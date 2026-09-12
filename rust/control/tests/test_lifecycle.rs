@@ -980,6 +980,84 @@ fn finished_runs_explain_missing_invalid_mismatched_and_incomplete_reports() {
 }
 
 #[test]
+fn interrupted_executor_retains_a_retry_receipt_without_rewriting_its_report() {
+    for timed_out in [true, false] {
+        let world = LifecycleWorld::new();
+        let started = world.start();
+        let path = world
+            .worktree
+            .join(".devcoordinator/test/current")
+            .join(REPORT_FILE);
+        let mut report = ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+        report.status = RunStatus::Running;
+        report.finished_at = None;
+        report.checks[0].status = LeafStatus::Running;
+        report.checks[0].finished_at = None;
+        report.checks[0].exit = DiagnosticExit {
+            code: None,
+            signal: None,
+        };
+        report.counts.insert("passed".into(), 0);
+        report.counts.insert("running".into(), 1);
+        report.validate().unwrap();
+        let raw = serde_json::to_vec(&report).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        if timed_out {
+            world.systemd.timed_out.store(true, Ordering::SeqCst);
+            world.systemd.finish(&started.unit);
+            world.wait_status(TestStatus::TimedOut);
+        } else {
+            world
+                .lifecycle
+                .stop(
+                    world.worktree.to_str().unwrap(),
+                    Some("fixture cancellation".into()),
+                    &world.caller,
+                )
+                .unwrap();
+            world.wait_status(TestStatus::Cancelled);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        world.systemd.timed_out.store(false, Ordering::SeqCst);
+        let retry = world
+            .lifecycle
+            .retry(
+                RetryTest {
+                    path: world.worktree.display().to_string(),
+                    test: Some("all".into()),
+                    run_id: started.run_id,
+                    check: "unit".into(),
+                },
+                &world.caller,
+            )
+            .expect("a stopped executor retains diagnostic retry evidence");
+        assert_eq!(retry.proof, ApiProofKind::Retry);
+        world.systemd.finish(&retry.unit);
+        let completed = world.wait_status(TestStatus::Passed);
+        assert_eq!(completed.proof, ApiProofKind::Retry);
+        assert!(!completed.readiness_eligible);
+    }
+}
+
+#[test]
+fn passing_checks_do_not_become_retry_targets() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    let result = world.lifecycle.retry(
+        RetryTest {
+            path: world.worktree.display().to_string(),
+            test: Some("all".into()),
+            run_id: started.run_id,
+            check: "unit".into(),
+        },
+        &world.caller,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn run_timeout_terminates_live_children_and_preserves_completed_checks() {
     let world = LifecycleWorld::new();
     let started = world.start();

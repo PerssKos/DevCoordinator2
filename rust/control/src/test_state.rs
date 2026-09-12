@@ -391,13 +391,19 @@ impl TestRunStore {
         &self,
         worktree: &Path,
         report: &ExecutionReport,
+        terminal_status: &TestStatus,
         work: Option<&devcoordinator2_api::work_context::WorkAttribution>,
         uid: u32,
         gid: u32,
     ) -> Result<(), TestStateError> {
-        if report.status == RunStatus::Running {
-            return Ok(());
+        if *terminal_status == TestStatus::Running {
+            return Err(TestStateError::Invalid(
+                "cannot retain retry evidence for an active run".into(),
+            ));
         }
+        // The outer unit may end before its executor can publish a final report.
+        // Retain a derived diagnostic receipt while preserving the original bytes.
+        let interrupted = report.status == RunStatus::Running;
         let test = self
             .open_test(worktree)?
             .ok_or_else(|| TestStateError::Invalid("test state directory is unavailable".into()))?;
@@ -408,13 +414,41 @@ impl TestRunStore {
             run_id: report.run_id.clone(),
             test: report.test.clone(),
             proof: report.proof,
-            status: report.status,
+            status: if *terminal_status == TestStatus::Passed && report.status == RunStatus::Passed
+            {
+                RunStatus::Passed
+            } else {
+                RunStatus::Failed
+            },
             source_digest: report.source_digest.clone(),
             config_digest: report.config_digest.clone(),
             requested_tier: report.requested_tier,
             readiness_eligible: report.readiness_eligible,
             selection: report.selection.clone(),
-            checks: report.checks.iter().map(retry_check).collect(),
+            checks: report
+                .checks
+                .iter()
+                .map(|check| {
+                    let mut evidence = retry_check(check);
+                    if interrupted
+                        && matches!(
+                            evidence.status,
+                            devcoordinator2_executor_protocol::LeafStatus::Pending
+                                | devcoordinator2_executor_protocol::LeafStatus::Running
+                        )
+                    {
+                        evidence.status = if evidence.status
+                            == devcoordinator2_executor_protocol::LeafStatus::Running
+                            && *terminal_status == TestStatus::TimedOut
+                        {
+                            devcoordinator2_executor_protocol::LeafStatus::TimedOut
+                        } else {
+                            devcoordinator2_executor_protocol::LeafStatus::Cancelled
+                        };
+                    }
+                    evidence
+                })
+                .collect(),
         });
         if runs.len() > EVIDENCE_CAP {
             runs.drain(..runs.len() - EVIDENCE_CAP);

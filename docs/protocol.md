@@ -143,7 +143,9 @@ requests currently waiting, as well as completed admission waits.
 Terminal test summaries expose optional `report_issue`: `missing`, `invalid`,
 `unreadable`, `identity_mismatch`, or `incomplete`. This reason never contains
 report payloads. Partial check results remain available and all interrupted
-children have terminal status.
+children have terminal status. A valid partial report from a stopped executor
+also yields a diagnostic retry receipt for failed, timed-out, or cancelled checks;
+the original report bytes are retained, and the retry cannot establish readiness.
 
 A mixed Compose component waits for safe finite siblings to settle even if
 another finite service exits unsuccessfully. Cancellation and the declared

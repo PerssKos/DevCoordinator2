@@ -82,7 +82,11 @@ not contradict them.
   waiting for capacity have no process start time. Console shows this distinction
   during the run; historical reports without observations remain readable.
 - **REQ-TEST-14** (2026-09-01, done): Explicit check selections and a
-  failed-check retry are diagnostic only. Retry begins only after an original
+  retry of a failed, timed-out, or cancelled check are diagnostic only.
+  When the outer unit ends before its executor seals its report, retain a
+  failed-run retry receipt with reconciled child states while preserving the
+  original report bytes. Missing or invalid reports never become invented
+  successful evidence. Retry begins only after an original
   complete run finishes, includes the target's prerequisite closure, reuses
   only exact matching regular-file artifact receipts, reruns non-reusable
   setup, and rejects changed source, config, artifacts, origin, or target

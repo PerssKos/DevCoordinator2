@@ -1676,18 +1676,24 @@ impl TestLifecycle {
         );
         summary.stdout_bytes_observed = handle.stdout_bytes.load(Ordering::SeqCst);
         summary.stderr_bytes_observed = handle.stderr_bytes.load(Ordering::SeqCst);
+        let mut retry_evidence_written = true;
         if let Some(report) = report
             .as_ref()
             .filter(|report| report_matches(handle, report))
         {
             let _ = apply_report(&mut summary, report);
-            let _ = self.inner.store.record_evidence(
-                &handle.worktree,
-                report,
-                summary.work.as_ref(),
-                handle.caller_uid,
-                handle.caller_gid,
-            );
+            retry_evidence_written = self
+                .inner
+                .store
+                .record_evidence(
+                    &handle.worktree,
+                    report,
+                    &status,
+                    summary.work.as_ref(),
+                    handle.caller_uid,
+                    handle.caller_gid,
+                )
+                .is_ok();
         }
         reconcile_terminal_checks(&mut summary);
         let summary_written = self
@@ -1715,7 +1721,7 @@ impl TestLifecycle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.final_status = Some(status.clone());
-        state.evidence_complete = summary_written && history_written;
+        state.evidence_complete = summary_written && history_written && retry_evidence_written;
         handle.finalized.notify_all();
         drop(state);
         // Publish the terminal summary before releasing admission. A
@@ -2050,14 +2056,16 @@ fn validate_retry(
             format!("unknown check: {check}"),
         ));
     }
-    if !origin
-        .checks
-        .iter()
-        .any(|candidate| candidate.name == check && candidate.status == LeafStatus::Failed)
-    {
+    if !origin.checks.iter().any(|candidate| {
+        candidate.name == check
+            && matches!(
+                candidate.status,
+                LeafStatus::Failed | LeafStatus::TimedOut | LeafStatus::Cancelled
+            )
+    }) {
         return Err(ProtocolError::new(
             ErrorCode::TestStartFailed,
-            "only a failed check from that complete run can retry",
+            "only a failed, timed-out, or cancelled check from that complete run can retry",
         ));
     }
     Ok(())
