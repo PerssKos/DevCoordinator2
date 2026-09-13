@@ -11,7 +11,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use devcoordinator2_api::results::{
-    RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryStatus, Worktree,
+    RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryPresentation,
+    RepositoryStatus, Worktree,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::{Connection, OptionalExtension, Row};
@@ -506,6 +507,83 @@ impl Registry {
         }
     }
 
+    pub fn update_presentation(
+        &self,
+        params: devcoordinator2_api::params::RepositoryPresentationUpdate,
+        uid: u32,
+    ) -> Result<RepositoryPresentation, ProtocolError> {
+        validate_repository_id(&params.repository_id, "repository_id")?;
+        let display_name = params.display_name.map(|name| name.trim().to_owned());
+        if display_name.as_ref().is_some_and(|name| {
+            name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control)
+        }) {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "Repository name must contain 1 to 80 characters without control characters.",
+            ));
+        }
+        let icons = [
+            "folder",
+            "code",
+            "app-window",
+            "world",
+            "rocket",
+            "database",
+            "device-desktop",
+            "device-mobile",
+            "tools",
+            "flask",
+            "palette",
+            "star",
+            "plane",
+            "book",
+            "chart-bar",
+            "shield",
+        ];
+        if params
+            .icon
+            .as_ref()
+            .is_some_and(|icon| !icons.contains(&icon.as_str()))
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "Choose a supported repository icon.",
+            ));
+        }
+        let result = RepositoryPresentation {
+            repository_id: params.repository_id,
+            display_name,
+            icon: params.icon,
+        };
+        let saved = result.clone();
+        let found = self.database.call(move |connection| {
+            let transaction = connection.transaction()?;
+            let active: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id=?1 AND archived_at IS NULL)",
+                [&saved.repository_id], |row| row.get(0),
+            )?;
+            if !active { return Ok(false); }
+            if saved.display_name.is_none() && saved.icon.is_none() {
+                transaction.execute("DELETE FROM repository_presentation WHERE repository_id=?1", [&saved.repository_id])?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO repository_presentation(repository_id,display_name,icon,updated_at,updated_by_uid) \
+                     VALUES(?1,?2,?3,strftime('%Y-%m-%dT%H:%M:%fZ','now'),?4) \
+                     ON CONFLICT(repository_id) DO UPDATE SET display_name=excluded.display_name,icon=excluded.icon,updated_at=excluded.updated_at,updated_by_uid=excluded.updated_by_uid",
+                    rusqlite::params![saved.repository_id, saved.display_name, saved.icon, uid],
+                )?;
+            }
+            transaction.commit()?;
+            Ok(true)
+        }).map_err(database_error)?;
+        if !found {
+            return Err(repository_not_found(
+                "repository is not registered or is archived",
+            ));
+        }
+        Ok(result)
+    }
+
     fn repository(&self, repository_id: &str) -> Result<Option<Repository>, ProtocolError> {
         let repository_id = repository_id.to_owned();
         self.database
@@ -583,23 +661,95 @@ pub(crate) fn test_repository_source(
     probe: &Path,
     run_as: (u32, u32),
 ) -> Option<devcoordinator2_api::results::TestRepositorySource> {
-    let output = run_git_arguments(
-        probe,
-        Some(run_as),
-        &[
-            "config",
-            "--local",
-            "--no-includes",
-            "--get",
-            "remote.origin.url",
-        ],
-        Duration::from_secs(1),
-    )
-    .ok()?;
-    if !output.status.success() || output.stdout.len() > 2048 {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut checkout = probe.canonicalize().ok()?;
+    let mut visited = std::collections::HashSet::new();
+    for depth in 0..8 {
+        if !visited.insert(checkout.clone()) {
+            return None;
+        }
+        if depth > 0 {
+            let output = run_git_arguments(
+                &checkout,
+                Some(run_as),
+                &["rev-parse", "--show-toplevel"],
+                deadline.checked_duration_since(Instant::now())?,
+            )
+            .ok()?;
+            let root = if output.status.success() {
+                output
+            } else {
+                run_git_arguments(
+                    &checkout,
+                    Some(run_as),
+                    &["rev-parse", "--absolute-git-dir"],
+                    deadline.checked_duration_since(Instant::now())?,
+                )
+                .ok()?
+            };
+            if !root.status.success()
+                || root.stdout.len() > 4096
+                || Path::new(std::str::from_utf8(&root.stdout).ok()?.trim())
+                    .canonicalize()
+                    .ok()?
+                    != checkout
+            {
+                return None;
+            }
+        }
+        let output = run_git_arguments(
+            &checkout,
+            Some(run_as),
+            &[
+                "config",
+                "--local",
+                "--no-includes",
+                "--get",
+                "remote.origin.url",
+            ],
+            deadline.checked_duration_since(Instant::now())?,
+        )
+        .ok()?;
+        if !output.status.success() || output.stdout.len() > 2048 {
+            return None;
+        }
+        let remote = std::str::from_utf8(&output.stdout).ok()?.trim();
+        if let Some(source) = repository_source_from_remote(remote) {
+            return Some(source);
+        }
+        checkout = local_repository_origin(remote, &checkout)?
+            .canonicalize()
+            .ok()?;
+    }
+    None
+}
+
+/// Resolve presentation independently of retained test runs, using the root's
+/// physical owner for the existing bounded, credential-free Git discovery.
+pub(crate) fn repository_source_for_root(
+    root: &Path,
+) -> Option<devcoordinator2_api::results::TestRepositorySource> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = root.metadata().ok()?;
+    test_repository_source(root, (metadata.uid(), metadata.gid()))
+}
+
+fn local_repository_origin(remote: &str, checkout: &Path) -> Option<PathBuf> {
+    if remote.starts_with("file://") {
+        let parsed = reqwest::Url::parse(remote).ok()?;
+        if parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || !matches!(parsed.host_str(), None | Some("localhost"))
+        {
+            return None;
+        }
+        return parsed.to_file_path().ok();
+    }
+    if remote.is_empty() || remote.contains(':') || remote.contains('\n') {
         return None;
     }
-    repository_source_from_remote(std::str::from_utf8(&output.stdout).ok()?.trim())
+    Some(checkout.join(remote))
 }
 
 fn repository_source_from_remote(
@@ -1128,6 +1278,133 @@ mod tests {
             source.name,
             fixture.root.file_name().unwrap().to_str().unwrap()
         );
+    }
+
+    #[test]
+    fn test_repository_source_follows_local_clones_and_linked_worktrees() {
+        let fixture = RepositoryFixture::new();
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                OsStr::new("https://github.com/owner/hdlripper.git"),
+            ],
+        );
+        let linked = fixture
+            .root
+            .parent()
+            .unwrap()
+            .join("hdlripper-windows-0.1.4");
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("--detach"),
+                linked.as_os_str(),
+            ],
+        );
+        let expected = test_repository_source(&fixture.root, identity());
+        assert!(expected.is_some());
+        for root in [&fixture.root, &linked] {
+            let workspace = root.join(".local/daily/workspace");
+            std::fs::create_dir_all(workspace.parent().unwrap()).unwrap();
+            git(
+                root,
+                &[
+                    OsStr::new("clone"),
+                    OsStr::new("--quiet"),
+                    root.as_os_str(),
+                    workspace.as_os_str(),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+            git(
+                &workspace,
+                &[
+                    OsStr::new("remote"),
+                    OsStr::new("set-url"),
+                    OsStr::new("origin"),
+                    OsStr::new("../../.."),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+            let file_url = reqwest::Url::from_directory_path(root).unwrap().to_string();
+            git(
+                &workspace,
+                &[
+                    OsStr::new("remote"),
+                    OsStr::new("set-url"),
+                    OsStr::new("origin"),
+                    OsStr::new(&file_url),
+                ],
+            );
+            assert_eq!(test_repository_source(&workspace, identity()), expected);
+        }
+    }
+
+    #[test]
+    fn test_repository_source_rejects_cycles_missing_paths_and_parent_inference() {
+        let fixture = RepositoryFixture::new();
+        let nested = fixture.root.join("workspace");
+        create_repository(&nested);
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                OsStr::new("https://github.com/owner/hdlripper.git"),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
+        for remote in [
+            ".",
+            "../missing",
+            "file://other-host/private/repo",
+            "https://github.com/owner/repo?token=private",
+        ] {
+            git(
+                &nested,
+                &[
+                    OsStr::new("config"),
+                    OsStr::new("remote.origin.url"),
+                    OsStr::new(remote),
+                ],
+            );
+            assert!(test_repository_source(&nested, identity()).is_none());
+        }
+        let ordinary = fixture.root.join("ordinary-subdirectory");
+        std::fs::create_dir(&ordinary).unwrap();
+        git(
+            &nested,
+            &[
+                OsStr::new("config"),
+                OsStr::new("remote.origin.url"),
+                ordinary.as_os_str(),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
+        git(
+            &nested,
+            &[
+                OsStr::new("config"),
+                OsStr::new("remote.origin.url"),
+                fixture.root.as_os_str(),
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("set-url"),
+                OsStr::new("origin"),
+                nested.as_os_str(),
+            ],
+        );
+        assert!(test_repository_source(&nested, identity()).is_none());
     }
 
     struct RepositoryFixture {

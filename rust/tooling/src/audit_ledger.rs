@@ -434,22 +434,28 @@ fn absolute_components(path: &Path) -> Result<(PathBuf, Vec<OsString>), LedgerEr
     Ok((normalized, components))
 }
 
+fn directory_traversal_flags() -> OFlags {
+    // Known child access needs search permission, not directory enumeration.
+    // Keep NOFOLLOW and DIRECTORY so traversal cannot follow a replacement link.
+    #[cfg(target_os = "linux")]
+    let access = OFlags::PATH;
+    #[cfg(not(target_os = "linux"))]
+    let access = OFlags::RDONLY;
+    access | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW
+}
+
 fn open_directory_path(
     components: &[OsString],
     missing_is_absent: bool,
 ) -> Result<Option<File>, LedgerError> {
-    let mut directory = unix_fs::open(
-        "/",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|error| LedgerError(format!("ledger anchor is unsafe: {error}")))?;
+    let mut directory = unix_fs::open("/", directory_traversal_flags(), Mode::empty())
+        .map(File::from)
+        .map_err(|error| LedgerError(format!("ledger anchor is unsafe: {error}")))?;
     for component in components {
         match unix_fs::openat(
             &directory,
             component,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            directory_traversal_flags(),
             Mode::empty(),
         ) {
             Ok(next) => directory = File::from(next),
@@ -481,18 +487,14 @@ pub fn validate_directory_nofollow(path: &Path) -> Result<PathBuf, LedgerError> 
 
 pub fn create_directory_all_nofollow(path: &Path, mode: u32) -> Result<PathBuf, LedgerError> {
     let (absolute, components) = absolute_components(path)?;
-    let mut directory = unix_fs::open(
-        "/",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map(File::from)
-    .map_err(|error| LedgerError(format!("directory root is unsafe: {error}")))?;
+    let mut directory = unix_fs::open("/", directory_traversal_flags(), Mode::empty())
+        .map(File::from)
+        .map_err(|error| LedgerError(format!("directory root is unsafe: {error}")))?;
     for component in components {
         let next = match unix_fs::openat(
             &directory,
             &component,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            directory_traversal_flags(),
             Mode::empty(),
         ) {
             Ok(next) => next,
@@ -508,7 +510,7 @@ pub fn create_directory_all_nofollow(path: &Path, mode: u32) -> Result<PathBuf, 
                 unix_fs::openat(
                     &directory,
                     &component,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                    directory_traversal_flags(),
                     Mode::empty(),
                 )
                 .map_err(|error| {
@@ -896,5 +898,58 @@ mod tests {
         write_new_bytes_nofollow(&path, b"first", 0o600).unwrap();
         assert!(write_new_bytes_nofollow(&path, b"second", 0o600).is_err());
         assert_eq!(std::fs::read(path).unwrap(), b"first");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nofollow_paths_traverse_without_directory_listing_permission() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("permission checks require an unprivileged test process");
+            return;
+        }
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700))
+                    .expect("restore isolated fixture for cleanup");
+            }
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        let traversal = fixture.path().join("traversal-only");
+        let leaf = traversal.join("owned-evidence");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let input = leaf.join("report.json");
+        std::fs::write(&input, b"verified evidence").unwrap();
+        symlink(&leaf, traversal.join("redirected")).unwrap();
+        let _restore = Restore(traversal.clone());
+        std::fs::set_permissions(&traversal, std::fs::Permissions::from_mode(0o111)).unwrap();
+        assert!(std::fs::read_dir(&traversal).is_err());
+        assert_eq!(std::fs::read(&input).unwrap(), b"verified evidence");
+        assert_eq!(
+            read_bytes_nofollow(&input, Some(fixture.path()))
+                .unwrap()
+                .unwrap(),
+            b"verified evidence"
+        );
+        assert_eq!(validate_directory_nofollow(&leaf).unwrap(), leaf);
+        let output = leaf.join("review.json");
+        write_new_bytes_nofollow(&output, b"reviewed", 0o600).unwrap();
+        assert!(write_new_bytes_nofollow(&output, b"replace", 0o600).is_err());
+        write_bytes_nofollow(&output, b"updated", 0o600).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"updated");
+        let created = leaf.join("new/nested");
+        assert_eq!(
+            create_directory_all_nofollow(&created, 0o700).unwrap(),
+            created
+        );
+        assert!(read_bytes_nofollow(&traversal.join("redirected/report.json"), None).is_err());
+        assert!(create_directory_all_nofollow(&traversal.join("redirected/new"), 0o700).is_err());
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(read_bytes_nofollow(&input, None).is_err());
+        std::fs::set_permissions(&input, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&traversal, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(read_bytes_nofollow(&input, None).is_err());
+        assert!(std::fs::read_dir(&traversal).is_err());
     }
 }

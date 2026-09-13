@@ -260,12 +260,32 @@ independent_services = ["worker"]           # reviewed long-running service cont
 build = true                 # build on apply; ordinary start never builds
 port = true                  # leases PORT for Compose interpolation
 route = true
-timeout_seconds = 300        # finite + long-running readiness, 1..900
+timeout_seconds = 300        # 1..900; up to 21600 when finite_services is non-empty
 
 [deployment.web.component.smtp]
 type = "external"            # observed only, never owned or controlled
 tcp = "127.0.0.1:25"
 ```
+
+Explicit finite services may use a longer bounded execution deadline, including
+when accompanied by an artifact server. The default remains 300 seconds; an
+ordinary component without finite services remains limited to 900 seconds.
+
+An explicitly all-finite Compose component may list every selected service in
+`finite_services`. It completes with state `completed`, not `running`, only when
+every selected service exits successfully. It cannot lease a service port,
+publish a route, or declare a running-service health probe. Existing mixed
+Compose deployments still require their non-finite services to remain running.
+Unchanged apply and ordinary start preserve completed work instead of rerunning
+it. A changed apply creates a new execution; failures retain diagnostics and do
+not become completion evidence.
+
+For a deployment composed entirely of finite workloads, a whole-deployment stop
+can cancel an active apply. `stopping` means the request is accepted but cleanup
+has not settled; `cancelled` is reported only after the owned candidate cleanup
+succeeds. Cancellation cannot reverse an operation already sealed for commit.
+No agent Docker access or runner privilege relaxation is involved. Explicit
+deployment removal retains the normal exact-target/data-deletion controls.
 
 Environment injected into every component of a deployment:
 `DC2_DEPLOYMENT`, `DC2_COMPONENT`, `DC2_GENERATION`, `PORT` (own leased

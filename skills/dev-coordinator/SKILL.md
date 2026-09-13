@@ -179,13 +179,49 @@ history — never a Markdown list, checklist, or chat memory. A daemon or
 database error from these tools blocks the affected completion claim; there
 is no file fallback.
 
-- After diagnosis establishes a durable missing or regressed outcome within
-  the intended task, check whether it is already represented before using
-  `task_create` (kind `stub` or `improvement`). Size and split large work and
-  keep statuses current. Execution attempts stay in governed run history;
-  failures and suggestions do not automatically create tasks, and passing
-  runs do not automatically complete work. An analysis-only request does not
-  authorize task mutations.
+After diagnosis establishes a durable missing or regressed outcome within
+the intended task, check whether an equivalent concrete task already exists
+before using `task_create` (kind `stub` or `improvement`). Execution attempts
+stay in governed run history; failures and suggestions do not automatically
+create tasks, and passing runs do not automatically complete work. An
+analysis-only request does not authorize task mutations.
+
+When implementation deliberately omits in-scope functionality, that omission
+already establishes an unfinished outcome. Record it when decided:
+
+1. Inspect `plan_overview` and relevant `task_history` records, including the
+   originating requirements, feedback, and applicable standing corrections.
+2. Find an equivalent concrete outcome. Reuse or reopen it when appropriate;
+   a thematic umbrella match alone does not prevent creating the omission
+   outcome.
+3. Apply the universal umbrella-placement rule using the existing
+   `estimated_loc` and `parent_task_id` fields: only a fitting existing
+   umbrella with a recorded estimate above 100 lines qualifies. Otherwise,
+   keep the omission standalone; clear a previous parent when needed
+   (`devcoordinator2 task update <task_id> --root`). Preserve existing task IDs and
+   history when refining or moving a matching record. Apply this procedure
+   to authorized omissions without a retrospective backlog rewrite.
+4. Put the missing behavior and acceptance criteria in `title`/`outcome`,
+   user consequences in `impact`, actual blockers in `unblock_condition`,
+   and completion proof requirements in `verification`. Explain the reason
+   for deferral in the owner-facing description. Keep supporting requirement
+   or feedback references in `technical_note`.
+5. Confirm the saved result. At delivery or handoff, provide a compact receipt
+   naming the omitted behavior, task ID, parent or standalone placement,
+   next action or blocker, and required proof. Keep these outcomes open until
+   verified or explicitly removed from scope by the user.
+
+| Situation | Required behavior |
+|---|---|
+| Save/reopen is omitted; fitting umbrella estimates 300 lines | Record a child outcome beneath that umbrella. |
+| The fitting umbrella estimates 60 lines | Record a standalone outcome. |
+| The fitting umbrella estimates exactly 100 lines or has no estimate | Record a standalone outcome. |
+| Only an unrelated large umbrella exists | Record a standalone outcome. |
+| An equivalent omission outcome already exists | Reuse it and apply the placement rule. |
+| An omitted behavior needs only a few lines | Record it using the same placement rule. |
+| An estimate rises from 80 to 120 lines without an omission | No planning action. |
+| A verified preliminary increment is delivered with functionality still omitted | Keep the omission outcomes open and reference them in the delivery limitations. |
+
 - Explain titles, outcomes, decision bodies, and progress through what the
   user needs to accomplish, what people can now do, the remaining impact,
   and the next observable result. Naming components or test counts is not

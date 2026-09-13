@@ -11,7 +11,7 @@ use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::params::{RetryTest, StartTest, ValidationTier as ApiValidationTier};
 use devcoordinator2_api::results::{ProofKind as ApiProofKind, StopTest, TestStarted, TestStatus};
 use devcoordinator2_control::access::Caller;
-use devcoordinator2_control::capacity::CapacityBroker;
+use devcoordinator2_control::capacity::{CapacityBroker, HostMemory};
 use devcoordinator2_control::config::Config;
 use devcoordinator2_control::database::Database;
 use devcoordinator2_control::docker::{
@@ -164,13 +164,27 @@ impl DockerControl for PostgresDocker {
         Ok(())
     }
 
+    fn ensure_image(&self, image: &str) -> Result<(), DockerError> {
+        assert_eq!(image, "postgres:18");
+        Ok(())
+    }
+
     fn run_detached(&self, request: &RunDetachedRequest) -> Result<ExactContainerId, DockerError> {
         assert_eq!(
             request.env_names,
-            ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"]
+            [
+                "POSTGRES_USER",
+                "POSTGRES_PASSWORD",
+                "POSTGRES_DB",
+                "PGDATA"
+            ]
         );
+        assert_eq!(request.env_values["PGDATA"], "/var/lib/postgresql/data");
         assert_eq!(request.publish, ["127.0.0.1::5432"]);
-        assert_eq!(request.tmpfs.len(), 1);
+        assert_eq!(
+            request.tmpfs,
+            ["/var/lib/postgresql/data:rw,size=1g,mode=0700"]
+        );
         assert_eq!(request.label_context.purpose, "test");
         assert_eq!(request.label_context.data_class, "disposable");
         self.provisioned.fetch_add(1, Ordering::SeqCst);
@@ -269,6 +283,9 @@ struct FixtureSystemd {
     fail_spawn: AtomicBool,
     fail_capture: AtomicBool,
     mismatch_uid: AtomicBool,
+    memory: Mutex<HashMap<String, String>>,
+    fail_stop: AtomicBool,
+    timed_out: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -281,6 +298,9 @@ impl FixtureSystemd {
             fail_spawn: AtomicBool::new(false),
             fail_capture: AtomicBool::new(false),
             mismatch_uid: AtomicBool::new(false),
+            memory: Mutex::new(HashMap::new()),
+            fail_stop: AtomicBool::new(false),
+            timed_out: AtomicBool::new(false),
         }
     }
 
@@ -335,6 +355,7 @@ impl FixtureSystemd {
             .checks
             .iter()
             .map(|check| CheckReport {
+                execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
                 role: check.role,
@@ -468,7 +489,15 @@ impl SystemdControl for FixtureSystemd {
                     "MainPID" => "0".into(),
                     "ExecMainStatus" => exit.to_string(),
                     "Result" if running => String::new(),
+                    "Result" if self.timed_out.load(Ordering::SeqCst) => "timeout".into(),
                     "Result" => "success".into(),
+                    "MemoryCurrent" => self
+                        .memory
+                        .lock()
+                        .unwrap()
+                        .get(unit)
+                        .cloned()
+                        .unwrap_or_default(),
                     _ => String::new(),
                 };
                 ((*name).into(), value)
@@ -476,18 +505,28 @@ impl SystemdControl for FixtureSystemd {
             .collect())
     }
 
-    fn list_matching_units(&self, _pattern: &str) -> Result<Vec<String>, SystemdError> {
+    fn list_matching_units(&self, pattern: &str) -> Result<Vec<String>, SystemdError> {
         Ok(self
             .runs
             .lock()
             .unwrap()
             .iter()
-            .filter(|(_, state)| !state.0.lock().unwrap().done)
+            .filter(|(unit, state)| {
+                let matches = pattern
+                    .split_once('*')
+                    .map_or(unit.as_str() == pattern, |(prefix, suffix)| {
+                        unit.starts_with(prefix) && unit.ends_with(suffix)
+                    });
+                matches && !state.0.lock().unwrap().done
+            })
             .map(|(unit, _)| unit.clone())
             .collect())
     }
 
     fn stop_unit(&self, unit: &str) -> Result<(), SystemdError> {
+        if self.fail_stop.load(Ordering::SeqCst) {
+            return Err(SystemdError::Operation("fixture stop unavailable".into()));
+        }
         self.stops.fetch_add(1, Ordering::SeqCst);
         if let Some(state) = self.runs.lock().unwrap().get(unit).cloned() {
             let mut current = state.0.lock().unwrap();
@@ -505,6 +544,15 @@ impl SystemdControl for FixtureSystemd {
 
     fn control_group_path(&self, _unit: &str) -> Result<Option<PathBuf>, SystemdError> {
         Ok(None)
+    }
+
+    fn cgroup_memory_current(&self, cgroup: &Path) -> Option<u64> {
+        self.memory
+            .lock()
+            .unwrap()
+            .get(cgroup.file_name()?.to_str()?)?
+            .parse()
+            .ok()
     }
 
     fn prove_cgroup_empty(&self, _cgroup: Option<&Path>, _deadline: Duration) -> bool {
@@ -536,6 +584,10 @@ struct LifecycleWorld {
 
 impl LifecycleWorld {
     fn new() -> Self {
+        Self::with_docker(Arc::new(FixtureDocker))
+    }
+
+    fn with_docker(docker: Arc<dyn DockerControl>) -> Self {
         let temporary = tempdir().unwrap();
         let worktree = temporary.path().join("repository");
         std::fs::create_dir(&worktree).unwrap();
@@ -597,7 +649,7 @@ command=["true"]
             capacity,
             logs,
             systemd.clone(),
-            Arc::new(FixtureDocker),
+            docker,
             Arc::new(FixtureCommand),
             TestRunStore,
             Arc::new(FixtureClock),
@@ -615,6 +667,7 @@ command=["true"]
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "lifecycle fixture requires non-root caller");
@@ -640,6 +693,41 @@ command=["true"]
                 &self.caller,
             )
             .unwrap()
+    }
+
+    fn start_other(&self) -> (PathBuf, TestStarted) {
+        self.start_named("other-repository")
+    }
+
+    fn start_named(&self, name: &str) -> (PathBuf, TestStarted) {
+        let path = self._temporary.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::copy(
+            self.worktree.join(".devcoordinator.toml"),
+            path.join(".devcoordinator.toml"),
+        )
+        .unwrap();
+        let started = self
+            .lifecycle
+            .start(
+                StartTest {
+                    path: path.to_string_lossy().into_owned(),
+                    test: Some("all".into()),
+                    checks: Vec::new(),
+                    tier: ApiValidationTier::Release,
+                },
+                &self.caller,
+            )
+            .unwrap();
+        (path, started)
     }
 
     fn wait_status(&self, expected: TestStatus) -> devcoordinator2_api::results::TestSummary {
@@ -732,6 +820,895 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
             .history(query(&world.worktree), &world.caller)
             .is_err()
     );
+}
+
+#[test]
+fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() {
+    let world = LifecycleWorld::new();
+    let first = world.start();
+    world.systemd.finish(&first.unit);
+    let mut summary = world.wait_status(TestStatus::Passed);
+    let mut check = summary.checks.as_ref().unwrap()[0].clone();
+    check.cases = (0..32)
+        .map(|index| devcoordinator2_api::results::CaseProjection {
+            execution: None,
+            id: format!("case-{index}-{}", "x".repeat(96)),
+            status: devcoordinator2_api::results::LeafStatus::Passed,
+            exit: devcoordinator2_api::results::DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            duration_ms: 1,
+            streams: Vec::new(),
+        })
+        .collect();
+    check.case_count = 32;
+    summary.checks = Some(
+        (0..64)
+            .map(|index| {
+                let mut check = check.clone();
+                check.name = format!("check-{index}");
+                check
+            })
+            .collect(),
+    );
+    summary
+        .check_summary
+        .as_mut()
+        .unwrap()
+        .insert("passed".into(), 64);
+    let full = serde_json::to_vec(&summary).unwrap();
+    assert!(full.len() > 256 * 1024 && full.len() < 2 * 1024 * 1024);
+    std::fs::write(
+        world
+            .worktree
+            .join(".devcoordinator/test/current/summary.json"),
+        full,
+    )
+    .unwrap();
+    let (other, second) = world.start_named("other-page");
+    world.systemd.finish(&second.unit);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while world
+        .lifecycle
+        .status(other.to_str().unwrap(), &world.caller)
+        .unwrap()
+        .status
+        == TestStatus::Running
+    {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let page = world
+            .lifecycle
+            .list_current_page(devcoordinator2_api::params::TestList {
+                after_worktree_id: cursor,
+                limit: Some(1),
+            })
+            .unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() < 200 * 1024);
+        for row in &page.runs {
+            assert!(seen.insert(row.worktree_id.clone()));
+            if row.worktree_path == world.worktree.to_str().unwrap() {
+                assert_eq!(row.summary.checks.as_ref().unwrap().len(), 8);
+                assert_eq!(row.summary.checks_truncated, Some(true));
+                assert!(row.summary.checks.as_ref().unwrap()[0].cases.is_empty());
+            }
+        }
+        cursor = page.next_worktree_id;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(seen.len(), 2);
+    let details = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_eq!(details.checks.as_ref().unwrap().len(), 64);
+    assert!(serde_json::to_vec(&details).unwrap().len() < 160 * 1024);
+    assert!(
+        details
+            .checks
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|check| check.cases_truncated)
+    );
+}
+
+#[test]
+fn finished_runs_explain_missing_invalid_mismatched_and_incomplete_reports() {
+    use devcoordinator2_api::results::TestReportIssue;
+    for issue in [
+        TestReportIssue::Missing,
+        TestReportIssue::Invalid,
+        TestReportIssue::IdentityMismatch,
+        TestReportIssue::Incomplete,
+    ] {
+        let world = LifecycleWorld::new();
+        let started = world.start();
+        let path = world
+            .worktree
+            .join(".devcoordinator/test/current")
+            .join(REPORT_FILE);
+        match issue {
+            TestReportIssue::Missing => std::fs::remove_file(&path).unwrap(),
+            TestReportIssue::Invalid => std::fs::write(&path, b"{invalid private report}").unwrap(),
+            _ => {
+                let mut report =
+                    ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+                if issue == TestReportIssue::IdentityMismatch {
+                    report.run_id = "unrelated-run".into();
+                } else {
+                    report.status = RunStatus::Running;
+                    report.finished_at = None;
+                    report.checks[0].status = LeafStatus::Running;
+                    report.checks[0].finished_at = None;
+                    report.checks[0].duration_seconds = None;
+                    report.checks[0].exit = DiagnosticExit {
+                        code: None,
+                        signal: None,
+                    };
+                    report.counts.insert("passed".into(), 0);
+                    report.counts.insert("running".into(), 1);
+                }
+                report.validate().unwrap();
+                std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+            }
+        }
+        world.systemd.finish(&started.unit);
+        let summary = world.wait_status(TestStatus::Failed);
+        assert_eq!(summary.report_issue, Some(issue));
+        assert!(!summary.readiness_eligible);
+        assert!(
+            !serde_json::to_string(&summary)
+                .unwrap()
+                .contains("private report")
+        );
+        if issue == TestReportIssue::Incomplete {
+            assert_eq!(
+                summary.checks.as_ref().unwrap()[0].status,
+                devcoordinator2_api::results::LeafStatus::Cancelled
+            );
+            assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+        }
+    }
+}
+
+#[test]
+fn interrupted_executor_retains_a_retry_receipt_without_rewriting_its_report() {
+    for timed_out in [true, false] {
+        let world = LifecycleWorld::new();
+        let started = world.start();
+        let path = world
+            .worktree
+            .join(".devcoordinator/test/current")
+            .join(REPORT_FILE);
+        let mut report = ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+        report.status = RunStatus::Running;
+        report.finished_at = None;
+        report.checks[0].status = LeafStatus::Running;
+        report.checks[0].finished_at = None;
+        report.checks[0].exit = DiagnosticExit {
+            code: None,
+            signal: None,
+        };
+        report.counts.insert("passed".into(), 0);
+        report.counts.insert("running".into(), 1);
+        report.validate().unwrap();
+        let raw = serde_json::to_vec(&report).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        if timed_out {
+            world.systemd.timed_out.store(true, Ordering::SeqCst);
+            world.systemd.finish(&started.unit);
+            world.wait_status(TestStatus::TimedOut);
+        } else {
+            world
+                .lifecycle
+                .stop(
+                    world.worktree.to_str().unwrap(),
+                    Some("fixture cancellation".into()),
+                    &world.caller,
+                )
+                .unwrap();
+            world.wait_status(TestStatus::Cancelled);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), raw);
+        world.systemd.timed_out.store(false, Ordering::SeqCst);
+        let retry = world
+            .lifecycle
+            .retry(
+                RetryTest {
+                    path: world.worktree.display().to_string(),
+                    test: Some("all".into()),
+                    run_id: started.run_id,
+                    check: "unit".into(),
+                },
+                &world.caller,
+            )
+            .expect("a stopped executor retains diagnostic retry evidence");
+        assert_eq!(retry.proof, ApiProofKind::Retry);
+        world.systemd.finish(&retry.unit);
+        let completed = world.wait_status(TestStatus::Passed);
+        assert_eq!(completed.proof, ApiProofKind::Retry);
+        assert!(!completed.readiness_eligible);
+    }
+}
+
+#[test]
+fn legacy_terminal_snapshot_is_reconciled_and_can_recover_its_missing_retry_receipt() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let current = world.worktree.join(".devcoordinator/test/current");
+    let mut report =
+        ExecutionReport::from_json(&std::fs::read(current.join(REPORT_FILE)).unwrap()).unwrap();
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.checks[0].status = LeafStatus::Running;
+    report.checks[0].finished_at = None;
+    report.checks[0].exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.counts.insert("passed".into(), 0);
+    report.counts.insert("running".into(), 1);
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    world.systemd.timed_out.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let mut old = world.wait_status(TestStatus::TimedOut);
+    old.report_issue = None;
+    old.readiness_eligible = true;
+    old.checks.as_mut().unwrap()[0].status = devcoordinator2_api::results::LeafStatus::Running;
+    old.check_summary
+        .as_mut()
+        .unwrap()
+        .insert("timed_out".into(), 0);
+    old.check_summary
+        .as_mut()
+        .unwrap()
+        .insert("running".into(), 1);
+    std::fs::write(
+        current.join("summary.json"),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_file(world.worktree.join(".devcoordinator/test/evidence.json")).unwrap();
+    let status = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_eq!(
+        status.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    assert_eq!(
+        world.lifecycle.list_current().unwrap().runs[0]
+            .summary
+            .checks
+            .as_ref()
+            .unwrap()[0]
+            .status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    world.systemd.timed_out.store(false, Ordering::SeqCst);
+    let mut other = report.clone();
+    other.run_id = "t20260904T000000Z-ffffff".into();
+    for check in &mut other.checks {
+        for stream in &mut check.streams {
+            stream.log_ref.run_id.clone_from(&other.run_id);
+        }
+    }
+    other.validate().unwrap();
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&other).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        world
+            .lifecycle
+            .retry(
+                RetryTest {
+                    path: world.worktree.display().to_string(),
+                    test: Some("all".into()),
+                    run_id: started.run_id.clone(),
+                    check: "unit".into()
+                },
+                &world.caller
+            )
+            .is_err()
+    );
+    assert!(
+        !world
+            .worktree
+            .join(".devcoordinator/test/evidence.json")
+            .exists()
+    );
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let retry = world
+        .lifecycle
+        .retry(
+            RetryTest {
+                path: world.worktree.display().to_string(),
+                test: Some("all".into()),
+                run_id: started.run_id,
+                check: "unit".into(),
+            },
+            &world.caller,
+        )
+        .expect("matching retained legacy report can restore diagnostic retry evidence");
+    world.systemd.finish(&retry.unit);
+    assert!(!world.wait_status(TestStatus::Passed).readiness_eligible);
+}
+
+#[test]
+fn passing_checks_do_not_become_retry_targets() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    let result = world.lifecycle.retry(
+        RetryTest {
+            path: world.worktree.display().to_string(),
+            test: Some("all".into()),
+            run_id: started.run_id,
+            check: "unit".into(),
+        },
+        &world.caller,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn run_timeout_terminates_live_children_and_preserves_completed_checks() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let path = world
+        .worktree
+        .join(".devcoordinator/test/current")
+        .join(REPORT_FILE);
+    let mut report = ExecutionReport::from_json(&std::fs::read(&path).unwrap()).unwrap();
+    let mut active = report.checks[0].clone();
+    active.name = "still-running".into();
+    active.status = LeafStatus::Running;
+    active.finished_at = None;
+    active.duration_seconds = None;
+    active.exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.checks.push(active);
+    report.counts.insert("running".into(), 1);
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.validate().unwrap();
+    std::fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+    world.systemd.timed_out.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let summary = world.wait_status(TestStatus::TimedOut);
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::Passed
+    );
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[1].status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+    assert_eq!(summary.check_summary.as_ref().unwrap()["timed_out"], 1);
+}
+
+#[test]
+fn postgres_18_tag_uses_explicit_disposable_data_directory() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = LifecycleWorld::with_docker(docker.clone());
+    let path = world.worktree.join(".devcoordinator.toml");
+    let mut config = std::fs::read_to_string(&path).unwrap();
+    config.push_str(
+        "\n[test.all.postgres]\nimage=\"postgres:18\"\nuser=\"app\"\ndatabase=\"app_test\"\n",
+    );
+    std::fs::write(path, config).unwrap();
+    let started = world.start();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn memory_emergency_preserves_evidence_and_does_not_claim_operator_cancellation() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let report_path = world
+        .worktree
+        .join(".devcoordinator/test/current")
+        .join(REPORT_FILE);
+    let mut report = ExecutionReport::from_json(&std::fs::read(&report_path).unwrap()).unwrap();
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.checks[0].status = LeafStatus::Running;
+    report.checks[0].finished_at = None;
+    report.checks[0].duration_seconds = None;
+    report.checks[0].exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.counts.insert("passed".into(), 0);
+    report.counts.insert("running".into(), 1);
+    report.validate().unwrap();
+    std::fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (55 * gib).to_string());
+    // The same large run is allowed while available memory is healthy.
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 11 * gib
+            }))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 0,
+                available: 0
+            }))
+            .unwrap()
+            .is_empty()
+    );
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 10 * gib,
+            })
+        })
+        .unwrap();
+    assert_eq!(stopped, vec![started.run_id.clone()]);
+    let summary = world.wait_status(TestStatus::Failed);
+    assert_eq!(
+        summary.termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    assert!(!summary.readiness_eligible);
+    assert_eq!(
+        summary.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::Cancelled
+    );
+    assert_eq!(summary.check_summary.as_ref().unwrap()["running"], 0);
+    assert_eq!(summary.check_summary.as_ref().unwrap()["cancelled"], 1);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 5,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(history.runs[0].run_id, started.run_id);
+    assert_eq!(history.runs[0].status, TestStatus::Failed);
+    assert_eq!(
+        history.runs[0].termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    let successor = world.start();
+    world.systemd.finish(&successor.unit);
+    world.wait_status(TestStatus::Passed);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 5,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(
+        history
+            .runs
+            .iter()
+            .find(|run| run.run_id == started.run_id)
+            .unwrap()
+            .termination_reason,
+        Some(devcoordinator2_api::results::RunTerminationReason::MemoryPressure)
+    );
+    assert!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 0
+            }))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn memory_emergency_does_not_blame_missing_small_or_foreign_measurements() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    let pressure = || {
+        Some(HostMemory {
+            total: 100 * gib,
+            available: gib,
+        })
+    };
+    world.systemd.seed_unit("foreign.service", world.caller.uid);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert("foreign.service".into(), (90 * gib).to_string());
+    for value in ["", "[not set]", "18446744073709551616", "1024"] {
+        world
+            .systemd
+            .memory
+            .lock()
+            .unwrap()
+            .insert(started.unit.clone(), value.into());
+        assert!(
+            world
+                .lifecycle
+                .relieve_memory_pressure(pressure)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            world
+                .systemd
+                .process_state(&started.unit)
+                .unwrap()
+                .active_state,
+            "active"
+        );
+        assert_eq!(
+            world
+                .systemd
+                .process_state("foreign.service")
+                .unwrap()
+                .active_state,
+            "active"
+        );
+    }
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Passed);
+    world.systemd.finish("foreign.service");
+}
+
+#[test]
+fn memory_emergency_retries_the_exact_run_after_a_failed_stop() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    let pressure = || {
+        Some(HostMemory {
+            total: 100 * gib,
+            available: 5 * gib,
+        })
+    };
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (50 * gib).to_string());
+    world.systemd.fail_stop.store(true, Ordering::SeqCst);
+    assert!(world.lifecycle.relieve_memory_pressure(pressure).is_err());
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&started.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.fail_stop.store(false, Ordering::SeqCst);
+    assert_eq!(
+        world.lifecycle.relieve_memory_pressure(pressure).unwrap(),
+        vec![started.run_id]
+    );
+    world.wait_status(TestStatus::Failed);
+}
+
+#[test]
+fn memory_emergency_selects_largest_then_stops_when_host_recovers() {
+    let world = LifecycleWorld::new();
+    let smaller = world.start();
+    let (other_path, larger) = world.start_other();
+    let gib = 1024_u64.pow(3);
+    world.systemd.memory.lock().unwrap().extend([
+        (smaller.unit.clone(), (10 * gib).to_string()),
+        (larger.unit.clone(), (60 * gib).to_string()),
+    ]);
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            let large_active = world
+                .systemd
+                .process_state(&larger.unit)
+                .unwrap()
+                .active_state
+                == "active";
+            Some(HostMemory {
+                total: 100 * gib,
+                available: if large_active { 5 * gib } else { 65 * gib },
+            })
+        })
+        .unwrap();
+    assert_eq!(stopped, vec![larger.run_id]);
+    assert_eq!(
+        world
+            .lifecycle
+            .status(other_path.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .status,
+        TestStatus::Failed
+    );
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&smaller.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.finish(&smaller.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn memory_emergency_does_not_stop_a_replacement_run_from_an_old_snapshot() {
+    let world = LifecycleWorld::new();
+    let original = world.start();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(original.unit.clone(), (60 * gib).to_string());
+    let mut samples = 0;
+    let mut replacement = None;
+    let stopped = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            samples += 1;
+            if samples == 2 {
+                replacement = Some(world.start());
+            }
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib,
+            })
+        })
+        .unwrap();
+    assert!(stopped.is_empty());
+    let replacement = replacement.unwrap();
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&replacement.unit)
+            .unwrap()
+            .active_state,
+        "active"
+    );
+    world.systemd.finish(&replacement.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn memory_emergency_counts_and_cleans_up_owned_database_containers() {
+    let docker = Arc::new(PostgresDocker::new());
+    let world = LifecycleWorld::with_docker(docker.clone());
+    let configuration = world.worktree.join(".devcoordinator.toml");
+    let mut text = std::fs::read_to_string(&configuration).unwrap();
+    text.push_str(&format!("\n[test.all.postgres]\nimage=\"postgres@sha256:{}\"\nuser=\"app\"\ndatabase=\"app_test\"\n", "a".repeat(64)));
+    std::fs::write(configuration, text).unwrap();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    world.systemd.memory.lock().unwrap().extend([
+        (started.unit.clone(), "1024".into()),
+        (
+            format!("docker-{}.scope", "d".repeat(64)),
+            (60 * gib).to_string(),
+        ),
+        (
+            format!("docker-{}.scope", "f".repeat(64)),
+            (90 * gib).to_string(),
+        ),
+    ]);
+    assert_eq!(
+        world
+            .lifecycle
+            .relieve_memory_pressure(|| Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib
+            }))
+            .unwrap(),
+        vec![started.run_id]
+    );
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    world.wait_status(TestStatus::Failed);
+}
+
+#[test]
+fn memory_emergency_reports_unretained_evidence_without_leaving_the_process_running() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let gib = 1024_u64.pow(3);
+    world
+        .systemd
+        .memory
+        .lock()
+        .unwrap()
+        .insert(started.unit.clone(), (60 * gib).to_string());
+    let outside = world._temporary.path().join("preserved-history.json");
+    std::fs::write(&outside, "preserve").unwrap();
+    std::os::unix::fs::symlink(
+        &outside,
+        world.worktree.join(".devcoordinator/test/history.json"),
+    )
+    .unwrap();
+    let error = world
+        .lifecycle
+        .relieve_memory_pressure(|| {
+            Some(HostMemory {
+                total: 100 * gib,
+                available: 5 * gib,
+            })
+        })
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::UnitStopFailed);
+    assert!(error.message.contains("evidence could not be retained"));
+    assert_eq!(
+        world
+            .systemd
+            .process_state(&started.unit)
+            .unwrap()
+            .active_state,
+        "inactive"
+    );
+    assert_eq!(std::fs::read_to_string(outside).unwrap(), "preserve");
+    world.wait_status(TestStatus::Failed);
+}
+
+#[test]
+fn work_context_survives_governed_run_completion_and_retained_evidence() {
+    use devcoordinator2_api::work_context::{WorkContext, WorkSource};
+    let mut world = LifecycleWorld::new();
+    let context = devcoordinator2_api::ClientContext {
+        session: Some("fixture".into()),
+        work: Some(WorkContext::parse(r#"{"version":1,"native_project_id":"native-clock-not-coordinator-id","thread_id":"fixture","turn_id":"turn-1","operation_id":"operation-1","workstream_id":"implementation","outcome_id":"outcome-1","experiment_ref":"review-1@2"}"#).unwrap()),
+        work_source: Some(WorkSource::Environment),
+        ..Default::default()
+    };
+    world.caller.work = context.work_attribution();
+    let expected = world.caller.work.clone();
+    let (finished, completion) = std::sync::mpsc::channel();
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finished.send(());
+            }
+        }));
+    let started = world.start();
+    assert_ne!(started.repository_id, "native-clock-not-coordinator-id");
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .work,
+        expected
+    );
+    world.systemd.finish(&started.unit);
+    completion.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(world.wait_status(TestStatus::Passed).work, expected);
+    let history = world
+        .lifecycle
+        .history(
+            devcoordinator2_api::params::TestHistory {
+                path: world.worktree.to_string_lossy().into_owned(),
+                before: None,
+                limit: 1,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(history.runs[0].work, expected);
+    assert_eq!(
+        TestRunStore.read_history(&world.worktree).unwrap()[0].work,
+        expected
+    );
+    assert_eq!(
+        TestRunStore.read_evidence(&world.worktree).unwrap()[0].work,
+        expected
+    );
+}
+
+#[test]
+fn work_context_history_pages_preserve_whole_contexts_and_advance() {
+    use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource};
+    let world = LifecycleWorld::new();
+    let context = WorkContext {
+        version: 1,
+        native_project_id: "n".repeat(256),
+        thread_id: "t".repeat(256),
+        turn_id: Some("u".repeat(256)),
+        operation_id: Some("o".repeat(256)),
+        workstream_id: Some("w".repeat(256)),
+        outcome_id: Some("d".repeat(256)),
+        experiment_ref: Some("e".repeat(256)),
+    };
+    context.validate().unwrap();
+    let work = WorkAttribution {
+        context: Some(context),
+        source: WorkSource::Environment,
+        diagnostic: None,
+    };
+    let directory = world.worktree.join(".devcoordinator/test");
+    std::fs::create_dir_all(&directory).unwrap();
+    let rows = (0..60).map(|index| serde_json::json!({"work":work,"run_id":format!("t20260904T000000Z-{index:06x}"),"test":"all","status":"passed","started_at":"2026-09-04T00:00:00Z","finished_at":"2026-09-04T00:00:01Z","duration_seconds":1.0,"exit_code":0})).collect::<Vec<_>>();
+    std::fs::write(
+        directory.join("history.json"),
+        serde_json::to_vec(&serde_json::json!({"schema":2,"runs":rows})).unwrap(),
+    )
+    .unwrap();
+    let query = |before| devcoordinator2_api::params::TestHistory {
+        path: world.worktree.to_string_lossy().into_owned(),
+        before,
+        limit: 50,
+    };
+    let first = world.lifecycle.history(query(None), &world.caller).unwrap();
+    assert!(first.runs.len() < 50);
+    assert!(first.next_before.is_some());
+    assert!(serde_json::to_vec(&first.runs).unwrap().len() < 12_288);
+    assert_eq!(first.runs[0].work.as_ref(), Some(&work));
+    let next = world
+        .lifecycle
+        .history(query(first.next_before), &world.caller)
+        .unwrap();
+    assert_ne!(first.runs[0].run_id, next.runs[0].run_id);
+    assert_eq!(next.runs[0].work.as_ref(), Some(&work));
 }
 
 #[test]
@@ -1098,6 +2075,7 @@ database="app_test"
         gid: rustix::process::getgid().as_raw(),
         client_kind: devcoordinator2_api::ClientKind::Codex,
         client_session: None,
+        work: None,
         identity: None,
     };
     assert_ne!(caller.uid, 0, "PostgreSQL lifecycle fixture needs non-root");
@@ -1147,7 +2125,7 @@ database="app_test"
 }
 
 #[test]
-fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
+fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
     let temporary = tempdir().unwrap();
     let worktree = temporary.path().join("repository");
     std::fs::create_dir(&worktree).unwrap();
@@ -1191,6 +2169,7 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         gid: rustix::process::getgid().as_raw(),
         client_kind: devcoordinator2_api::ClientKind::Other,
         client_session: None,
+        work: None,
         identity: None,
     };
     let registry = Registry::new(database.clone());
@@ -1224,7 +2203,7 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
             caller.gid,
         )
         .unwrap();
-    let summary = initial_summary(
+    let mut summary = initial_summary(
         run_id,
         "all",
         "2026-09-04T00:00:00Z",
@@ -1235,6 +2214,11 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         None,
         ValidationTier::Release,
     );
+    summary.work = devcoordinator2_api::ClientContext {
+        work: Some(devcoordinator2_api::work_context::WorkContext::parse(r#"{"version":1,"native_project_id":"native-clock","thread_id":"thread-restore","outcome_id":"outcome-restore"}"#).unwrap()),
+        ..Default::default()
+    }.work_attribution();
+    let expected_work = summary.work.clone();
     store
         .write_summary(&prepared.current, &summary, caller.uid, caller.gid)
         .unwrap();
@@ -1268,10 +2252,15 @@ fn recovery_skips_unavailable_worktree_and_records_interrupted_summary() {
         .status(worktree.to_str().unwrap(), &caller)
         .unwrap();
     assert_eq!(interrupted.status, TestStatus::Interrupted);
+    assert_eq!(interrupted.work, expected_work);
     assert_eq!(
         interrupted.termination_reason,
         Some(devcoordinator2_api::results::RunTerminationReason::Interrupted)
     );
     assert_eq!(store.read_history(&worktree).unwrap().len(), 1);
+    assert_eq!(
+        store.read_history(&worktree).unwrap()[0].work,
+        expected_work
+    );
     assert!(systemd.stops.load(Ordering::SeqCst) >= 1);
 }

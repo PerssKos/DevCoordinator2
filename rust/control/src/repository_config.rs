@@ -138,6 +138,16 @@ pub struct ComponentSpec {
 }
 
 impl ComponentSpec {
+    pub fn is_finite_workload(&self) -> bool {
+        self.kind == ComponentKind::Compose
+            && !self.services.is_empty()
+            && self.services.len() == self.finite_services.len()
+            && self
+                .services
+                .iter()
+                .all(|service| self.finite_services.contains(service))
+    }
+
     pub fn owns_persistent_data(&self) -> bool {
         (self.kind == ComponentKind::Postgres && self.shared_from.is_none())
             || !self.volumes.is_empty()
@@ -1822,6 +1832,13 @@ fn validate_component(
         ComponentKind::Postgres => validate_postgres_component(body, &label, &mut specification)?,
         ComponentKind::External => validate_external_component(body, &label, &mut specification)?,
     }
+    if specification.is_finite_workload()
+        && (specification.wants_port || specification.route || specification.health.is_some())
+    {
+        return Err(RepositoryConfigError::new(format!(
+            "{label} finite-only workloads cannot expose a port, route or service health probe"
+        )));
+    }
     Ok(specification)
 }
 
@@ -1986,13 +2003,6 @@ fn validate_compose_component(
             "{label} finite_services must be included in explicit services"
         )));
     }
-    if !specification.finite_services.is_empty()
-        && specification.finite_services.len() == specification.services.len()
-    {
-        return Err(RepositoryConfigError::new(format!(
-            "{label} finite_services must leave a running service"
-        )));
-    }
     specification.independent_services = validate_compose_services(
         label,
         "independent_services",
@@ -2032,7 +2042,11 @@ fn validate_compose_component(
         body.get("timeout_seconds"),
         COMPOSE_READINESS_TIMEOUT_DEFAULT,
         1,
-        900,
+        if specification.finite_services.is_empty() {
+            900
+        } else {
+            TIMEOUT_MAX
+        },
         &format!("{label} timeout_seconds"),
     )?;
     Ok(())
@@ -2511,6 +2525,68 @@ tcp = "127.0.0.1:25"
     }
 
     #[test]
+    fn explicitly_finite_workload_needs_no_running_service() {
+        let temporary = tempdir().expect("tempdir");
+        write(
+            temporary.path(),
+            "schema=2\n[deployment.check]\ncomponents=['probe']\n[deployment.check.component.probe]\ntype='compose'\nservices=['probe']\nfinite_services=['probe']\n",
+        );
+        let spec = load_deployment_spec(temporary.path(), "check").expect("finite workload");
+        assert!(spec.components[0].is_finite_workload());
+        assert!(!spec.components[0].wants_port);
+        assert!(spec.route_component().is_none());
+    }
+
+    #[test]
+    fn finite_container_execution_deadlines_are_explicit_and_bounded() {
+        let temporary = tempdir().expect("tempdir");
+        for services in ["['probe']", "['probe','api']"] {
+            let base = format!(
+                "schema=2\n[deployment.check]\ncomponents=['probe']\n[deployment.check.component.probe]\ntype='compose'\nservices={services}\nfinite_services=['probe']\n"
+            );
+            for timeout in [901, 3300, TIMEOUT_MAX] {
+                write(
+                    temporary.path(),
+                    &format!("{base}timeout_seconds={timeout}\n"),
+                );
+                let spec = load_deployment_spec(temporary.path(), "check")
+                    .expect("bounded finite execution");
+                assert_eq!(spec.components[0].compose_timeout_seconds, timeout);
+            }
+            write(temporary.path(), &base);
+            let spec = load_deployment_spec(temporary.path(), "check").expect("default deadline");
+            assert_eq!(
+                spec.components[0].compose_timeout_seconds,
+                COMPOSE_READINESS_TIMEOUT_DEFAULT
+            );
+            for timeout in ["0", "-1", "21601", "3300.5", "'3300'", "true"] {
+                write(
+                    temporary.path(),
+                    &format!("{base}timeout_seconds={timeout}\n"),
+                );
+                let error = load_deployment_spec(temporary.path(), "check")
+                    .expect_err("invalid finite deadline");
+                assert!(
+                    error.message.contains("timeout_seconds"),
+                    "{}",
+                    error.message
+                );
+            }
+        }
+        for finite in ["", "finite_services=[]\n"] {
+            let base = format!(
+                "schema=2\n[deployment.check]\ncomponents=['api']\n[deployment.check.component.api]\ntype='compose'\nservices=['api']\n{finite}"
+            );
+            write(temporary.path(), &format!("{base}timeout_seconds=900\n"));
+            assert!(load_deployment_spec(temporary.path(), "check").is_ok());
+            write(temporary.path(), &format!("{base}timeout_seconds=901\n"));
+            let error = load_deployment_spec(temporary.path(), "check")
+                .expect_err("ordinary readiness remains bounded");
+            assert!(error.message.contains("[1, 900]"), "{}", error.message);
+        }
+    }
+
+    #[test]
     fn deployment_rejection_matrix_and_implicit_route_match_existing_contract() {
         let base = "schema=2\n[deployment.d]\ncomponents=['a']\n";
         let cases = [
@@ -2551,8 +2627,8 @@ tcp = "127.0.0.1:25"
                 "ttl_seconds",
             ),
             (
-                "[deployment.d.component.a]\ntype='compose'\nservices=['bootstrap']\nfinite_services=['bootstrap']",
-                "running service",
+                "[deployment.d.component.a]\ntype='compose'\nservices=['bootstrap']\nfinite_services=['bootstrap']\nport=true",
+                "finite-only",
             ),
             (
                 "[deployment.d.component.a]\ntype='compose'\nroute=true",

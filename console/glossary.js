@@ -30,16 +30,12 @@ async function viewGlossary() {
     }
     main.classList.add('glossary-page');
     const params = glossaryParams(route.scope);
-    const [result, projects] = await Promise.all([
-      api(route.conceptId ? 'glossary.get' : 'glossary.list', route.conceptId
+    const result = await api(route.conceptId ? 'glossary.get' : 'glossary.list', route.conceptId
         ? { ...params, concept_id: route.conceptId, revision: route.revision }
-        : { ...params, revision: route.revision, query: glossaryState.query, language: glossaryState.language || null, status: glossaryState.status || null, origin: glossaryState.origin || null, offset: glossaryState.offset, limit: 25 }),
-      api('plan.overview', {}),
-    ]);
+        : { ...params, revision: route.revision, query: glossaryState.query, language: glossaryState.language || null, status: glossaryState.status || null, origin: glossaryState.origin || null, offset: glossaryState.offset, limit: 25 });
     const profile = result.profile;
-    const choices = [{ repository_id: 'shared', display_name: 'Shared glossary' }, ...(projects.repositories || [])];
     const editable = !!state.who?.administrator && route.revision == null;
-    const heading = `<div class="repository-context"><h1>${destinationLink('Glossary', '#/glossary')}</h1><span class="context-slash" aria-hidden="true">/</span>${projectPicker(choices, route.scope, (identity) => glossaryHref(identity), 'glossary')}</div>`;
+    const heading = `<div class="repository-context"><h1>${destinationLink(route.scope === 'shared' ? 'Shared glossary' : 'Glossary', glossaryHref(route.scope))}</h1></div>`;
     const revision = `<span class="muted">Revision ${profile.revision}${route.scope === 'shared' ? '' : ` · Shared revision ${profile.baseline_revision}`}</span>`;
     const historical = route.revision == null ? '' : `<div class="notice">Viewing revision ${profile.revision}. <a href="${glossaryHref(route.scope, route.conceptId)}">Return to the current glossary</a></div>`;
     const tools = `<div class="glossary-tools actions"><button class="btn btn-small" id="glossary-guidance">${editable ? 'Guidance and languages' : 'View guidance'}</button><button class="btn btn-small" id="glossary-history">History</button>${route.scope === 'shared' && state.who?.administrator ? '<button class="btn btn-small" id="glossary-projects">Project adoption</button>' : ''}${profile.adoption_needed && editable ? '<button class="btn btn-small" id="glossary-adopt">Review shared update</button>' : ''}${revision}</div>`;

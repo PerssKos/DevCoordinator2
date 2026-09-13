@@ -41,6 +41,7 @@ pub struct Caller {
     pub gid: u32,
     pub client_kind: ClientKind,
     pub client_session: Option<String>,
+    pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     /// Public e-mail asserted by the configured edge, or `None` for a trusted
     /// local caller.
     pub identity: Option<String>,
@@ -55,12 +56,14 @@ impl Caller {
         edge_uid: Option<u32>,
     ) -> Result<Self, ProtocolError> {
         validate_identity_assertion(uid, edge_uid, client.identity.as_deref())?;
+        let work = client.work_attribution();
         Ok(Self {
             pid,
             uid,
             gid,
             client_kind: client.kind,
             client_session: client.session,
+            work,
             identity: client
                 .identity
                 .map(|identity| normalize_identity(&identity)),
@@ -1569,6 +1572,7 @@ mod tests {
             gid: 1000,
             client_kind: ClientKind::Other,
             client_session: None,
+            work: None,
             identity: None,
         }
     }
@@ -1580,6 +1584,7 @@ mod tests {
             gid: 999,
             client_kind: ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some(identity.to_owned()),
         }
     }
@@ -1609,6 +1614,33 @@ mod tests {
                 display_name: None,
             })
             .expect("accept");
+    }
+
+    #[test]
+    fn repository_presentation_preserves_administrator_write_authority() {
+        let world = world();
+        let params = serde_json::json!({"repository_id":"r1111111111111111","display_name":"My project","icon":"code"});
+        assert!(
+            world
+                .access
+                .authorize("repository.presentation.update", &params, &local())
+                .is_ok()
+        );
+        for (identity, role) in [
+            ("viewer@example.test", AccessRole::Viewer),
+            ("operator@example.test", AccessRole::Operator),
+            ("deployment-admin@example.test", AccessRole::Administrator),
+        ] {
+            invite_and_accept(&world.access, identity, role, "d1");
+            assert_eq!(
+                world
+                    .access
+                    .authorize("repository.presentation.update", &params, &public(identity))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PermissionDenied
+            );
+        }
     }
 
     #[test]
@@ -1665,6 +1697,9 @@ mod tests {
                 kind: ClientKind::Edge,
                 session: None,
                 identity: Some("owner@example.test".to_owned()),
+                work: Some(devcoordinator2_api::work_context::WorkContext::parse(r#"{"version":1,"native_project_id":"claimed-owner-project","thread_id":"thread"}"#).unwrap()),
+                work_source: Some(devcoordinator2_api::work_context::WorkSource::Environment),
+                ..ClientContext::default()
             },
             Some(999),
         )

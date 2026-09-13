@@ -648,6 +648,7 @@ mod tests {
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Other,
             client_session: None,
+            work: None,
             identity: None,
         };
         let registered = registry

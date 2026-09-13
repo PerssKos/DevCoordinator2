@@ -50,6 +50,8 @@ pub struct PreparedRun {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub status: TestStatus,
@@ -57,6 +59,8 @@ pub struct TestHistoryEntry {
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<RunTerminationReason>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -73,6 +77,8 @@ pub struct RetryCheckEvidence {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetryEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub proof: ProofKind,
@@ -242,15 +248,11 @@ impl TestRunStore {
     }
 
     pub fn read_report(&self, current: &File) -> Result<Option<ExecutionReport>, TestStateError> {
-        let report = match read_json::<ExecutionReport>(current, REPORT_FILE) {
-            Ok(report) => report,
-            Err(TestStateError::Json(_)) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        if let Some(report) = &report
-            && report.validate().is_err()
-        {
-            return Ok(None);
+        let report = read_json::<ExecutionReport>(current, REPORT_FILE)?;
+        if let Some(report) = &report {
+            report
+                .validate()
+                .map_err(|_| TestStateError::Invalid("executor report failed validation".into()))?;
         }
         Ok(report)
     }
@@ -322,6 +324,7 @@ impl TestRunStore {
         let mut runs = self.read_history(worktree)?;
         runs.retain(|run| run.run_id != summary.run_id);
         runs.push(TestHistoryEntry {
+            work: summary.work.clone(),
             run_id: summary.run_id.clone(),
             test: summary.test.clone(),
             status: summary.status.clone(),
@@ -329,10 +332,12 @@ impl TestRunStore {
             finished_at: summary.finished_at.clone(),
             duration_seconds: summary.duration_seconds,
             exit_code: summary.exit_code,
+            termination_reason: summary.termination_reason.clone(),
         });
         if runs.len() > HISTORY_CAP {
             runs.drain(..runs.len() - HISTORY_CAP);
         }
+        bound_receipt_rows(&mut runs)?;
         atomic_json(
             &test,
             HISTORY_FILE,
@@ -386,32 +391,69 @@ impl TestRunStore {
         &self,
         worktree: &Path,
         report: &ExecutionReport,
+        terminal_status: &TestStatus,
+        work: Option<&devcoordinator2_api::work_context::WorkAttribution>,
         uid: u32,
         gid: u32,
     ) -> Result<(), TestStateError> {
-        if report.status == RunStatus::Running {
-            return Ok(());
+        if *terminal_status == TestStatus::Running {
+            return Err(TestStateError::Invalid(
+                "cannot retain retry evidence for an active run".into(),
+            ));
         }
+        // The outer unit may end before its executor can publish a final report.
+        // Retain a derived diagnostic receipt while preserving the original bytes.
+        let interrupted = report.status == RunStatus::Running;
         let test = self
             .open_test(worktree)?
             .ok_or_else(|| TestStateError::Invalid("test state directory is unavailable".into()))?;
         let mut runs = self.read_evidence(worktree)?;
         runs.retain(|run| run.run_id != report.run_id);
         runs.push(RetryEvidence {
+            work: work.cloned(),
             run_id: report.run_id.clone(),
             test: report.test.clone(),
             proof: report.proof,
-            status: report.status,
+            status: if *terminal_status == TestStatus::Passed && report.status == RunStatus::Passed
+            {
+                RunStatus::Passed
+            } else {
+                RunStatus::Failed
+            },
             source_digest: report.source_digest.clone(),
             config_digest: report.config_digest.clone(),
             requested_tier: report.requested_tier,
             readiness_eligible: report.readiness_eligible,
             selection: report.selection.clone(),
-            checks: report.checks.iter().map(retry_check).collect(),
+            checks: report
+                .checks
+                .iter()
+                .map(|check| {
+                    let mut evidence = retry_check(check);
+                    if interrupted
+                        && matches!(
+                            evidence.status,
+                            devcoordinator2_executor_protocol::LeafStatus::Pending
+                                | devcoordinator2_executor_protocol::LeafStatus::Running
+                        )
+                    {
+                        evidence.status = if evidence.status
+                            == devcoordinator2_executor_protocol::LeafStatus::Running
+                            && *terminal_status == TestStatus::TimedOut
+                        {
+                            devcoordinator2_executor_protocol::LeafStatus::TimedOut
+                        } else {
+                            devcoordinator2_executor_protocol::LeafStatus::Cancelled
+                        };
+                    }
+                    evidence
+                })
+                .collect(),
         });
         if runs.len() > EVIDENCE_CAP {
             runs.drain(..runs.len() - EVIDENCE_CAP);
         }
+        bound_receipt_rows(&mut runs)?;
         atomic_json(
             &test,
             EVIDENCE_FILE,
@@ -444,6 +486,7 @@ pub fn initial_summary(
     requested_tier: ValidationTier,
 ) -> TestSummary {
     TestSummary {
+        work: None,
         schema_version: 2,
         run_id: run_id.into(),
         test: test.into(),
@@ -463,6 +506,7 @@ pub fn initial_summary(
         readiness_eligible: proof == ProofKind::Complete
             && requested_tier == ValidationTier::Release,
         check_report_ref: REPORT_FILE.into(),
+        report_issue: None,
         log_catalog_ref: LogCatalogReference {
             run_id: run_id.into(),
         },
@@ -507,6 +551,7 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
 
 fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
     validate_run_id(&summary.run_id)?;
+    let memory_stop = summary.termination_reason == Some(RunTerminationReason::MemoryPressure);
     if summary.schema_version != 2
         || summary.test.is_empty()
         || summary.test.len() > 32
@@ -514,7 +559,10 @@ fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
         || summary.log_catalog_ref.run_id != summary.run_id
         || summary.readiness_eligible
             != (summary.proof == ApiProofKind::Complete
-                && summary.requested_tier == devcoordinator2_api::params::ValidationTier::Release)
+                && summary.requested_tier == devcoordinator2_api::params::ValidationTier::Release
+                && summary.report_issue.is_none()
+                && !memory_stop)
+        || (memory_stop && summary.status != TestStatus::Failed)
     {
         return Err(TestStateError::Invalid("test summary is invalid".into()));
     }
@@ -683,6 +731,34 @@ fn create_file(
     fchown(&file, uid, gid)?;
     Ok(file)
 }
+
+fn bound_receipt_rows<T: Serialize>(rows: &mut Vec<T>) -> Result<(), TestStateError> {
+    let sizes = rows
+        .iter()
+        .map(|row| serde_json::to_vec(row).map(|bytes| bytes.len() + 1))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| TestStateError::Json(error.to_string()))?;
+    let mut total = sizes.iter().sum::<usize>() + 64;
+    let mut discard = 0;
+    for size in sizes.into_iter().take(rows.len().saturating_sub(1)) {
+        if total <= JSON_LIMIT as usize {
+            break;
+        }
+        total -= size;
+        discard += 1;
+    }
+    if total > JSON_LIMIT as usize {
+        return Err(TestStateError::Invalid(
+            "newest governed-run receipt exceeds the 2 MiB limit".into(),
+        ));
+    }
+    rows.drain(..discard);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "work_context_state_tests.rs"]
+mod work_context_tests;
 
 fn atomic_json<T: Serialize + ?Sized>(
     parent: &File,
@@ -992,6 +1068,31 @@ mod tests {
             ValidationTier::Release,
         );
         summary.log_catalog_ref.run_id = "other".into();
+        assert!(validate_summary(&summary).is_err());
+    }
+
+    #[test]
+    fn memory_emergency_summary_must_be_failed_and_ineligible() {
+        let mut summary = initial_summary(
+            "t20260904T000000Z-aabbcc",
+            "all",
+            "2026-09-04T00:00:00Z",
+            1,
+            "codex",
+            ProofKind::Complete,
+            Vec::new(),
+            None,
+            ValidationTier::Release,
+        );
+        assert!(validate_summary(&summary).is_ok());
+        summary.termination_reason = Some(RunTerminationReason::MemoryPressure);
+        summary.status = TestStatus::Failed;
+        assert!(validate_summary(&summary).is_err());
+        summary.readiness_eligible = false;
+        assert!(validate_summary(&summary).is_ok());
+        summary.status = TestStatus::Passed;
+        assert!(validate_summary(&summary).is_err());
+        summary.status = TestStatus::Running;
         assert!(validate_summary(&summary).is_err());
     }
 }

@@ -4,14 +4,19 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   const verify = (name, condition, detail = '') => check(`tests ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  daemon.setScenario({ ...scenario, earlierEvidence: true });
+  daemon.setScenario({ ...scenario, earlierEvidence: true, admission: true, testPaged: true });
   await page.goto(`${baseUrl}#/tests`);
-  await page.waitForSelector('.test-repository');
-  await page.locator('.test-repository').filter({ hasText: 'repo-one' }).click();
-  verify('Tests belongs to the repository pane only', await page.locator('.tests-sidebar h1').innerText() === 'Tests' && await page.locator('#test-runs-collection>h1, #test-runs-collection>h2').count() === 0);
+  await chooseRepository(page, 'repo-one');
+  await page.waitForSelector('.test-result');
+  verify('Tests follows bounded pages before showing the collection', daemon.calls.some((call) => call.operation === 'test.list' && call.params.after_worktree_id === 'w1'));
+  verify('Tests uses the shared repository workspace', await page.locator('.workspace-tests-heading h1').innerText() === 'Tests' && await page.locator('.test-repository-list, [data-project-picker]').count() === 0);
   verify('the selected repository is not repeated over results', !/repo-one|Latest results|Latest test runs|Repositories/.test(await page.locator('#test-runs-collection').innerText()));
-  verify('results begin in the initial viewport', (await page.locator('.test-result-summary').first().boundingBox()).y < 200);
+  verify('results begin in the initial viewport', (await page.locator('.test-result-summary').first().boundingBox()).y < 330);
   verify('no overflow', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.locator('.test-detail summary').first().click();
+  verify('queued checks show waiting without a false executing duration', /waiting/i.test(await page.locator('.test-check').first().innerText()) && !/running|executing|process time/i.test(await page.locator('.test-check').first().innerText()));
+  await page.locator('.test-detail summary').first().click();
+
   const grouping = await page.evaluate(() => {
     const source = { key: 'verified-origin', name: 'actual-project' };
     return window.DevCoordinatorTests.groupRuns([
@@ -27,24 +32,37 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   const dimensions = await page.locator('.test-thumbnail img').first().boundingBox();
   verify('thumbnails stay small', dimensions.width <= 112 && dimensions.height <= 76);
   await page.locator('.test-thumbnail').nth(1).click();
-  await page.locator('.test-image-preview[open] img').waitFor();
+  await page.locator('[data-gallery-image]:visible').waitFor();
   verify('preview is focused and links to the exact image', await page.locator('.test-image-preview:focus-within').count() === 1 && (await page.locator('.test-image-preview a').getAttribute('href')).includes(`?image=${'2'.repeat(64)}`));
+  verify('gallery includes every viewport and full-page screenshot', await page.locator('[data-gallery-index]').count() === 8);
+  await page.getByRole('button', { name: 'Next screenshot', exact: true }).click();
+  verify('next advances to the next exact image', (await page.locator('[data-gallery-footer] a').getAttribute('href')).includes(`?image=${'2'.repeat(63)}f`));
+  await page.getByRole('button', { name: 'Previous screenshot', exact: true }).click();
+  verify('previous returns to the selected image', (await page.locator('[data-gallery-footer] a').getAttribute('href')).includes(`?image=${'2'.repeat(64)}`));
+  await page.keyboard.press('End');
+  await page.locator('[data-gallery-image]:visible').waitFor();
+  verify('keyboard navigation reaches the last thumbnail', await page.locator('[data-gallery-index="7"]').getAttribute('aria-pressed') === 'true');
+  verify('selected thumbnail scrolls into view', await page.locator('[data-gallery-index="7"]').evaluate((element) => { const bounds = element.getBoundingClientRect(); const rail = element.parentElement.getBoundingClientRect(); return bounds.left >= rail.left - 1 && bounds.right <= rail.right + 1; }));
+  await page.keyboard.press('ArrowRight');
+  verify('navigation wraps without closing the gallery', await page.locator('[data-gallery-index="0"]').getAttribute('aria-pressed') === 'true');
+  await page.locator('[data-gallery-index="2"]').click();
+  verify('thumbnail selection updates the viewer link', (await page.locator('[data-gallery-footer] a').getAttribute('href')).includes(`?image=${'2'.repeat(64)}`));
   await page.keyboard.press('Escape');
   verify('closing preview returns to the thumbnail', await page.locator('.test-thumbnail:focus').count() === 1 && await page.locator('.test-image-preview').count() === 0);
   await page.locator('.test-thumbnail').nth(1).click();
   daemon.calls.length = 0;
   await page.locator('.test-image-preview a').click();
   await page.waitForSelector('.evidence-workspace');
-  verify('commenter opens the exact earlier run', daemon.calls.some((call) => call.operation === 'test.evidence.get' && call.params.run_id === 't20251231T000000Z-abc111' && call.params.path === '/srv/repos/repo-one'));
+  verify('commenter opens the exact earlier run', daemon.calls.some((call) => call.params.run_id === 't20251231T000000Z-abc111' && (call.operation === 'test.evidence.get' && call.params.path === '/srv/repos/repo-one' || call.operation === 'test.evidence.lookup' && call.params.worktree_id === 'w1')) && page.url().includes('t20251231T000000Z-abc111'));
   verify('commenter selects the clicked screenshot', await page.locator('[data-evidence-viewport][aria-pressed=true]').getAttribute('data-evidence-viewport') === 'mobile');
   await page.goto(`${baseUrl}#/tests`);
-  await page.waitForSelector('.test-repository');
   daemon.calls.length = 0;
-  await page.locator('.test-repository').last().click();
-  verify('repository switching is local', !daemon.calls.some((call) => call.operation === 'test.list') && await page.locator('.test-result').count() === 1);
+  await chooseRepository(page, 'a-very-long-deployment-name');
+  await page.waitForSelector('[data-test-run-id="t20260101T000100Z-def456"]');
+  verify('repository switching selects only its test results', await page.locator('.test-result').count() === 1);
   await page.reload();
-  await page.waitForSelector('.test-repository[aria-pressed=true]');
-  verify('repository selection survives reload', !/repo-one/.test(await page.locator('.test-repository[aria-pressed=true]').innerText()));
+  await page.waitForSelector('.test-result');
+  verify('repository selection survives reload', !/repo-one/.test(await page.locator('#workspace-heading').innerText()));
   await page.click('#test-run-open');
   await page.locator('#test-run-form [name=tier]').selectOption('development');
   const priorTime = await page.locator('.test-result time').getAttribute('datetime');
@@ -60,7 +78,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.getByRole('button', { name: 'Run again', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-test-start]')?.disabled);
   verify('rerun acts directly on the exact checkout, named test and tier', daemon.calls.some((call) => call.operation === 'test.start' && call.params.path.includes('a-very-long-deployment-name') && call.params.test === 'ui-release' && call.params.tier === 'release') && await page.locator('#test-run-dialog').count() === 0);
-  await page.locator('.test-repository').filter({ hasText: 'repo-one' }).click();
+  await chooseRepository(page, 'repo-one');
   await page.getByRole('button', { name: 'Logs', exact: true }).click();
   await page.waitForSelector('#test-logs-dialog[open] .test-log-scroll');
   verify('logs open immediately', await page.locator('#test-logs-dialog pre.log').count() > 0);
@@ -98,7 +116,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   verify('theme persists', await page.getAttribute('html', 'data-theme') !== theme);
   daemon.setScenario(scenario);
   await page.reload();
-  await page.locator('.test-repository').filter({ hasText: 'repo-one' }).click();
+  await chooseRepository(page, 'repo-one');
   daemon.calls.length = 0;
   await page.getByRole('button', { name: 'Stop run', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.test-result-summary>.badge')?.textContent === 'cancelled');
@@ -126,6 +144,13 @@ export async function revealTestRows(page) {
 }
 
 export async function revealTestSettings(page) {
-  await page.waitForSelector('.test-settings>summary');
-  if (await page.locator('.test-settings:not([open])').count()) await page.locator('.test-settings>summary').click();
+  if (await page.locator('#nav-toggle').getAttribute('aria-expanded') !== 'true') await page.click('#nav-toggle');
+  await page.locator('#test-capacity-open').waitFor();
+}
+
+export async function chooseRepository(page, name) {
+  await page.locator('#repository-list a').first().waitFor({ state: 'attached' });
+  if (await page.locator('#repository-toggle').isVisible() && await page.locator('#repository-toggle').getAttribute('aria-expanded') !== 'true') await page.click('#repository-toggle');
+  await page.locator('#repository-list a').filter({ hasText: name }).click();
+  await page.waitForFunction((name) => document.querySelector('#workspace-heading')?.textContent.includes(name), name);
 }

@@ -74,6 +74,7 @@ impl Cancellation {
 }
 
 pub(crate) struct ProcessRequest {
+    pub progress: mpsc::UnboundedSender<crate::progress::ProcessUpdate>,
     pub run_id: String,
     pub check_name: String,
     pub leaf_id: String,
@@ -191,6 +192,40 @@ pub(crate) async fn run_process(
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
 ) -> ProcessResult {
+    let mut progress = crate::progress::ProgressReporter::new(
+        request.progress.clone(),
+        request.leaf_id.clone(),
+        request.log_selector.clone(),
+    );
+    let mut result = run_process_observed(request, permits, cancellation, &mut progress).await;
+    if let Some(service) = result.service.take() {
+        // A readiness event completes its check while the service process and
+        // its capacity permit remain owned until the graph releases them.
+        result.service = Some(EventService {
+            pgid: service.pgid,
+            future: Box::pin(async move {
+                let exit = service.future.await;
+                progress.finish(if exit.exit_code == Some(0) {
+                    LeafStatus::Passed
+                } else {
+                    LeafStatus::Cancelled
+                });
+                drop(progress);
+                exit
+            }),
+        });
+    } else {
+        progress.finish(result.status.into());
+    }
+    result
+}
+
+async fn run_process_observed(
+    request: ProcessRequest,
+    permits: Arc<dyn PermitProvider>,
+    cancellation: Cancellation,
+    progress: &mut crate::progress::ProgressReporter,
+) -> ProcessResult {
     let acquire = permits.acquire(PermitRequest {
         run_id: request.run_id.clone(),
         leaf_id: request.leaf_id.clone(),
@@ -205,6 +240,7 @@ pub(crate) async fn run_process(
         }
     };
     let capacity = permit.observation;
+    progress.admitted(capacity);
     if let Err(error) = tokio::fs::create_dir_all(&request.scratch).await {
         return ProcessResult {
             capacity,
@@ -271,6 +307,7 @@ pub(crate) async fn run_process(
             return result;
         }
     };
+    progress.executing();
     let mut result = match request.completion {
         CompletionMode::Process => {
             run_to_exit(

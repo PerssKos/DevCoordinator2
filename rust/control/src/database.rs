@@ -1,6 +1,8 @@
 //! Single-owner SQLite actor for permanent Coordinator authority state.
 
 use std::any::Any;
+use std::fs::{OpenOptions, Permissions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -96,17 +98,14 @@ impl Database {
 
     pub fn backup(&self, destination: PathBuf) -> Result<(), DatabaseError> {
         self.call(move |connection| {
-            if destination.exists() {
-                return Err(DatabaseError::Startup(format!(
-                    "backup destination already exists: {}",
-                    destination.display()
-                )));
-            }
-            connection.backup(rusqlite::MAIN_DB, &destination, None)?;
-            use std::os::unix::fs::PermissionsExt;
-            let permissions = std::fs::Permissions::from_mode(0o600);
-            std::fs::set_permissions(&destination, permissions)
+            // Create privately before SQLite writes any authority data.
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&destination)
                 .map_err(|error| DatabaseError::Startup(error.to_string()))?;
+            connection.backup(rusqlite::MAIN_DB, &destination, None)?;
             Ok(())
         })
     }
@@ -144,6 +143,40 @@ fn actor(
 }
 
 fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
+    // SQLite inherits the database mode for newly created journals. Repair old
+    // sidecars before opening too, since reopening does not change their modes.
+    for (path, create) in
+        std::iter::once((path.to_owned(), true)).chain(["-wal", "-shm", "-journal"].map(|suffix| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            (PathBuf::from(name), false)
+        }))
+    {
+        match OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(create)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(file) => {
+                let metadata = file
+                    .metadata()
+                    .map_err(|error| DatabaseError::Startup(error.to_string()))?;
+                if !metadata.is_file() {
+                    return Err(DatabaseError::Startup(
+                        "authority state must be a regular file".to_owned(),
+                    ));
+                }
+                file.set_permissions(Permissions::from_mode(0o600))
+                    .map_err(|error| DatabaseError::Startup(error.to_string()))?;
+            }
+            Err(error) if !create && error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(DatabaseError::Startup(error.to_string())),
+        }
+    }
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NOFOLLOW
@@ -325,20 +358,52 @@ mod tests {
         let temporary = tempdir().expect("tempdir");
         let path = temporary.path().join("authority.sqlite3");
         let connection = Connection::open(&path).expect("fixture");
+        let future_version = DATABASE_SCHEMA_VERSION + 1;
         connection
-            .execute_batch(
-                "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);\n\
-                 INSERT INTO meta VALUES('schema_version','19');",
-            )
+            .execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);")
             .expect("fixture schema");
+        connection
+            .execute(
+                "INSERT INTO meta VALUES('schema_version',?1)",
+                [future_version.to_string()],
+            )
+            .expect("future schema");
         drop(connection);
         assert!(matches!(
             Database::open(path),
             Err(DatabaseError::SchemaTooNew {
-                found: 19,
-                supported: 18
-            })
+                found,
+                supported
+            }) if found == future_version && supported == DATABASE_SCHEMA_VERSION
         ));
+    }
+
+    #[test]
+    fn upgrades_schema_eighteen_with_separate_repository_presentation() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("authority.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','18');").unwrap();
+        drop(connection);
+        let database = Database::open(path).unwrap();
+        let columns: Vec<String> = database
+            .call(|connection| {
+                let mut query = connection.prepare("PRAGMA table_info(repository_presentation)")?;
+                Ok(query
+                    .query_map([], |row| row.get(1))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            columns,
+            [
+                "repository_id",
+                "display_name",
+                "icon",
+                "updated_at",
+                "updated_by_uid"
+            ]
+        );
     }
 
     #[test]
@@ -392,6 +457,43 @@ mod tests {
             0o600
         );
         assert!(database.backup(backup).is_err());
+    }
+
+    #[test]
+    fn authority_and_journals_are_private_on_creation_and_reopen() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("authority.sqlite3");
+        let connection = open_connection(&path).unwrap();
+        let files = [
+            path.clone(),
+            path.with_extension("sqlite3-wal"),
+            path.with_extension("sqlite3-shm"),
+        ];
+        for file in &files {
+            assert_eq!(
+                std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let reopened = open_connection(&path).unwrap();
+        for file in &files {
+            assert_eq!(
+                std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(reopened);
+        drop(connection);
+        let _recreated = open_connection(&path).unwrap();
+        for file in &files {
+            assert_eq!(
+                std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]

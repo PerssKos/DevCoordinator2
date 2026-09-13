@@ -957,6 +957,16 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    run_node_probe(
+        root,
+        &format!(
+            "process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES = {}; await import({});",
+            json!(playwright_module_dir(root)?),
+            json!(root.join("rust/tooling/tests/formal_occlusion.mjs")),
+        ),
+        timeout,
+    )?;
+    scenarios += 1;
     let popup_clean = run_verifier(
         root,
         &contracted_config(
@@ -3885,8 +3895,8 @@ fn run_discovery_phase(
     }
     create_directory_all_nofollow(work, 0o700).map_err(|error| error.to_string())?;
     let legacy = work.join("coordinator-protocol-v1");
-    std::fs::hard_link(&fixture, &legacy)
-        .map_err(|error| format!("cannot create v1 fixture hard link: {error}"))?;
+    std::fs::copy(&fixture, &legacy)
+        .map_err(|error| format!("cannot copy v1 executable fixture: {error}"))?;
     let mut legacy_config = base;
     legacy_config["coordinatorCommand"] = json!(legacy);
     let legacy = run_verifier(

@@ -42,7 +42,9 @@ not contradict them.
   containers carry the exact test identity and are removed on completion,
   timeout, supersession, or the next start. Declared shared/permanent
   database dependencies are never stopped and their data never deleted by
-  test cleanup.
+  test cleanup. The ephemeral PostgreSQL data directory is explicitly set to
+  its bounded tmpfs mount, including PostgreSQL 18 image tags; digest-pinned
+  images retain exact digest verification.
 - **REQ-TEST-10** (2026-08-28, done): An extension-dependent test may use a
   reviewed PostgreSQL-compatible image pinned by immutable SHA-256 digest.
   The root daemon alone pulls and verifies the exact digest; generated
@@ -71,8 +73,22 @@ not contradict them.
   completion-only successors; success-dependent checks become explicitly not
   meaningful. Only an explicitly unsafe/stop failure cancels remaining work,
   and every path completes the existing cgroup/container cleanup contract.
+  Failure blocking propagates through the full prerequisite closure regardless
+  of declaration order. Every terminal outer run closes remaining live child
+  states; rejected, missing, mismatched, and incomplete executor reports have
+  bounded public reasons while raw contents remain private. Admission observations
+  expose waiting, granted, executing, and finished leaf counts, actual grant and
+  process timestamps, and separate accumulated queue and process durations. Checks
+  waiting for capacity have no process start time. Console shows this distinction
+  during the run; historical reports without observations remain readable.
 - **REQ-TEST-14** (2026-09-01, done): Explicit check selections and a
-  failed-check retry are diagnostic only. Retry begins only after an original
+  retry of a failed, timed-out, or cancelled check are diagnostic only.
+  When the outer unit ends before its executor seals its report, retain a
+  failed-run retry receipt with reconciled child states while preserving the
+  original report bytes. Existing terminal snapshots are reconciled on read;
+  an explicit retry may recover a missing receipt from the exact matching,
+  stopped current run's retained report. Missing or invalid reports never
+  become invented successful evidence. Retry begins only after an original
   complete run finishes, includes the target's prerequisite closure, reuses
   only exact matching regular-file artifact receipts, reruns non-reusable
   setup, and rejects changed source, config, artifacts, origin, or target
@@ -95,8 +111,21 @@ not contradict them.
   25% when admission was saturated for at least half the samples and CPU and
   memory p95 were both below 90%; it decreases 25% when CPU or memory stayed at
   or above 98% for four 15-second samples spanning at least 45 seconds. Memory
-  uses `MemAvailable`. Sustained pressure pauses new grants without killing
-  active work until two samples put both measures below 95%. Missing evidence
+  uses `MemAvailable`. Sustained CPU pressure pauses new grants without killing
+  active work until two samples put both measures below 95%. A host memory
+  emergency (available memory at or below 10%) immediately pauses grants and
+  invokes one asynchronous containment worker. It selects positively owned
+  active tests by measured memory, largest first, and rechecks host memory
+  after each exact-run stop and cleanup. Negligible test wrappers (remaining
+  measured tests below 1% of host memory) are not blamed for unrelated service
+  pressure. Emergency stops remain failed runs with `memory_pressure` reasons,
+  retained logs and normal owned cleanup, never successful or operator-cancelled
+  results. Two samples with memory use below 85% and CPU below 95% restore
+  admission after a memory emergency. Missing evidence
+  never proves recovery. An emergency also marks the current workload epoch
+  for a 25% reduction, reported as `memory_emergency`, once the existing
+  ten-minute minimum run duration is met; it cannot instead teach Auto to grow.
+  Otherwise, missing evidence
   causes no adjustment. An administrator may set or clear one host-wide
   maximum; lowering it never kills active work. Learned/effective capacity,
   the cap, active/waiting counts, pause state, and append-only adjustment
@@ -262,6 +291,9 @@ not contradict them.
   `busy`; it is never queued.
 - **REQ-DEPLOY-03** (P3, done): Partial failure yields an honest `degraded` state
   listing exact running and failed components; no fake success.
+  Reapplying may recreate an exact failed or inactive process unit only after
+  proving its cgroup empty. Validate the request before runtime or log changes;
+  preserve prior failure logs and refuse live, transitional or unknown units.
 - **REQ-DEPLOY-04** (P3, done): Stop/restart/redeploy never deletes persistent
   database or volume data; destructive removal is a separate explicit
   action.
@@ -517,7 +549,10 @@ not contradict them.
 - **REQ-PLAN-04** (S8, done): `plan.overview` is one bounded call carrying
   releases with leaf-based progress, the compact active task projection
   (unfinished tasks never truncated away), pending preview requests, and
-  decision-summary state.
+  decision-summary state. A separate read-only `task.search` searches all states,
+  including dropped history, with literal title/outcome/technical-note matching,
+  an optional state filter, up to 50 compact hits, and an immutable sequence cursor.
+  Finding historical work never restores it to the active plan.
 - **REQ-PLAN-05** (S8, done): The owner can move tasks between releases,
   reorder them within a release (mutable `position`, immutable `seq`), and
   drop them; each is an append-only transition (`release_move`, `reorder`,

@@ -52,6 +52,7 @@ impl McpAdapter {
                 kind: client_kind,
                 session: None,
                 identity: None,
+                ..ClientContext::default()
             },
         )
         .await
@@ -185,7 +186,13 @@ mod tests {
     #[test]
     fn tools_are_deterministic_typed_and_annotated() {
         let tools = McpAdapter::tools();
-        assert_eq!(tools.len(), 68);
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .collect::<Vec<_>>(),
+            mcp_tools().iter().map(|tool| tool.name).collect::<Vec<_>>()
+        );
         assert!(tools.windows(2).all(|pair| pair[0].name < pair[1].name));
         for tool in &tools {
             assert!(

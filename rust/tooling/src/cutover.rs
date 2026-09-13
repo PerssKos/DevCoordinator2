@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt, symlink};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ const ACTIVITY_FILE: &str = "test-activity.json";
 const LOCK_FILE: &str = "test-admission.lock";
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: u64 = 1024 * 1024;
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[15, 16, 17, DATABASE_SCHEMA_VERSION];
+const MINIMUM_SUPPORTED_DATABASE_SCHEMA: u32 = 15;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +221,7 @@ fn combine(primary: String, operation: &str, secondary: Result<(), String>) -> S
 pub struct HostCutoverConfig {
     pub candidate_manifest: PathBuf,
     pub installed_manifest: PathBuf,
+    pub tmpfiles_path: PathBuf,
     pub transaction_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub socket_path: PathBuf,
@@ -275,6 +276,7 @@ impl Default for HostCutoverConfig {
         Self {
             candidate_manifest: "/etc/devcoordinator2/candidate-install-manifest.json".into(),
             installed_manifest: "/etc/devcoordinator2/install-manifest.json".into(),
+            tmpfiles_path: "/etc/tmpfiles.d/devcoordinator2.conf".into(),
             transaction_dir: "/var/lib/devcoordinator2/cutover/rust-v2".into(),
             runtime_dir: "/run/devcoordinator2".into(),
             socket_path: "/run/devcoordinator2/daemon.sock".into(),
@@ -336,6 +338,7 @@ pub struct HostCutover {
     manifest: InstallManifest,
     daemon_unit_text: String,
     edge_unit_text: String,
+    tmpfiles_text: String,
     expected_owner: (u32, u32),
     fenced: bool,
 }
@@ -492,12 +495,14 @@ impl HostCutover {
         let source_root = Path::new(&manifest.source_root);
         let daemon_unit_text = render_daemon_unit(source_root)?;
         let edge_unit_text = render_edge_unit(source_root, config.canary)?;
+        let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
         Ok(Self {
             config,
             runner,
             manifest,
             daemon_unit_text,
             edge_unit_text,
+            tmpfiles_text,
             expected_owner,
             fenced: false,
         })
@@ -534,13 +539,14 @@ impl HostCutover {
         }
     }
 
-    fn snapshot_targets(&self) -> [&Path; 5] {
+    fn snapshot_targets(&self) -> [&Path; 6] {
         [
             &self.config.daemon_unit_path,
             &self.config.edge_unit_path,
             &self.config.cli_link,
             &self.config.tooling_link,
             &self.config.installed_manifest,
+            &self.config.tmpfiles_path,
         ]
     }
 
@@ -592,6 +598,12 @@ impl CutoverAdapter for HostCutover {
         if backup.exists() {
             return Err("cutover database backup already exists".to_owned());
         }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&backup)
+            .map_err(|error| format!("cannot create private database backup: {error}"))?;
         let connection = open_database_read_only(&self.config.database_path)?;
         connection
             .backup(rusqlite::MAIN_DB, &backup, None)
@@ -649,6 +661,19 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn install_rust(&mut self) -> Result<(), String> {
+        install::prepare_state_directory(
+            self.config
+                .database_path
+                .parent()
+                .ok_or("database has no state directory")?,
+            self.expected_owner,
+        )?;
+        install::atomic_file(
+            &self.config.tmpfiles_path,
+            self.tmpfiles_text.as_bytes(),
+            0o644,
+            Some(self.expected_owner),
+        )?;
         install::atomic_file(
             &self.config.daemon_unit_path,
             self.daemon_unit_text.as_bytes(),
@@ -1356,20 +1381,14 @@ fn open_database_read_only(path: &Path) -> Result<Connection, String> {
     let schema = database_schema_from(&connection)?;
     if !supported_database_schema(&schema) {
         return Err(format!(
-            "cutover requires database schema {}, found {schema}",
-            SUPPORTED_DATABASE_SCHEMAS
-                .iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            "cutover requires database schema {MINIMUM_SUPPORTED_DATABASE_SCHEMA} through {DATABASE_SCHEMA_VERSION}, found {schema}"
         ));
     }
     Ok(connection)
 }
 
 fn supported_database_schema(schema: &str) -> bool {
-    SUPPORTED_DATABASE_SCHEMAS
-        .iter()
+    (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION)
         .any(|supported| schema == supported.to_string())
 }
 
@@ -1955,6 +1974,11 @@ mod tests {
         std::fs::create_dir_all(source.join("edge")).unwrap();
         std::fs::create_dir_all(source.join("target/release")).unwrap();
         std::fs::write(
+            source.join("deploy/devcoordinator2.tmpfiles.conf"),
+            include_str!("../../../deploy/devcoordinator2.tmpfiles.conf"),
+        )
+        .unwrap();
+        std::fs::write(
             source.join("deploy/devcoordinator2.service"),
             "[Service]\nExecStart=/home/DevCoordinator2/target/release/devcoordinator2 daemon\n",
         )
@@ -2041,6 +2065,7 @@ mod tests {
             config: HostCutoverConfig {
                 candidate_manifest,
                 installed_manifest,
+                tmpfiles_path: root.join("etc/tmpfiles.conf"),
                 transaction_dir: root.join("transaction"),
                 runtime_dir,
                 socket_path,
@@ -2276,6 +2301,9 @@ mod tests {
     #[test]
     fn concrete_host_adapter_installs_verified_files_and_commits_snapshot() {
         let world = host_world();
+        let prior_rule =
+            "d /var/lib/devcoordinator2 0750 root root -\n# retain this instance setting\n";
+        std::fs::write(&world.config.tmpfiles_path, prior_rule).unwrap();
         let runner = Arc::new(HostFake {
             commit: world.commit.clone(),
             ..HostFake::default()
@@ -2284,6 +2312,24 @@ mod tests {
             HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
         let receipt = activate(&mut host).unwrap();
         assert_eq!(receipt.status, "activated");
+        assert_eq!(
+            std::fs::metadata(&world.config.database_path)
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(world.config.database_path.parent().unwrap())
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o751
+        );
+        assert_eq!(
+            std::fs::read_to_string(&world.config.tmpfiles_path).unwrap(),
+            prior_rule.replace("0750", "0751")
+        );
         assert!(Path::new(&receipt.backup).is_file());
         assert!(
             std::fs::read_to_string(&world.config.daemon_unit_path)
@@ -2314,7 +2360,7 @@ mod tests {
 
     #[test]
     fn concrete_host_adapter_activates_supported_schemas_and_rejects_unknown_schemas() {
-        for schema in [15, 16, 17, DATABASE_SCHEMA_VERSION] {
+        for schema in 15..=DATABASE_SCHEMA_VERSION {
             let world = host_world();
             let connection = Connection::open(&world.config.database_path).unwrap();
             connection

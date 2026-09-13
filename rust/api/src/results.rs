@@ -60,6 +60,7 @@ pub enum TerminationReason {
 #[serde(rename_all = "snake_case")]
 pub enum RunTerminationReason {
     OperatorCancelled,
+    MemoryPressure,
     Superseded,
     TimedOut,
     Interrupted,
@@ -248,6 +249,14 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RepositoryPresentation {
+    pub repository_id: String,
+    pub display_name: Option<String>,
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegisteredRepository {
     pub repository_id: String,
     pub worktree_id: String,
@@ -346,9 +355,26 @@ pub struct RetainedArtifactReceipt {
     pub sha256: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionProgress {
+    pub waiting: u32,
+    pub admitted: u32,
+    pub executing: u32,
+    pub finished: u32,
+    pub queued_at_epoch_ms: u64,
+    pub admitted_at_epoch_ms: Option<u64>,
+    pub started_at_epoch_ms: Option<u64>,
+    pub finished_at_epoch_ms: Option<u64>,
+    pub capacity_wait_ms: u64,
+    pub process_duration_ms: u64,
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionProgress>,
     pub id: String,
     pub status: LeafStatus,
     pub exit: DiagnosticExit,
@@ -359,6 +385,8 @@ pub struct CaseProjection {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckProjection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionProgress>,
     pub name: String,
     pub tier: crate::params::ValidationTier,
     pub role: CheckRole,
@@ -426,6 +454,8 @@ pub struct ExecutionCapacity {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work_context::WorkAttribution>,
     pub schema_version: u8,
     pub run_id: String,
     pub test: String,
@@ -444,6 +474,8 @@ pub struct TestSummary {
     pub requested_tier: crate::params::ValidationTier,
     pub readiness_eligible: bool,
     pub check_report_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_issue: Option<TestReportIssue>,
     pub log_catalog_ref: LogCatalogReference,
     pub termination_reason: Option<RunTerminationReason>,
     pub check_summary: Option<BTreeMap<String, u32>>,
@@ -455,6 +487,16 @@ pub struct TestSummary {
     pub execution_capacity: Option<ExecutionCapacity>,
     pub capacity_wait_count: Option<u64>,
     pub capacity: Option<Capacity>,
+}
+
+#[derive(Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestReportIssue {
+    Missing,
+    Invalid,
+    Unreadable,
+    IdentityMismatch,
+    Incomplete,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -511,17 +553,23 @@ pub struct EarlierVisualEvidence {
 #[serde(deny_unknown_fields)]
 pub struct TestList {
     pub runs: Vec<TestListRow>,
+    #[serde(default)]
+    pub next_worktree_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryRun {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::work_context::WorkAttribution>,
     pub run_id: String,
     pub test: String,
     pub status: TestStatus,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination_reason: Option<RunTerminationReason>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -863,6 +911,25 @@ pub struct EvidenceGet {
     pub issues: Vec<EvidenceIssue>,
     pub issues_truncated: bool,
     pub image_count: u32,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceRunContext {
+    pub repository_id: String,
+    pub worktree_id: String,
+    pub worktree_path: String,
+    pub display_name: String,
+    pub run_id: String,
+    pub test: Option<String>,
+    pub started_at: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceLookup {
+    pub context: EvidenceRunContext,
+    pub evidence: EvidenceGet,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1436,6 +1503,12 @@ pub struct CurrentReleaseSummary {
 pub struct PlanRepositoryRow {
     pub repository_id: String,
     pub display_name: String,
+    #[serde(default)]
+    pub root_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<RepositoryPresentation>,
     pub open_tasks: u32,
     pub loc_done: u64,
     pub loc_total: u64,
@@ -2234,6 +2307,22 @@ pub struct PlanEvent {
     pub actor: String,
     pub at: String,
     pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSearch {
+    pub tasks: Vec<TaskSearchHit>,
+    pub next_sequence: Option<u64>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSearchHit {
+    pub task_id: String,
+    pub sequence: u64,
+    pub title: String,
+    pub status: crate::params::TaskStatus,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

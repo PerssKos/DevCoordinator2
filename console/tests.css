@@ -44,14 +44,35 @@
 .test-thumbnail img{display:block;width:112px;height:76px;max-width:100%;object-fit:contain;border:1px solid var(--line);border-radius:4px;background:var(--panel)}
 .test-thumbnail>span{display:block;font-size:11px;line-height:1.4;margin-top:4px;overflow-wrap:anywhere}
 .test-thumbnail:hover img{border-color:var(--accent)}
-.test-preview-more{align-self:center;font-size:12px;padding:8px 5px;color:var(--accent)}
+.test-preview-more{align-self:center;font:inherit;font-size:12px;padding:8px 5px;color:var(--accent);background:transparent;border:0;cursor:pointer}
 .test-preview-provenance{flex-basis:100%;font-size:11px;color:var(--muted)}
 .test-action-error{font-size:12px;color:var(--bad);margin-left:35px;overflow-wrap:anywhere}
 .test-action-error:empty{display:none}
-.test-image-preview{width:min(1120px,94vw);max-width:94vw;max-height:94vh;padding:0;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px}
+.test-image-preview{width:min(1280px,96vw);max-width:96vw;height:min(920px,94dvh);max-height:94dvh;padding:0;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px}
+.test-image-preview[open]{display:flex;flex-direction:column;overflow:hidden}
 .test-image-preview .dialog-head{padding:12px 16px;font-size:13px;min-width:0}
 .test-image-preview .dialog-head>span{overflow-wrap:anywhere}
-.test-image-preview>img{display:block;max-width:calc(94vw - 32px);max-height:72vh;width:auto;height:auto;margin:auto;object-fit:contain}
+.test-image-preview .dialog-head{flex-shrink:0;display:flex;align-items:flex-start;gap:12px}
+.test-image-preview .dialog-head>div{flex:1;min-width:0;overflow-wrap:anywhere}
+.test-image-preview .dialog-head small{display:block;color:var(--muted);font-size:11px;margin-top:3px}
+.test-image-preview .dialog-close{min-width:40px;min-height:40px}
+.test-gallery-stage{display:flex;flex:1;align-items:stretch;min-height:0;gap:4px;padding:0 8px}
+.test-gallery-image{position:relative;display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:0;background:var(--bg);border-radius:4px}
+.test-gallery-image>img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}
+.test-gallery-image>img[hidden]{display:none}
+.test-gallery-arrow{display:flex;align-self:center;align-items:center;justify-content:center;width:44px;height:52px;flex:0 0 44px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg);cursor:pointer}
+.test-gallery-arrow:disabled{opacity:.4;cursor:default}
+.test-gallery-arrow .ti{width:22px;height:22px}
+.test-gallery-message{display:flex;gap:12px;align-items:center;justify-content:center;flex-direction:column;padding:12px;color:var(--muted);font-size:13px;text-align:center;overflow-wrap:anywhere}
+.test-gallery-message:empty{display:none}
+.test-gallery-thumbnails{display:flex;flex:0 0 auto;gap:8px;overflow-x:auto;overflow-y:hidden;padding:12px 16px 8px;scrollbar-width:thin;scroll-padding:16px}
+.test-gallery-thumbnails button{flex:0 0 108px;min-width:0;padding:5px;border:2px solid transparent;border-radius:6px;background:transparent;color:var(--muted);font:inherit;cursor:pointer;text-align:left}
+.test-gallery-thumbnails button[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--fg)}
+.test-gallery-thumbnails img{display:block;width:96px;height:64px;object-fit:contain;background:var(--bg);border-radius:3px}
+.test-gallery-thumbnails img:not([src]){visibility:hidden}
+.test-gallery-thumbnails span{display:block;font-size:11px;margin-top:5px;line-height:1.3;overflow-wrap:anywhere}
+.test-image-preview>footer{flex-shrink:0}
+@media(max-width:540px){.test-gallery-stage{padding:0 4px;gap:2px}.test-gallery-arrow{width:36px;flex-basis:36px;height:44px}.test-gallery-thumbnails{padding:8px}.test-image-preview .dialog-head{padding:10px}.test-image-preview>footer{padding:8px 10px}.test-gallery-thumbnails button{flex-basis:92px}.test-gallery-thumbnails img{width:80px;height:54px}}
 .test-image-preview>footer{display:flex;justify-content:flex-end;padding:12px 16px}
 #test-run-form{padding:12px 0 18px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:12px}
 #test-run-form .f{min-width:0;flex:1 1 200px}

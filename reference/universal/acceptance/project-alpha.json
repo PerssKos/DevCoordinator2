@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "project": "project-alpha",
+  "timeUnit": "unixMilliseconds",
+  "events": [
+    {
+      "at": 1000000,
+      "action": "bind",
+      "workstream": "spec",
+      "purpose": "Specification",
+      "mode": "performance-only",
+      "expected": { "deliveryTargets": [], "deliveryAlarms": [], "reviewEnabled": true }
+    },
+    {
+      "at": 605800000,
+      "action": "observe",
+      "workstream": "spec",
+      "expected": { "deliveryTargets": [], "deliveryAlarms": [], "recoveryOnly": false }
+    },
+    {
+      "at": 605800000,
+      "action": "bind",
+      "workstream": "implementation",
+      "purpose": "Implementation",
+      "target": "linux-cli",
+      "expected": { "implementationStartedAt": 605800000, "deliveryDueAt": 692200000, "hardStopAt": 735400000, "deadlineRevision": 1 }
+    },
+    {
+      "at": 692200000,
+      "action": "observe-twice",
+      "workstream": "implementation",
+      "expected": { "deliveryRequests": 1, "ordinaryImplementationAllowed": true, "recoveryAllowed": true }
+    },
+    {
+      "at": 735400000,
+      "action": "observe",
+      "workstream": "implementation",
+      "expected": { "ordinaryImplementationAllowed": false, "recoveryAllowed": true, "independentSpecBlocked": false }
+    },
+    {
+      "at": 735400000,
+      "action": "explicit-user-postponement",
+      "workstream": "implementation",
+      "deliveryIntervalHours": 48,
+      "hardStopIntervalHours": 60,
+      "expected": { "deadlineRevision": 2, "previousRevisionRetained": true, "implementationStartedAt": 605800000, "deliveryDueAt": 778600000, "hardStopAt": 821800000, "lastQualifiedDeliveryAt": null, "ordinaryImplementationAllowed": true, "obsoleteWakeIgnored": true }
+    },
+    {
+      "at": 782200000,
+      "action": "qualified-delivery",
+      "workstream": "implementation",
+      "target": "linux-cli",
+      "receipt": "delivery-linux-cli-1",
+      "expected": { "lastQualifiedDeliveryAt": 782200000, "reviewReceiptUnchanged": true }
+    },
+    {
+      "at": 782201000,
+      "action": "completed-review",
+      "workstream": "implementation",
+      "receipt": "review-implementation-1",
+      "expected": { "lastQualifiedDeliveryAt": 782200000, "lastCompletedReviewAt": 782201000, "deliveryReceiptUnchanged": true }
+    }
+  ],
+  "reviewCases": [
+    { "cause": "waiting-for-user", "avoidableWaste": false },
+    { "cause": "required-release-validation-after-candidate-change", "avoidableWaste": false },
+    { "cause": "unchanged-bottleneck-and-evidence", "duplicateReview": false },
+    { "purpose": "Specification", "automaticProductImplementationAllowed": false }
+  ],
+  "reviewProtocol": ["hypothesis", "options", "chosen-action", "measurement", "keep-or-revert"]
+}

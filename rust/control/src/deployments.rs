@@ -80,6 +80,7 @@ pub struct Deployments {
     clock: Arc<dyn Clock>,
     port_availability: Arc<dyn crate::ports::PortAvailability>,
     busy: Arc<Mutex<HashSet<String>>>,
+    finite_operations: crate::deployment_cancellation::FiniteOperations,
     routes: RouteFilePublisher,
 }
 
@@ -224,6 +225,7 @@ impl Deployments {
             clock,
             port_availability,
             busy: Arc::new(Mutex::new(HashSet::new())),
+            finite_operations: crate::deployment_cancellation::FiniteOperations::default(),
             routes,
         }
     }
@@ -466,7 +468,7 @@ impl Deployments {
                         .into(),
                 }),
         }
-        readiness.ready = status.state == "running"
+        readiness.ready = matches!(status.state.as_str(), "running" | "completed")
             && readiness.missing_components.is_empty()
             && readiness.pending_apply == Some(false)
             && readiness.blockers.is_empty();
@@ -554,7 +556,7 @@ impl Deployments {
         }
         if let Some(row) = &target.row
             && row.spec_fingerprint == fingerprint
-            && row.state == "running"
+            && matches!(row.state.as_str(), "running" | "completed")
             && !snapshot.dirty
         {
             let resolved = ResolvedDeployment {
@@ -565,7 +567,9 @@ impl Deployments {
             let route_expected =
                 domain.is_some() && target.specification.route_component().is_some();
             let route_healthy = self.validate_or_withdraw_route(&target.deployment_id)?;
-            if status.state == "running" && (!route_expected || route_healthy) {
+            if matches!(status.state.as_str(), "running" | "completed")
+                && (!route_expected || route_healthy)
+            {
                 status.unchanged = Some(true);
                 self.refresh_readiness(&target, &mut status)?;
                 return Ok(status);
@@ -627,6 +631,12 @@ impl Deployments {
             &target.client,
             ttl_expires_at.as_deref(),
         )?;
+        let _finite_guard = target
+            .specification
+            .components
+            .iter()
+            .all(ComponentSpec::is_finite_workload)
+            .then(|| self.finite_operations.begin(&target.deployment_id));
         let generation_path =
             match self.prepare_generation(&target, generation, snapshot.commit.as_deref()) {
                 Ok(path) => path,
@@ -650,7 +660,7 @@ impl Deployments {
             self.restore_after_preparation_failure(&target, &old_components, &desired)?;
             return Err(error);
         }
-        let mut status = self.converge(
+        let result = self.converge(
             &target,
             &old_components,
             generation,
@@ -658,7 +668,8 @@ impl Deployments {
             domain.as_deref(),
             None,
             desired,
-        )?;
+        );
+        let mut status = result?;
         self.refresh_readiness(&target, &mut status)?;
         Ok(status)
     }
@@ -774,6 +785,25 @@ impl Deployments {
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        if action == "stop"
+            && component.is_none()
+            && let Some((requested, finished)) = self
+                .finite_operations
+                .cancel_and_wait(&target.deployment_id, Duration::from_secs(15))
+        {
+            let current = self
+                .store
+                .get(&target.deployment_id)?
+                .ok_or_else(|| not_found(&target.deployment_id))?;
+            let mut status = self.managed_status(&ResolvedDeployment {
+                row: current,
+                specification: target.specification,
+            })?;
+            if requested && !finished {
+                status.state = "stopping".into();
+            }
+            return Ok(status);
+        }
         let _busy = self.acquire_busy(&target.deployment_id)?;
         if let Some(reference) = component
             && let Some((parent, service)) = reference.split_once('/')
@@ -1044,6 +1074,7 @@ impl Deployments {
                     gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
                     client_kind: devcoordinator2_api::ClientKind::Other,
                     client_session: None,
+                    work: None,
                     identity: None,
                 };
                 if let Ok(status) =
@@ -1466,7 +1497,16 @@ impl Deployments {
                 &component.name,
                 ComponentRuntimePatch {
                     desired_state: Some("running".into()),
-                    state: Some(if readiness.ready { "running" } else { "failed" }.into()),
+                    state: Some(
+                        if !readiness.ready {
+                            "failed"
+                        } else if component.is_finite_workload() {
+                            "completed"
+                        } else {
+                            "running"
+                        }
+                        .into(),
+                    ),
                     health: Some(
                         if readiness.ready {
                             "healthy"
@@ -1522,9 +1562,18 @@ impl Deployments {
             })
             .map(|component| component.state)
             .collect::<Vec<_>>();
-        let state = if !states.is_empty() && states.iter().all(|state| state == "running") {
+        let state = if !states.is_empty() && states.iter().all(|state| state == "completed") {
+            "completed"
+        } else if !states.is_empty()
+            && states
+                .iter()
+                .all(|state| matches!(state.as_str(), "running" | "completed"))
+        {
             "running"
-        } else if states.iter().all(|state| state == "stopped") {
+        } else if states
+            .iter()
+            .all(|state| matches!(state.as_str(), "stopped" | "completed"))
+        {
             "stopped"
         } else {
             "degraded"
@@ -1743,6 +1792,12 @@ impl Deployments {
         generation: u32,
         generation_path: &Path,
     ) -> Result<(), ProtocolError> {
+        if self.finite_operations.cancelled(&target.deployment_id) {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "finite workload cancelled before build",
+            ));
+        }
         if target.specification.build.is_empty() {
             return Ok(());
         }
@@ -1795,7 +1850,37 @@ impl Deployments {
         let stderr = child
             .take_stderr()
             .map(|stream| spawn_log_drain(stream, Arc::clone(&log)));
-        let status = child.wait().map_err(|error| {
+        let status = if self.finite_operations.flag(&target.deployment_id).is_some() {
+            loop {
+                if self.finite_operations.cancelled(&target.deployment_id) {
+                    let cgroup = self
+                        .systemd
+                        .control_group_path(&specification.unit)
+                        .map_err(systemd_error)?;
+                    self.systemd
+                        .stop_unit(&specification.unit)
+                        .map_err(systemd_error)?;
+                    if !self
+                        .systemd
+                        .prove_cgroup_empty(cgroup.as_deref(), Duration::from_secs(15))
+                    {
+                        return Err(ProtocolError::new(
+                            ErrorCode::DeploymentApplyFailed,
+                            "cancelled build cleanup is not confirmed",
+                        ));
+                    }
+                    break child.wait();
+                }
+                match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Err(error) => break Err(error),
+                    Ok(None) => thread::sleep(Duration::from_millis(100)),
+                }
+            }
+        } else {
+            child.wait()
+        }
+        .map_err(|error| {
             ProtocolError::new(
                 ErrorCode::DeploymentApplyFailed,
                 "build process could not be reaped",
@@ -1820,7 +1905,7 @@ impl Deployments {
                 )
                 .with_detail(truncate(&error.to_string(), 512))
             })?;
-        if status.success() {
+        if status.success() && !self.finite_operations.cancelled(&target.deployment_id) {
             Ok(())
         } else {
             Err(ProtocolError::new(
@@ -1888,7 +1973,8 @@ impl Deployments {
                 };
                 let old = old_components.get(&component.name);
                 let newly_started = binding.0 != "none"
-                    && (DeploymentStore::is_generation_scoped(component)
+                    && (component.is_finite_workload()
+                        || DeploymentStore::is_generation_scoped(component)
                         || old.is_none()
                         || old.and_then(|row| row.binding_kind.as_deref())
                             != Some(binding.0.as_str())
@@ -1929,7 +2015,16 @@ impl Deployments {
                     &component.name,
                     ComponentRuntimePatch {
                         spec_fingerprint: Some(DeploymentStore::component_fingerprint(component)),
-                        state: Some(if readiness.ready { "running" } else { "failed" }.into()),
+                        state: Some(
+                            if !readiness.ready {
+                                "failed"
+                            } else if component.is_finite_workload() {
+                                "completed"
+                            } else {
+                                "running"
+                            }
+                            .into(),
+                        ),
                         health: Some(
                             if readiness.ready {
                                 "healthy"
@@ -1955,6 +2050,12 @@ impl Deployments {
                         ),
                     ));
                 }
+            }
+            if !self.finite_operations.seal(&target.deployment_id) {
+                return Err(ProtocolError::new(
+                    ErrorCode::DeploymentApplyFailed,
+                    "finite workload cancelled before commit",
+                ));
             }
             Ok(())
         })();
@@ -1993,7 +2094,16 @@ impl Deployments {
             self.store.patch_deployment_runtime(
                 &target.deployment_id,
                 DeploymentRuntimePatch {
-                    state: Some(if had_generation { "degraded" } else { "failed" }.into()),
+                    state: Some(
+                        if self.finite_operations.cancelled(&target.deployment_id) {
+                            "cancelled"
+                        } else if had_generation {
+                            "degraded"
+                        } else {
+                            "failed"
+                        }
+                        .into(),
+                    ),
                     ..Default::default()
                 },
             )?;
@@ -2081,7 +2191,19 @@ impl Deployments {
         self.store.patch_deployment_runtime(
             &target.deployment_id,
             DeploymentRuntimePatch {
-                state: Some("running".into()),
+                state: Some(
+                    if target
+                        .specification
+                        .components
+                        .iter()
+                        .all(ComponentSpec::is_finite_workload)
+                    {
+                        "completed"
+                    } else {
+                        "running"
+                    }
+                    .into(),
+                ),
                 current_generation: Some(Some(generation)),
                 previous_generation: Some(if target.source == "checkout" {
                     previous
@@ -2159,7 +2281,7 @@ impl Deployments {
         desired: &DesiredSnapshot,
     ) -> Result<(), ProtocolError> {
         for binding in started.iter().rev() {
-            let _ = self.stop_binding(
+            let stopped = self.stop_binding(
                 target,
                 &binding.kind,
                 &binding.identity,
@@ -2167,6 +2289,28 @@ impl Deployments {
                 generation_path,
                 generation,
             );
+            if binding.specification.is_finite_workload()
+                && let Err(error) = stopped
+            {
+                self.store.set_component_runtime(
+                    &target.deployment_id,
+                    &binding.specification.name,
+                    ComponentRuntimePatch {
+                        state: Some("failed".into()),
+                        health: Some("unhealthy".into()),
+                        last_error: Some(Some("finite workload cleanup is not confirmed".into())),
+                        ..Default::default()
+                    },
+                )?;
+                self.store.patch_deployment_runtime(
+                    &target.deployment_id,
+                    DeploymentRuntimePatch {
+                        state: Some("failed".into()),
+                        ..Default::default()
+                    },
+                )?;
+                return Err(error);
+            }
             if binding.kind == "container"
                 && DeploymentStore::is_generation_scoped(&binding.specification)
                 && let Ok(identity) = ExactContainerId::parse(binding.identity.clone())
@@ -2489,6 +2633,7 @@ impl Deployments {
                     &component.finite_services,
                     component.compose_build,
                     Some(Arc::clone(&log)),
+                    self.finite_operations.flag(&target.deployment_id),
                 );
                 let mut writer = log
                     .lock()
@@ -3010,6 +3155,7 @@ impl Deployments {
                         &completions.keys().cloned().collect(),
                         &desires,
                         Duration::from_secs(component.compose_timeout_seconds),
+                        self.finite_operations.flag(&target.deployment_id),
                     )
                     .map_err(|error| apply_runtime_error("Compose health check failed", error))?;
                 let candidates = state
@@ -3165,7 +3311,31 @@ impl Deployments {
                 };
                 let context =
                     self.compose_context(target, specification, generation_path, generation)?;
-                self.docker.compose_stop(&context).map_err(runtime_error)
+                self.docker.compose_stop(&context).map_err(runtime_error)?;
+                if specification.is_finite_workload() {
+                    let state = self
+                        .docker
+                        .compose_state(
+                            &context.project,
+                            &specification.services,
+                            &specification.finite_services,
+                            &BTreeSet::new(),
+                            &BTreeMap::new(),
+                        )
+                        .map_err(runtime_error)?;
+                    if state.services.iter().any(|service| {
+                        matches!(
+                            service.state,
+                            RuntimeState::Running | RuntimeState::Starting
+                        )
+                    }) {
+                        return Err(ProtocolError::new(
+                            ErrorCode::DeploymentActionFailed,
+                            "finite workload still runs after stop",
+                        ));
+                    }
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -3391,13 +3561,25 @@ impl Deployments {
             .filter(|name| !components.iter().any(|component| &component.name == *name))
             .cloned()
             .collect::<Vec<_>>();
-        let mut state = if row.state == "applying" {
+        let mut state = if row.state == "cancelled" {
+            "cancelled"
+        } else if row.state == "applying" {
             "applying"
         } else if !missing_components.is_empty() {
             "degraded"
-        } else if !owned.is_empty() && owned.iter().all(|component| component.state == "running") {
+        } else if !owned.is_empty() && owned.iter().all(|component| component.state == "completed")
+        {
+            "completed"
+        } else if !owned.is_empty()
+            && owned
+                .iter()
+                .all(|component| matches!(component.state.as_str(), "running" | "completed"))
+        {
             "running"
-        } else if owned.iter().all(|component| component.state == "stopped") {
+        } else if owned
+            .iter()
+            .all(|component| matches!(component.state.as_str(), "stopped" | "completed"))
+        {
             "stopped"
         } else {
             "degraded"
@@ -3745,7 +3927,9 @@ impl Deployments {
 }
 
 fn live_health(row: &ComponentRow, state: &str) -> String {
-    if state == "running" {
+    if state == "completed" {
+        "healthy".into()
+    } else if state == "running" {
         row.health.clone()
     } else if row.state == "running" {
         "unhealthy".into()
@@ -4272,6 +4456,8 @@ mod tests {
         next: AtomicU64,
         fail_create: std::sync::atomic::AtomicBool,
         fail_compose: std::sync::atomic::AtomicBool,
+        block_finite: std::sync::atomic::AtomicBool,
+        finite_started: std::sync::atomic::AtomicBool,
     }
 
     impl MutationDocker {
@@ -4282,6 +4468,8 @@ mod tests {
                 next: AtomicU64::new(1),
                 fail_create: std::sync::atomic::AtomicBool::new(false),
                 fail_compose: std::sync::atomic::AtomicBool::new(false),
+                block_finite: std::sync::atomic::AtomicBool::new(false),
+                finite_started: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -4450,11 +4638,22 @@ mod tests {
             _finite_services: &[String],
             _build: bool,
             _output_log: Option<Arc<Mutex<std::fs::File>>>,
+            cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
         ) -> Result<(), DockerError> {
             self.actions
                 .lock()
                 .unwrap()
                 .push(format!("compose-up:{}", context.project));
+            if self.block_finite.load(Ordering::Acquire) {
+                let flag = cancellation.expect("finite operation cancellation");
+                self.finite_started.store(true, Ordering::Release);
+                while !flag.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                return Err(DockerError::Cancelled {
+                    operation: "fixture finite workload".into(),
+                });
+            }
             if self.fail_compose.load(Ordering::SeqCst) {
                 return Err(DockerError::Command(format!(
                     "{}\nfixture-current-compose-failure",
@@ -4586,7 +4785,9 @@ mod tests {
                 .iter()
                 .filter(|service| service.role == "running")
                 .collect::<Vec<_>>();
-            let state = if !running.is_empty()
+            let state = if running.is_empty() && !details.is_empty() {
+                RuntimeState::Completed
+            } else if !running.is_empty()
                 && running
                     .iter()
                     .all(|service| service.state == RuntimeState::Stopped)
@@ -4874,6 +5075,7 @@ tcp="127.0.0.1:25"
                 gid: 1000,
                 client_kind: devcoordinator2_api::ClientKind::Other,
                 client_session: None,
+                work: None,
                 identity: None,
             }
         }
@@ -5218,6 +5420,7 @@ image="cache:1"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         };
         assert_ne!(
@@ -5384,6 +5587,7 @@ image="cache:1"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "checkout fixture requires a non-root caller");
@@ -5506,6 +5710,7 @@ command=["serve"]
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "process fixture requires a non-root caller");
@@ -5554,6 +5759,176 @@ command=["serve"]
             .apply(None, None, Some(&first.deployment_id), &caller)
             .unwrap();
         assert_eq!(recovered.current_generation, Some(2));
+    }
+
+    fn finite_world() -> (
+        tempfile::TempDir,
+        PathBuf,
+        Deployments,
+        Arc<MutationDocker>,
+        Caller,
+    ) {
+        let temporary = tempdir().unwrap();
+        let worktree = temporary.path().join("repository");
+        std::fs::create_dir(&worktree).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&worktree)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(worktree.join("compose.yml"), "services: {}\n").unwrap();
+        std::fs::write(worktree.join(".devcoordinator.toml"), "schema=2\n[deployment.job]\nsource='worktree'\ncomponents=['probe']\n[deployment.job.component.probe]\ntype='compose'\nfiles=['compose.yml']\nservices=['probe']\nfinite_services=['probe']\n").unwrap();
+        let state = temporary.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let database = Database::open(state.join("authority.sqlite3")).unwrap();
+        let config = Config {
+            socket_path: temporary.path().join("daemon.sock"),
+            state_dir: state,
+            unit_prefix: "devcoordinator2-test".into(),
+            slice_name: "devcoordinator2-tests.slice".into(),
+            client_group: "clients".into(),
+            port_range: (40000, 40100),
+            base_domain: "example.test".into(),
+            edge_uid: None,
+            admin_emails: Vec::new(),
+            telegram_token_file: None,
+            telegram_api: "https://api.telegram.org".into(),
+            bugs_dir: temporary.path().join("bugs"),
+            compose_env_allowlist_file: None,
+            compose_env_authorizations: HashSet::new(),
+            codex_usage_sources_file: None,
+            codex_usage_sources: Vec::new(),
+        };
+        let docker = Arc::new(MutationDocker::new());
+        let deployments = Deployments::with_runtime_adapters(
+            config.clone(),
+            database.clone(),
+            Registry::new(database),
+            docker.clone(),
+            Arc::new(FakeSystemd),
+            Arc::new(ReadyNetwork),
+            Arc::new(FixtureGit),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
+        );
+        let caller = Caller {
+            pid: 1,
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            client_kind: devcoordinator2_api::ClientKind::Codex,
+            client_session: None,
+            work: None,
+            identity: None,
+        };
+        (temporary, worktree, deployments, docker, caller)
+    }
+
+    #[test]
+    fn finite_workload_completes_without_running_or_repeating_a_service() {
+        let (_temporary, worktree, deployments, docker, caller) = finite_world();
+        let first = deployments
+            .apply(Some(worktree.to_str().unwrap()), Some("job"), None, &caller)
+            .unwrap();
+        assert_eq!(first.state, "completed");
+        assert_eq!(first.components[0].state, "completed");
+        assert_eq!(first.components[0].health, "healthy");
+        assert!(first.route_port.is_none());
+        assert_eq!(
+            first.components[0].completed_services.as_ref().unwrap()[0].exit_code,
+            0
+        );
+        let before = docker.actions.lock().unwrap().len();
+        let again = deployments
+            .apply(None, None, Some(&first.deployment_id), &caller)
+            .unwrap();
+        assert_eq!(again.state, "completed");
+        assert_eq!(again.unchanged, Some(true));
+        assert_eq!(docker.actions.lock().unwrap().len(), before);
+        let started = deployments
+            .control(
+                "start",
+                None,
+                None,
+                Some(&first.deployment_id),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(started.state, "completed");
+        assert_eq!(docker.actions.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn finite_workload_failure_is_not_completion_and_can_recover() {
+        let (_temporary, worktree, deployments, docker, caller) = finite_world();
+        let target = deployments
+            .resolve_target(Some(worktree.to_str().unwrap()), Some("job"), None, &caller)
+            .unwrap();
+        docker.fail_compose.store(true, Ordering::Release);
+        assert!(
+            deployments
+                .apply(Some(worktree.to_str().unwrap()), Some("job"), None, &caller)
+                .is_err()
+        );
+        let row = deployments
+            .store
+            .get(&target.deployment_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.state, "failed");
+        assert!(
+            deployments
+                .store
+                .compose_completions(&target.deployment_id, "probe", 1)
+                .unwrap()
+                .is_empty()
+        );
+        docker.fail_compose.store(false, Ordering::Release);
+        let recovered = deployments
+            .apply(None, None, Some(&target.deployment_id), &caller)
+            .unwrap();
+        assert_eq!(recovered.state, "completed");
+    }
+
+    #[test]
+    fn finite_workload_stop_cancels_busy_apply_and_allows_recovery() {
+        let (_temporary, worktree, deployments, docker, caller) = finite_world();
+        let target = deployments
+            .resolve_target(Some(worktree.to_str().unwrap()), Some("job"), None, &caller)
+            .unwrap();
+        let id = target.deployment_id;
+        docker.block_finite.store(true, Ordering::Release);
+        let applying = deployments.clone();
+        let worker_caller = caller.clone();
+        let worker = thread::spawn(move || {
+            applying.apply(
+                Some(worktree.to_str().unwrap()),
+                Some("job"),
+                None,
+                &worker_caller,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !docker.finite_started.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "finite fixture did not start");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let stopped = deployments
+            .control("stop", None, None, Some(&id), None, &caller)
+            .unwrap();
+        assert_eq!(stopped.state, "cancelled");
+        assert!(worker.join().unwrap().is_err());
+        assert!(docker.actions.lock().unwrap().iter().any(|action| {
+            action.starts_with("compose-stop:") || action.starts_with("compose-down:")
+        }));
+        docker.block_finite.store(false, Ordering::Release);
+        let recovered = deployments.apply(None, None, Some(&id), &caller).unwrap();
+        assert_eq!(recovered.state, "completed");
     }
 
     #[test]
@@ -5633,6 +6008,7 @@ route=true
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(caller.uid, 0, "Compose fixture requires a non-root caller");
@@ -5835,6 +6211,7 @@ database="app"
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: None,
+            work: None,
             identity: None,
         };
         assert_ne!(

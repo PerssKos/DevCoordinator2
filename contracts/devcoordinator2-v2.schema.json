@@ -1074,6 +1074,78 @@
     },
     {
       "cli": {
+        "excludedReason": "Repository appearance is a Console-only administrator workflow.",
+        "routes": []
+      },
+      "description": "Choose a repository's Console name and icon without changing its identity.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "pattern": "^(folder|code|app-window|world|rocket|database|device-desktop|device-mobile|tools|flask|palette|star|plane|book|chart-bar|shield)$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "RepositoryPresentationUpdate",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "repository.presentation.update",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "icon": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "RepositoryPresentation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": null,
         "routes": [
           {
@@ -2427,6 +2499,7 @@
           "RunTerminationReason": {
             "enum": [
               "operator_cancelled",
+              "memory_pressure",
               "superseded",
               "timed_out",
               "interrupted"
@@ -2487,6 +2560,115 @@
               "development",
               "pre-merge",
               "release"
+            ],
+            "type": "string"
+          },
+          "WorkAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/WorkSource"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "WorkContext": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment_ref": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "native_project_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operation_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thread_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "turn_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "native_project_id",
+              "thread_id"
+            ],
+            "type": "object"
+          },
+          "WorkDiagnostic": {
+            "enum": [
+              "work_context_invalid",
+              "work_context_too_large",
+              "work_context_session_conflict"
+            ],
+            "type": "string"
+          },
+          "WorkSource": {
+            "enum": [
+              "environment",
+              "request"
             ],
             "type": "string"
           }
@@ -2661,6 +2843,16 @@
           },
           "test": {
             "type": "string"
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorkAttribution"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -7531,6 +7723,1090 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "test evidence lookup"
+          }
+        ]
+      },
+      "description": "Open an exact retained screenshot run without relying on the latest-runs list.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "image_id": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "worktree_id": {
+            "pattern": "^w[0-9a-f]{16}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "EvidenceLookup",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "image_id": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "worktree_id": {
+                "pattern": "^w[0-9a-f]{16}$",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "run_id"
+            ],
+            "title": "EvidenceLookup",
+            "type": "object"
+          },
+          "name": "test_evidence_lookup",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.evidence.lookup",
+      "outputSchema": {
+        "$defs": {
+          "AvailableScreenshot": {
+            "additionalProperties": false,
+            "properties": {
+              "captured_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "image_id",
+              "kind",
+              "mime",
+              "size",
+              "sha256",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          "EvidenceAction": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "type": "string"
+              },
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "index": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "index",
+              "action",
+              "outcome",
+              "duration_ms"
+            ],
+            "type": "object"
+          },
+          "EvidenceBundle": {
+            "additionalProperties": false,
+            "properties": {
+              "browser": {
+                "type": "string"
+              },
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cells": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceCell"
+                },
+                "type": "array"
+              },
+              "check": {
+                "type": "string"
+              },
+              "coverage": {
+                "$ref": "#/$defs/EvidenceCoverage"
+              },
+              "formal_run_id": {
+                "type": "string"
+              },
+              "generated_at": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "formal_run_id",
+              "generated_at",
+              "browser",
+              "check",
+              "phase",
+              "coverage",
+              "cells"
+            ],
+            "type": "object"
+          },
+          "EvidenceCell": {
+            "additionalProperties": false,
+            "properties": {
+              "actions": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceAction"
+                },
+                "type": "array"
+              },
+              "cell_id": {
+                "type": "string"
+              },
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "ended_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "final_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "findings": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceFinding"
+                },
+                "type": "array"
+              },
+              "formal_run_id": {
+                "type": "string"
+              },
+              "http_status": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "outcome": {
+                "type": "string"
+              },
+              "plan_index": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "primary_journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EvidenceReview"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "review_cell_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "screenshots": {
+                "$ref": "#/$defs/EvidenceScreenshots"
+              },
+              "source_binding_status": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state_name": {
+                "type": "string"
+              },
+              "target_name": {
+                "type": "string"
+              },
+              "viewport": {
+                "$ref": "#/$defs/EvidenceViewport"
+              }
+            },
+            "required": [
+              "cell_id",
+              "target_name",
+              "state_name",
+              "viewport",
+              "outcome",
+              "source_binding_status",
+              "actions",
+              "findings",
+              "screenshots",
+              "formal_run_id"
+            ],
+            "type": "object"
+          },
+          "EvidenceCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "checked_pages": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "planned_pages": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "readiness_eligible": {
+                "type": "boolean"
+              },
+              "required_coverage": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/EvidenceRequiredCoverage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "checked_pages",
+              "planned_pages",
+              "failed",
+              "readiness_eligible"
+            ],
+            "type": "object"
+          },
+          "EvidenceCoverageEntry": {
+            "additionalProperties": false,
+            "properties": {
+              "matching_cell_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "requirement_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "viewport": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "target",
+              "state",
+              "viewport",
+              "status",
+              "matching_cell_ids",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "EvidenceFinding": {
+            "additionalProperties": false,
+            "properties": {
+              "rule": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "severity",
+              "rule"
+            ],
+            "type": "object"
+          },
+          "EvidenceGet": {
+            "additionalProperties": false,
+            "properties": {
+              "bundles": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceBundle"
+                },
+                "type": "array"
+              },
+              "feedback": {
+                "items": {
+                  "$ref": "#/$defs/Feedback"
+                },
+                "type": "array"
+              },
+              "image_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "issues": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceIssue"
+                },
+                "type": "array"
+              },
+              "issues_truncated": {
+                "type": "boolean"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "worktree_id",
+              "run_id",
+              "status",
+              "bundles",
+              "feedback",
+              "issues",
+              "issues_truncated",
+              "image_count"
+            ],
+            "type": "object"
+          },
+          "EvidenceIssue": {
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "phase": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "check",
+              "phase",
+              "case",
+              "code"
+            ],
+            "type": "object"
+          },
+          "EvidenceRequiredCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "declared_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "entries": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceCoverageEntry"
+                },
+                "type": "array"
+              },
+              "failed": {
+                "type": "boolean"
+              },
+              "satisfied_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "declared_count",
+              "satisfied_count",
+              "failed",
+              "entries"
+            ],
+            "type": "object"
+          },
+          "EvidenceReview": {
+            "additionalProperties": false,
+            "properties": {
+              "decision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status"
+            ],
+            "type": "object"
+          },
+          "EvidenceRunContext": {
+            "additionalProperties": false,
+            "properties": {
+              "display_name": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "test": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              },
+              "worktree_path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "worktree_id",
+              "worktree_path",
+              "display_name",
+              "run_id"
+            ],
+            "type": "object"
+          },
+          "EvidenceScreenshots": {
+            "additionalProperties": false,
+            "properties": {
+              "full_page": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Screenshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "viewport": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Screenshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "EvidenceViewport": {
+            "additionalProperties": false,
+            "properties": {
+              "device": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          "Feedback": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "can_delete": {
+                "type": "boolean"
+              },
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cell_id": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              },
+              "comments": {
+                "items": {
+                  "$ref": "#/$defs/FeedbackComment"
+                },
+                "type": "array"
+              },
+              "comments_truncated": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "feedback_id": {
+                "type": "string"
+              },
+              "formal_run_id": {
+                "type": "string"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/Mark"
+                },
+                "type": "array"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "review_cell_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "screenshot_kind": {
+                "type": "string"
+              },
+              "screenshot_sha256": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "task_status": {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "feedback_id",
+              "task_id",
+              "task_status",
+              "state",
+              "run_id",
+              "check",
+              "phase",
+              "formal_run_id",
+              "cell_id",
+              "image_id",
+              "screenshot_kind",
+              "screenshot_sha256",
+              "marks",
+              "author",
+              "created_at",
+              "updated_at",
+              "can_delete",
+              "comments",
+              "comments_truncated"
+            ],
+            "type": "object"
+          },
+          "FeedbackComment": {
+            "additionalProperties": false,
+            "properties": {
+              "author": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "can_edit": {
+                "type": "boolean"
+              },
+              "comment_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "deleted": {
+                "type": "boolean"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "comment_id",
+              "body",
+              "author",
+              "created_at",
+              "updated_at",
+              "deleted",
+              "can_edit"
+            ],
+            "type": "object"
+          },
+          "Mark": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "pin",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "height": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "rectangle",
+                    "type": "string"
+                  },
+                  "width": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "width",
+                  "height"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "arrow",
+                    "type": "string"
+                  },
+                  "x1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x2": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y2": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x1",
+                  "y1",
+                  "x2",
+                  "y2"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "freehand",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "highlight",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "x": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "Screenshot": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AvailableScreenshot"
+              },
+              {
+                "$ref": "#/$defs/UnavailableScreenshot"
+              }
+            ]
+          },
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
+          },
+          "UnavailableScreenshot": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "kind"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "context": {
+            "$ref": "#/$defs/EvidenceRunContext"
+          },
+          "evidence": {
+            "$ref": "#/$defs/EvidenceGet"
+          }
+        },
+        "required": [
+          "context",
+          "evidence"
+        ],
+        "title": "EvidenceLookup",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "test evidence feedback reply"
           }
         ]
@@ -9638,6 +10914,16 @@
       "name": "test.history",
       "outputSchema": {
         "$defs": {
+          "RunTerminationReason": {
+            "enum": [
+              "operator_cancelled",
+              "memory_pressure",
+              "superseded",
+              "timed_out",
+              "interrupted"
+            ],
+            "type": "string"
+          },
           "TestHistoryRun": {
             "additionalProperties": false,
             "properties": {
@@ -9663,8 +10949,28 @@
               "status": {
                 "$ref": "#/$defs/TestStatus"
               },
+              "termination_reason": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunTerminationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "test": {
                 "type": "string"
+              },
+              "work": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkAttribution"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -9684,6 +10990,115 @@
               "cancelled",
               "interrupted",
               "superseded"
+            ],
+            "type": "string"
+          },
+          "WorkAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/WorkSource"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "WorkContext": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment_ref": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "native_project_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operation_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thread_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "turn_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "native_project_id",
+              "thread_id"
+            ],
+            "type": "object"
+          },
+          "WorkDiagnostic": {
+            "enum": [
+              "work_context_invalid",
+              "work_context_too_large",
+              "work_context_session_conflict"
+            ],
+            "type": "string"
+          },
+          "WorkSource": {
+            "enum": [
+              "environment",
+              "request"
             ],
             "type": "string"
           }
@@ -10408,6 +11823,7 @@
           "RunTerminationReason": {
             "enum": [
               "operator_cancelled",
+              "memory_pressure",
               "superseded",
               "timed_out",
               "interrupted"
@@ -10651,6 +12067,16 @@
               "visual_evidence": {
                 "$ref": "#/$defs/VisualEvidenceSummary"
               },
+              "work": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkAttribution"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "worktree_id": {
                 "type": "string"
               },
@@ -10757,6 +12183,115 @@
               "issues_truncated"
             ],
             "type": "object"
+          },
+          "WorkAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/WorkSource"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "WorkContext": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment_ref": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "native_project_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operation_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thread_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "turn_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "native_project_id",
+              "thread_id"
+            ],
+            "type": "object"
+          },
+          "WorkDiagnostic": {
+            "enum": [
+              "work_context_invalid",
+              "work_context_too_large",
+              "work_context_session_conflict"
+            ],
+            "type": "string"
+          },
+          "WorkSource": {
+            "enum": [
+              "environment",
+              "request"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -20659,10 +22194,34 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "presentation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RepositoryPresentation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "preview_requested": {
                 "type": "boolean"
               },
               "repository_id": {
+                "type": "string"
+              },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "root_path": {
+                "default": "",
                 "type": "string"
               }
             },
@@ -20785,6 +22344,30 @@
             ],
             "type": "string"
           },
+          "RepositoryPresentation": {
+            "additionalProperties": false,
+            "properties": {
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "icon": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "type": "object"
+          },
           "TaskKind": {
             "enum": [
               "goal",
@@ -20802,6 +22385,22 @@
               "dropped"
             ],
             "type": "string"
+          },
+          "TestRepositorySource": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22945,6 +24544,3144 @@
         "effect": "read",
         "idempotent": true,
         "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review prepare"
+          }
+        ]
+      },
+      "description": "Prepare bounded canonical usage and outcome evidence without scheduling work.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before_decision_seq": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "window_start_ms",
+          "window_end_ms"
+        ],
+        "title": "Prepare",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "before_decision_seq": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id",
+              "window_start_ms",
+              "window_end_ms"
+            ],
+            "title": "Prepare",
+            "type": "object"
+          },
+          "name": "review_prepare",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.prepare",
+      "outputSchema": {
+        "$defs": {
+          "CoverageState": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable",
+              "unobserved"
+            ],
+            "type": "string"
+          },
+          "Evidence": {
+            "additionalProperties": false,
+            "properties": {
+              "config_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "detail": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/$defs/EvidenceRef"
+              },
+              "source_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "work": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkAttribution"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "title",
+              "state",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "MeasuredTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "PhaseTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "ReviewUsage": {
+            "additionalProperties": false,
+            "properties": {
+              "activities": {
+                "items": {
+                  "$ref": "#/$defs/UsageActivity"
+                },
+                "type": "array"
+              },
+              "coverage": {
+                "$ref": "#/$defs/UsageCoverage"
+              },
+              "semantics": {
+                "$ref": "#/$defs/UsageSemantics"
+              },
+              "time": {
+                "$ref": "#/$defs/UsageTime"
+              },
+              "tools": {
+                "$ref": "#/$defs/UsageTools"
+              },
+              "totals": {
+                "$ref": "#/$defs/UsageTotals"
+              }
+            },
+            "required": [
+              "coverage",
+              "totals",
+              "activities",
+              "time",
+              "tools",
+              "semantics"
+            ],
+            "type": "object"
+          },
+          "ToolFamily": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "family": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "family",
+              "count"
+            ],
+            "type": "object"
+          },
+          "ToolOutcome": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "count"
+            ],
+            "type": "object"
+          },
+          "UsageActivity": {
+            "additionalProperties": false,
+            "properties": {
+              "activity": {
+                "type": "string"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "provenance": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "share": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "activity",
+              "total_tokens",
+              "operations",
+              "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "available_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "configured_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "contributing_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "database_schemas": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "events": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "freshest_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "has_gaps": {
+                "type": "boolean"
+              },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/CoverageState"
+              },
+              "taxonomy_versions": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "token_observations": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "state",
+              "has_gaps",
+              "configured_collectors",
+              "available_collectors",
+              "contributing_collectors",
+              "events",
+              "token_observations",
+              "unavailable_reasons",
+              "database_schemas",
+              "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageSemantics": {
+            "additionalProperties": false,
+            "properties": {
+              "coverage": {
+                "type": "string"
+              },
+              "time": {
+                "type": "string"
+              },
+              "tokens": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tokens",
+              "time",
+              "coverage"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageTime": {
+            "additionalProperties": false,
+            "properties": {
+              "execution_wall": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/PhaseTime"
+                },
+                "type": "array"
+              },
+              "request_to_delivery": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "summed_agent_active": {
+                "$ref": "#/$defs/MeasuredTime"
+              }
+            },
+            "required": [
+              "request_to_delivery",
+              "execution_wall",
+              "summed_agent_active",
+              "phases"
+            ],
+            "type": "object"
+          },
+          "UsageTools": {
+            "additionalProperties": false,
+            "properties": {
+              "families": {
+                "items": {
+                  "$ref": "#/$defs/ToolFamily"
+                },
+                "type": "array"
+              },
+              "outcomes": {
+                "items": {
+                  "$ref": "#/$defs/ToolOutcome"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcomes",
+              "families"
+            ],
+            "type": "object"
+          },
+          "UsageTotals": {
+            "additionalProperties": false,
+            "properties": {
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "model_requests": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_calls": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_requests",
+              "tool_calls",
+              "operations"
+            ],
+            "type": "object"
+          },
+          "WorkAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/WorkSource"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "WorkContext": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment_ref": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "native_project_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operation_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thread_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "turn_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "native_project_id",
+              "thread_id"
+            ],
+            "type": "object"
+          },
+          "WorkDiagnostic": {
+            "enum": [
+              "work_context_invalid",
+              "work_context_too_large",
+              "work_context_session_conflict"
+            ],
+            "type": "string"
+          },
+          "WorkSource": {
+            "enum": [
+              "environment",
+              "request"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "coverage_gaps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "type": "array"
+          },
+          "generated_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "interpretation_rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "next_before_decision_seq": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/$defs/EvidenceRef"
+            },
+            "type": "array"
+          },
+          "standing_decisions": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/$defs/ReviewUsage"
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "window_start_ms",
+          "window_end_ms",
+          "generated_at_ms",
+          "source_refs",
+          "coverage_gaps",
+          "usage",
+          "evidence",
+          "standing_decisions",
+          "interpretation_rules"
+        ],
+        "title": "Prepared",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review record"
+          }
+        ]
+      },
+      "description": "Append an evidence-backed review revision with optimistic concurrency.",
+      "inputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "record": {
+            "$ref": "#/$defs/ReviewRecord"
+          },
+          "record_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "record"
+        ],
+        "title": "Record",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Baseline": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidenceRefs": {
+                    "items": {
+                      "$ref": "#/$defs/EvidenceRef"
+                    },
+                    "type": "array"
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "missingMeasurements": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "evidenceRefs",
+                  "interpretation",
+                  "missingMeasurements"
+                ],
+                "type": "object"
+              },
+              "Comparison": {
+                "additionalProperties": false,
+                "properties": {
+                  "inputChangeReason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "narrative": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "narrative"
+                ],
+                "type": "object"
+              },
+              "Disposition": {
+                "enum": [
+                  "proposed",
+                  "applied",
+                  "retained",
+                  "reverted",
+                  "inconclusive",
+                  "unchanged"
+                ],
+                "type": "string"
+              },
+              "EvidenceKind": {
+                "enum": [
+                  "usage",
+                  "outcome",
+                  "decision",
+                  "run",
+                  "release"
+                ],
+                "type": "string"
+              },
+              "EvidenceRef": {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "$ref": "#/$defs/EvidenceKind"
+                  },
+                  "reference": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "reference"
+                ],
+                "type": "object"
+              },
+              "Observation": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidenceRefs": {
+                    "items": {
+                      "$ref": "#/$defs/EvidenceRef"
+                    },
+                    "type": "array"
+                  },
+                  "interpretation": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "$ref": "#/$defs/ObservationKind"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "interpretation",
+                  "evidenceRefs"
+                ],
+                "type": "object"
+              },
+              "ObservationKind": {
+                "enum": [
+                  "user_wait",
+                  "intentional_validation",
+                  "avoidable_work",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "OptimizationExperiment": {
+                "additionalProperties": false,
+                "properties": {
+                  "alternatives": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "baseline": {
+                    "$ref": "#/$defs/Baseline"
+                  },
+                  "chosenAction": {
+                    "type": "string"
+                  },
+                  "comparison": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Comparison"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "disposition": {
+                    "$ref": "#/$defs/Disposition"
+                  },
+                  "evidenceRefs": {
+                    "items": {
+                      "$ref": "#/$defs/EvidenceRef"
+                    },
+                    "type": "array"
+                  },
+                  "hypothesis": {
+                    "type": "string"
+                  },
+                  "observations": {
+                    "items": {
+                      "$ref": "#/$defs/Observation"
+                    },
+                    "type": "array"
+                  },
+                  "preservesQuality": {
+                    "type": "boolean"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "resultEvidenceRefs": {
+                    "items": {
+                      "$ref": "#/$defs/EvidenceRef"
+                    },
+                    "type": "array"
+                  },
+                  "rollbackCondition": {
+                    "type": "string"
+                  },
+                  "scopeRepoId": {
+                    "type": "string"
+                  },
+                  "successCriteria": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hypothesis",
+                  "evidenceRefs",
+                  "alternatives",
+                  "chosenAction",
+                  "baseline",
+                  "successCriteria",
+                  "rollbackCondition",
+                  "disposition",
+                  "resultEvidenceRefs",
+                  "scopeRepoId",
+                  "preservesQuality",
+                  "reason",
+                  "observations"
+                ],
+                "type": "object"
+              },
+              "ReviewRecord": {
+                "additionalProperties": false,
+                "properties": {
+                  "experiment": {
+                    "$ref": "#/$defs/OptimizationExperiment"
+                  },
+                  "outcomeId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "projectId": {
+                    "type": "string"
+                  },
+                  "repositoryId": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "windowEndMs": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "windowStartMs": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "workstreamId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "version",
+                  "repositoryId",
+                  "projectId",
+                  "windowStartMs",
+                  "windowEndMs",
+                  "experiment"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "record": {
+                "$ref": "#/$defs/ReviewRecord"
+              },
+              "record_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "record"
+            ],
+            "title": "Record",
+            "type": "object"
+          },
+          "name": "review_record",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.record",
+      "outputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "record": {
+            "$ref": "#/$defs/ReviewRecord"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "recorded_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reference",
+          "record_id",
+          "revision",
+          "recorded_at_ms",
+          "completed",
+          "record"
+        ],
+        "title": "Revision",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review list"
+          }
+        ]
+      },
+      "description": "Read bounded immutable review revisions.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "record_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "Show",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "record_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "title": "Show",
+            "type": "object"
+          },
+          "name": "review_show",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.show",
+      "outputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          },
+          "Revision": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "type": "boolean"
+              },
+              "record": {
+                "$ref": "#/$defs/ReviewRecord"
+              },
+              "record_id": {
+                "type": "string"
+              },
+              "recorded_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "reference",
+              "record_id",
+              "revision",
+              "recorded_at_ms",
+              "completed",
+              "record"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "records": {
+            "items": {
+              "$ref": "#/$defs/Revision"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review show"
+          }
+        ]
+      },
+      "description": "Read one exact immutable structured review revision.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reference"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "review_receipt",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.receipt",
+      "outputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "record": {
+            "$ref": "#/$defs/ReviewRecord"
+          },
+          "record_id": {
+            "type": "string"
+          },
+          "recorded_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reference",
+          "record_id",
+          "revision",
+          "recorded_at_ms",
+          "completed",
+          "record"
+        ],
+        "title": "Revision",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release evidence"
+          }
+        ]
+      },
+      "description": "Read an exact delivery receipt; qualification and verification time are server-derived.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "reference"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "release_evidence",
+          "transform": "identity"
+        }
+      ],
+      "name": "release.evidence",
+      "outputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "artifact",
+              "registry-package",
+              "local-executable",
+              "web-deployment"
+            ],
+            "type": "string"
+          },
+          "Qualification": {
+            "enum": [
+              "qualified",
+              "pending_external_evidence"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact": {
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "type": "string"
+          },
+          "check": {
+            "type": "string"
+          },
+          "checked_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "config_sha256": {
+            "type": "string"
+          },
+          "delivered_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "manifest_sha256": {
+            "type": "string"
+          },
+          "qualification": {
+            "$ref": "#/$defs/Qualification"
+          },
+          "qualified": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "release_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_metadata_sha256": {
+            "type": "string"
+          },
+          "source_sha256": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "verification_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "release_id",
+          "repository_id",
+          "worktree_id",
+          "kind",
+          "target",
+          "source_sha256",
+          "config_sha256",
+          "run_id",
+          "check",
+          "artifact",
+          "artifact_sha256",
+          "manifest_sha256",
+          "run_metadata_sha256",
+          "qualification",
+          "qualified",
+          "checked_at_ms"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release deliver-evidence"
+          }
+        ]
+      },
+      "description": "Attach retained delivery proof or explicitly pending external evidence.",
+      "inputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "artifact",
+              "registry-package",
+              "local-executable",
+              "web-deployment"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact": {
+            "type": "string"
+          },
+          "check": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "manifest_sha256": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "release_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "source_sha256": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "verification_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "release_id",
+          "path",
+          "run_id",
+          "check",
+          "artifact",
+          "manifest_sha256",
+          "source_sha256",
+          "target",
+          "kind"
+        ],
+        "title": "Deliver",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Kind": {
+                "enum": [
+                  "artifact",
+                  "registry-package",
+                  "local-executable",
+                  "web-deployment"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "manifest_sha256": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "release_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "source_sha256": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "verification_file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "release_id",
+              "path",
+              "run_id",
+              "check",
+              "artifact",
+              "manifest_sha256",
+              "source_sha256",
+              "target",
+              "kind"
+            ],
+            "title": "Deliver",
+            "type": "object"
+          },
+          "name": "release_deliver_evidence",
+          "transform": "identity"
+        }
+      ],
+      "name": "release.deliver_evidence",
+      "outputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "artifact",
+              "registry-package",
+              "local-executable",
+              "web-deployment"
+            ],
+            "type": "string"
+          },
+          "Qualification": {
+            "enum": [
+              "qualified",
+              "pending_external_evidence"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "artifact": {
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "type": "string"
+          },
+          "check": {
+            "type": "string"
+          },
+          "checked_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "config_sha256": {
+            "type": "string"
+          },
+          "delivered_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "manifest_sha256": {
+            "type": "string"
+          },
+          "qualification": {
+            "$ref": "#/$defs/Qualification"
+          },
+          "qualified": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "release_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "run_metadata_sha256": {
+            "type": "string"
+          },
+          "source_sha256": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "verification_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "worktree_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "receipt_id",
+          "release_id",
+          "repository_id",
+          "worktree_id",
+          "kind",
+          "target",
+          "source_sha256",
+          "config_sha256",
+          "run_id",
+          "check",
+          "artifact",
+          "artifact_sha256",
+          "manifest_sha256",
+          "run_metadata_sha256",
+          "qualification",
+          "qualified",
+          "checked_at_ms"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "release evidence-show"
+          }
+        ]
+      },
+      "description": "Read bounded immutable delivery evidence receipts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "release_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id"
+        ],
+        "title": "Show",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "release_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "release_id"
+            ],
+            "title": "Show",
+            "type": "object"
+          },
+          "name": "release_evidence_show",
+          "transform": "identity"
+        }
+      ],
+      "name": "release.evidence_show",
+      "outputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "artifact",
+              "registry-package",
+              "local-executable",
+              "web-deployment"
+            ],
+            "type": "string"
+          },
+          "Qualification": {
+            "enum": [
+              "qualified",
+              "pending_external_evidence"
+            ],
+            "type": "string"
+          },
+          "Receipt": {
+            "additionalProperties": false,
+            "properties": {
+              "access": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "artifact": {
+                "type": "string"
+              },
+              "artifact_sha256": {
+                "type": "string"
+              },
+              "check": {
+                "type": "string"
+              },
+              "checked_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "config_sha256": {
+                "type": "string"
+              },
+              "delivered_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "manifest_sha256": {
+                "type": "string"
+              },
+              "qualification": {
+                "$ref": "#/$defs/Qualification"
+              },
+              "qualified": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipt_id": {
+                "type": "string"
+              },
+              "release_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "run_metadata_sha256": {
+                "type": "string"
+              },
+              "source_sha256": {
+                "type": "string"
+              },
+              "target": {
+                "type": "string"
+              },
+              "verification_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "verified_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "receipt_id",
+              "release_id",
+              "repository_id",
+              "worktree_id",
+              "kind",
+              "target",
+              "source_sha256",
+              "config_sha256",
+              "run_id",
+              "check",
+              "artifact",
+              "artifact_sha256",
+              "manifest_sha256",
+              "run_metadata_sha256",
+              "qualification",
+              "qualified",
+              "checked_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/Receipt"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "receipts"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
         "scope": "repository"
       }
     },
@@ -27060,6 +31797,36 @@
               "string",
               "null"
             ]
+          },
+          "work": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorkContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "work_diagnostic": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorkDiagnostic"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "work_source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/WorkSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -27073,6 +31840,83 @@
           "human",
           "edge",
           "other"
+        ],
+        "type": "string"
+      },
+      "WorkContext": {
+        "additionalProperties": false,
+        "properties": {
+          "experiment_ref": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "native_project_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "operation_id": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome_id": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thread_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "turn_id": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "format": "uint8",
+            "maximum": 1,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "workstream_id": {
+            "maxLength": 256,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "version",
+          "native_project_id",
+          "thread_id"
+        ],
+        "type": "object"
+      },
+      "WorkDiagnostic": {
+        "enum": [
+          "work_context_invalid",
+          "work_context_too_large",
+          "work_context_session_conflict"
+        ],
+        "type": "string"
+      },
+      "WorkSource": {
+        "enum": [
+          "environment",
+          "request"
         ],
         "type": "string"
       }

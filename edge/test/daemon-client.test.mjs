@@ -7,10 +7,13 @@ import { test } from 'node:test';
 
 import { createDaemonClient } from '../lib/daemon-client.mjs';
 
-async function fixture(respond, invoke, { respondOnFrame = false } = {}) {
+async function fixture(respond, invoke, { respondOnFrame = false, timeoutMs = 1000 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-daemon-client-'));
   const socketPath = path.join(directory, 'daemon.sock');
-  const server = net.createServer((socket) => {
+  const sockets = new Set();
+  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
     const chunks = [];
     let responded = false;
     socket.on('data', (chunk) => {
@@ -26,8 +29,9 @@ async function fixture(respond, invoke, { respondOnFrame = false } = {}) {
   });
   await new Promise((resolve) => server.listen(socketPath, resolve));
   try {
-    return await invoke(createDaemonClient({ socketPath, timeoutMs: 1000 }));
+    return await invoke(createDaemonClient({ socketPath, timeoutMs }));
   } finally {
+    for (const socket of sockets) socket.destroy();
     await new Promise((resolve) => server.close(resolve));
     await fs.rm(directory, { recursive: true, force: true });
   }
@@ -94,4 +98,21 @@ test('event wait remains open beyond the ordinary timeout and supports cancellat
     }, { respondOnFrame: true }),
     /cancelled/,
   );
+});
+
+test('deployment mutations wait for the result while ordinary reads retain their deadline', async () => {
+  const delayed = (socket, raw) => {
+    const request = JSON.parse(raw.subarray(0, -1));
+    setTimeout(() => socket.end(`${JSON.stringify({ protocol: 2, id: request.id, ok: true, data: {} })}\n`), 40);
+  };
+  for (const operation of ['apply', 'rollback', 'start', 'stop', 'restart', 'remove']) {
+    const result = await fixture(delayed, (client) => client.call(`deployment.${operation}`), { timeoutMs: 10 });
+    assert.equal(result.ok, true);
+  }
+  await assert.rejects(fixture(delayed, (client) => client.call('deployment.status'), { timeoutMs: 10 }), /timeout/);
+  const cancellation = new AbortController();
+  await assert.rejects(fixture(delayed, (client) => {
+    setTimeout(() => cancellation.abort(), 20);
+    return client.call('deployment.apply', {}, null, { signal: cancellation.signal });
+  }, { timeoutMs: 10 }), /cancelled/);
 });

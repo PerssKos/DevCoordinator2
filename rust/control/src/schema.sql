@@ -14,6 +14,13 @@ CREATE TABLE IF NOT EXISTS repositories (
   archive_note TEXT,
   merged_into_repository_id TEXT
 );
+CREATE TABLE IF NOT EXISTS repository_presentation (
+  repository_id TEXT PRIMARY KEY REFERENCES repositories(repository_id),
+  display_name TEXT,
+  icon TEXT,
+  updated_at TEXT NOT NULL,
+  updated_by_uid INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS worktrees (
   worktree_id TEXT PRIMARY KEY,
   repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
@@ -283,6 +290,37 @@ CREATE TABLE IF NOT EXISTS decisions (
   UNIQUE(repository_id, seq)
 );
 CREATE INDEX IF NOT EXISTS decisions_repository_aspect ON decisions(repository_id, aspect);
+CREATE TABLE IF NOT EXISTS review_records (
+  record_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision > 0),
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  window_start_ms INTEGER NOT NULL,
+  window_end_ms INTEGER NOT NULL CHECK(window_end_ms > window_start_ms),
+  record_json TEXT NOT NULL CHECK(length(record_json) <= 8192),
+  actor TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  PRIMARY KEY(record_id, revision)
+);
+CREATE INDEX IF NOT EXISTS review_records_repository ON review_records(repository_id);
+CREATE TRIGGER IF NOT EXISTS review_records_no_update BEFORE UPDATE ON review_records BEGIN
+  SELECT RAISE(ABORT, 'review revisions are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS review_records_no_delete BEFORE DELETE ON review_records BEGIN
+  SELECT RAISE(ABORT, 'review revisions are permanent');
+END;
+CREATE TABLE IF NOT EXISTS release_evidence (
+  receipt_id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL REFERENCES releases(release_id),
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  receipt_json TEXT NOT NULL CHECK(length(receipt_json) <= 8192)
+);
+CREATE INDEX IF NOT EXISTS release_evidence_release ON release_evidence(release_id);
+CREATE TRIGGER IF NOT EXISTS release_evidence_no_update BEFORE UPDATE ON release_evidence BEGIN
+  SELECT RAISE(ABORT, 'delivery receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS release_evidence_no_delete BEFORE DELETE ON release_evidence BEGIN
+  SELECT RAISE(ABORT, 'delivery receipts are permanent');
+END;
 CREATE UNIQUE INDEX IF NOT EXISTS decisions_ref ON decisions(repository_id, ref) WHERE ref IS NOT NULL;
 CREATE TABLE IF NOT EXISTS decision_summaries (
   repository_id TEXT NOT NULL REFERENCES repositories(repository_id),

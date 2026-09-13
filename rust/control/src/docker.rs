@@ -9,8 +9,10 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -32,6 +34,7 @@ pub enum DockerErrorKind {
     CliUnavailable,
     SpawnFailed,
     TimedOut,
+    Cancelled,
     CommandFailed,
     InvalidOutput,
     InvalidTarget,
@@ -50,6 +53,8 @@ pub enum DockerError {
     },
     #[error("docker {operation} timed out")]
     Timeout { operation: String },
+    #[error("docker {operation} cancelled")]
+    Cancelled { operation: String },
     #[error("{0}")]
     Command(String),
     #[error("{0}")]
@@ -66,6 +71,7 @@ impl DockerError {
             Self::CliUnavailable => DockerErrorKind::CliUnavailable,
             Self::Spawn { .. } => DockerErrorKind::SpawnFailed,
             Self::Timeout { .. } => DockerErrorKind::TimedOut,
+            Self::Cancelled { .. } => DockerErrorKind::Cancelled,
             Self::Command(_) => DockerErrorKind::CommandFailed,
             Self::InvalidOutput(_) => DockerErrorKind::InvalidOutput,
             Self::InvalidTarget(_) => DockerErrorKind::InvalidTarget,
@@ -223,6 +229,7 @@ pub struct DockerInvocation {
     environment: BTreeMap<OsString, OsString>,
     timeout: Duration,
     output_log: Option<Arc<Mutex<File>>>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl DockerInvocation {
@@ -238,6 +245,7 @@ impl DockerInvocation {
             environment: BTreeMap::new(),
             timeout,
             output_log: None,
+            cancellation: None,
         })
     }
 
@@ -248,6 +256,11 @@ impl DockerInvocation {
 
     pub fn with_output_log(mut self, output_log: Option<Arc<Mutex<File>>>) -> Self {
         self.output_log = output_log;
+        self
+    }
+
+    pub fn with_cancellation(mut self, cancellation: Option<Arc<AtomicBool>>) -> Self {
+        self.cancellation = cancellation;
         self
     }
 
@@ -342,6 +355,13 @@ fn execute_process(
         ));
     }
     let operation = operation_name(&invocation.args);
+    if invocation
+        .cancellation
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        return Err(DockerError::Cancelled { operation });
+    }
     let mut command = Command::new(executable);
     command
         .args(&invocation.args)
@@ -350,6 +370,7 @@ fn execute_process(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command.process_group(0);
     if let Some(cwd) = invocation.cwd {
         command.current_dir(cwd);
     }
@@ -379,40 +400,89 @@ fn execute_process(
     let pid = child.id();
     let (sender, receiver) = mpsc::sync_channel(1);
     let waiter = thread::spawn(move || {
-        let _ = sender.send(child.wait());
+        // Observe completion without reaping. The owner below keeps the child
+        // PID/process-group identity reserved through cancellation and cleanup.
+        let result = loop {
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                break Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                break Err(error);
+            }
+        };
+        let _ = sender.send(result);
     });
-    let status = match receiver.recv_timeout(invocation.timeout) {
-        Ok(result) => result.map_err(|source| DockerError::Spawn {
-            operation: "wait for docker command",
-            source,
-        })?,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            // SAFETY: this PID belongs to the unreaped child moved into the
-            // waiter thread. Sending SIGKILL cannot target a reused PID while
-            // that child still exists or remains a zombie.
-            unsafe {
-                libc::kill(pid.cast_signed(), libc::SIGKILL);
+    let deadline = Instant::now() + invocation.timeout;
+    let status = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let interval = if invocation.cancellation.is_some() {
+            remaining.min(READINESS_POLL)
+        } else {
+            remaining
+        };
+        match receiver.recv_timeout(interval) {
+            Ok(result) => {
+                result.map_err(|source| DockerError::Spawn {
+                    operation: "wait for docker command",
+                    source,
+                })?;
+                break child.wait().map_err(|source| DockerError::Spawn {
+                    operation: "reap docker command",
+                    source,
+                })?;
             }
-            let _ = receiver.recv();
-            let _ = waiter.join();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(DockerError::Timeout { operation });
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            // The waiter disappeared before reporting a status. Preserve the
-            // same exact child target and make a best effort to terminate it;
-            // the waiter owned and reaped the Child if it reached `wait`.
-            unsafe {
-                libc::kill(pid.cast_signed(), libc::SIGKILL);
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let cancelled = invocation
+                    .cancellation
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::Acquire));
+                if !cancelled && Instant::now() < deadline {
+                    continue;
+                }
+                // SAFETY: this PID belongs to the unreaped child moved into the
+                // waiter thread. Sending SIGKILL cannot target a reused PID while
+                // that child still exists or remains a zombie.
+                unsafe {
+                    libc::kill(-pid.cast_signed(), libc::SIGKILL);
+                }
+                let _ = receiver.recv();
+                let _ = waiter.join();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(if cancelled {
+                    DockerError::Cancelled { operation }
+                } else {
+                    DockerError::Timeout { operation }
+                });
             }
-            let _ = waiter.join();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(DockerError::Spawn {
-                operation: "wait for docker command",
-                source: io::Error::other("Docker waiter stopped unexpectedly"),
-            });
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // The waiter disappeared before reporting a status. Preserve the
+                // same exact child target and make a best effort to terminate it;
+                // the owner has not reaped the Child, so the group identity is
+                // still reserved even if the observer thread failed.
+                unsafe {
+                    libc::kill(-pid.cast_signed(), libc::SIGKILL);
+                }
+                let _ = waiter.join();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(DockerError::Spawn {
+                    operation: "wait for docker command",
+                    source: io::Error::other("Docker waiter stopped unexpectedly"),
+                });
+            }
         }
     };
     waiter.join().map_err(|_| DockerError::Spawn {
@@ -1238,6 +1308,17 @@ pub trait DockerControl: Send + Sync {
         timeout: Duration,
         output_log: Option<Arc<Mutex<File>>>,
     ) -> Result<DockerOutput, DockerError> {
+        self.compose_invoke_cancellable(context, arguments, timeout, output_log, None)
+    }
+
+    fn compose_invoke_cancellable(
+        &self,
+        context: &ComposeContext,
+        arguments: &[String],
+        timeout: Duration,
+        output_log: Option<Arc<Mutex<File>>>,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<DockerOutput, DockerError> {
         context.validate()?;
         let mut argv = vec![
             "compose".into(),
@@ -1255,6 +1336,7 @@ pub trait DockerControl: Send + Sync {
         argv.extend(arguments.iter().map(OsString::from));
         self.invoke(
             DockerInvocation::new(argv, timeout)?
+                .with_cancellation(cancellation)
                 .with_cwd(context.cwd.clone())
                 .with_output_log(output_log),
         )
@@ -1302,6 +1384,7 @@ pub trait DockerControl: Send + Sync {
         finite_services: &[String],
         build: bool,
         output_log: Option<Arc<Mutex<File>>>,
+        cancellation: Option<Arc<AtomicBool>>,
     ) -> Result<(), DockerError> {
         validate_services(services)?;
         validate_services(finite_services)?;
@@ -1322,7 +1405,13 @@ pub trait DockerControl: Send + Sync {
         if !finite_services.is_empty() {
             let mut reset = vec!["rm".into(), "--stop".into(), "--force".into()];
             reset.extend(finite_services.iter().cloned());
-            let output = self.compose_invoke(context, &reset, Duration::from_secs(120))?;
+            let output = self.compose_invoke_cancellable(
+                context,
+                &reset,
+                Duration::from_secs(120),
+                None,
+                cancellation.clone(),
+            )?;
             if !output.success() {
                 return Err(first_error(
                     &output,
@@ -1336,8 +1425,13 @@ pub trait DockerControl: Send + Sync {
             up.push("--build".into());
         }
         up.extend(services.iter().cloned());
-        let output =
-            self.compose_invoke_logged(context, &up, Duration::from_secs(1_800), output_log)?;
+        let output = self.compose_invoke_cancellable(
+            context,
+            &up,
+            Duration::from_secs(1_800),
+            output_log,
+            cancellation,
+        )?;
         if output.success() {
             Ok(())
         } else {
@@ -1536,6 +1630,9 @@ pub trait DockerControl: Send + Sync {
         )
     }
 
+    // Keep the existing explicit readiness inputs together with its owned
+    // cancellation signal; callers must not infer any of these identities.
+    #[allow(clippy::too_many_arguments)]
     fn compose_ready(
         &self,
         project: &str,
@@ -1544,6 +1641,7 @@ pub trait DockerControl: Send + Sync {
         completions: &BTreeSet<String>,
         desired_states: &BTreeMap<String, RuntimeState>,
         timeout: Duration,
+        cancellation: Option<Arc<AtomicBool>>,
     ) -> Result<(bool, String, ComposeState), DockerError> {
         let deadline = Instant::now() + timeout;
         let mut state = self.compose_state(
@@ -1553,7 +1651,30 @@ pub trait DockerControl: Send + Sync {
             completions,
             desired_states,
         )?;
-        while state.state == RuntimeState::Starting && Instant::now() < deadline {
+        // An ordinary failed finite service does not invalidate independent
+        // calculations that are still running in this same Compose project.
+        while (state.state == RuntimeState::Starting
+            || state
+                .services
+                .iter()
+                .any(|service| service.role == "finite" && service.state == RuntimeState::Starting)
+                && state
+                    .services
+                    .iter()
+                    .filter(|service| service.role != "finite")
+                    .all(|service| {
+                        !matches!(service.state, RuntimeState::Failed | RuntimeState::Missing)
+                    }))
+            && Instant::now() < deadline
+        {
+            if cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                return Err(DockerError::Cancelled {
+                    operation: "finite workload readiness".into(),
+                });
+            }
             thread::sleep(READINESS_POLL);
             state = self.compose_state(
                 project,
@@ -1573,7 +1694,11 @@ pub trait DockerControl: Send + Sync {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        Ok((state.state == RuntimeState::Running, detail, state))
+        Ok((
+            matches!(state.state, RuntimeState::Running | RuntimeState::Completed),
+            detail,
+            state,
+        ))
     }
 
     fn compose_logs(
@@ -2016,7 +2141,14 @@ fn compose_state<D: DockerControl + ?Sized>(
             .iter()
             .filter(|detail| detail.role == "finite")
             .collect::<Vec<_>>();
-        if !running.is_empty()
+        if running.is_empty()
+            && !finite.is_empty()
+            && finite
+                .iter()
+                .all(|detail| detail.state == RuntimeState::Completed)
+        {
+            RuntimeState::Completed
+        } else if !running.is_empty()
             && running
                 .iter()
                 .all(|detail| detail.state == RuntimeState::Running)
@@ -2424,6 +2556,36 @@ mod tests {
     }
 
     #[test]
+    fn all_finite_compose_workload_is_completed_not_running() {
+        for (status, exit_code, expected) in [
+            ("exited", 0, RuntimeState::Completed),
+            ("exited", 1, RuntimeState::Failed),
+            ("running", 0, RuntimeState::Starting),
+        ] {
+            let container = id('d');
+            let info = serde_json::json!({
+                "State":{"Status":status,"ExitCode":exit_code},
+                "Config":{"Labels":{"com.docker.compose.service":"probe"}}
+            });
+            let fake = FakeDocker::new(vec![
+                output(0, format!("{container}\n"), ""),
+                output(0, info.to_string(), ""),
+            ]);
+            let state = fake
+                .compose_state(
+                    "dc2-finite-probe",
+                    &["probe".into()],
+                    &["probe".into()],
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                )
+                .expect("finite state");
+            assert_eq!(state.state, expected);
+            assert_ne!(state.state, RuntimeState::Running);
+        }
+    }
+
+    #[test]
     fn compose_up_and_state_preserve_finite_completion_and_selected_service_control() {
         let temporary = tempdir().expect("tempdir");
         let context = ComposeContext {
@@ -2461,6 +2623,7 @@ mod tests {
             &["bootstrap".into()],
             true,
             None,
+            None,
         )
         .expect("compose up");
         let state = fake
@@ -2495,6 +2658,92 @@ mod tests {
             Some(api.as_str())
         );
         assert_eq!(calls[0].cwd.as_deref(), Some(temporary.path()));
+    }
+
+    #[test]
+    fn compose_readiness_collects_finite_siblings_after_ordinary_failure() {
+        let failed = id('a');
+        let slow = id('b');
+        let evidence = id('c');
+        let info = |service: &str, status: &str, code: i32| {
+            serde_json::json!({
+                "State": {"Status": status, "ExitCode": code},
+                "Config": {"Labels": {"com.docker.compose.service": service}}
+            })
+            .to_string()
+        };
+        let ids = format!("{failed}\n{slow}\n{evidence}\n");
+        let fake = FakeDocker::new(vec![
+            output(0, ids.clone(), ""),
+            output(0, info("failed", "exited", 1), ""),
+            output(0, info("slow", "running", 0), ""),
+            output(0, info("evidence", "running", 0), ""),
+            output(0, ids, ""),
+            output(0, info("failed", "exited", 1), ""),
+            output(0, info("slow", "exited", 0), ""),
+            output(0, info("evidence", "running", 0), ""),
+        ]);
+        let (ready, _, state) = fake
+            .compose_ready(
+                "dc2-d1-stack",
+                &["failed".into(), "slow".into(), "evidence".into()],
+                &["failed".into(), "slow".into()],
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                Duration::from_secs(2),
+                None,
+            )
+            .expect("settled result");
+        assert!(!ready);
+        assert_eq!(state.state, RuntimeState::Failed);
+        assert_eq!(state.completion_candidates.len(), 1);
+        assert_eq!(state.completion_candidates[0].service, "slow");
+        assert!(state.services.iter().any(|service| service.name == "evidence" && service.state == RuntimeState::Running));
+        assert_eq!(fake.calls().len(), 8);
+    }
+
+    #[test]
+    fn cancellation_stops_the_owned_command_group_and_preserves_output() {
+        let temporary = tempdir().expect("tempdir");
+        let executable = temporary.path().join("docker");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nsleep 30 &\nprintf 'ready\\n'\nwait\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let log_path = temporary.path().join("private.log");
+        let log = Arc::new(Mutex::new(File::create(&log_path).unwrap()));
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let invocation = DockerInvocation::new(vec!["version".into()], Duration::from_secs(45))
+            .unwrap()
+            .with_output_log(Some(log))
+            .with_cancellation(Some(cancellation.clone()));
+        let handle = thread::spawn(move || DockerCli::new(executable).invoke(invocation));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while std::fs::metadata(&log_path).unwrap().len() == 0 {
+            assert!(Instant::now() < deadline, "fixture did not start");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let stopped = Instant::now();
+        cancellation.store(true, Ordering::Release);
+        let error = match handle.join().unwrap() {
+            Ok(_) => panic!("cancellation expected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), DockerErrorKind::Cancelled);
+        assert!(
+            stopped.elapsed() < Duration::from_secs(3),
+            "a descendant retained the output pipe"
+        );
+        assert_eq!(std::fs::read_to_string(log_path).unwrap(), "ready\n");
+        let cancelled = DockerInvocation::new(vec!["version".into()], Duration::from_secs(1))
+            .unwrap()
+            .with_cancellation(Some(cancellation));
+        assert!(matches!(
+            DockerCli::new("/missing/cancelled-fixture").invoke(cancelled),
+            Err(DockerError::Cancelled { .. })
+        ));
     }
 
     #[test]

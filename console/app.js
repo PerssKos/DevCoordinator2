@@ -39,6 +39,12 @@ const state = {
   evidenceColor: '#f59e0b',
   evidenceZoom: 1,
   evidenceDraftMarks: [],
+  evidenceDraftBody: '',
+  evidenceDraftKey: null,
+  evidenceDrafts: new Map(),
+  evidenceSavingKey: null,
+  evidenceComposerDismissed: false,
+  evidencePendingLabel: null,
   evidenceUndo: [],
   evidenceRedo: [],
   evidenceSelectedMarkId: null,
@@ -110,6 +116,7 @@ function normalizedProjects(projects) {
 }
 
 function projectPicker(projects, currentId, hrefFor, pickerId) {
+  if (workspace.active) return '';
   const options = normalizedProjects(projects);
   const current = options.find((project) => project.repository_id === currentId)
     || { repository_id: currentId, display_name: 'Current project' };
@@ -239,9 +246,21 @@ async function api(operation, params = {}, abortable = true) {
   if (res.status === 401) { location.href = `/auth/login?rt=${encodeURIComponent(location.pathname + location.hash)}`; throw new ApiError('unauthenticated', 'sign in'); }
   const body = await res.json().catch(() => ({ ok: false, error: { code: 'bad_response', message: `HTTP ${res.status}` } }));
   if (!body.ok) throw new ApiError(body.error?.code || 'error', body.error?.message || 'request failed');
+  if (operation === 'test.list' && !params.after_worktree_id && !params.limit) {
+    const result = body.data;
+    const seen = new Set();
+    while (result.next_worktree_id) {
+      const cursor = result.next_worktree_id;
+      if (seen.has(cursor)) throw new ApiError('bad_response', 'Test list pagination did not advance');
+      seen.add(cursor);
+      const page = await api(operation, { ...params, after_worktree_id: cursor }, abortable);
+      result.runs.push(...page.runs);
+      result.next_worktree_id = page.next_worktree_id;
+    }
+  }
   return body.data;
 }
-async function history(kind, id, metric, rangeKey) {
+async function metricHistory(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
   return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });
 }
@@ -254,7 +273,7 @@ function stateBlock(kind, text) {
   return `<div class="notice muted">${esc(text)}</div>`;
 }
 function currentDestinationHeading() {
-  const [, view, arg] = (location.hash || '#/deployments').slice(1).split('/');
+  const [, view, arg] = (location.hash || '#/plan').split('?')[0].slice(1).split('/');
   const destinations = {
     deployments: ['Deployments', '#/deployments'], plan: ['Plan', '#/plan'],
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'],
@@ -271,6 +290,7 @@ function guard(fn) {
     try { return await fn(...args); } catch (error) {
       if (error.code === 'stale') return null; // another view took over
       if (error.code === 'permission_denied') main.innerHTML = currentDestinationHeading() + stateBlock('denied', error.message);
+      else if (['test_evidence_expired', 'test_evidence_not_found'].includes(error.code)) main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No visual evidence is available for this run. It may have expired.');
       else if (error.code !== 'unauthenticated') main.innerHTML = currentDestinationHeading() + stateBlock('error', error.message);
       return null;
     }
@@ -322,9 +342,10 @@ function setupTopNavigation() {
   const desktop = window.matchMedia('(min-width: 1241px)');
   desktop.addEventListener('change', (event) => { if (event.matches) setOpen(false, false); });
 }
-function lifecycleButtons(id, component, cls = 'btn btn-small', state = null) {
+function lifecycleButtons(id, component, cls = 'btn btn-small', deploymentState = null) {
   const args = component ? { deployment_id: id, component } : { deployment_id: id };
-  const blocked = state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
+  const canOperate = state.who?.administrator || ['operator', 'administrator'].includes(state.who?.grants?.[id]);
+  const blocked = !canOperate ? ' disabled aria-disabled="true" title="Operator access required"' : deploymentState === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
   return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'${blocked}>${a}</button>`).join('');
 }
 
@@ -625,6 +646,14 @@ function bindDeploymentCollapsibles(root) {
 
 const viewDeployments = guard(async () => {
   main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}${skeleton(8)}</section>`;
+  if (workspace.active) {
+    const result = await api('deployment.list', {});
+    const deployments = result.deployments.filter(workspace.matches);
+    main.innerHTML = `<section class="deployments-dashboard">${pageHeading('Deployments', '#/deployments')}${deployments.length ? `<div class="deployment-records">${deployments.map((deployment) => deploymentRecord(deployment, state.who?.administrator)).join('')}</div>` : stateBlock('empty', 'No deployments have been applied for this repository.')}</section>`;
+    bind(main);
+    bindDomainButtons(main, deployments);
+    return;
+  }
   const [deploymentResult, planResult, progressResult, usageResult, testsResult, healthResult] = await Promise.all([
     api('deployment.list', {}),
     optionalDashboardRead('plan.overview', {}),
@@ -758,8 +787,8 @@ const viewDeployment = guard(async (id) => {
       .filter(Boolean);
     const usage = await Promise.all(subjects.map(async (s) => {
       const [cpu, mem] = await Promise.all([
-        history(s.kind, s.sid, 'cpu_percent', state.usageRange),
-        history(s.kind, s.sid, 'memory_bytes', state.usageRange)]);
+        metricHistory(s.kind, s.sid, 'cpu_percent', state.usageRange),
+        metricHistory(s.kind, s.sid, 'memory_bytes', state.usageRange)]);
       return `<div class="chartpair"><h3>${esc(s.name)}</h3>${chart(cpu.points, pct, 'CPU')}${chart(mem.points, bytes, 'Memory')}</div>`;
     }));
     $('#usage').innerHTML = usage.length ? usage.join('') : '<p class="muted">No measured components.</p>';
@@ -1215,12 +1244,147 @@ function resetEvidenceImages() {
 }
 
 function resetEvidenceDraft() {
+  state.evidencePendingLabel = null;
+  $('.evidence-label-editor', main)?.remove();
+  state.evidenceComposerDismissed = false;
+  state.evidenceDrafts.delete(state.evidenceDraftKey);
+  state.evidenceDraftBody = '';
   state.evidenceDraftMarks = [];
   state.evidenceUndo = [];
   state.evidenceRedo = [];
   state.evidenceSelectedMarkId = null;
   state.evidenceSelectedFeedbackId = null;
-  state.evidenceZoom = 1;
+}
+
+function evidenceMarkId() {
+  return `mark-${crypto.getRandomValues(new Uint32Array(2)).join('-')}`;
+}
+
+function rememberEvidenceDraft() {
+  if (!state.evidenceDraftKey) return;
+  state.evidenceDrafts.set(state.evidenceDraftKey, {
+    marks: cloneEvidenceMarks(state.evidenceDraftMarks), body: state.evidenceDraftBody,
+    undo: state.evidenceUndo, redo: state.evidenceRedo, zoom: state.evidenceZoom, label: state.evidencePendingLabel,
+  });
+}
+
+function activateEvidenceDraft(imageId) {
+  const key = `${state.evidenceRunId}:${imageId || ''}`;
+  if (state.evidenceDraftKey === key) return;
+  rememberEvidenceDraft();
+  const draft = state.evidenceDrafts.get(key);
+  state.evidenceDraftKey = key;
+  state.evidenceComposerDismissed = false;
+  state.evidenceDraftMarks = cloneEvidenceMarks(draft?.marks || []);
+  state.evidenceDraftBody = draft?.body || '';
+  state.evidencePendingLabel = draft?.label || null;
+  $('.evidence-label-editor', main)?.remove();
+  state.evidenceUndo = draft?.undo || [];
+  state.evidenceRedo = draft?.redo || [];
+  state.evidenceZoom = draft?.zoom || 1;
+  state.evidenceSelectedMarkId = null;
+  state.evidenceSelectedFeedbackId = null;
+  $('#evidence-composer', main)?.remove();
+}
+
+function revealEvidenceDiscussion() {
+  evidenceLayoutSession?.showDetails();
+  $('.evidence-page', main)?.classList.add('inspector-open');
+  refreshEvidenceInspector();
+  requestAnimationFrame(() => {
+    const discussion = $('.evidence-thread', main);
+    discussion?.scrollIntoView({ block: 'nearest' });
+    $('textarea', discussion || main)?.focus({ preventScroll: true });
+  });
+}
+
+function ensureEvidenceComposer() {
+  let composer = $('#evidence-composer', main);
+  if (composer) return composer;
+  const page = $('.evidence-page', main);
+  if (!page) return null;
+  composer = document.createElement('section');
+  composer.id = 'evidence-composer';
+  composer.className = 'evidence-composer';
+  composer.hidden = true;
+  composer.setAttribute('role', 'dialog');
+  composer.setAttribute('aria-labelledby', 'evidence-compose-title');
+  composer.innerHTML = `<h2 id="evidence-compose-title">New feedback</h2><form id="evidence-feedback-create"><label class="f">Suggestion<textarea name="body" rows="3" minlength="3" maxlength="2000" required placeholder="Describe what should change">${esc(state.evidenceDraftBody)}</textarea></label><p id="evidence-feedback-error" role="alert" hidden></p><div class="actions"><button class="btn" type="button" data-evidence-cancel>Cancel</button><button class="btn btn-primary" type="submit" disabled>Create feedback task</button></div></form>`;
+  $('#evidence-scroll', page).appendChild(composer);
+  composer.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault(); state.evidenceComposerDismissed = true; updateEvidenceToolbar();
+    $('#evidence-canvas', main)?.focus({ preventScroll: true });
+  });
+  const form = $('form', composer);
+  const requirement = document.createElement('p');
+  requirement.id = 'evidence-feedback-requirement'; requirement.className = 'muted'; requirement.hidden = true;
+  form.insertBefore(requirement, $('.actions', form));
+  form.addEventListener('input', () => {
+    state.evidenceDraftBody = form.elements.body.value;
+    $('#evidence-feedback-error', form).hidden = true;
+    updateEvidenceToolbar();
+  });
+  $('[data-evidence-cancel]', composer).addEventListener('click', () => {
+    resetEvidenceDraft(); form.elements.body.value = '';
+    updateEvidenceToolbar(); redrawEvidenceCanvas();
+    $('#evidence-canvas', main)?.focus({ preventScroll: true });
+  });
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const { screenshot } = currentEvidenceSelection();
+    const body = state.evidenceDraftBody.trim();
+    if (!screenshot || body.length < 3 || !state.evidenceDraftMarks.length || state.evidenceSavingKey || state.evidencePendingLabel) return;
+    const key = state.evidenceDraftKey;
+    state.evidenceSavingKey = key;
+    updateEvidenceToolbar();
+    let failure;
+    const result = await evidenceMutation(event.submitter, 'test.evidence.feedback.create', {
+      image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
+    }, error => { failure = error; });
+    state.evidenceSavingKey = null;
+    if (result) {
+      state.evidenceDrafts.delete(key);
+      if (state.evidenceDraftKey === key) {
+        resetEvidenceDraft(); form.elements.body.value = '';
+        state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
+        revealEvidenceDiscussion(); redrawEvidenceCanvas(); updateEvidencePageStatus();
+      }
+      toast('Feedback task created', 'ok');
+    } else if (state.evidenceDraftKey === key) {
+      const error = $('#evidence-feedback-error', form);
+      error.textContent = `Could not confirm the save: ${failure?.message || 'the request failed'}. Your comment and marks are still here.`;
+      error.hidden = false;
+      openEvidenceComposer(undefined, false);
+    }
+    updateEvidenceToolbar();
+  });
+  return composer;
+}
+
+function openEvidenceComposer(point, focus = true) {
+  state.evidenceComposerDismissed = false;
+  const composer = ensureEvidenceComposer();
+  if (!composer) return;
+  composer.hidden = false;
+  const scroll = $('#evidence-scroll', main);
+  const imageArea = scroll.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 24, imageArea.width - 16);
+  composer.style.width = `${width}px`;
+  const canvas = $('#evidence-canvas', main)?.getBoundingClientRect();
+  const anchorX = canvas && point ? canvas.left + point.x * canvas.width : window.innerWidth;
+  const anchorY = canvas && point ? canvas.top + point.y * canvas.height : window.innerHeight;
+  const height = composer.getBoundingClientRect().height;
+  const leftEdge = Math.max(12, imageArea.left + 8);
+  const rightEdge = Math.min(innerWidth - 12, imageArea.right - 8);
+  const topEdge = Math.max(12, imageArea.top + 8);
+  const bottomEdge = Math.min(innerHeight - 12, imageArea.bottom - 8);
+  const left = anchorX + width + 24 < rightEdge ? anchorX + 20 : anchorX - width - 20;
+  const top = anchorY + height + 24 < bottomEdge ? anchorY + 20 : anchorY - height - 20;
+  composer.style.maxHeight = `${Math.max(180, bottomEdge - topEdge)}px`;
+  composer.style.left = `${Math.max(leftEdge, Math.min(rightEdge - width, left)) - imageArea.left + scroll.scrollLeft}px`;
+  composer.style.top = `${Math.max(topEdge, Math.min(bottomEdge - height, top)) - imageArea.top + scroll.scrollTop}px`;
+  if (focus) $('textarea', composer)?.focus({ preventScroll: true });
 }
 
 function evidenceStepLabel(value) {
@@ -1381,7 +1545,7 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
   const automatic = `<section class="evidence-inspector-section"><h2>Automated findings <span>${findings.length}</span></h2>${findings.length ? `<ul class="evidence-findings">${findings.map((finding) => `<li class="${esc(finding.severity)}"><button type="button" data-evidence-finding="${esc(finding.rule)}"><i></i><span><strong>${esc(evidenceFindingLabel(finding.rule))}</strong><small>${esc(finding.severity)}</small></span></button></li>`).join('')}</ul><p class="muted evidence-finding-note" id="evidence-finding-note">Choose a finding to return focus to its capture.</p>` : '<p class="muted">No automatic visual findings for this capture.</p>'}</section>`;
   const threadList = `<section class="evidence-inspector-section evidence-annotations"><h2>Annotations <span>${threads.length}</span></h2>${threads.length ? threads.map((thread, index) => `<button type="button" class="evidence-thread-summary${selected?.feedback_id === thread.feedback_id ? ' active' : ''}" data-evidence-feedback="${esc(thread.feedback_id)}"><i>${index + 1}</i><span><strong>${esc(thread.comments[0]?.body || 'Visual feedback')}</strong><small>${esc(thread.state)} · ${esc(thread.author)}</small></span></button>`).join('') : '<p class="muted">No feedback on this screenshot yet.</p>'}</section>`;
   if (!selected) {
-    return `${capture}${automatic}${threadList}<section class="evidence-inspector-section evidence-compose"><h2>New feedback</h2><form id="evidence-feedback-create"><label class="f">Suggestion<textarea name="body" rows="4" maxlength="2000" placeholder="Describe what should change"></textarea></label><p class="muted" id="evidence-feedback-help">Add at least one mark to the screenshot.</p><button class="btn btn-primary" type="submit" disabled>Create feedback task</button></form></section>`;
+    return `${capture}${automatic}${threadList}`;
   }
   const comments = selected.comments.map((comment) => `<article class="evidence-comment" data-comment="${esc(comment.comment_id)}"><header><strong>${esc(comment.author)}</strong><small>${esc(ago(comment.created_at))}</small></header><p>${esc(comment.body)}</p>${comment.can_edit && !comment.deleted ? `<div class="actions"><button class="btn btn-small" type="button" data-evidence-edit-comment="${esc(comment.comment_id)}">Edit</button></div>` : ''}</article>`).join('');
   const thread = `<section class="evidence-inspector-section evidence-thread"><div class="evidence-thread-head"><h2>Discussion</h2><button class="btn btn-small" type="button" data-evidence-feedback-back>All annotations</button></div><div class="evidence-thread-state">${badge(selected.state, selected.state === 'resolved' ? 'ok' : 'warn')}<a href="#/plan/${esc(state.evidenceData.repository_id)}" data-evidence-open-task="${esc(selected.task_id)}">Open Plan task →</a></div>${comments}<form id="evidence-feedback-reply"><label class="f">Reply<textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit">Reply</button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${selected.state === 'resolved' ? 'Reopen' : 'Resolve'}</button>${selected.can_delete ? '<button class="btn btn-danger" type="button" data-evidence-delete>Delete annotation</button>' : ''}</div></section>`;
@@ -1415,6 +1579,152 @@ async function loadEvidenceThumbnails(run, root = main) {
 }
 
 let evidenceCanvasSession = null;
+let evidenceLayoutSession = null;
+
+function setupEvidenceLayout() {
+  evidenceLayoutSession?.dispose();
+  const page = $('.evidence-page', main);
+  if (!page) return;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const preferences = {};
+  try { Object.assign(preferences, JSON.parse(localStorage.getItem('dc2-evidence-panels') || '{}')); } catch {}
+  let fullscreen = false;
+  let pendingFullscreen = false;
+  let fullscreenPanels = { journey: false, details: false };
+  let priorScroll;
+  let blockedSiblings = [];
+  let toastLocation;
+  let frame;
+  page.classList.add('evidence-layout');
+  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || page.clientWidth >= 1050);
+  const paint = () => {
+    if (!page.isConnected) return;
+    page.classList.toggle('evidence-layout-narrow', page.clientWidth < 1050);
+    page.classList.toggle('evidence-is-fullscreen', fullscreen);
+    page.style.height = `${fullscreen ? innerHeight : Math.max(520, innerHeight - Math.max(0, page.getBoundingClientRect().top) - 1)}px`;
+    for (const [panel, selector, label] of [['journey', '#evidence-journey', 'journey panel'], ['details', '#evidence-inspector', 'capture details']]) {
+      const visible = expanded(panel);
+      $(selector, page).hidden = !visible;
+      page.style.setProperty(`--evidence-${panel}-width`, visible ? (panel === 'journey' ? '230px' : '280px') : '0px');
+      page.querySelectorAll(`[data-evidence-panel="${panel}"]`).forEach(button => {
+        button.setAttribute('aria-expanded', String(visible));
+        button.setAttribute('aria-label', `${visible ? 'Hide' : 'Show'} ${label}`);
+        button.title = `${visible ? 'Hide' : 'Show'} ${label}`;
+        if (!button.classList.contains('evidence-panel-close')) {
+          const icon = $('.ti', button);
+          icon.classList.toggle('ti-layout-sidebar-left-collapse', visible);
+          icon.classList.toggle('ti-layout-sidebar-left-expand', !visible);
+        }
+      });
+    }
+    page.classList.toggle('inspector-open', expanded('details'));
+    const board = $('.evidence-board', page).getBoundingClientRect();
+    const imageRegion = $('#evidence-scroll', page).getBoundingClientRect();
+    page.style.setProperty('--evidence-details-top', `${Math.max(0, imageRegion.top - board.top) + 4}px`);
+    page.style.setProperty('--evidence-details-bottom', `${Math.max(0, board.bottom - imageRegion.bottom) + 4}px`);
+    const fullButton = $('[data-evidence-fullscreen]', page);
+    const fullLabel = fullscreen ? 'Exit full screen' : 'Full screen';
+    fullButton.setAttribute('aria-label', fullLabel); fullButton.title = fullLabel;
+    fullButton.setAttribute('aria-pressed', String(fullscreen));
+    fullButton.disabled = pendingFullscreen;
+    $('.evidence-fullscreen-label', fullButton).textContent = fullLabel;
+    $('path', fullButton).setAttribute('d', fullscreen ? 'M4 9h5V4m6 0v5h5m0 6h-5v5m-6 0v-5H4' : 'M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5');
+    const toolbar = $('.evidence-toolbar', page);
+    toolbar.classList.remove('evidence-toolbar-compact');
+    const needed = [...toolbar.children].reduce((width, element) => width + element.getBoundingClientRect().width + 6, 0) + 20;
+    toolbar.classList.toggle('evidence-toolbar-compact', needed > toolbar.clientWidth);
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      redrawEvidenceCanvas();
+      const composer = $('#evidence-composer', page);
+      if (composer && !composer.hidden) openEvidenceComposer(undefined, false);
+    });
+  };
+  const showPanel = (panel, visible, focus = false) => {
+    if (fullscreen) fullscreenPanels[panel] = visible;
+    else {
+      preferences[panel] = visible;
+      try { localStorage.setItem('dc2-evidence-panels', JSON.stringify(preferences)); } catch {}
+    }
+    paint();
+    if (focus) (visible && panel === 'details' ? $('.evidence-panel-close', page) : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
+  };
+  const finishFullscreen = () => {
+    fullscreen = false;
+    for (const [element, inert] of blockedSiblings) element.inert = inert;
+    blockedSiblings = [];
+    if (toastLocation) {
+      toastLocation.parent.insertBefore($('#toasts'), toastLocation.next?.parentNode === toastLocation.parent ? toastLocation.next : null);
+      toastLocation = null;
+    }
+    document.body.classList.remove('evidence-fullscreen-mode');
+    paint();
+    if (priorScroll) window.scrollTo(priorScroll.x, priorScroll.y);
+    $('[data-evidence-fullscreen]', page)?.focus({ preventScroll: true });
+  };
+  const toggleFullscreen = async () => {
+    if (pendingFullscreen) return;
+    pendingFullscreen = true;
+    if (fullscreen) {
+      try { if (document.fullscreenElement === page) await document.exitFullscreen(); }
+      finally { finishFullscreen(); pendingFullscreen = false; paint(); }
+      return;
+    }
+    priorScroll = { x: scrollX, y: scrollY };
+    fullscreenPanels = { journey: false, details: false };
+    fullscreen = true;
+    const toasts = $('#toasts');
+    toastLocation = { parent: toasts.parentNode, next: toasts.nextSibling };
+    page.appendChild(toasts);
+    for (let active = page; active.parentElement; active = active.parentElement) {
+      for (const sibling of active.parentElement.children) if (sibling !== active) {
+        blockedSiblings.push([sibling, sibling.inert]); sibling.inert = true;
+      }
+      if (active.parentElement === document.body) break;
+    }
+    document.body.classList.add('evidence-fullscreen-mode');
+    paint();
+    try { if (document.fullscreenEnabled && page.requestFullscreen) await page.requestFullscreen(); } catch {}
+    finally { pendingFullscreen = false; paint(); }
+    $('#evidence-canvas', page)?.focus({ preventScroll: true });
+  };
+  page.addEventListener('click', event => {
+    const panel = event.target.closest('[data-evidence-panel]');
+    if (panel) showPanel(panel.dataset.evidencePanel, !expanded(panel.dataset.evidencePanel), true);
+    if (event.target.closest('[data-evidence-fullscreen]')) void toggleFullscreen();
+  }, { signal });
+  document.addEventListener('fullscreenchange', () => {
+    if (fullscreen && document.fullscreenElement !== page) finishFullscreen();
+  }, { signal });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && fullscreen) {
+      event.preventDefault(); event.stopPropagation(); void toggleFullscreen();
+    } else if (event.key === 'Escape' && page.classList.contains('evidence-layout-narrow') && expanded('details') && $('#evidence-inspector', page).contains(document.activeElement)) {
+      event.preventDefault(); showPanel('details', false, true);
+    } else if (event.key === 'Tab' && fullscreen) {
+      const controls = [...page.querySelectorAll('button:not(:disabled),a[href],input,select,textarea,[tabindex="0"]')].filter(element => element.getClientRects().length);
+      const boundary = event.shiftKey ? controls[0] : controls.at(-1);
+      if (document.activeElement === boundary) { event.preventDefault(); (event.shiftKey ? controls.at(-1) : controls[0])?.focus(); }
+    }
+  }, { signal, capture: true });
+  const observer = new ResizeObserver(paint);
+  observer.observe(page);
+  observer.observe($('.evidence-workspace', page));
+  window.addEventListener('resize', paint, { signal });
+  const dispose = () => {
+    if (controller.signal.aborted) return;
+    controller.abort(); observer.disconnect(); cancelAnimationFrame(frame);
+    for (const [element, inert] of blockedSiblings) element.inert = inert;
+    if (toastLocation) toastLocation.parent.insertBefore($('#toasts'), toastLocation.next?.parentNode === toastLocation.parent ? toastLocation.next : null);
+    page.classList.remove('evidence-is-fullscreen');
+    document.body.classList.remove('evidence-fullscreen-mode');
+    if (document.fullscreenElement === page) void document.exitFullscreen().catch(() => {});
+  };
+  viewAbort.signal.addEventListener('abort', dispose, { once: true });
+  evidenceLayoutSession = { showDetails: () => showPanel('details', true), refresh: paint, dispose };
+  paint();
+}
 function cloneEvidenceMarks(marks) { return JSON.parse(JSON.stringify(marks || [])); }
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 
@@ -1553,15 +1863,18 @@ function evidenceRedo() {
 }
 
 function updateEvidenceToolbar() {
+  if (!state.evidenceDraftMarks.some((mark) => mark.id === state.evidenceSelectedMarkId)) state.evidenceSelectedMarkId = null;
+  const saving = state.evidenceSavingKey === state.evidenceDraftKey && state.evidenceSavingKey !== null;
   main.querySelectorAll('[data-evidence-tool]').forEach((button) => {
     const active = button.dataset.evidenceTool === state.evidenceTool;
     button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active));
+    button.disabled = saving;
   });
   const undo = $('[data-evidence-undo]', main); const redo = $('[data-evidence-redo]', main);
   const clear = $('[data-evidence-clear]', main); const zoom = $('#evidence-zoom-value', main);
-  if (undo) undo.disabled = !state.evidenceUndo.length;
-  if (redo) redo.disabled = !state.evidenceRedo.length;
-  if (clear) clear.disabled = !state.evidenceDraftMarks.length;
+  if (undo) undo.disabled = saving || !state.evidenceUndo.length;
+  if (redo) redo.disabled = saving || !state.evidenceRedo.length;
+  if (clear) clear.disabled = saving || !state.evidenceDraftMarks.length;
   if (zoom) zoom.textContent = `${Math.round(state.evidenceZoom * 100)}%`;
   const canvas = $('#evidence-canvas', main);
   if (canvas) {
@@ -1569,11 +1882,22 @@ function updateEvidenceToolbar() {
     canvas.dataset.draftCount = String(state.evidenceDraftMarks.length);
     canvas.dataset.selectedMark = state.evidenceSelectedMarkId || '';
   }
+  const composer = ensureEvidenceComposer();
+  if (composer) composer.hidden = state.evidenceComposerDismissed || !state.evidenceDraftMarks.length && !state.evidenceDraftBody;
+  const editComment = $('[data-evidence-compose]', main);
+  if (editComment) editComment.disabled = saving || !state.evidenceDraftMarks.length && !state.evidenceDraftBody;
   const form = $('#evidence-feedback-create', main);
   if (form) {
-    const body = String(new FormData(form).get('body') || '').trim();
+    const body = state.evidenceDraftBody.trim();
     const submit = $('button[type="submit"]', form);
-    if (submit) submit.disabled = !state.evidenceDraftMarks.length || body.length < 3;
+    if (submit) {
+      submit.disabled = !!state.evidenceSavingKey || !!state.evidencePendingLabel || !state.evidenceDraftMarks.length || body.length < 3;
+      submit.title = state.evidencePendingLabel ? 'Add or cancel the text label before saving.' : !state.evidenceDraftMarks.length ? 'Add a mark to attach this comment.' : '';
+      const requirement = $('#evidence-feedback-requirement', form);
+      requirement.textContent = submit.title; requirement.hidden = !submit.title;
+    }
+    form.elements.body.disabled = saving;
+    $('[data-evidence-cancel]', form).disabled = saving;
   }
 }
 
@@ -1583,24 +1907,40 @@ function setEvidenceZoom(value) {
   updateEvidenceToolbar(); requestAnimationFrame(redrawEvidenceCanvas);
 }
 
-function evidenceTextEntry(point) {
+function evidenceTextEntry(point, focus = true) {
   const media = $('#evidence-media', main); if (!media) return;
-  media.querySelector('.evidence-text-entry')?.remove();
-  const input = document.createElement('input'); input.className = 'evidence-text-entry';
-  input.maxLength = 120; input.placeholder = 'Annotation label';
-  input.style.left = `${point.x * 100}%`; input.style.top = `${point.y * 100}%`;
-  const close = () => input.remove();
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') { event.preventDefault(); close(); }
-    if (event.key === 'Enter') {
-      event.preventDefault(); const text = input.value.trim(); if (text.length < 3) return;
-      commitEvidenceMarks([...state.evidenceDraftMarks, {
-        id: `mark-${Date.now().toString(36)}`, type: 'text', color: state.evidenceColor,
-        x: point.x, y: point.y, text,
-      }]); close();
-    }
-  });
-  media.appendChild(input); requestAnimationFrame(() => input.focus());
+  let editor = media.querySelector('.evidence-label-editor');
+  if (!editor) {
+    editor = document.createElement('form'); editor.className = 'evidence-label-editor';
+    editor.innerHTML = '<input class="evidence-text-entry" aria-label="Annotation label" placeholder="Annotation label" maxlength="120" required><div class="actions"><button class="btn btn-small" type="button">Cancel</button><button class="btn btn-primary btn-small" type="submit">Add label</button></div>';
+    const input = $('input', editor);
+    input.value = state.evidencePendingLabel?.text || '';
+    const cancel = () => { state.evidencePendingLabel = null; editor.remove(); updateEvidenceToolbar(); $('#evidence-canvas', main)?.focus({ preventScroll: true }); };
+    $('button[type=button]', editor).addEventListener('click', cancel);
+    editor.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); cancel(); } });
+    editor.addEventListener('submit', (event) => {
+      event.preventDefault(); const text = input.value.trim();
+      if (!text) { input.setCustomValidity('Enter a label.'); input.reportValidity(); return; }
+      const position = { x: Number(editor.dataset.x), y: Number(editor.dataset.y) };
+      const id = evidenceMarkId();
+      commitEvidenceMarks([...state.evidenceDraftMarks, { id, type: 'text', color: state.evidenceColor, ...position, text }]);
+      state.evidenceSelectedMarkId = id;
+      state.evidencePendingLabel = null; editor.remove(); updateEvidenceToolbar(); openEvidenceComposer(position);
+    });
+    input.addEventListener('input', () => {
+      input.setCustomValidity('');
+      state.evidencePendingLabel = { point: { x: Number(editor.dataset.x), y: Number(editor.dataset.y) }, text: input.value };
+    });
+    media.appendChild(editor);
+  }
+  editor.dataset.x = String(point.x); editor.dataset.y = String(point.y);
+  state.evidencePendingLabel = { point, text: $('input', editor).value };
+  const visible = $('#evidence-scroll', main).getBoundingClientRect();
+  const bounds = media.getBoundingClientRect();
+  editor.style.left = `${Math.max(0, visible.left - bounds.left, Math.min(point.x * media.clientWidth, visible.right - bounds.left - 250))}px`;
+  editor.style.top = `${Math.max(0, visible.top - bounds.top, Math.min(point.y * media.clientHeight, visible.bottom - bounds.top - 100))}px`;
+  updateEvidenceToolbar();
+  if (focus) $('input', editor)?.focus({ preventScroll: true });
 }
 
 function setupEvidenceCanvas(imageId) {
@@ -1610,24 +1950,35 @@ function setupEvidenceCanvas(imageId) {
   const canvas = priorCanvas.cloneNode(true); priorCanvas.replaceWith(canvas);
   const session = { canvas, image, imageId, drag: null, space: false, observer: new ResizeObserver(redrawEvidenceCanvas) };
   evidenceCanvasSession = session; session.observer.observe(image);
-  const finish = () => {
+  const finish = (event) => {
     const drag = session.drag; if (!drag) return;
     session.drag = null;
+    if (event?.type === 'pointercancel' || event?.key === 'Escape') {
+      if (drag.before) state.evidenceDraftMarks = cloneEvidenceMarks(drag.before);
+      updateEvidenceToolbar(); redrawEvidenceCanvas(); return;
+    }
+    let created = false;
     if (drag.kind === 'draw') {
       const mark = state.evidenceDraftMarks.find((item) => item.id === drag.id);
       const box = mark ? evidenceMarkBounds(mark) : null;
-      if (!mark || ((mark.type === 'rectangle' || mark.type === 'arrow') && box.width < .004 && box.height < .004)
+      if (!mark || (mark.type === 'rectangle' && (box.width < .004 || box.height < .004))
+        || (mark.type === 'arrow' && box.width < .004 && box.height < .004)
         || ((mark.type === 'freehand' || mark.type === 'highlight') && mark.points.length < 2)) {
         state.evidenceDraftMarks = cloneEvidenceMarks(drag.before);
       } else {
         state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+        created = true;
       }
     } else if (drag.kind === 'move' || drag.kind === 'resize') {
-      state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+      if (JSON.stringify(drag.before) !== JSON.stringify(state.evidenceDraftMarks)) {
+        state.evidenceUndo.push(cloneEvidenceMarks(drag.before)); state.evidenceRedo = [];
+      }
     }
     updateEvidenceToolbar(); redrawEvidenceCanvas();
+    if (created) openEvidenceComposer(drag.start);
   };
   canvas.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 && event.button !== 1 || state.evidenceSavingKey === state.evidenceDraftKey) return;
     const point = evidencePoint(event, canvas);
     if (session.space || event.button === 1) {
       const scroll = $('#evidence-scroll', main);
@@ -1635,12 +1986,13 @@ function setupEvidenceCanvas(imageId) {
         scrollLeft: scroll.scrollLeft, scrollTop: scroll.scrollTop };
       canvas.setPointerCapture(event.pointerId); event.preventDefault(); return;
     }
-    if (state.evidenceTool === 'text') { evidenceTextEntry(point); return; }
+    if (state.evidenceTool === 'text') { event.preventDefault(); evidenceTextEntry(point); return; }
     if (state.evidenceTool === 'select') {
       const hit = evidenceHitTest(point, imageId);
       if (!hit) { state.evidenceSelectedMarkId = null; redrawEvidenceCanvas(); return; }
       if (!hit.draft) {
-        state.evidenceSelectedFeedbackId = hit.mark.feedbackId; refreshEvidenceInspector(); redrawEvidenceCanvas(); return;
+        state.evidenceSelectedMarkId = null;
+        state.evidenceSelectedFeedbackId = hit.mark.feedbackId; revealEvidenceDiscussion(); redrawEvidenceCanvas(); return;
       }
       state.evidenceSelectedMarkId = hit.mark.id;
       const box = evidenceMarkBounds(hit.mark);
@@ -1649,12 +2001,16 @@ function setupEvidenceCanvas(imageId) {
         && Math.abs(point.y - (box.y + box.height)) < .025;
       session.drag = { kind: resize ? 'resize' : 'move', id: hit.mark.id, start: point, before: cloneEvidenceMarks(state.evidenceDraftMarks) };
     } else if (state.evidenceTool === 'pin') {
-      commitEvidenceMarks([...state.evidenceDraftMarks, {
-        id: `mark-${Date.now().toString(36)}`, type: 'pin', color: state.evidenceColor,
+      const pendingPin = state.evidenceDraftMarks.find((mark) => mark.type === 'pin');
+      const pin = {
+        id: pendingPin?.id || evidenceMarkId(), type: 'pin', color: state.evidenceColor,
         x: point.x, y: point.y,
-      }]);
+      };
+      commitEvidenceMarks(pendingPin ? state.evidenceDraftMarks.map((mark) => mark.id === pin.id ? pin : mark) : [...state.evidenceDraftMarks, pin]);
+      state.evidenceSelectedMarkId = pin.id;
+      event.preventDefault(); openEvidenceComposer(point);
     } else {
-      const id = `mark-${Date.now().toString(36)}`; const before = cloneEvidenceMarks(state.evidenceDraftMarks);
+      const id = evidenceMarkId(); const before = cloneEvidenceMarks(state.evidenceDraftMarks);
       const mark = state.evidenceTool === 'rectangle'
         ? { id, type: 'rectangle', color: state.evidenceColor, x: point.x, y: point.y, width: 0, height: 0 }
         : state.evidenceTool === 'arrow'
@@ -1691,6 +2047,8 @@ function setupEvidenceCanvas(imageId) {
   });
   canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
   canvas.addEventListener('keydown', (event) => {
+    if (state.evidenceSavingKey === state.evidenceDraftKey) return;
+    if (event.key === 'Escape' && session.drag) { event.preventDefault(); finish(event); return; }
     if (event.code === 'Space') { event.preventDefault(); session.space = true; canvas.dataset.panning = 'true'; return; }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault(); if (event.shiftKey) evidenceRedo(); else evidenceUndo(); return;
@@ -1701,6 +2059,7 @@ function setupEvidenceCanvas(imageId) {
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && state.evidenceSelectedMarkId) {
       event.preventDefault(); const before = cloneEvidenceMarks(state.evidenceDraftMarks);
       const mark = state.evidenceDraftMarks.find((item) => item.id === state.evidenceSelectedMarkId);
+      if (!mark) return;
       const amount = (event.shiftKey ? 10 : 1) / Math.max(canvas.clientWidth, canvas.clientHeight);
       translateEvidenceMark(mark, event.key === 'ArrowLeft' ? -amount : event.key === 'ArrowRight' ? amount : 0,
         event.key === 'ArrowUp' ? -amount : event.key === 'ArrowDown' ? amount : 0);
@@ -1718,8 +2077,9 @@ function evidenceToolbar() {
   return `<div class="evidence-toolbar" role="toolbar" aria-label="Screenshot annotation tools">
     <div class="evidence-tool-group">${EVIDENCE_TOOLS.map(([tool, icon, label]) => `<button type="button" class="evidence-tool${tool === state.evidenceTool ? ' active' : ''}" data-evidence-tool="${tool}" aria-label="${label}" title="${label}" aria-pressed="${tool === state.evidenceTool}">${planIcon(icon)}<span>${label}</span></button>`).join('')}</div>
     <label class="evidence-color" title="Annotation colour">${planIcon('palette')}<span class="sr-only">Annotation colour</span><select id="evidence-color" aria-label="Annotation colour">${EVIDENCE_COLORS.map(([color, label]) => `<option value="${color}"${color === state.evidenceColor ? ' selected' : ''}>${label}</option>`).join('')}</select><i style="--mark-color:${state.evidenceColor}"></i></label>
-    <div class="evidence-tool-group evidence-history"><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
+    <div class="evidence-tool-group evidence-history"><button type="button" class="evidence-tool" data-evidence-compose aria-label="Edit comment" title="Edit comment" disabled>${planIcon('message-plus')}<span>Edit comment</span></button><button type="button" class="evidence-tool" data-evidence-undo aria-label="Undo" title="Undo" disabled>${planIcon('arrow-back-up')}</button><button type="button" class="evidence-tool" data-evidence-redo aria-label="Redo" title="Redo" disabled>${planIcon('arrow-forward-up')}</button></div>
     <div class="evidence-tool-group evidence-zoom"><button type="button" class="evidence-tool" data-evidence-zoom-out aria-label="Zoom out" title="Zoom out">${planIcon('zoom-out')}</button><output id="evidence-zoom-value">100%</output><button type="button" class="evidence-tool" data-evidence-zoom-in aria-label="Zoom in" title="Zoom in">${planIcon('zoom-in')}</button><button type="button" class="evidence-tool" data-evidence-fit aria-label="Fit screenshot" title="Fit screenshot">${planIcon('focus-centered')}</button><button type="button" class="evidence-tool" data-evidence-clear aria-label="Clear unsaved marks" title="Clear unsaved marks" disabled>${planIcon('trash')}</button></div>
+    <div class="evidence-tool-group evidence-layout-controls"><button type="button" class="evidence-tool" data-evidence-panel="journey" aria-controls="evidence-journey" aria-label="Hide journey panel" title="Hide journey panel">${planIcon('layout-sidebar-left-collapse')}<span>Journey</span></button><button type="button" class="evidence-tool" data-evidence-panel="details" aria-controls="evidence-inspector" aria-label="Hide capture details" title="Hide capture details">${planIcon('layout-sidebar-left-collapse')}<span>Details</span></button><button type="button" class="evidence-tool" data-evidence-fullscreen aria-label="Full screen" title="Full screen" aria-pressed="false"><svg class="evidence-fullscreen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5m6 0h5v5m0 6v5h-5m-6 0H4v-5"/></svg><span class="evidence-fullscreen-label">Full screen</span></button></div>
   </div>`;
 }
 
@@ -1733,10 +2093,11 @@ function renderEvidenceCurrent(step, cell) {
 
 function evidenceWorkspace(run, data) {
   const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
+  const breadcrumb = `<a class="destination-link" href="#/tests">Tests</a><span>/</span>${workspace.active ? '' : `<strong>${esc(run.display_name)}</strong><span>/</span>`}`;
   return `<section class="evidence-page" data-ui-region="test-evidence-primary">
-    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb"><a class="destination-link" href="#/tests">Tests</a><span>/</span><strong>${esc(run.display_name)}</strong><span>/</span><strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
     <div class="evidence-board">
-      <aside class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
+      <aside id="evidence-journey" class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
       <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
       <aside id="evidence-inspector" class="evidence-inspector" aria-label="Capture details and feedback"></aside>
     </div>
@@ -1749,37 +2110,24 @@ function replaceEvidenceFeedback(feedback) {
   if (index >= 0) rows[index] = feedback; else rows.push(feedback);
 }
 
-async function evidenceMutation(button, command, args) {
+async function evidenceMutation(button, command, args, onError = error => toast(error.message, 'bad')) {
+  const runId = state.evidenceRun.run_id;
   button.disabled = true;
   try {
     const result = await api(command, {
       path: state.evidenceRun.worktree_path, run_id: state.evidenceRun.run_id, ...args,
     }, false);
-    if (result.feedback) replaceEvidenceFeedback(result.feedback);
+    if (result.feedback && state.evidenceRun?.run_id === runId) replaceEvidenceFeedback(result.feedback);
     return result;
   } catch (error) {
-    toast(error.message, 'bad'); return null;
+    onError(error); return null;
   } finally { button.disabled = false; }
 }
 
 function bindEvidenceInspector() {
-  const form = $('#evidence-feedback-create', main);
-  form?.addEventListener('input', updateEvidenceToolbar);
-  form?.addEventListener('submit', async (event) => {
-    event.preventDefault(); const button = event.submitter;
-    const { screenshot } = currentEvidenceSelection();
-    const body = String(new FormData(form).get('body') || '').trim();
-    if (!screenshot || body.length < 3 || !state.evidenceDraftMarks.length) return;
-    const result = await evidenceMutation(button, 'test.evidence.feedback.create', {
-      image_id: screenshot.image_id, body, marks: cloneEvidenceMarks(state.evidenceDraftMarks),
-    });
-    if (!result) return;
-    resetEvidenceDraft(); state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
-    refreshEvidenceInspector(); redrawEvidenceCanvas(); updateEvidencePageStatus();
-    toast('Feedback task created', 'ok');
-  });
   main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
     state.evidenceSelectedFeedbackId = button.dataset.evidenceFeedback;
+    evidenceLayoutSession?.showDetails();
     $('.evidence-page', main)?.classList.add('inspector-open');
     refreshEvidenceInspector(); redrawEvidenceCanvas();
   }));
@@ -1843,11 +2191,8 @@ function bindEvidenceInspector() {
 function refreshEvidenceInspector() {
   const inspector = $('#evidence-inspector', main); if (!inspector) return;
   const { step, cell, screenshot } = currentEvidenceSelection();
-  inspector.innerHTML = `<button type="button" class="evidence-mobile-inspector-toggle" data-evidence-inspector-toggle aria-expanded="${$('.evidence-page', main)?.classList.contains('inspector-open') || false}">${planIcon('message-plus')}Feedback and capture details${planIcon('chevron-up')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
-  $('[data-evidence-inspector-toggle]', inspector)?.addEventListener('click', (event) => {
-    const page = $('.evidence-page', main); const open = !page.classList.contains('inspector-open');
-    page.classList.toggle('inspector-open', open); event.currentTarget.setAttribute('aria-expanded', String(open));
-  });
+  inspector.innerHTML = `<button type="button" class="evidence-tool evidence-panel-close" data-evidence-panel="details" aria-label="Hide capture details" title="Hide capture details">${planIcon('x')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
+  $('h2', inspector)?.setAttribute('id', 'evidence-details-heading');
   bindEvidenceInspector();
 }
 
@@ -1862,14 +2207,18 @@ function bindEvidenceToolbar() {
   if (toolbar?.dataset.evidenceBound === 'true') { updateEvidenceToolbar(); return; }
   if (toolbar) toolbar.dataset.evidenceBound = 'true';
   main.querySelectorAll('[data-evidence-tool]').forEach((button) => button.addEventListener('click', () => {
-    state.evidenceTool = button.dataset.evidenceTool; updateEvidenceToolbar();
+    state.evidenceTool = button.dataset.evidenceTool; state.evidenceComposerDismissed = true; updateEvidenceToolbar();
     $('#evidence-canvas', main)?.focus();
   }));
   $('#evidence-color', main)?.addEventListener('change', (event) => {
     state.evidenceColor = event.target.value;
     $('.evidence-color i', main)?.style.setProperty('--mark-color', state.evidenceColor);
+    if (state.evidenceSavingKey === state.evidenceDraftKey) return;
+    if (state.evidenceTool === 'select' && state.evidenceSelectedMarkId) commitEvidenceMarks(state.evidenceDraftMarks.map((mark) =>
+      mark.id === state.evidenceSelectedMarkId ? { ...mark, color: state.evidenceColor } : mark));
   });
   $('[data-evidence-undo]', main)?.addEventListener('click', evidenceUndo);
+  $('[data-evidence-compose]', main)?.addEventListener('click', () => openEvidenceComposer());
   $('[data-evidence-redo]', main)?.addEventListener('click', evidenceRedo);
   $('[data-evidence-clear]', main)?.addEventListener('click', () => {
     if (!state.evidenceDraftMarks.length) return;
@@ -1897,6 +2246,7 @@ async function loadMainEvidenceImage(run, screenshot) {
     if (currentEvidenceSelection().screenshot?.image_id !== requested || !image?.isConnected) return;
     image.src = url; image.hidden = false; await image.decode().catch(() => {});
     status.hidden = true; setupEvidenceCanvas(requested);
+    if (state.evidencePendingLabel) evidenceTextEntry(state.evidencePendingLabel.point, false);
   } catch (error) {
     status.textContent = error.message || 'Screenshot unavailable.'; status.hidden = false;
   }
@@ -1906,73 +2256,97 @@ function bindEvidenceSelection() {
   main.querySelectorAll('[data-evidence-step]').forEach((button) => button.addEventListener('click', () => {
     if (button.dataset.evidenceStep === state.evidenceStepKey) return;
     state.evidenceStepKey = button.dataset.evidenceStep; state.evidenceViewport = null;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   main.querySelectorAll('[data-evidence-viewport]').forEach((button) => button.addEventListener('click', () => {
     if (button.dataset.evidenceViewport === state.evidenceViewport) return;
     state.evidenceViewport = button.dataset.evidenceViewport;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   main.querySelectorAll('[data-evidence-kind]').forEach((button) => button.addEventListener('click', () => {
     if (button.disabled || button.dataset.evidenceKind === state.evidenceScreenshotKind) return;
     state.evidenceScreenshotKind = button.dataset.evidenceKind;
-    resetEvidenceDraft(); refreshEvidenceSelection();
+    refreshEvidenceSelection();
   }));
   $('[data-evidence-prev]', main)?.addEventListener('click', () => {
     const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
-    if (index > 0) { state.evidenceStepKey = state.evidenceSteps[index - 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+    if (index > 0) { state.evidenceStepKey = state.evidenceSteps[index - 1].key; state.evidenceViewport = null; refreshEvidenceSelection(); }
   });
   $('[data-evidence-next]', main)?.addEventListener('click', () => {
     const index = state.evidenceSteps.findIndex((item) => item.key === state.evidenceStepKey);
-    if (index >= 0 && index < state.evidenceSteps.length - 1) { state.evidenceStepKey = state.evidenceSteps[index + 1].key; state.evidenceViewport = null; resetEvidenceDraft(); refreshEvidenceSelection(); }
+    if (index >= 0 && index < state.evidenceSteps.length - 1) { state.evidenceStepKey = state.evidenceSteps[index + 1].key; state.evidenceViewport = null; refreshEvidenceSelection(); }
   });
 }
 
 function refreshEvidenceSelection() {
   const { step, cell, screenshot } = currentEvidenceSelection(); if (!step) return;
+  activateEvidenceDraft(screenshot?.image_id);
+  if (screenshot?.image_id) {
+    const query = new URLSearchParams(location.hash.split('?')[1] || '');
+    query.set('image', screenshot.image_id);
+    if (state.evidenceRun.worktree_id) query.set('worktree', state.evidenceRun.worktree_id);
+    window.history.replaceState(null, '', `#/tests/${state.evidenceRunId}?${query}`);
+  }
   $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
   $('#evidence-current', main).innerHTML = renderEvidenceCurrent(step, cell);
   $('#evidence-variants', main).innerHTML = renderEvidenceVariants(step, cell);
   refreshEvidenceInspector(); bindEvidenceSelection(); bindEvidenceToolbar();
+  for (const selector of ['#evidence-step-list', '#evidence-variants']) {
+    const list = $(selector, main); const selected = $('.active', list);
+    if (!selected) continue;
+    const boundary = list.getBoundingClientRect(); const item = selected.getBoundingClientRect();
+    if (item.left < boundary.left) list.scrollLeft -= boundary.left - item.left;
+    else if (item.right > boundary.right) list.scrollLeft += item.right - boundary.right;
+    if (item.top < boundary.top) list.scrollTop -= boundary.top - item.top;
+    else if (item.bottom > boundary.bottom) list.scrollTop += item.bottom - boundary.bottom;
+  }
   loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
 }
 
 async function viewTestEvidence(reference) {
   const [runId, queryString] = reference.split('?');
   const requestedImage = new URLSearchParams(queryString || '').get('image');
+  const requestedWorktree = new URLSearchParams(queryString || '').get('worktree');
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
-  const { runs } = await api('test.list', {});
-  const owner = (runs || []).find((item) => item.run_id === runId || item.earlier_visual_evidence?.run_id === runId);
-  const run = owner?.run_id === runId ? owner : owner ? {
+  let retained = workspace.retainedEvidence;
+  const { runs } = retained ? { runs: [] } : await api('test.list', {});
+  const owner = (runs || []).find((item) => (item.run_id === runId || item.earlier_visual_evidence?.run_id === runId) && (!requestedWorktree || item.worktree_id === requestedWorktree));
+  let run = owner?.run_id === runId ? owner : owner ? {
     worktree_id: owner.worktree_id, worktree_path: owner.worktree_path,
     repository_id: owner.repository_id, display_name: owner.display_name,
     ...owner.earlier_visual_evidence, isEarlierEvidence: true,
   } : null;
   if (!run) {
-    main.innerHTML = `${pageHeading('Tests', '#/tests', 'Evidence unavailable')}${stateBlock('empty', 'No visual evidence is available for this run in the current collection.')}`; return;
+    retained ||= await api('test.evidence.lookup', { run_id: runId, image_id: requestedImage || undefined, worktree_id: new URLSearchParams(queryString || '').get('worktree') || undefined });
+    run = { ...retained.context, isEarlierEvidence: true };
   }
-  if (state.evidenceRunId !== runId) { resetEvidenceImages(); resetEvidenceDraft(); }
-  const data = await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
+  if (state.evidenceRunId !== runId) resetEvidenceImages();
+  const data = retained?.evidence || await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
   if (requestedImage) {
+    let found = false;
     for (const step of state.evidenceSteps) for (const cell of step.variants) {
       const kind = ['viewport', 'full_page'].find((name) => cell.screenshots?.[name]?.image_id === requestedImage);
-      if (kind) { state.evidenceStepKey = step.key; state.evidenceViewport = cell.viewport?.name; state.evidenceScreenshotKind = kind; }
+      if (kind) { found = true; state.evidenceStepKey = step.key; state.evidenceViewport = cell.viewport?.name; state.evidenceScreenshotKind = kind; }
+    }
+    if (!found) {
+      main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', 'This screenshot is not available for this run.')}`;
+      return;
     }
   }
   if (!state.evidenceSteps.length) {
     main.innerHTML = `${pageHeading('Tests', '#/tests', run.display_name)}${stateBlock('empty', data.issues?.length ? 'Visual evidence was invalid and could not be opened.' : 'This run did not publish visual journey evidence.')}`; return;
   }
   if (!state.evidenceSteps.some((step) => step.key === state.evidenceStepKey)) state.evidenceStepKey = state.evidenceSteps[0].key;
-  main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection();
+  main.innerHTML = evidenceWorkspace(run, data); refreshEvidenceSelection(); setupEvidenceLayout();
 }
 
 function restoreTestSettingsFocus(id) {
   const button = document.getElementById(id);
   const settings = button?.closest('details');
   if (settings) settings.open = false;
-  (settings?.querySelector('summary') || button)?.focus();
+  (button?.closest('#nav') ? document.getElementById('nav-toggle') : settings?.querySelector('summary') || button)?.focus();
 }
 
 function bindTestPopovers() {
@@ -1989,17 +2363,26 @@ function bindTestPopovers() {
   }, { signal: viewAbort.signal });
 }
 
-const viewTests = guard(async (runId = null) => {
+const viewTests = guard(async (runId = null, settings = null) => {
   if (runId) return viewTestEvidence(runId);
   main.innerHTML = `${pageHeading('Tests', '#/tests')}${skeleton()}`;
   const [{ runs }, capacity, retention] = await Promise.all([api('test.list', {}), api('test.capacity.get', {}), api('test.log.retention.get', {})]);
-  return window.DevCoordinatorTests.render({
+  await window.DevCoordinatorTests.render({
     main, runs, capacity, retention, api, esc, badge, durationMs, bytes, signal: viewAbort.signal,
+    repository: workspace.active ? { name: workspace.current()?.name, ids: workspace.current()?.records.map((record) => record.repository_id) || [] } : null,
     openLogs: (run, opener) => openTestLogsDialog(run, retention, opener),
     openFiles: (run, opener, initialFile) => window.DevCoordinatorArtifacts.open(run, opener, { api, esc, bytes, signal: viewAbort.signal, highlight: highlightLogText, initialFile }),
     openCapacity: openTestCapacityDialog, openRetention: openTestLogRetentionDialog,
     bindSettings: bindTestPopovers,
   });
+  if (settings === 'capacity') openTestCapacityDialog(capacity, $('#nav-toggle'));
+  if (settings === 'retention') openTestLogRetentionDialog(retention, $('#nav-toggle'));
+  if (settings) {
+    const [pathname, queryString] = location.hash.split('?');
+    const query = new URLSearchParams(queryString);
+    query.delete('settings');
+    window.history.replaceState(null, '', `${pathname}${query.size ? `?${query}` : ''}`);
+  }
 });
 
 // --- Health --------------------------------------------------------------
@@ -2087,9 +2470,9 @@ const viewHealth = guard(async (sub) => {
   if (summary) {
     try {
       const [cpu, mem, sto] = await Promise.all([
-        history('host', 'host', 'cpu_percent', state.healthRange),
-        history('host', 'host', 'memory_used', state.healthRange),
-        history('host', 'host', 'storage_bytes', state.healthRange)]);
+        metricHistory('host', 'host', 'cpu_percent', state.healthRange),
+        metricHistory('host', 'host', 'memory_used', state.healthRange),
+        metricHistory('host', 'host', 'storage_bytes', state.healthRange)]);
       $('#host-history').innerHTML = chart(cpu.points, pct, 'Host CPU') + chart(mem.points, bytes, 'Host memory used') + chart(sto.points, bytes, 'Storage used');
     } catch (e) { const el = $('#host-history'); if (el) el.innerHTML = stateBlock('error', e.message); }
   }
@@ -2517,6 +2900,85 @@ function progressBucketLabel(ms, period) {
   ];
 }
 
+function progressPointTarget(point, index, { x, y, width, height, period, label, values, first = 0 }) {
+  const when = period === 'hour'
+    ? `${progressDate(point.bucket_start_ms, true)} · ${utcBucket(point.bucket_start_ms)}–${utcBucket(point.bucket_end_ms)} UTC`
+    : period === 'week' ? `${progressDate(point.bucket_start_ms)} – ${progressDate(point.bucket_end_ms - 1, true)} · UTC`
+      : `${progressDate(point.bucket_start_ms, true)} · UTC`;
+  return `<g class="progress-point-target" data-progress-point="${index}" data-progress-date="${esc(when)}" data-progress-label="${esc(label)}" data-progress-values="${esc(JSON.stringify(values))}" tabindex="${index === first ? 0 : -1}" role="button" aria-label="${esc(`${label}: show values for ${when}`)}"><rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="3"/></g>`;
+}
+
+let progressChartEvents;
+function bindProgressPointValues(root) {
+  progressChartEvents?.abort();
+  const events = new AbortController();
+  progressChartEvents = events;
+  viewAbort.signal.addEventListener('abort', () => events.abort(), { once: true, signal: events.signal });
+  const card = root.querySelector('.progress-pulse');
+  if (!card) return;
+  const tooltip = document.createElement('div');
+  tooltip.id = 'progress-point-tooltip';
+  tooltip.className = 'progress-point-tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  tooltip.dataset.uiContextualOverlay = 'Values for the hovered, focused or tapped chart bucket';
+  tooltip.hidden = true;
+  card.append(tooltip);
+  let active = null;
+  const hide = () => { tooltip.hidden = true; active?.removeAttribute('aria-describedby'); active = null; };
+  const place = () => {
+    if (!active) return;
+    const point = active.getBoundingClientRect();
+    const clip = card.querySelector('.progress-chart-scroll').getBoundingClientRect();
+    if (point.right <= clip.left || point.left >= clip.right || point.bottom <= 0 || point.top >= innerHeight) { hide(); return; }
+    const bounds = card.getBoundingClientRect();
+    const box = tooltip.getBoundingClientRect();
+    const left = Math.max(8, Math.min((point.left + point.right) / 2 - bounds.left - box.width / 2, bounds.width - box.width - 8));
+    let top = point.top - bounds.top - box.height - 8;
+    if (bounds.top + top < 8) top = point.bottom - bounds.top + 8;
+    top = Math.max(8 - bounds.top, Math.min(top, innerHeight - bounds.top - box.height - 8));
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  const show = (point) => {
+    active?.removeAttribute('aria-describedby');
+    active = point;
+    for (const sibling of point.closest('svg').querySelectorAll('[data-progress-point]')) sibling.setAttribute('tabindex', sibling === point ? '0' : '-1');
+    const values = JSON.parse(point.dataset.progressValues);
+    tooltip.innerHTML = `<strong>${esc(point.dataset.progressLabel)}</strong><span>${esc(point.dataset.progressDate)}</span><dl>${values.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+    tooltip.hidden = false;
+    point.setAttribute('aria-describedby', tooltip.id);
+    place();
+  };
+  let pointerPosition = null;
+  card.addEventListener('pointermove', event => {
+    const moved = !pointerPosition || event.clientX !== pointerPosition.x || event.clientY !== pointerPosition.y;
+    pointerPosition = { x: event.clientX, y: event.clientY };
+    const point = event.target.closest('[data-progress-point]');
+    if (moved && point) show(point);
+  });
+  for (const point of card.querySelectorAll('[data-progress-point]')) {
+    point.addEventListener('pointerenter', () => { if (!document.activeElement?.hasAttribute('data-progress-point')) show(point); });
+    point.addEventListener('pointerleave', () => { if (active === point && document.activeElement !== point) hide(); });
+    point.addEventListener('focus', () => show(point));
+    point.addEventListener('blur', hide);
+    point.addEventListener('click', () => { point.focus({ preventScroll: true }); show(point); });
+    point.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); hide(); return; }
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show(point); return; }
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const points = [...point.closest('svg').querySelectorAll('[data-progress-point]')];
+      const current = points.indexOf(point);
+      const index = event.key === 'Home' ? 0 : event.key === 'End' ? points.length - 1 : Math.max(0, Math.min(points.length - 1, current + (event.key === 'ArrowRight' ? 1 : -1)));
+      points[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      points[index].focus({ preventScroll: true });
+    });
+  }
+  window.addEventListener('scroll', place, { capture: true, passive: true, signal: events.signal });
+  window.addEventListener('resize', place, { signal: events.signal });
+  document.addEventListener('pointerdown', event => { if (!event.target.closest('[data-progress-point]')) hide(); }, { signal: events.signal });
+}
+
 function progressBarLineLane(data, {
   key, incomingKey, cumulativeKey, label, completedLabel, incomingLabel,
   detail, cls, format,
@@ -2569,7 +3031,11 @@ function progressBarLineLane(data, {
   const completedVerb = completedLabel.split(' ').at(-1).toLowerCase();
   const incomingVerb = incomingLabel.split(' ').at(-1).toLowerCase();
   const empty = total || incomingTotal ? '' : `<text x="${left + chartWidth / 2}" y="${baseline - 8}" text-anchor="middle" class="progress-chart-empty">No recorded movement in this period</text>`;
-  return `<svg class="progress-pulse-chart progress-bar-line-chart" style="min-width:${width}px" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title" data-ui-verify-svg-overlap="lane title stays outside plotted work">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail" data-ui-verify-svg-overlap="lane detail stays outside plotted work">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}</svg>`;
+  const pointTargets = series.map((point, index) => progressPointTarget(point, index, {
+    x: center(index) - step / 2, y: 8, width: step, height: height - bottom - 8, period: data.period, label,
+    values: [[completedLabel, values[index].toLocaleString('en-US')], [incomingLabel, incoming[index].toLocaleString('en-US')], ['Completed running total', cumulative[index].toLocaleString('en-US')]],
+  })).join('');
+  return `<svg class="progress-pulse-chart progress-bar-line-chart" style="min-width:${width}px" viewBox="0 0 ${width} ${height}" role="group" aria-label="${esc(label)} by ${esc(data.period)}: completed above the baseline, ${esc(incomingLabel.toLowerCase())} below, with completed running total"><title>${esc(label)} by ${esc(data.period)}</title><desc>Solid bars above the baseline show completed work. Outlined bars below show incoming work. The thin line shows the completed running total. Exact values follow the chart.</desc><line x1="${left}" x2="${width - right}" y1="${baseline}" y2="${baseline}" class="progress-grid-h progress-zero-line"/><text x="14" y="${top + 14}" class="progress-lane-title" data-ui-verify-svg-overlap="lane title stays outside plotted work">${esc(label)}</text><text x="14" y="${top + 34}" class="progress-lane-detail" data-ui-verify-svg-overlap="lane detail stays outside plotted work">${esc(detail)}</text><text x="${width - 10}" y="${top + 22}" text-anchor="end" class="progress-lane-value progress-running-${cls}">${esc(format(total))}</text><text x="${width - 10}" y="${top + 38}" text-anchor="end" class="progress-lane-detail">${esc(completedVerb)}</text><text x="${width - 10}" y="${baseline + 24}" text-anchor="end" class="progress-lane-value progress-incoming-${cls}">${esc(format(incomingTotal))}</text><text x="${width - 10}" y="${baseline + 40}" text-anchor="end" class="progress-lane-detail">${esc(incomingVerb)}</text><polyline points="${linePoints.join(' ')}" class="progress-running-line progress-running-${cls}"/>${dots}${bars}${incomingBars}${barLabels}${incomingLabels}${empty}${labels}${pointTargets}</svg>`;
 }
 
 function progressEvidenceLane(data, {
@@ -2592,18 +3058,25 @@ function progressEvidenceLane(data, {
   const y = (value) => top + (height - top - bottom) - (Number(value) / max) * (height - top - bottom - 10);
   const polylines = progressSegments(values, x, y).map((points) => `<polyline points="${points.join(' ')}" class="progress-evidence-line progress-running-${cls}"/>`).join('');
   const dots = values.map((value, index) => value == null ? '' : `<circle cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="3" class="progress-evidence-dot progress-running-${cls}"><title>${esc(`${label}: ${format(value)} · ${utcBucket(data.series[index].bucket_start_ms, true)} UTC`)}</title></circle>`).join('');
+  const pointTargets = values.map((value, index) => value == null ? '' : progressPointTarget(data.series[index], index, {
+    x: x(index) - 16, y: Math.max(0, Math.min(height - 28, y(value) - 14)), width: 32, height: 28,
+    period: data.period, label, first: values.findIndex(item => item != null),
+    values: cls === 'tests'
+      ? [[label, new Intl.NumberFormat('en-US', { style: 'percent', maximumFractionDigits: 2 }).format(value)], ['Tests passed', Number(data.series[index].tests_passed).toLocaleString('en-US')], ['Recorded test runs', Number(data.series[index].test_runs).toLocaleString('en-US')]]
+      : [['Tokens', Number(value).toLocaleString('en-US')], ['Token data', bucketDataStatus(data.series[index].token_coverage)]],
+  })).join('');
   const summary = summarize
     ? summarize(observedValues)
     : [...values].reverse().find((value) => value != null);
   const note = snapshotText || (coverage.state === 'complete' ? detail : cls === 'tokens'
     ? 'Measured total; missing buckets stay blank.'
     : 'Some data is missing; gaps stay blank.');
-  return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
+  return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(note)}</small></div><svg class="progress-evidence-chart" viewBox="0 0 ${width} ${height}" role="group" aria-label="${esc(label)} across this period"><line x1="${left}" x2="${width - right}" y1="${height - bottom}" y2="${height - bottom}" class="progress-grid-h"/>${polylines}${dots}${pointTargets}</svg><strong aria-label="${esc(`${label} measured in this period: ${format(summary)}`)}">${esc(format(summary))}</strong></div>`;
 }
 
 function progressPulseChart(data) {
   if (!data.series.length) return stateBlock('empty', 'No progress buckets in this period.');
-  return `<div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas"><div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div>${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider tokens · selected period', cls: 'tokens', format: compactNumber, summarize: (items) => items.reduce((sum, value) => sum + Number(value), 0) })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
+  return `<div class="progress-chart-legend"><span><i class="progress-legend-bar" aria-hidden="true"></i>Green = tasks</span><span><i class="progress-legend-bar progress-legend-lines" aria-hidden="true"></i>Blue = planned lines</span><span><i class="progress-legend-bar progress-legend-incoming" aria-hidden="true"></i>Solid above = completed · outlined below = incoming</span><span><i class="progress-legend-line" aria-hidden="true"></i>Line = completed running total</span></div><div class="progress-chart-scroll" tabindex="0" aria-label="Scrollable daily progress charts"><div class="progress-chart-canvas">${progressBarLineLane(data, { key: 'tasks_completed', incomingKey: 'tasks_created', cumulativeKey: 'tasks_cumulative', label: 'Tasks finished and created', completedLabel: 'Tasks finished', incomingLabel: 'Tasks created', detail: 'Finished above · created below', cls: 'tasks', format: compactNumber })}${progressBarLineLane(data, { key: 'planned_lines_completed', incomingKey: 'planned_lines_added', cumulativeKey: 'lines_cumulative', label: 'Planned lines completed and added', completedLabel: 'Planned lines completed', incomingLabel: 'Planned lines added', detail: 'Completed above · added below', cls: 'lines', format: compactNumber })}${progressEvidenceLane(data, { key: 'test_pass_rate', label: 'Test pass rate', detail: 'Recorded terminal runs', cls: 'tests', format: progressPercent, fixedMax: 1 })}${progressEvidenceLane(data, { key: 'total_tokens', label: 'Token use', detail: 'Provider tokens · selected period', cls: 'tokens', format: compactNumber, summarize: (items) => items.reduce((sum, value) => sum + Number(value), 0) })}<p class="progress-missing-note">Missing information stays blank and is never counted as zero.</p></div></div>`;
 }
 
 function progressReleaseWork(data, repositoryId) {
@@ -2646,6 +3119,7 @@ function renderProgressDashboard(data, projects, repositoryId) {
   const workspace = `<div class="progress-workspace" data-ui-region="progress-primary"><section class="progress-pulse"><div class="progress-section-heading"><div><h2>Daily progress</h2><span>Aligned ${esc(state.progressPeriod)}ly evidence · UTC</span></div></div>${progressPulseChart(data)}</section>${progressReleaseWork(data, repositoryId)}</div>`;
   main.innerHTML = `<section class="progress-dashboard">${context}${progressForecastStrip(data)}${workspace}${progressComparison(data)}${progressExactTable(data)}</section>`;
   bindProjectPicker(main);
+  bindProgressPointValues(main);
   bindSeg(main, 'progress-period', (period) => { state.progressPeriod = period; viewProgress(repositoryId).then(() => $(`[data-progress-period="${period}"]`, main)?.focus()); });
   main.querySelectorAll('[data-progress-task]').forEach((button) => button.addEventListener('click', () => {
     state.progressSelectedTaskId = button.dataset.progressTask;
@@ -2878,7 +3352,7 @@ const viewPlan = guard(async (repoId) => {
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
     api('plan.overview', { repository_id: repoId }),
-    api('plan.overview', {}),
+    workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repoId, display_name: model.display_name,
@@ -2928,7 +3402,7 @@ const viewPlan = guard(async (repoId) => {
       : '';
     return `<div class="grow grel"${droppable ? ` data-drop-release="${release ? esc(release.release_id) : ''}"` : ''}>
       <div class="glabel">
-        <div class="plan-release-copy"><strong>${release ? esc(release.name) : 'Not scheduled yet'}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted">${esc(progress)}</span></span></div>
+        <div class="plan-release-copy"><strong title="${release ? esc(release.name) : 'Not scheduled yet'}">${release ? esc(release.name) : 'Not scheduled yet'}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress)}">${esc(progress)}</span></span></div>
       </div>
       <div class="gtrack">${releaseBar}${where}</div>
     </div>`;
@@ -2964,7 +3438,7 @@ const viewPlan = guard(async (repoId) => {
     const bar = `${sizedBar}${unsizedBar}`;
     return `<div class="grow gtask${row.hidden ? ' ghidden' : ''}${selected ? ' selected' : ''}" data-task-row="${esc(task.task_id)}">
       <div class="glabel" style="--task-depth:${row.depth}">${drag}${collapse}<button type="button" class="plan-task-select" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}">
-        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta"><span>${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
+        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" title="${esc(`${metaLoc} · ${PLAN_WORDS[task.status] || task.status}`)}"><span title="${esc(metaLoc)}">${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
       </button>${admin ? planElaborationButton(task, 'plan-elaborate-row') : (task.elaboration_needed ? planElaborationMark(task) : '')}</div>
       <div class="gtrack">${bar}</div>
     </div>`;
@@ -3580,7 +4054,7 @@ const viewDecisions = guard(async (repoId) => {
     : api('decision.tail', { repository_id: repoId, n: state.decisionLimit, ...aspect, ...(state.decisionBefore ? { before_seq: state.decisionBefore } : {}) });
   const [result, projectList] = await Promise.all([
     resultRequest,
-    api('plan.overview', {}),
+    workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repoId, display_name: result.display_name || 'Current project',
@@ -3592,12 +4066,11 @@ const viewDecisions = guard(async (repoId) => {
     return `<div class="decision">${head}${paragraphs(d.body)}</div>`;
   };
   const story = !searching && !state.decisionBefore
-    ? `<div class="story"><h2>The story so far</h2>${result.summary ? paragraphs(result.summary.body) : '<p class="muted">No summary yet.</p>'}${result.summary_due ? '<p class="muted">The agent will refresh this summary soon.</p>' : ''}</div>` : '';
+    ? `<details class="story"><summary>The story so far</summary>${result.summary ? paragraphs(result.summary.body) : '<p class="muted">No summary yet.</p>'}</details>` : '';
   const emptyText = searching ? 'Nothing found for that search.'
     : state.decisionAspect !== 'all' ? `No ${state.decisionAspect.replace('_', ' ')} decisions yet.`
       : 'No decisions yet. The agent records its choices here as it works.';
   main.innerHTML = `<div class="repository-context"><h1>${destinationLink('Decisions', '#/decisions')}</h1><span class="context-slash" aria-hidden="true">/</span>${projectPicker(projects, repoId, (id) => `#/decisions/${id}`, 'decisions')}</div>
-    <p class="muted">Recorded choices in plain language. <a href="#/plan/${esc(repoId)}">Plan →</a></p>
     ${story}
     <form class="inline" id="decision-search"><label class="f">search every decision<input name="q" value="${esc(state.decisionQuery)}" placeholder="e.g. why exports are files"></label><button class="btn" type="submit">Search</button>${searching || state.decisionBefore ? '<button class="btn" type="button" id="decisions-latest">Show latest</button>' : ''}</form>
     <div class="segwrap">${seg(ASPECTS, state.decisionAspect, 'decision-aspect', (o) => o.replace('_', ' '))}</div>
@@ -3619,13 +4092,31 @@ const viewDecisions = guard(async (repoId) => {
 });
 
 // --- Router ----------------------------------------------------------------
+const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
+window.addEventListener('resize', () => {
+  const composer = $('#evidence-composer', main);
+  if (!composer || composer.hidden) return;
+  openEvidenceComposer(undefined, false);
+});
 async function render() {
   closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);
   viewAbort?.abort();
   viewAbort = new AbortController();
-  const hash = location.hash || '#/deployments';
-  const [, view, arg] = hash.slice(1).split('/');
+  const signal = viewAbort.signal;
+  let route;
+  try { route = await workspace.resolve(signal); }
+  catch (error) {
+    if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') return;
+    if (['test_evidence_expired', 'test_evidence_not_found'].includes(error.code)) {
+      main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No visual evidence is available for this run. It may have expired.');
+      return;
+    }
+    main.innerHTML = currentDestinationHeading() + stateBlock(error.code === 'permission_denied' ? 'denied' : 'error', error.message);
+    return;
+  }
+  if (!route || signal.aborted) return;
+  const { view, arg } = route;
   main.classList.toggle('plan-page', view === 'plan' && !!arg);
   main.classList.toggle('glossary-page', view === 'glossary');
   main.classList.toggle('usage-page', view === 'usage' && !!arg);
@@ -3643,17 +4134,21 @@ async function render() {
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');
+  if (route.empty) {
+    main.innerHTML = currentDestinationHeading() + stateBlock('empty', 'No repositories visible to you.');
+    return;
+  }
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
   if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
   if (view === 'glossary') return viewGlossary();
-  if (view === 'tests') return viewTests(arg || null);
+  if (view === 'tests') return viewTests(arg || null, route.settings);
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();
   if (view === 'admin') return viewAdmin();
-  location.hash = '#/deployments';
+  location.hash = '#/plan';
   return undefined;
 }
 window.render = render;
@@ -3669,10 +4164,6 @@ setupTopNavigation();
     state.who = await api('user.whoami', {});
     $('#who-email').textContent = state.who.identity || 'local';
     $('#nav-admin').hidden = !state.who.administrator;
-    const usageAllowed = state.who.administrator || Object.values(state.who.grants || {})
-      .some((role) => role === 'operator' || role === 'administrator');
-    $('#nav-usage').hidden = !usageAllowed;
-    $('#nav-progress').hidden = !usageAllowed;
   } catch (e) { if (e.code !== 'unauthenticated') setBanner(`Cannot reach the coordinator: ${e.message}`); }
   render();
 })();

@@ -118,6 +118,13 @@ pub trait SystemdControl: Send + Sync + 'static {
     fn stop_unit(&self, unit: &str) -> Result<(), SystemdError>;
     fn reset_failed(&self, unit: &str) -> Result<(), SystemdError>;
     fn control_group_path(&self, unit: &str) -> Result<Option<PathBuf>, SystemdError>;
+    fn cgroup_memory_current(&self, cgroup: &Path) -> Option<u64> {
+        std::fs::read_to_string(cgroup.join("memory.current"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
     fn prove_cgroup_empty(&self, cgroup: Option<&Path>, deadline: Duration) -> bool;
     fn process_uids(&self, pid: u32) -> Option<[u32; 4]>;
 }
@@ -182,8 +189,26 @@ impl SystemdControl for SystemdCli {
     }
 
     fn start_persistent(&self, specification: &PersistentUnitSpec) -> Result<(), SystemdError> {
-        rotate_log(&specification.log_path)?;
         let argv = build_persistent_systemd_run_argv(specification)?;
+        if self.unit_is_loaded(&specification.unit)? {
+            let state = self.process_state(&specification.unit)?;
+            if !matches!(state.active_state.as_str(), "inactive" | "failed") {
+                return Err(SystemdError::Operation(format!(
+                    "cannot recreate a non-terminal unit: {}",
+                    specification.unit
+                )));
+            }
+            let cgroup = self.control_group_path(&specification.unit)?;
+            if !self.prove_cgroup_empty(cgroup.as_deref(), Duration::ZERO) {
+                return Err(SystemdError::Operation(format!(
+                    "cannot recreate a populated unit: {}",
+                    specification.unit
+                )));
+            }
+            self.stop_unit(&specification.unit)?;
+            self.reset_failed(&specification.unit)?;
+        }
+        rotate_log(&specification.log_path)?;
         let output = run_bounded(&self.systemd_run, &argv[1..], STOP_TIMEOUT)?;
         if output.status.success() {
             Ok(())
@@ -908,6 +933,103 @@ mod tests {
         assert!(arguments.contains("--property=NoNewPrivileges=yes"));
         assert!(arguments.contains("--property=StandardOutput=append:"));
         assert!(arguments.contains("/usr/bin/true"));
+    }
+
+    #[test]
+    fn persistent_recreation_preserves_live_units_and_recovers_only_empty_terminal_units() {
+        for (active, populated, stop_exit, valid, recoverable) in [
+            ("not-found", false, 0, true, true),
+            ("failed", false, 0, true, true),
+            ("inactive", false, 0, true, true),
+            ("failed", true, 0, true, false),
+            ("failed", false, 1, true, false),
+            ("failed", false, 0, false, false),
+            ("active", false, 0, true, false),
+            ("activating", false, 0, true, false),
+            ("deactivating", false, 0, true, false),
+            ("reloading", false, 0, true, false),
+            ("unknown", false, 0, true, false),
+        ] {
+            let temporary = tempdir().unwrap();
+            let recorder = temporary.path().join("calls");
+            let controller = temporary.path().join("systemctl");
+            let launcher = temporary.path().join("systemd-run");
+            let cgroup = temporary.path().join("cgroup/unit");
+            std::fs::create_dir_all(&cgroup).unwrap();
+            std::fs::write(
+                cgroup.join("cgroup.events"),
+                format!("populated {}\n", u8::from(populated)),
+            )
+            .unwrap();
+            std::fs::write(
+                &controller,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\nif [ \"$1\" = show ]; then printf 'LoadState={}\\nActiveState={active}\\nControlGroup=/unit\\n'; fi\nif [ \"$1\" = stop ]; then exit {stop_exit}; fi\n",
+                    recorder.display(), if active == "not-found" { "not-found" } else { "loaded" }
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                &launcher,
+                format!(
+                    "#!/bin/sh\nprintf 'launch\\n' >> '{}'\n",
+                    recorder.display()
+                ),
+            )
+            .unwrap();
+            for executable in [&controller, &launcher] {
+                std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+            let log = temporary.path().join("component.log");
+            std::fs::write(&log, "original failure evidence").unwrap();
+            let cli = SystemdCli::with_paths(controller, launcher, temporary.path().join("cgroup"));
+            let result = cli.start_persistent(&PersistentUnitSpec {
+                unit: "devcoordinator2-deploy-d1-api-g1.service".into(),
+                slice_name: "devcoordinator2-deploy-d1.slice".into(),
+                uid: rustix::process::getuid().as_raw(),
+                gid: rustix::process::getgid().as_raw(),
+                working_directory: temporary.path().to_owned(),
+                environment_file: temporary.path().join("environment"),
+                command: if valid {
+                    vec![OsString::from("/usr/bin/true")]
+                } else {
+                    Vec::new()
+                },
+                log_path: log.clone(),
+            });
+            assert_eq!(
+                result.is_ok(),
+                recoverable,
+                "{active}/{populated}/{stop_exit}/{valid}"
+            );
+            let calls = std::fs::read_to_string(&recorder).unwrap_or_default();
+            if recoverable {
+                if active == "not-found" {
+                    assert_eq!(calls, "show\nlaunch\n");
+                } else {
+                    assert!(calls.ends_with("stop\nreset-failed\nlaunch\n"));
+                }
+                assert_eq!(
+                    std::fs::read_to_string(log.with_extension("log.1")).unwrap(),
+                    "original failure evidence"
+                );
+            } else {
+                assert_eq!(calls.contains("stop\n"), stop_exit != 0);
+                assert!(!calls.contains("reset-failed\n"));
+                assert!(!calls.contains("launch\n"));
+                assert_eq!(
+                    std::fs::read_to_string(log).unwrap(),
+                    "original failure evidence"
+                );
+                if !valid {
+                    assert!(
+                        calls.is_empty(),
+                        "invalid specification must not invoke systemd"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

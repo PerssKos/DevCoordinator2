@@ -304,17 +304,26 @@ impl PlanService {
             .database
             .call(|connection| {
                 let mut statement = connection.prepare(
-                    "SELECT repository_id,display_name FROM repositories WHERE archived_at IS NULL ORDER BY display_name,repository_id",
+                    "SELECT r.repository_id,r.display_name,p.display_name,p.icon,r.root_path FROM repositories r \
+                     LEFT JOIN repository_presentation p ON p.repository_id=r.repository_id \
+                     WHERE r.archived_at IS NULL ORDER BY r.display_name,r.repository_id",
                 )?;
                 Ok(statement
                     .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?))
                     })?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_or_domain)?;
         let mut rows = Vec::with_capacity(repositories.len());
-        for (repository_id, display_name) in repositories {
+        for (repository_id, display_name, custom_name, icon, root_path) in repositories {
+            let presentation = (custom_name.is_some() || icon.is_some()).then(|| {
+                devcoordinator2_api::results::RepositoryPresentation {
+                    repository_id: repository_id.clone(),
+                    display_name: custom_name,
+                    icon,
+                }
+            });
             let repository_id_for_query = repository_id.clone();
             let (aggregate, current_release, elaboration_request_count, preview_requested) = self
                 .database
@@ -357,6 +366,11 @@ impl PlanService {
             rows.push(PlanRepositoryRow {
                 repository_id,
                 display_name,
+                repository_source: crate::repository::repository_source_for_root(
+                    std::path::Path::new(&root_path),
+                ),
+                root_path,
+                presentation,
                 open_tasks: aggregate.tasks_total.saturating_sub(aggregate.tasks_done),
                 loc_done: aggregate.loc_done,
                 loc_total: aggregate.loc_total,
@@ -602,6 +616,45 @@ impl PlanService {
             elaboration_needed: false,
             preview_requested: self.has_requested(repository_id)?,
             elaboration_requests: self.elaboration_requests(repository_id)?,
+        })
+    }
+
+    pub fn search_tasks(
+        &self,
+        repository_id: &str,
+        params: devcoordinator2_api::params::TaskSearch,
+    ) -> Result<devcoordinator2_api::results::TaskSearch, ProtocolError> {
+        use devcoordinator2_api::results::{TaskSearch, TaskSearchHit};
+        if params.query.len() > 256
+            || !(1..=50).contains(&params.limit)
+            || params.after_sequence > i64::MAX as u64
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "task search requires a query up to 256 bytes, limit 1..50, and a valid sequence",
+            ));
+        }
+        let repository_id = repository_id.to_owned();
+        let status = params.status.map(|status| match status {
+            TaskStatus::Planned => "planned",
+            TaskStatus::InProgress => "in_progress",
+            TaskStatus::Done => "done",
+            TaskStatus::Dropped => "dropped",
+        });
+        let limit = usize::from(params.limit);
+        let mut tasks = self.database.call(move |connection| {
+            let mut statement = connection.prepare("SELECT task_id,seq,title,status FROM tasks WHERE repository_id=?1 AND (?2 IS NULL OR status=?2) AND seq>?3 AND instr(lower(title || ' ' || coalesce(outcome,'') || ' ' || coalesce(technical_note,'')),lower(?4))>0 ORDER BY seq LIMIT ?5")?;
+            let rows = statement.query_map(rusqlite::params![repository_id, status, params.after_sequence as i64, params.query, i64::from(params.limit)+1], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+            })?.collect::<Result<Vec<_>, _>>()?;
+            rows.into_iter().map(|(task_id, sequence, title, status)| Ok(TaskSearchHit { task_id, sequence: sequence as u64, title, status: parse_task_status(&status)? })).collect::<Result<Vec<_>, DatabaseError>>()
+        }).map_err(database_or_domain)?;
+        let truncated = tasks.len() > limit;
+        tasks.truncate(limit);
+        let next_sequence = truncated.then(|| tasks.last().expect("positive page size").sequence);
+        Ok(TaskSearch {
+            tasks,
+            next_sequence,
         })
     }
 
@@ -2158,6 +2211,153 @@ mod tests {
         (temporary, database, service)
     }
 
+    #[test]
+    fn repository_index_resolves_roots_and_local_clones_without_test_results() {
+        let (temporary, database, service) = world();
+        let registry = crate::repository::Registry::new(database);
+        let root = temporary.path().join("project");
+        let clone = temporary.path().join("workspace");
+        for path in [&root, &clone] {
+            std::fs::create_dir(path).unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .arg("init")
+                    .arg(path)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        for (path, origin) in [
+            (&root, "https://example.test/owner/project.git".to_owned()),
+            (&clone, root.to_string_lossy().into_owned()),
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(path)
+                    .args(["remote", "add", "origin", &origin])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            registry
+                .register(path, unsafe { libc::geteuid() }, unsafe { libc::getegid() })
+                .unwrap();
+        }
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        assert_eq!(collection.repositories.len(), 2);
+        let source = collection.repositories[0]
+            .repository_source
+            .as_ref()
+            .unwrap();
+        assert_eq!(source.name, "project");
+        for row in &collection.repositories {
+            assert_eq!(row.repository_source.as_ref(), Some(source));
+            assert_eq!(row.open_tasks, 0);
+            assert!(
+                row.root_path == root.to_string_lossy() || row.root_path == clone.to_string_lossy()
+            );
+        }
+        std::fs::remove_dir_all(&clone).unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        let missing = collection
+            .repositories
+            .iter()
+            .find(|row| row.display_name == "workspace")
+            .unwrap();
+        assert_eq!(missing.root_path, clone.to_string_lossy());
+        assert!(missing.repository_source.is_none());
+    }
+
+    #[test]
+    fn repository_presentation_persists_without_renaming_repository_identity() {
+        let (temporary, database, service) = world();
+        seed_repository(&database);
+        let registry = crate::repository::Registry::new(database.clone());
+        let request = devcoordinator2_api::params::RepositoryPresentationUpdate {
+            repository_id: "r1111111111111111".to_owned(),
+            display_name: Some("  My project  ".to_owned()),
+            icon: Some("rocket".to_owned()),
+        };
+        registry.update_presentation(request.clone(), 1000).unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        let row = &collection.repositories[0];
+        assert_eq!(row.display_name, "Fixture repository");
+        assert_eq!(row.repository_id, request.repository_id);
+        assert_eq!(
+            row.presentation.as_ref().unwrap().display_name.as_deref(),
+            Some("My project")
+        );
+        assert_eq!(
+            row.presentation.as_ref().unwrap().icon.as_deref(),
+            Some("rocket")
+        );
+        let reopened = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let persisted: (String, String, String) = reopened.call(|connection| {
+            Ok(connection.query_row("SELECT r.root_path,r.display_name,p.display_name FROM repositories r JOIN repository_presentation p USING(repository_id)", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?)
+        }).unwrap();
+        assert_eq!(
+            persisted,
+            (
+                "/fixture/repository".into(),
+                "Fixture repository".into(),
+                "My project".into()
+            )
+        );
+        for name in ["", "   ", "bad\nname", &"x".repeat(81)] {
+            let mut invalid = request.clone();
+            invalid.display_name = Some(name.into());
+            assert_eq!(
+                registry
+                    .update_presentation(invalid, 1000)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ParamsInvalid
+            );
+        }
+        let mut invalid = request.clone();
+        invalid.icon = Some("../private".into());
+        assert_eq!(
+            registry
+                .update_presentation(invalid, 1000)
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
+        let mut missing = request.clone();
+        missing.repository_id = "r2222222222222222".into();
+        assert_eq!(
+            registry
+                .update_presentation(missing, 1000)
+                .unwrap_err()
+                .code,
+            ErrorCode::RepositoryNotFound
+        );
+        registry
+            .update_presentation(
+                devcoordinator2_api::params::RepositoryPresentationUpdate {
+                    repository_id: request.repository_id,
+                    display_name: None,
+                    icon: None,
+                },
+                1000,
+            )
+            .unwrap();
+        let PlanOverview::Collection(collection) = service.overview(None).unwrap() else {
+            panic!("collection expected")
+        };
+        assert!(collection.repositories[0].presentation.is_none());
+    }
+
     fn seed(database: &Database, spec_json: String) {
         database
             .transaction(move |transaction| {
@@ -2463,6 +2663,66 @@ mod tests {
                     "2026-09-03T12:03:00Z",
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn task_search_finds_dropped_history_with_bounded_stable_pages() {
+        let (_temporary, database, service) = world();
+        seed_repository(&database);
+        let mut ids = Vec::new();
+        for title in ["Archived export", "Current export", "Other work"] {
+            ids.push(
+                service
+                    .create_task(
+                        "r1111111111111111",
+                        task_params(title),
+                        "uid:1000",
+                        "2026-09-12T12:00:00Z",
+                    )
+                    .unwrap()
+                    .task_id,
+            );
+        }
+        service
+            .update_task(
+                serde_json::from_value(serde_json::json!({"task_id": ids[0], "status": "dropped"}))
+                    .unwrap(),
+                "uid:1000",
+                "2026-09-12T12:01:00Z",
+            )
+            .unwrap();
+        let search = |query: &str, after, status| {
+            service
+                .search_tasks(
+                    "r1111111111111111",
+                    devcoordinator2_api::params::TaskSearch {
+                        path: None,
+                        repository_id: None,
+                        query: query.into(),
+                        status,
+                        after_sequence: after,
+                        limit: 1,
+                    },
+                )
+                .unwrap()
+        };
+        let first = search("export", 0, None);
+        assert_eq!(first.tasks[0].task_id, ids[0]);
+        assert_eq!(first.tasks[0].status, TaskStatus::Dropped);
+        let second = search("export", first.next_sequence.unwrap(), None);
+        assert_eq!(second.tasks[0].task_id, ids[1]);
+        assert!(second.next_sequence.is_none());
+        assert_eq!(search("", 0, Some(TaskStatus::Dropped)).tasks.len(), 1);
+        assert!(search("%", 0, None).tasks.is_empty());
+        let PlanOverview::Detail(overview) = service.overview(Some("r1111111111111111")).unwrap()
+        else {
+            panic!("detail");
+        };
+        assert!(overview.tasks.iter().all(|task| task.task_id != ids[0]));
+        assert_eq!(
+            service.task_history(&ids[0]).unwrap().task.status,
+            TaskStatus::Dropped
         );
     }
 

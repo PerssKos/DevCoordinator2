@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "outcomes",
+      "relativePath": "modules/outcomes.md",
+      "applicability": [
+        "always"
+      ]
+    },
+    {
+      "id": "context-evidence",
+      "relativePath": "modules/context-evidence.md",
+      "applicability": [
+        "always"
+      ]
+    },
+    {
+      "id": "approval-security",
+      "relativePath": "modules/approval-security.md",
+      "applicability": [
+        "always"
+      ]
+    },
+    {
+      "id": "ledger-decisions",
+      "relativePath": "modules/ledger-decisions.md",
+      "applicability": [
+        "planning",
+        "implementation",
+        "operations",
+        "review",
+        "diagnosis",
+        "feedback",
+        "delegation",
+        "delivery"
+      ]
+    },
+    {
+      "id": "execution",
+      "relativePath": "modules/execution.md",
+      "applicability": [
+        "implementation",
+        "operations",
+        "testing",
+        "delegation"
+      ]
+    },
+    {
+      "id": "delivery",
+      "relativePath": "modules/delivery.md",
+      "applicability": [
+        "delivery",
+        "web",
+        "desktop"
+      ]
+    },
+    {
+      "id": "verification",
+      "relativePath": "modules/verification.md",
+      "applicability": [
+        "implementation",
+        "testing",
+        "review",
+        "documentation"
+      ]
+    },
+    {
+      "id": "truthful-results",
+      "relativePath": "modules/truthful-results.md",
+      "applicability": [
+        "always"
+      ]
+    },
+    {
+      "id": "user-interface",
+      "relativePath": "modules/user-interface.md",
+      "applicability": [
+        "ui",
+        "web",
+        "desktop"
+      ]
+    },
+    {
+      "id": "corrections",
+      "relativePath": "modules/corrections.md",
+      "applicability": [
+        "diagnosis",
+        "review",
+        "feedback"
+      ]
+    },
+    {
+      "id": "preservation",
+      "relativePath": "modules/preservation.md",
+      "applicability": [
+        "implementation",
+        "operations",
+        "data"
+      ]
+    },
+    {
+      "id": "communication",
+      "relativePath": "modules/communication.md",
+      "applicability": [
+        "always"
+      ]
+    },
+    {
+      "id": "performance-review",
+      "relativePath": "modules/performance-review.md",
+      "applicability": [
+        "always"
+      ]
+    }
+  ]
+}

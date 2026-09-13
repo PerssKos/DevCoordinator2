@@ -17,6 +17,7 @@ pub async fn call(
     client: ClientContext,
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let operation = operation.into();
+    let review_action = matches!(operation.as_str(), "review.prepare" | "review.record");
     let blocking_wait = operation == "event.wait";
     let deployment_action = matches!(
         operation.as_str(),
@@ -78,7 +79,8 @@ pub async fn call(
     if blocking_wait || deployment_action {
         read.await.map_err(transport_error)?;
     } else {
-        timeout(Duration::from_secs(10), read)
+        let reply_seconds = if review_action { 20 } else { 10 };
+        timeout(Duration::from_secs(reply_seconds), read)
             .await
             .map_err(|_| {
                 ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out")
@@ -154,5 +156,67 @@ mod tests {
         .await;
         server.await.unwrap();
         assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn review_reply_budget_is_bounded_without_extending_receipt_lookups() {
+        for (operation, delay_seconds, succeeds) in [
+            ("review.prepare", 16, true),
+            ("review.record", 16, true),
+            ("review.prepare", 21, false),
+            ("review.receipt", 11, false),
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let socket = temporary.path().join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
+            let (response_sender, response_receiver) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut encoded = String::new();
+                stream.read_line(&mut encoded).await.unwrap();
+                let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
+                let mut finished = Vec::new();
+                stream.read_to_end(&mut finished).await.unwrap();
+                ready_sender.send(()).unwrap();
+                response_receiver.await.unwrap();
+                let response =
+                    ResponseEnvelope::success(request.id, serde_json::json!({"partial":true}))
+                        .unwrap();
+                let _ = stream
+                    .get_mut()
+                    .write_all(&serde_json::to_vec(&response).unwrap())
+                    .await;
+            });
+            let pending = tokio::spawn(async move {
+                call(
+                    &socket,
+                    operation,
+                    serde_json::json!({}),
+                    ClientContext::default(),
+                )
+                .await
+            });
+            ready_receiver.await.unwrap();
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(delay_seconds)).await;
+            let result = if succeeds {
+                tokio::time::resume();
+                response_sender.send(()).unwrap();
+                pending.await.unwrap()
+            } else {
+                let result = pending.await.unwrap();
+                tokio::time::resume();
+                response_sender.send(()).unwrap();
+                result
+            };
+            server.await.unwrap();
+            assert_eq!(
+                result.is_ok(),
+                succeeds,
+                "{operation} at {delay_seconds}s: {result:?}"
+            );
+        }
     }
 }

@@ -1344,9 +1344,26 @@ impl LogStreamSummary {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionProgress {
+    pub waiting: u32,
+    pub admitted: u32,
+    pub executing: u32,
+    pub finished: u32,
+    pub queued_at_epoch_ms: u64,
+    pub admitted_at_epoch_ms: Option<u64>,
+    pub started_at_epoch_ms: Option<u64>,
+    pub finished_at_epoch_ms: Option<u64>,
+    pub capacity_wait_ms: u64,
+    pub process_duration_ms: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionProgress>,
     pub id: String,
     pub status: LeafStatus,
     pub exit: DiagnosticExit,
@@ -1357,6 +1374,8 @@ pub struct CaseReport {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionProgress>,
     pub name: String,
     pub tier: ValidationTier,
     pub role: CheckRole,
@@ -1648,6 +1667,27 @@ impl ExecutionReport {
     }
 }
 
+fn validate_execution_progress(progress: &ExecutionProgress) -> Result<(), ContractError> {
+    let total = u64::from(progress.waiting)
+        + u64::from(progress.admitted)
+        + u64::from(progress.executing)
+        + u64::from(progress.finished);
+    if total == 0
+        || total > 4097
+        || progress.queued_at_epoch_ms == 0
+        || (progress.started_at_epoch_ms.is_some() && progress.admitted_at_epoch_ms.is_none())
+        || (progress.executing > 0 && progress.started_at_epoch_ms.is_none())
+        || (progress.admitted > 0 && progress.admitted_at_epoch_ms.is_none())
+        || (progress.finished_at_epoch_ms.is_some()
+            && progress.waiting + progress.admitted + progress.executing > 0)
+    {
+        return Err(ContractError::new(
+            "process admission observation is inconsistent",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), ContractError> {
     validate_name("report check", &check.name, 64)?;
     if !check.fingerprint.is_empty() {
@@ -1660,6 +1700,9 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
         return Err(ContractError::new(
             "check duration must be finite and non-negative",
         ));
+    }
+    if let Some(execution) = &check.execution {
+        validate_execution_progress(execution)?;
     }
     check.exit.validate()?;
     if check.artifacts.len() > 16
@@ -1727,6 +1770,9 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
         validate_case_id(&case.id)?;
         if !cases.insert(case.id.as_str()) {
             return Err(ContractError::new("check report repeats a case"));
+        }
+        if let Some(execution) = &case.execution {
+            validate_execution_progress(execution)?;
         }
         case.exit.validate()?;
         for stream in &case.streams {
@@ -1994,6 +2040,7 @@ mod tests {
 
     fn report() -> ExecutionReport {
         let check = CheckReport {
+            execution: None,
             name: "unit".into(),
             tier: ValidationTier::Release,
             role: CheckRole::Work,

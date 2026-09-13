@@ -143,7 +143,7 @@ fn plan_native_routes(
             .ok_or("native route repository is not registered")?
             .clone();
         let matches = array_or_empty(object_or_empty(export.get("routes")).get("routes"))
-            .into_iter()
+            .iter()
             .filter(|legacy| {
                 legacy.get("slug").and_then(Value::as_str) == Some(route.domain.as_str())
             })
@@ -176,7 +176,7 @@ fn plan_native_routes(
         }
         let authority_roots =
             array_or_empty(object_or_empty(export.get("authority")).get("port_assignments"))
-                .into_iter()
+                .iter()
                 .filter(|assignment| {
                     assignment.get("port").and_then(Value::as_u64) == Some(u64::from(route.port))
                 })

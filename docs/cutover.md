@@ -107,8 +107,15 @@ left as expiring invitations. Approved historical requests are not pending work.
    and reopens admission without discarding accepted work
    (DC2-2026-09-07-REACHABLE-UPGRADE-DRAIN).
    The daemon and installer share the current database schema version, so an
-   update remains installable after an earlier migration. Explicit legacy
-   versions remain supported; unknown future versions are still refused.
+   update remains installable after an earlier migration. The reviewed upgrade
+   window includes every owned schema from 15 through the current version, so a
+   version bump cannot remove the previously installed version. Installer tests
+   activate each supported schema and reject older, malformed and future values.
+   Activation also protects existing private authority files and recovery
+   directories before restoring state-root traversal, then updates only the
+   state-root tmpfiles rule. The rule is included in the installation snapshot.
+   Database and backup creation retain private permissions from the first write
+   (DC2-2026-09-12-OWNER-APPROVED-STATE-REPAIR).
 10. **Docker authoritative mode** (owner decision DC2-…-DOCKER-MODE): remove
     agent accounts from the `docker` group, restart their sessions, verify
     `devcoordinator2 health containers` attributions; the observational

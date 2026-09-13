@@ -1091,7 +1091,7 @@ pub fn prepare_instance<R: CommandRunner>(
     }
     let acl_count = ensure_edge_source_access(&source_root, "devcoordinator2-edge", runner)?;
     ensure_directory(&request.paths.runtime_dir, 0o755, request.system_owner)?;
-    ensure_directory(&request.paths.state_dir, 0o751, request.system_owner)?;
+    prepare_state_directory(&request.paths.state_dir, request.system_owner)?;
     ensure_directory(
         &request.paths.state_dir.join("public"),
         0o755,
@@ -1220,6 +1220,96 @@ pub fn prepare_instance<R: CommandRunner>(
         usage_policy_changed,
         edge_source_acl_entries: u32::try_from(acl_count).unwrap_or(u32::MAX),
     })
+}
+
+/// Protect the existing private leaves before making published state traversable.
+/// The public edge is untrusted; owner-controlled local accounts remain trusted.
+pub(crate) fn prepare_state_directory(path: &Path, owner: (u32, u32)) -> Result<(), String> {
+    std::fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    let open = |path: &Path, directory: bool| -> Result<File, String> {
+        let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+        let file = unix_open(
+            path,
+            if directory {
+                flags | OFlags::DIRECTORY
+            } else {
+                flags
+            },
+            Mode::empty(),
+        )
+        .map(File::from)
+        .map_err(|error| error.to_string())?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if (metadata.uid(), metadata.gid()) != owner || (!directory && !metadata.is_file()) {
+            return Err(
+                "state permission repair requires owned regular files and directories".to_owned(),
+            );
+        }
+        Ok(file)
+    };
+    let root = open(path, true)?;
+    let mut private = Vec::new();
+    for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("unrecognized state entry")?;
+        match name {
+            "public" | "deployments" | "secrets" => {
+                open(&entry.path(), true)?;
+            }
+            "cutover" | "recovery" => private.push((open(&entry.path(), true)?, 0o700)),
+            name if name == "authority.sqlite3"
+                || name.starts_with("authority.sqlite3-")
+                || name.starts_with("authority.sqlite3.") =>
+            {
+                private.push((open(&entry.path(), false)?, 0o600));
+            }
+            _ => {
+                return Err(
+                    "unrecognized state entry; inspect it before changing traversal".to_owned(),
+                );
+            }
+        }
+    }
+    // Preflight every entry before any permission change. Preserve data and owners.
+    for (file, mode) in private {
+        file.set_permissions(std::fs::Permissions::from_mode(mode))
+            .map_err(|error| error.to_string())?;
+    }
+    root.set_permissions(std::fs::Permissions::from_mode(0o751))
+        .map_err(|error| error.to_string())
+}
+
+/// Update only our state-root rule, retaining instance-specific sibling rules.
+pub(crate) fn state_tmpfiles(source_root: &Path, installed: &Path) -> Result<String, String> {
+    let template = read_template(&source_root.join("deploy/devcoordinator2.tmpfiles.conf"))?;
+    let rule = template
+        .lines()
+        .find(|line| line.split_whitespace().nth(1) == Some("/var/lib/devcoordinator2"))
+        .ok_or("source state-directory rule is missing")?;
+    let (current, metadata) = read_optional_regular(installed)?;
+    if metadata.is_none() {
+        return Ok(template);
+    }
+    let mut found = false;
+    let mut result = String::new();
+    for line in current.lines() {
+        if line.split_whitespace().nth(1) == Some("/var/lib/devcoordinator2") {
+            if found {
+                return Err("duplicate state-directory rule".to_owned());
+            }
+            found = true;
+            result.push_str(rule);
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    if !found {
+        result.push_str(rule);
+        result.push('\n');
+    }
+    Ok(result)
 }
 
 pub fn ensure_edge_source_access<R: CommandRunner>(
@@ -2447,5 +2537,114 @@ mod tests {
                 .iter()
                 .any(|argument| argument.to_string_lossy().contains("rwx"))
         }));
+    }
+
+    #[test]
+    fn state_repair_preserves_contents_and_public_paths_before_restoring_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let owner = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
+        for name in ["public", "deployments", "secrets", "cutover", "recovery"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::fs::write(root.join(name).join("keep"), "unchanged").unwrap();
+        }
+        for name in [
+            "authority.sqlite3",
+            "authority.sqlite3-wal",
+            "authority.sqlite3-shm",
+            "authority.sqlite3.pre-schema7.bak",
+        ] {
+            std::fs::write(root.join(name), "preserved").unwrap();
+            std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        for _ in 0..2 {
+            // Simulate the former startup rule, then repair the same state again.
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o750)).unwrap();
+            prepare_state_directory(root, owner).unwrap();
+            assert_eq!(std::fs::metadata(root).unwrap().mode() & 0o777, 0o751);
+            for name in [
+                "authority.sqlite3",
+                "authority.sqlite3-wal",
+                "authority.sqlite3-shm",
+                "authority.sqlite3.pre-schema7.bak",
+            ] {
+                let metadata = std::fs::metadata(root.join(name)).unwrap();
+                assert_eq!(metadata.mode() & 0o777, 0o600);
+                assert_eq!((metadata.uid(), metadata.gid()), owner);
+                assert_eq!(
+                    std::fs::read_to_string(root.join(name)).unwrap(),
+                    "preserved"
+                );
+            }
+            for name in ["public", "deployments", "secrets", "cutover", "recovery"] {
+                assert_eq!(
+                    std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,
+                    if matches!(name, "cutover" | "recovery") {
+                        0o700
+                    } else {
+                        0o755
+                    }
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join(name).join("keep")).unwrap(),
+                    "unchanged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn state_repair_refuses_unsafe_entries_before_changing_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("state");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let authority = root.join("authority.sqlite3");
+        std::fs::write(&authority, "preserved").unwrap();
+        std::fs::set_permissions(&authority, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let owner = (
+            rustix::process::getuid().as_raw(),
+            rustix::process::getgid().as_raw(),
+        );
+        symlink(&authority, root.join("authority.sqlite3-wal")).unwrap();
+        assert!(prepare_state_directory(&root, owner).is_err());
+        assert_eq!(std::fs::metadata(&authority).unwrap().mode() & 0o777, 0o644);
+        assert_eq!(std::fs::metadata(&root).unwrap().mode() & 0o777, 0o750);
+        std::fs::remove_file(root.join("authority.sqlite3-wal")).unwrap();
+        std::fs::write(root.join("unclassified"), "preserved").unwrap();
+        assert!(prepare_state_directory(&root, owner).is_err());
+        assert!(prepare_state_directory(&root, (owner.0 + 1, owner.1)).is_err());
+        assert_eq!(std::fs::metadata(&authority).unwrap().mode() & 0o777, 0o644);
+    }
+
+    #[test]
+    fn state_tmpfiles_retains_instance_rules_and_the_installer_traversal_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("deploy")).unwrap();
+        std::fs::write(
+            temp.path().join("deploy/devcoordinator2.tmpfiles.conf"),
+            include_str!("../../../deploy/devcoordinator2.tmpfiles.conf"),
+        )
+        .unwrap();
+        let installed = temp.path().join("installed.conf");
+        let other = "d /var/lib/devcoordinator2-bugs 2775 root devcoordinator2-clients -\n";
+        std::fs::write(
+            &installed,
+            format!("d /var/lib/devcoordinator2 0750 root root -\n{other}"),
+        )
+        .unwrap();
+        let rendered = state_tmpfiles(temp.path(), &installed).unwrap();
+        assert_eq!(
+            rendered,
+            format!("d /var/lib/devcoordinator2 0751 root root -\n{other}")
+        );
+        std::fs::write(&installed, &rendered).unwrap();
+        assert_eq!(state_tmpfiles(temp.path(), &installed).unwrap(), rendered);
     }
 }

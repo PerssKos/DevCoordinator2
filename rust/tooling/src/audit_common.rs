@@ -44,7 +44,7 @@ pub fn interaction_checklist_missing(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     Sha256::digest(bytes)
         .iter()

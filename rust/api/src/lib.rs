@@ -8,12 +8,15 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 pub mod configuration;
+pub mod delivery;
 pub mod glossary;
 pub mod params;
 pub mod results;
+pub mod review;
+pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 18;
+pub const DATABASE_SCHEMA_VERSION: u32 = 20;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -42,6 +45,12 @@ pub struct ClientContext {
     pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<work_context::WorkContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_source: Option<work_context::WorkSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_diagnostic: Option<work_context::WorkDiagnostic>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -676,6 +685,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::RepositoryStatus
     ),
     operation!(
+        "repository.presentation.update",
+        "Choose a repository's Console name and icon without changing its identity.",
+        IDEMPOTENT_REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Repository appearance is a Console-only administrator workflow.",
+        [],
+        params::RepositoryPresentationUpdate,
+        results::RepositoryPresentation
+    ),
+    operation!(
         "repository.archive",
         "Archive a repository after its blockers are cleared.",
         REVERSIBLE_SERVER_ADMIN,
@@ -829,6 +847,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::FeedbackCreated
     ),
     operation!(
+        "test.evidence.lookup",
+        "Open an exact retained screenshot run without relying on the latest-runs list.",
+        READ_SERVER_ADMIN,
+        Protocol["test evidence lookup"],
+        ["test_evidence_lookup"],
+        params::EvidenceLookup,
+        results::EvidenceLookup
+    ),
+    operation!(
         "test.evidence.feedback.reply",
         "Reply to screenshot-anchored feedback.",
         APPEND_REPOSITORY_ADMIN,
@@ -888,7 +915,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         READ_SERVER_ADMIN,
         Protocol["test list"],
         ["test_list"],
-        params::Empty,
+        params::TestList,
         results::TestList
     ),
     operation!(
@@ -1198,6 +1225,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::PlanOverview
     ),
     operation!(
+        "task.search",
+        "Search all task states, including dropped history, without changing the active plan.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["task search"],
+        ["task_search"],
+        params::TaskSearch,
+        results::TaskSearch
+    ),
+    operation!(
         "task.history",
         "Show one task and its permanent history.",
         READ_REPOSITORY_VIEWER,
@@ -1268,6 +1304,69 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["decision_tail"],
         params::DecisionTail,
         results::DecisionTail
+    ),
+    operation!(
+        "review.prepare",
+        "Prepare bounded canonical usage and outcome evidence without scheduling work.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["review prepare"],
+        ["review_prepare"],
+        review::Prepare,
+        review::Prepared
+    ),
+    operation!(
+        "review.record",
+        "Append an evidence-backed review revision with optimistic concurrency.",
+        APPEND_REPOSITORY_ADMIN,
+        Protocol["review record"],
+        ["review_record"],
+        review::Record,
+        review::Revision
+    ),
+    operation!(
+        "review.show",
+        "Read bounded immutable review revisions.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["review list"],
+        ["review_show"],
+        review::Show,
+        review::Page
+    ),
+    operation!(
+        "review.receipt",
+        "Read one exact immutable structured review revision.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["review show"],
+        ["review_receipt"],
+        review::Reference,
+        review::Revision
+    ),
+    operation!(
+        "release.evidence",
+        "Read an exact delivery receipt; qualification and verification time are server-derived.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["release evidence"],
+        ["release_evidence"],
+        review::Reference,
+        delivery::Receipt
+    ),
+    operation!(
+        "release.deliver_evidence",
+        "Attach retained delivery proof or explicitly pending external evidence.",
+        APPEND_REPOSITORY_ADMIN,
+        Protocol["release deliver-evidence"],
+        ["release_deliver_evidence"],
+        delivery::Deliver,
+        delivery::Receipt
+    ),
+    operation!(
+        "release.evidence_show",
+        "Read bounded immutable delivery evidence receipts.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["release evidence-show"],
+        ["release_evidence_show"],
+        delivery::Show,
+        delivery::Page
     ),
     operation!(
         "decision.search",
@@ -1466,7 +1565,7 @@ pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
             "request exceeds 64 KiB frame cap",
         ));
     }
-    let value: Value = serde_json::from_slice(raw).map_err(|error| {
+    let mut value: Value = serde_json::from_slice(raw).map_err(|error| {
         ProtocolError::new(ErrorCode::ProtocolInvalid, "request is not valid JSON")
             .with_detail(error.to_string())
     })?;
@@ -1480,6 +1579,7 @@ pub fn parse_request(raw: &[u8]) -> Result<RequestEnvelope, ProtocolError> {
             ),
         ));
     }
+    work_context::sanitize_request(&mut value);
     let request: RequestEnvelope = serde_json::from_value(value).map_err(|error| {
         ProtocolError::new(ErrorCode::ProtocolInvalid, "request envelope is invalid")
             .with_detail(error.to_string())
@@ -1697,9 +1797,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 90);
-        assert_eq!(tools.len(), 68);
-        assert_eq!(cli_routes.len(), 80);
+        assert_eq!(OPERATIONS.len(), 100);
+        assert_eq!(tools.len(), 77);
+        assert_eq!(cli_routes.len(), 89);
     }
 
     #[test]

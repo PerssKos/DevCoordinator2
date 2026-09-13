@@ -9,6 +9,7 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -18,9 +19,12 @@ import { createRequire } from 'node:module';
 import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
-import { revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-pane.mjs';
+import { chooseRepository, revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-pane.mjs';
 import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
+import { verifyWorkspace } from './verify-workspace.mjs';
+import { verifyAnnotations } from './verify-annotations.mjs';
+import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -263,7 +267,7 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', earlier_visual_evidence: scenario.earlierEvidence ? { run_id: 't20251231T000000Z-abc111', test: 'browser-journeys', started_at: '2025-12-31T00:00:00Z', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } } : null, visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
+      { checks: scenario.admission ? [{ name: 'compile', status: 'running', started_at: null, execution: { waiting: 1, admitted: 0, executing: 0, finished: 0, capacity_wait_ms: 0, process_duration_ms: 0 } }] : [], report_issue: scenario.reportIssue || null, run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', earlier_visual_evidence: scenario.earlierEvidence ? { run_id: 't20251231T000000Z-abc111', test: 'browser-journeys', started_at: '2025-12-31T00:00:00Z', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } } : null, visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
       { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
@@ -342,8 +346,12 @@ const fixtures = (scenario) => {
       decisions: { unsummarized_count: scenario.empty ? 0 : 4, summary_due: false },
     },
     'plan.overview-list': { repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', open_tasks: 5, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
-      { repository_id: 'r2', display_name: LONG, open_tasks: 0, loc_done: 0, loc_total: 0, current_release: null, preview_requested: true, elaboration_request_count: 0 }] },
+      { repository_id: REPO, display_name: 'repo-one', root_path: '/srv/repos/repo-one', repository_source: { key: 'repo-one-origin', name: 'repo-one' }, open_tasks: 5, loc_done: 550, loc_total: 1800, current_release: { name: 'Release 1', kind: 'release', status: 'planned' }, preview_requested: false, elaboration_request_count: 1 },
+      { repository_id: 'r2', display_name: LONG, open_tasks: 0, loc_done: 0, loc_total: 0, current_release: null, preview_requested: true, elaboration_request_count: 0 },
+      ...(scenario.workspaceLongList ? [
+        { repository_id: 'release-clone', display_name: '0.1.3-generated', root_path: '/srv/releases/0.1.3-generated', repository_source: { key: 'repo-one-origin', name: 'repo-one' } },
+        ...Array.from({ length: 16 }, (_, index) => ({ repository_id: `workspace-${index}`, display_name: 'workspace', root_path: `/srv/owner/checkouts/independent-project-${index}/.local/daily/workspace` })),
+      ] : [])] },
     'decision.tail': {
       repository_id: REPO, display_name: 'repo-one',
       summary: scenario.empty ? null : { body: 'The story so far: the app greets people plainly and exports are files.', covers_through_seq: 40, created_at: '2026-08-20T10:00:00Z' },
@@ -404,6 +412,7 @@ async function startFakeDaemon(dir) {
   const socketPath = path.join(dir, 'daemon.sock');
   let scenario = SCENARIOS.populated;
   const calls = [];
+  const repositoryPresentations = new Map();
   const settled = new WeakSet();
   const settledWaiters = new Set();
   const receivedWaiters = new Set();
@@ -537,6 +546,11 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
+      if (cmd === 'test.list' && scenario.testPaged) {
+        const data = fixtures(scenario)['test.list'];
+        const page = req.params.after_worktree_id ? 1 : 0;
+        return reply({ ok: true, data: { runs: [data.runs[page]], next_worktree_id: page ? null : data.runs[0].worktree_id } });
+      }
       if (cmd === 'test.list' && scenario.testStopped) {
         const data = fixtures(scenario)['test.list'];
         data.runs[0] = { ...data.runs[0], status: 'cancelled', finished_at: new Date().toISOString() };
@@ -602,6 +616,16 @@ async function startFakeDaemon(dir) {
       } });
       const artifacts = artifactResponse(cmd, req.params, scenario);
       if (artifacts) return reply(artifacts);
+      if (cmd === 'test.evidence.lookup') {
+        if (scenario.identity !== 'owner@example.test') return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access is required.', detail: '' } });
+        const retained = req.params.run_id === 't20251101T000000Z-abcd12';
+        const earlier = scenario.earlierEvidence && req.params.run_id === 't20251231T000000Z-abc111';
+        if (scenario.empty || !retained && !earlier && req.params.run_id !== TEST_RUN || req.params.image_id && !/^[1-8]{64}$/.test(req.params.image_id)) return reply({ ok: false, error: { code: 'test_evidence_expired', message: 'The selected visual evidence is unavailable or has expired.', detail: '' } });
+        return reply({ ok: true, data: {
+          context: { repository_id: earlier ? REPO : 'r2', worktree_id: earlier ? 'w1' : 'w2', worktree_path: earlier ? '/srv/repos/repo-one' : `/srv/repos/${LONG}`, display_name: earlier ? 'repo-one' : LONG, run_id: req.params.run_id, test: retained ? 'retained-visual-review' : earlier ? 'browser-journeys' : 'ui-release', started_at: '2025-11-01T00:00:00Z' },
+          evidence: { ...evidenceResult(), run_id: req.params.run_id },
+        } });
+      }
       if (cmd === 'test.evidence.get') return reply({ ok: true, data: evidenceResult() });
       if (cmd === 'test.evidence.image') {
         const start = req.params.offset || 0;
@@ -661,7 +685,16 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: { feedback: structuredClone(feedback) } });
       }
       if (['deployment.restart', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'bug.report', 'bug.close', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'telegram.link', 'telegram.subscribe', 'telegram.unsubscribe', 'test.stop', 'test.start', 'health.container_remove'].includes(cmd)) return reply({ ok: true, data: { state: 'done', status: 'done' } });
-      if (cmd === 'plan.overview' && !req.params.repository_id) return reply({ ok: true, data: fixtures(scenario)['plan.overview-list'] });
+      if (cmd === 'repository.presentation.update') {
+        if (!scenario.admin) return reply({ ok: false, error: { code: 'permission_denied', message: 'Administrator access required' } });
+        repositoryPresentations.set(req.params.repository_id, structuredClone(req.params));
+        return reply({ ok: true, data: req.params });
+      }
+      if (cmd === 'plan.overview' && !req.params.repository_id) {
+        const result = fixtures(scenario)['plan.overview-list'];
+        result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
@@ -718,7 +751,16 @@ async function startFakeDaemon(dir) {
         ? (call) => call.operation === predicateOrCommand : predicateOrCommand;
       const existing = calls.find((call) => settled.has(call) && predicate(call));
       if (existing) return Promise.resolve(existing);
-      return new Promise((resolve) => settledWaiters.add({ predicate, resolve }));
+      return new Promise((resolve, reject) => {
+        const deadline = AbortSignal.timeout(30000);
+        const waiter = { predicate, resolve: (value) => { deadline.removeEventListener('abort', onTimeout); resolve(value); } };
+        const onTimeout = () => {
+          settledWaiters.delete(waiter);
+          reject(new Error(`Fixture event deadline exceeded: ${String(predicateOrCommand)}; recent operations: ${calls.slice(-8).map(call => call.operation).join(', ')}`));
+        };
+        deadline.addEventListener('abort', onTimeout, { once: true });
+        settledWaiters.add(waiter);
+      });
     },
     close: () => new Promise((r) => server.close(r)),
   };
@@ -731,7 +773,8 @@ async function waitForRenderFrame(page) {
 }
 
 async function waitForSettledCall(daemon, page, predicateOrCommand) {
-  await daemon.waitForCall(predicateOrCommand);
+  try { await daemon.waitForCall(predicateOrCommand); }
+  catch (error) { await page.screenshot({ path: path.join(OUT, 'event-deadline.png'), fullPage: true }); throw error; }
   await waitForRenderFrame(page);
 }
 
@@ -811,14 +854,14 @@ async function main() {
   }
   const browser = await pw.chromium.launch({ args: [`--host-resolver-rules=MAP *.${BASE} 127.0.0.1`] });
   const report = { checks: [], failures: [] };
-  const check = (name, ok, detail = '') => { report.checks.push({ name, ok, detail }); if (!ok) report.failures.push(`${name}: ${detail}`); };
+  const check = (name, ok, detail = '') => { report.checks.push({ name, ok, detail }); appendFileSync(path.join(OUT, 'checks.jsonl'), `${JSON.stringify({ name, ok, detail })}\n`); if (!ok) report.failures.push(`${name}: ${detail}`); };
   const appSource = await fs.readFile(new URL('./app.js', import.meta.url), 'utf8');
   check('administrator controls have no native or data-driven confirmation path',
     !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
 
   if (process.env.CONSOLE_VERIFY_PROGRESS_ONLY) {
     try {
-      const context = await browser.newContext({ viewport: VIEWPORTS.wide });
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, hasTouch: true, colorScheme: process.env.CONSOLE_VERIFY_THEME || 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();
@@ -837,16 +880,16 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      for (const viewport of [{ width: 1280, height: 900 }, { width: 713, height: 921 }, { width: 390, height: 844 }]) {
+      for (const viewport of [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -919,7 +962,8 @@ async function main() {
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
         const callsBeforeNavigation = daemon.calls.length;
-        await page.goto(`http://${HOST}:${port}/${view}`);
+        const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
+        await page.goto(`http://${HOST}:${port}/${scopedView}`);
         if (scenario.delayMs) {
           const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
           if (firstPending.operation === 'user.whoami') {
@@ -986,6 +1030,7 @@ async function main() {
             navVisible: document.querySelector('#nav')?.offsetParent !== null,
             projectPickerCount: document.querySelectorAll('[data-project-picker]').length,
             projectNativeSelectCount: document.querySelectorAll('[data-project-picker] select').length,
+            sharedRepositoryCount: document.querySelectorAll('#repository-list').length,
             health: healthSummary ? {
               capacityCards: healthCapacityRects.length,
               statusItems: document.querySelectorAll('.health-status-item').length,
@@ -1006,15 +1051,11 @@ async function main() {
         check(`${label}: no horizontal document overflow`, metrics.overflow <= 0, `overflow ${metrics.overflow}px`);
         check(`${label}: no clipped headline text`, metrics.clipped.length === 0, metrics.clipped.join(' | '));
         check(`${label}: no off-canvas controls outside scroll containers`, metrics.offscreen === 0, `${metrics.offscreen} off-canvas`);
-        check(`${label}: destination title links to its collection`, metrics.headingHref === metrics.expectedDestinationHref, `${metrics.headingHref} != ${metrics.expectedDestinationHref}`);
+        check(`${label}: destination remains reachable in context`, metrics.headingHref === metrics.expectedDestinationHref || view === '#/tests' && await page.locator('#workspace-aspects a[aria-current][href^="#/tests?repository="]').count() === 1, `${metrics.headingHref} != ${metrics.expectedDestinationHref}`);
         check(`${label}: global header stays on one row`, metrics.headerHeight <= 64 && metrics.headerCenterSpread <= 2, `height ${metrics.headerHeight}px, center spread ${metrics.headerCenterSpread}px`);
-        if (vpName === 'wide') {
-          check(`${label}: wide header shows inline navigation`, metrics.navVisible && !metrics.navToggleVisible, JSON.stringify({ navVisible: metrics.navVisible, toggle: metrics.navToggleVisible }));
-        } else {
-          check(`${label}: narrow header collapses navigation`, !metrics.navVisible && metrics.navToggleVisible, JSON.stringify({ navVisible: metrics.navVisible, toggle: metrics.navToggleVisible }));
-        }
+        check(`${label}: Console tools use one compact menu`, !metrics.navVisible && metrics.navToggleVisible);
         if (PROJECT_DETAIL_VIEWS.has(view) && ['populated', 'empty', 'applying'].includes(scenarioName)) {
-          check(`${label}: project context uses one custom DOM picker`, metrics.projectPickerCount === 1 && metrics.projectNativeSelectCount === 0, JSON.stringify({ pickers: metrics.projectPickerCount, nativeSelects: metrics.projectNativeSelectCount }));
+          check(`${label}: one shared repository selector replaces per-page pickers`, metrics.projectPickerCount === 0 && metrics.sharedRepositoryCount === 1);
         }
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
         if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work)/.test(metrics.text), metrics.text.slice(0, 120));
@@ -1024,9 +1065,7 @@ async function main() {
         if (scenarioName === 'denied' && view.startsWith('#/progress')) check(`${label}: progress requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view === '#/health') check(`${label}: host health denied but repositories visible`, /administrator-only/.test(metrics.text) && /repo-one/.test(metrics.text));
         if (scenarioName === 'denied' && view === '#/deployments') {
-          check(`${label}: repository dashboard states restricted evidence without dead links`,
-            /Operator access required/.test(metrics.text) && /Administrator access required/.test(metrics.text)
-            && await page.locator('.deployment-repository a[href^="#/progress/"], .deployment-repository a[href^="#/usage/"], .deployment-repository a[href="#/tests"]').count() === 0);
+          check(`${label}: viewers retain read-only deployment facts`, await page.locator('.deployment-record').count() === 2 && await page.locator('[data-edit-domain], [data-cmd]:not(:disabled)').count() === 0);
         }
         if (scenarioName === 'applying' && (view === '#/deployments' || view === `#/deployments/${DEP}`)) {
           const surface = view === '#/deployments'
@@ -1036,43 +1075,13 @@ async function main() {
           check(`${label}: applying deployment has no enabled conflicting mutation`, enabledMutation === 0, `${enabledMutation} enabled`);
           if (view === `#/deployments/${DEP}`) check(`${label}: applying journey explains lost replies`, /Closing this page does not cancel/.test(metrics.text));
         }
-        if (scenarioName === 'populated' && ['#/deployments', '#/tests', '#/health'].includes(view)) check(`${label}: long names rendered`, /going-and-going/.test(metrics.text), metrics.text.slice(0, 80));
+        if (scenarioName === 'populated' && ['#/deployments', '#/tests'].includes(view)) check(`${label}: long repository names remain selectable`, /going-and-going/.test(await page.locator('#repository-list').textContent()));
         if (scenarioName === 'populated' && view === '#/deployments') {
-          const legacy = page.locator('[data-repository-id="r9999999999999999"]');
-          const repo = page.locator(`[data-repository-id="${REPO}"]`);
-          const legacyText = await legacy.innerText();
-          const repoText = await repo.innerText();
-          check(`${label}: every deployment is attributed to exactly one repository summary`,
-            await page.locator('.deployment-repository').count() === 2
-            && await legacy.locator(`[data-deployment-id="${OBS}"]`).count() === 1
-            && await legacy.locator(`[data-deployment-id="${DEP}"], [data-deployment-id="d1111111111111111"]`).count() === 0
-            && await repo.locator(`[data-deployment-id="${DEP}"], [data-deployment-id="d1111111111111111"]`).count() === 2
-            && await repo.locator(`[data-deployment-id="${OBS}"]`).count() === 0,
-            `${legacyText.slice(0, 120)} | ${repoText.slice(0, 120)}`);
-          check(`${label}: repository evidence never crosses project boundaries`,
-            /Not recorded/.test(legacyText) && /No measured progress/.test(legacyText)
-            && /No measured usage/.test(legacyText) && /No current run/.test(legacyText)
-            && /Deployment healthy/.test(legacyText) && /No history/.test(legacyText)
-            && !/Release 1|6\.4M|Buttons are green/.test(legacyText)
-            && /Release 1 · 5 open/.test(repoText) && /62% · 1,558 of 2,500 lines/.test(repoText)
-            && /6\.4M tokens · 104 requests/.test(repoText) && /unit · running/.test(repoText)
-            && /Unhealthy · CPU 40\.1%/.test(repoText) && /Buttons are green now/.test(repoText),
-            `${legacyText.slice(0, 240)} | ${repoText.slice(0, 240)}`);
-          check(`${label}: each repository exposes six truthful continuation summaries`,
-            await legacy.locator('.deployment-summary-item').count() === 6
-            && await repo.locator('.deployment-summary-item').count() === 6
-            && await repo.locator(`a[href="#/plan/${REPO}"]`).count() === 1
-            && await repo.locator(`a[href="#/progress/${REPO}"]`).count() === 1
-            && await repo.locator(`a[href="#/usage/${REPO}"]`).count() === 1
-            && await repo.locator(`a[href="#/decisions/${REPO}"]`).count() === 1
-            && await repo.locator('a[href="#/tests"]').count() === 1
-            && await repo.locator('a[href="#/health"]').count() === 1);
-          check(`${label}: Tests and Health expose only available repository-attributed detail`,
-            await repo.locator('[data-summary="tests"] .deployment-summary-facts > div').count() === 3
-            && await repo.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4
-            && await legacy.locator('[data-summary="tests"] .deployment-summary-facts').count() === 0
-            && await legacy.locator('[data-summary="health"] .deployment-summary-facts > div').count() === 4);
-          check(`${label}: removed declared-only area stays absent`, !/Declared, not applied|tool@worktree/.test(metrics.text));
+          check(`${label}: deployments stay within the selected repository`,
+            await page.locator('.deployment-record').count() === 2
+            && await page.locator(`[data-deployment-id="${DEP}"]`).count() === 1
+            && await page.locator(`[data-deployment-id="${OBS}"]`).count() === 0
+            && await page.locator('.deployment-repository-summary').count() === 0);
         }
         if (scenarioName === 'populated' && ['#/tests', '#/health'].includes(view)) {
           const numberText = view === '#/tests' ? await page.locator('.test-technical').first().textContent() : metrics.text;
@@ -1154,9 +1163,17 @@ async function main() {
     }
   }
 
+  if (process.env.CONSOLE_VERIFY_STATES_ONLY) {
+    await browser.close(); await edge.close(); await daemon.close();
+    await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    return;
+  }
+
   // Interaction proofs (populated, wide): controls call the API and the view re-renders.
   daemon.setScenario(SCENARIOS.populated);
-  const context = await browser.newContext({ viewport: VIEWPORTS.wide });
+  const context = await browser.newContext({ viewport: VIEWPORTS.wide, hasTouch: true });
   const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
   await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
   const page = await context.newPage();
@@ -1226,161 +1243,14 @@ async function main() {
   const domainCall = daemon.calls.find((c) => c.operation === 'deployment.set_domain');
   check('interaction: domain pop-up calls deployment.set_domain with the new label',
     domainCall && domainCall.params.deployment_id === DEP && domainCall.params.domain === 'renamed-app');
-  await page.goto(`http://${HOST}:${port}/#/deployments`);
-  await page.waitForSelector('.deployment-repository-head');
-  const groupHeads = await page.locator('.deployment-repository-head').allInnerTexts();
-  check('deployments list groups rows under repository headers',
-    groupHeads.length === 2 && groupHeads.some((t) => /repo-one/.test(t)) && groupHeads.some((t) => /legacy-repo/.test(t)),
-    groupHeads.join(' | '));
-  let dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
-  let legacyDashboardRepo = page.locator('[data-repository-id="r9999999999999999"]');
-  const repositoryToggle = dashboardRepo.locator('[data-deployment-repository-toggle]');
-  check('deployments: every repository and Workers collection starts expanded with no per-worker expander',
-    await page.locator('[data-deployment-repository-toggle][aria-expanded="true"]').count() === 2
-    && await page.locator('[data-deployment-workers-toggle][aria-expanded="true"]').count() === 2
-    && await page.locator('[data-deployment-toggle], .deployment-record-toggle').count() === 0
-    && await page.locator('.deployment-repository-body:not([hidden])').count() === 2
-    && await page.locator('.deployment-records:not([hidden])').count() === 2
-    && await page.locator('.deployment-record').count() === 3);
-  await repositoryToggle.focus();
-  await page.keyboard.press('Enter');
-  check('interaction: Enter collapses only the selected repository while its identity and status remain visible',
-    await repositoryToggle.getAttribute('aria-expanded') === 'false'
-    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1
-    && await dashboardRepo.locator('.deployment-repository-head:visible').count() === 1
-    && /repo-one/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
-    && /Attention/.test(await dashboardRepo.locator('.deployment-repository-head').innerText())
-    && await legacyDashboardRepo.locator('.deployment-repository-body:not([hidden])').count() === 1);
-  await page.keyboard.press('Space');
-  check('interaction: Space expands the selected repository and restores every summary and deployment',
-    await repositoryToggle.getAttribute('aria-expanded') === 'true'
-    && await dashboardRepo.locator('.deployment-summary-item:visible').count() === 6
-    && await dashboardRepo.locator('.deployment-record:visible').count() === 2);
-  let workersToggle = dashboardRepo.locator('[data-deployment-workers-toggle]');
-  await workersToggle.focus();
-  await page.keyboard.press('Enter');
-  check('interaction: Enter collapses every worker in only the selected repository',
-    await workersToggle.getAttribute('aria-expanded') === 'false'
-    && await dashboardRepo.locator('.deployment-records[hidden]').count() === 1
-    && await dashboardRepo.locator('.deployment-workers-head:visible').count() === 1
-    && await dashboardRepo.locator('.deployment-record:visible').count() === 0
-    && await legacyDashboardRepo.locator('.deployment-records:not([hidden])').count() === 1
-    && await legacyDashboardRepo.locator('.deployment-record:visible').count() === 1);
-  await page.keyboard.press('Space');
-  check('interaction: Space restores every worker and its real lifecycle controls together',
-    await workersToggle.getAttribute('aria-expanded') === 'true'
-    && await dashboardRepo.locator('.deployment-records:not([hidden])').count() === 1
-    && await dashboardRepo.locator('.deployment-record:visible').count() === 2
-    && await dashboardRepo.locator('.deployment-record [data-cmd]:visible').count() > 0);
-  await workersToggle.click();
-  await page.evaluate(() => { location.hash = '#/health'; });
-  await page.waitForSelector('.health-summary');
-  await page.evaluate(() => { location.hash = '#/deployments'; });
-  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
-  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
-  workersToggle = dashboardRepo.locator('[data-deployment-workers-toggle]');
-  check('interaction: the selected Workers collection stays collapsed through a same-session page rerender',
-    await workersToggle.getAttribute('aria-expanded') === 'false'
-    && await dashboardRepo.locator('.deployment-records[hidden]').count() === 1
-    && await dashboardRepo.locator('.deployment-record:visible').count() === 0);
-  await workersToggle.click();
-  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
-  await page.evaluate(() => { location.hash = '#/tests'; });
-  await page.waitForSelector('.test-results');
-  await page.evaluate(() => { location.hash = '#/deployments'; });
-  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
-  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
-  check('interaction: the selected repository stays collapsed through a same-session page rerender',
-    await dashboardRepo.locator('[data-deployment-repository-toggle]').getAttribute('aria-expanded') === 'false'
-    && await dashboardRepo.locator('.deployment-repository-body[hidden]').count() === 1);
-  await dashboardRepo.locator('[data-deployment-repository-toggle]').click();
-  const testSummary = dashboardRepo.locator('[data-summary="tests"]');
-  const healthSummary = dashboardRepo.locator('[data-summary="health"]');
-  check('deployments: Tests shows selected-run tier, elapsed time, output, recency, and proof type',
-    /unit · running/.test(await testSummary.innerText())
-    && /Diagnostic run · started/.test(await testSummary.innerText())
-    && /Tier\s+Pre-merge/.test(await testSummary.innerText())
-    && /Elapsed\s+\d+s/.test(await testSummary.innerText())
-    && /Output\s+118 MiB/.test(await testSummary.innerText()));
-  check('deployments: Health shows current repository CPU, memory, storage, and deployment count',
-    /Unhealthy · CPU 40\.1%/.test(await healthSummary.innerText())
-    && /CPU\s+40\.1%/.test(await healthSummary.innerText())
-    && /Memory\s+46\.6 GiB/.test(await healthSummary.innerText())
-    && /Storage\s+373 GiB/.test(await healthSummary.innerText())
-    && /Deployments\s+2/.test(await healthSummary.innerText()));
-  daemon.setScenario(SCENARIOS.dashboardUsagePending);
-  await page.reload();
-  const resolvingUsage = page.locator(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  await resolvingUsage.waitFor();
-  await resolvingUsage.locator('.deployment-summary-link').focus();
-  const resolvingInitialText = await resolvingUsage.innerText();
-  const resolvingInitialBusy = await resolvingUsage.getAttribute('aria-busy');
-  check('deployments: a pending usage mapping starts as a truthful non-blocking loading state',
-    /Loading usage/.test(resolvingInitialText)
-    && resolvingInitialBusy === 'true'
-    && await page.locator('.deployment-summary-item').count() === 12,
-  JSON.stringify({ resolvingInitialText, resolvingInitialBusy,
-    summaryCount: await page.locator('.deployment-summary-item').count() }));
-  daemon.releaseDelayed();
-  await page.waitForFunction((repositoryId) => {
-    const card = document.querySelector(`[data-repository-id="${repositoryId}"] [data-summary="usage"]`);
-    return /6\.4M tokens · 104 requests/.test(card?.textContent || '')
-      && !card?.hasAttribute('aria-busy');
-  }, REPO);
-  const usageResolutionCalls = daemon.calls.filter((call) => call.operation === 'usage.repository');
-  const resolvingFinalText = await resolvingUsage.innerText();
-  const resolvingFinalFocus = await resolvingUsage.locator('.deployment-summary-link:focus').count();
-  check('interaction: available project usage resolves once in place without losing link focus',
-    usageResolutionCalls.length === 1
-    && usageResolutionCalls[0].params.repository_id === REPO
-    && usageResolutionCalls[0].params.range === '24h'
-    && resolvingFinalFocus === 1
-    && /3 of 4 environments included/.test(resolvingFinalText),
-  JSON.stringify({ usageResolutionCalls, resolvingFinalText, resolvingFinalFocus }));
-  daemon.setScenario(SCENARIOS.dashboardUsageUnobserved);
-  await page.reload();
-  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const unobservedText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const unobservedCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
-  check('deployments: genuinely unobserved usage stays truthful and triggers no detail read',
-    /No usage measured/.test(unobservedText) && unobservedCalls.length === 0,
-  JSON.stringify({ unobservedText, unobservedCalls }));
-  daemon.setScenario(SCENARIOS.usageUnavailable);
-  await page.reload();
-  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const unavailableText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const unavailableCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
-  check('deployments: a real usage source failure stays unavailable and triggers no mapping read',
-    /Usage data unavailable/.test(unavailableText) && unavailableCalls.length === 0,
-  JSON.stringify({ unavailableText, unavailableCalls }));
-  daemon.setScenario(SCENARIOS.denied);
-  await page.reload();
-  await page.waitForSelector(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const deniedUsageText = await page.innerText(`[data-repository-id="${REPO}"] [data-summary="usage"]`);
-  const deniedUsageCalls = daemon.calls.filter((call) => call.command === 'usage.repository');
-  check('deployments: insufficient access stays explicit and never starts a usage detail read',
-    /Operator access required/.test(deniedUsageText) && deniedUsageCalls.length === 0,
-  JSON.stringify({ deniedUsageText, deniedUsageCalls }));
-  daemon.setScenario(SCENARIOS.populated);
-  await page.reload();
-  await page.waitForSelector(`[data-repository-id="${REPO}"]`);
-  dashboardRepo = page.locator(`[data-repository-id="${REPO}"]`);
-  const repositorySummaryJourneys = [
-    [`#/plan/${REPO}`, '#/plan'],
-    [`#/progress/${REPO}`, '#/progress'],
-    [`#/usage/${REPO}`, '#/usage'],
-    [`#/decisions/${REPO}`, '#/decisions'],
-    ['#/tests', '#/tests'],
-    ['#/health', '#/health'],
-  ];
-  for (const [href, destination] of repositorySummaryJourneys) {
-    await page.locator(`[data-repository-id="${REPO}"] a[href="${href}"]`).click();
-    await page.waitForURL((url) => url.hash === href);
-    await page.waitForSelector(destination === '#/tests' ? '.tests-sidebar h1' : `main h1 a[href="${destination}"]`);
-    check(`interaction: repository summary continues to ${href}`, true);
-    await page.goto(`http://${HOST}:${port}/#/deployments`);
-    await page.waitForSelector(`[data-repository-id="${REPO}"]`);
-  }
+  await page.goto(`http://${HOST}:${port}/#/deployments?repository=${REPO}`);
+  await page.waitForSelector('.deployment-record');
+  check('deployments: the selected repository shows every deployment without duplicate aspect summaries',
+    await page.locator('.deployment-record').count() === 2 && await page.locator('.deployment-repository-summary').count() === 0);
+  await chooseRepository(page, 'legacy-repo');
+  await page.waitForSelector(`[data-deployment-id="${OBS}"]`);
+  check('deployments: switching repositories never mixes another repository’s deployments',
+    await page.locator('.deployment-record').count() === 1 && await page.locator(`[data-deployment-id="${DEP}"]`).count() === 0);
   daemon.calls.length = 0;
   await page.click(`[data-edit-domain="${OBS}"]`);
   await page.waitForSelector('dialog#domain-dialog[open]');
@@ -1408,16 +1278,16 @@ async function main() {
   await waitForSettledCall(daemon, page, 'deployment.restart');
   check('interaction: observed restart calls deployment.restart on the observed id',
     daemon.calls.some((c) => c.operation === 'deployment.restart' && c.params.deployment_id === OBS));
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   const runningRow = page.locator('[data-test-run-id="t20260101T000000Z-abc123"]');
   const visualRow = page.locator(`[data-test-run-id="${TEST_RUN}"]`);
-  await page.locator('.test-repository').filter({ hasText: LONG }).click();
+  await chooseRepository(page, LONG);
   await visualRow.locator('.test-thumbnail').first().waitFor();
   check('tests: evidence availability is truthful before opening a run',
     await visualRow.locator('.test-thumbnail').count() === 4
-    && await visualRow.locator(`a[href="#/tests/${TEST_RUN}"]`).count() === 1);
-  await page.locator('.test-repository').filter({ hasText: 'repo-one' }).click();
+    && await visualRow.locator('.test-preview-more').count() === 1);
+  await chooseRepository(page, 'repo-one');
   check('tests: nonvisual runs do not claim to have screenshots', await runningRow.locator('.test-thumbnail, a[href^="#/tests/"]').count() === 0);
   await page.setViewportSize(VIEWPORTS.narrow);
   const narrowTests = await page.evaluate(() => {
@@ -1454,7 +1324,7 @@ async function main() {
   await page.click('#test-capacity-cancel');
   daemon.setScenario(SCENARIOS.populated);
   await page.goto(`http://${HOST}:${port}/#/health`);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await page.waitForSelector('#test-live-status', { state: 'attached' });
   daemon.setScenario(SCENARIOS.error);
   await page.waitForFunction(() => /Updates paused/.test(document.querySelector('#test-live-status')?.textContent || ''));
@@ -1465,7 +1335,7 @@ async function main() {
     && await page.locator('.test-results').count() === 1);
   daemon.setScenario(SCENARIOS.populated);
   await page.goto(`http://${HOST}:${port}/#/health`);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   daemon.calls.length = 0;
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
@@ -1605,7 +1475,7 @@ async function main() {
     await page.locator('[data-test-run-id="t20260101T000000Z-abc123"] button[data-test-logs]:focus').count() === 1);
   daemon.setScenario(SCENARIOS.populated);
   check('tests: the run collection remains primary and capacity details stay in the action dialog',
-    await page.locator('.tests-sidebar h1').count() === 1
+    await page.locator('.workspace-tests-heading h1').count() === 1
     && await page.locator('.test-results').count() === 1
     && await page.locator('#test-capacity-dialog').count() === 0
     && await page.locator('#test-runs-collection > h1, #test-runs-collection > h2').count() === 0);
@@ -1624,12 +1494,12 @@ async function main() {
   check('interaction: retention saves both boundaries directly and schedules cleanup', daemon.calls.some((c) => c.operation === 'test.log.retention.set'
     && c.params.max_age_seconds === 7200 && c.params.case_depth === 5),
   JSON.stringify(daemon.calls.filter((c) => c.operation === 'test.log.retention.set').map((c) => c.params)));
-  await page.waitForSelector('.test-settings>summary:focus');
-  check('interaction: saving retention returns focus to the settings toggle', await page.locator('.test-settings>summary:focus').count() === 1);
+  await page.waitForSelector('#nav-toggle:focus');
+  check('interaction: saving retention returns focus to Console tools', await page.locator('#nav-toggle:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
   await page.click('[data-retention-cancel]');
-  check('interaction: cancelling retention preserves context and returns focus', await page.locator('.test-settings>summary:focus').count() === 1);
+  check('interaction: cancelling retention preserves context and returns focus', await page.locator('#nav-toggle:focus').count() === 1);
   await page.setViewportSize(VIEWPORTS.narrow);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('dialog#test-logs-dialog[open] #test-log-read-result pre.log');
@@ -1650,7 +1520,7 @@ async function main() {
   JSON.stringify({ narrowToolbar, narrowFailure }));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logEmpty);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   daemon.calls.length = 0;
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
@@ -1660,7 +1530,7 @@ async function main() {
     && !daemon.calls.some((call) => call.operation === 'test.log.tail'));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logCatalogError);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('#test-log-catalog-retry');
@@ -1674,7 +1544,7 @@ async function main() {
     && daemon.calls.filter((call) => call.operation === 'test.log.tail').length === 1);
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logCatalogPaged);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('#test-log-more');
@@ -1688,7 +1558,7 @@ async function main() {
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logShortPaged);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   daemon.calls.length = 0;
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
@@ -1700,7 +1570,7 @@ async function main() {
     && /recent output 41999/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logPageError);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('#test-log-read-result pre.log');
@@ -1722,7 +1592,7 @@ async function main() {
     daemon.calls.filter((call) => call.operation === 'test.log.tail' && call.params.cursor === 'older-tail').length === 2);
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.logReadError);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestRows(page);
   await revealTestRows(page); await page.locator('button[data-test-logs]').first().click();
   await page.waitForSelector('#test-log-retry');
@@ -1735,7 +1605,7 @@ async function main() {
     && /assertion failed/.test(await page.innerText('#test-log-read-result')));
   await page.click('#test-logs-dialog .dialog-close');
   daemon.setScenario(SCENARIOS.populated);
-  await page.goto(`http://${HOST}:${port}/#/tests`);
+  await page.goto(`http://${HOST}:${port}/#/tests?repository=${REPO}`);
   await revealTestSettings(page); await page.waitForSelector('#test-log-retention-open');
   await revealTestSettings(page); await page.click('#test-log-retention-open');
   await page.waitForSelector('dialog#test-log-retention-dialog[open]');
@@ -1766,7 +1636,7 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
   await revealTestSettings(page); await page.waitForSelector('#test-capacity-open');
   check('interaction: saving capacity returns focus to the Capacity action',
-    await page.locator('.test-settings>summary:focus').count() === 1);
+    await page.locator('#nav-toggle:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   daemon.calls.length = 0;
@@ -1776,9 +1646,9 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === null));
   await page.waitForSelector('[data-test-start]', { state: 'attached' });
   check('interaction: clearing capacity returns focus to the Capacity action',
-    await page.locator('.test-settings>summary:focus').count() === 1);
+    await page.locator('#nav-toggle:focus').count() === 1);
   await revealTestRows(page);
-  await page.locator('.test-repository').filter({ hasText: LONG }).click();
+  await chooseRepository(page, LONG);
   await page.click('#test-run-open');
   await page.waitForSelector('#test-run-form');
   const tierControl = page.locator('#test-run-form [name=tier]');
@@ -1956,14 +1826,14 @@ async function main() {
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
-  await page.evaluate(() => document.querySelector('.evidence-page')?.classList.remove('inspector-open'));
-  await page.click('[data-evidence-inspector-toggle]');
+  await page.click('.evidence-panel-close');
+  await page.click('.evidence-layout-controls [data-evidence-panel=details]');
   const narrowEvidence = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - innerWidth,
     inspectorOpen: document.querySelector('.evidence-page')?.classList.contains('inspector-open'),
     canvasWidth: document.querySelector('#evidence-canvas')?.getBoundingClientRect().width,
   }));
-  check('visual evidence: narrow layout keeps the canvas reachable and uses the feedback bottom sheet',
+  check('visual evidence: narrow layout keeps the canvas reachable beside dismissible feedback details',
     narrowEvidence.overflow <= 0 && narrowEvidence.inspectorOpen && narrowEvidence.canvasWidth > 250,
     JSON.stringify(narrowEvidence));
   await page.screenshot({ path: path.join(OUT, 'test-evidence-review-narrow.png'), fullPage: true });
@@ -2059,61 +1929,13 @@ async function main() {
 
   // Codex Usage: linked navigation, repository selection, truthful phase
   // chart, keyboard-preserving range changes, and accessible exact values.
-  await page.goto(`http://${HOST}:${port}/#/usage`);
-  await page.waitForSelector(`a[href="#/usage/${REPO}"]`);
-  check('usage: the global navigation remains ordinary links',
-    await page.locator('#nav a[href="#/usage"]').count() === 1
-    && await page.locator('#nav button').count() === 0);
-  const usageCollectionText = await page.innerText('[data-ui-region="codex-usage-repositories"]');
-  check('usage: repository collection describes data inclusion without implementation jargon',
-    /Data included/.test(usageCollectionText)
-    && /All 4 environments included/.test(usageCollectionText)
-    && /3 of 4 environments included/.test(usageCollectionText)
-    && /No usage measured/.test(usageCollectionText)
-    && /Not connected in all environments/.test(usageCollectionText)
-    && /Usage data unavailable/.test(usageCollectionText)
-    && !/\bcollectors?\b|Partial coverage|Complete coverage/.test(usageCollectionText));
-  check('usage: collection severity distinguishes setup, partial, complete, and failure',
-    await page.locator('.usage-collection-table .usage-coverage-mark.setup').count() === 1
-    && await page.locator('.usage-collection-table .usage-coverage-mark.warn').count() === 1
-    && await page.locator('.usage-collection-table .usage-coverage-mark.ok').count() === 1
-    && await page.locator('.usage-collection-table .usage-coverage-mark.bad').count() === 1);
-  await page.click(`a[href="#/usage/${REPO}"]`);
+  await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
   await page.waitForSelector('.usage-phase-chart');
-  check('usage: the destination title is a real collection link',
-    await page.locator('main h1 a.destination-link[href="#/usage"]').count() === 1);
-  check('usage: project choice is a custom DOM menu, never a native select',
-    await page.locator('[data-project-picker]').count() === 1
-    && await page.locator('[data-project-picker] select').count() === 0);
-  const usageProjectToggle = page.locator('[data-project-picker-toggle]');
-  await usageProjectToggle.click();
-  await page.waitForSelector('[data-project-picker-menu]:not([hidden])');
-  await page.waitForFunction(() => document.activeElement?.matches('[data-project-picker-menu] [role="menuitem"]'));
-  check('interaction: the project menu lists every visible project as a real link',
-    await page.locator('[data-project-picker-menu] [role="menuitem"]').count() === 5
-    && await page.locator('[data-project-picker-menu] a[href="#/usage/r2"]').count() === 1);
-  const usageProjectBeforeArrow = await page.evaluate(
-    () => document.activeElement?.getAttribute('href'));
-  await page.keyboard.press('ArrowDown');
-  check('interaction: arrow keys move focus through the project menu',
-    !!usageProjectBeforeArrow
-    && await page.evaluate(() => document.activeElement?.getAttribute('href'))
-      !== usageProjectBeforeArrow);
-  await page.keyboard.press('Escape');
-  check('interaction: Escape closes the project menu and returns focus',
-    await page.locator('[data-project-picker-menu][hidden]').count() === 1
-    && await page.locator('[data-project-picker-toggle]:focus').count() === 1);
-  await usageProjectToggle.click();
-  await page.click('[data-project-picker-menu] a[href="#/usage/r2"]');
+  check('usage: the shared workspace offers real same-aspect repository links',
+    await page.locator('#repository-list a[href="#/usage/r2"]').count() === 1 && await page.locator('[data-project-picker]').count() === 0);
+  await chooseRepository(page, LONG);
   await page.waitForURL(/#\/usage\/r2$/);
-  await page.waitForFunction(() => /going-and-going/.test(document.querySelector('.project-picker-current')?.textContent || ''));
-  check('interaction: choosing a project changes the usage route and visible project',
-    /going-and-going/.test(await page.innerText('.project-picker-current')));
-  await page.click('main h1 a.destination-link[href="#/usage"]');
-  await page.waitForURL(/#\/usage$/);
-  await page.waitForSelector('[data-ui-region="codex-usage-repositories"]');
-  check('interaction: the linked destination title returns to the repository collection',
-    await page.locator('[data-ui-region="codex-usage-repositories"]').count() === 1);
+  check('usage: changing repositories preserves the Usage view', (await page.locator('#workspace-heading').innerText()) === LONG);
   await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
   await page.waitForSelector('.usage-phase-chart');
   check('usage: provider total tokens are stacked by the six work phases',
@@ -2210,61 +2032,15 @@ async function main() {
       explanationText.slice(0, 240));
     await page.keyboard.press('Escape');
   }
-  daemon.setScenario(SCENARIOS.usageIndexing);
-  const usageIndexingStarted = Date.now();
-  await page.goto(`http://${HOST}:${port}/#/usage`);
-  await page.waitForSelector('.usage-collection-table .usage-coverage-mark.indexing');
-  const usageIndexingFirstRow = await page.innerText('.usage-collection-table tbody tr');
-  const usageIndexingVisibleMs = Date.now() - usageIndexingStarted;
-  await page.focus('[data-codex-range="24h"]');
-  daemon.releaseDelayed();
-  check('usage: indexing collection appears within one second without fake zeroes',
-    usageIndexingVisibleMs < 1000
-    && /Loading usage/.test(usageIndexingFirstRow)
-    && (usageIndexingFirstRow.match(/—/g) || []).length >= 4,
-    JSON.stringify({ usageIndexingVisibleMs, usageIndexingFirstRow }));
-  await page.waitForFunction(() => {
-    const row = document.querySelector('.usage-collection-table tbody tr');
-    return !document.querySelector('.usage-collection-table .usage-coverage-mark.indexing')
-      && /6\.4M/.test(row?.innerText || '')
-      && document.activeElement?.matches('[data-codex-range="24h"]');
-  }, null, { timeout: 3000 });
-  const usageIndexingCalls = daemon.calls.filter(
-    (call) => call.operation === 'usage.repositories').length;
-  const usageIndexingFinalRow = await page.innerText('.usage-collection-table tbody tr');
-  const usageIndexingFocus = await page.locator('[data-codex-range="24h"]:focus').count();
-  check('interaction: indexing collection refreshes in place and preserves range focus',
-    usageIndexingCalls >= 2 && /6\.4M/.test(usageIndexingFinalRow)
-    && usageIndexingFocus === 1,
-    JSON.stringify({ usageIndexingCalls, usageIndexingFinalRow, usageIndexingFocus }));
   daemon.setScenario(SCENARIOS.populated);
 
   // Progress: factual release work, truthful bars and running totals, local
   // selection, period reads, missing evidence, and exact Plan continuation.
-  await page.goto(`http://${HOST}:${port}/#/progress`);
-  await page.waitForSelector(`a[href="#/progress/${REPO}"]`);
-  check('progress: the operator navigation and repository collection are available',
-    await page.locator('#nav a[href="#/progress"]').count() === 1
-    && /Release 1/.test(await page.innerText('main')));
-  await page.click(`a[href="#/progress/${REPO}"]`);
+  await page.goto(`http://${HOST}:${port}/#/progress/${REPO}`);
   await page.waitForSelector('.progress-pulse-chart');
-  check('progress: destination title links to its collection',
-    await page.locator('main h1 a.destination-link[href="#/progress"]').count() === 1);
-  await page.click('main h1 a.destination-link[href="#/progress"]');
-  await page.waitForURL(/#\/progress$/);
-  await page.waitForSelector(`a[href="#/progress/${REPO}"]`);
-  check('interaction: the Progress title returns to the repository collection',
-    await page.locator(`a[href="#/progress/${REPO}"]`).count() >= 1);
-  await page.click(`a[href="#/progress/${REPO}"]`);
-  await page.waitForSelector('.progress-pulse-chart');
-  check('progress: the repository project menu lists real same-destination links',
-    await page.locator('[data-project-picker-menu] a[href="#/progress/r2"]').count() === 1);
-  await page.click('[data-project-picker-toggle]');
-  await page.click('[data-project-picker-menu] a[href="#/progress/r2"]');
+  await chooseRepository(page, LONG);
   await page.waitForURL(/#\/progress\/r2$/);
-  await page.waitForFunction(() => /going-and-going/.test(document.querySelector('.project-picker-current')?.textContent || ''));
-  check('interaction: the Progress project menu switches within Progress',
-    /going-and-going/.test(await page.innerText('.project-picker-current')));
+  check('progress: changing repositories preserves Progress', (await page.locator('#workspace-heading').innerText()) === LONG);
   await page.goto(`http://${HOST}:${port}/#/progress/${REPO}`);
   await page.waitForSelector('.progress-pulse-chart');
   await page.evaluate(() => { window.__progressWorkspace = document.querySelector('[data-ui-region="progress-primary"]'); });
@@ -2385,12 +2161,9 @@ async function main() {
   // alternatives, persistence, recovery, preview request, feedback, and drop.
   await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
   await page.waitForSelector('.gantt');
-  await page.click('[data-project-picker-toggle]');
-  await page.click('[data-project-picker-menu] a[href="#/plan/r2"]');
+  await chooseRepository(page, LONG);
   await page.waitForURL(/#\/plan\/r2$/);
-  await page.waitForFunction(() => /going-and-going/.test(document.querySelector('.project-picker-current')?.textContent || ''));
-  check('interaction: the Plan project menu switches the project route',
-    /going-and-going/.test(await page.innerText('.project-picker-current')));
+  check('plan: shared repository selection keeps the current aspect', (await page.locator('#workspace-heading').innerText()) === LONG);
   await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
   await page.waitForSelector('.gantt');
   check('plan: delivered preview links to the running app',
@@ -2538,6 +2311,7 @@ async function main() {
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-resize-handle="${P_C2}"]`);
   daemon.calls.length = 0;
+  await page.locator(`[data-resize-handle="${P_C2}"]`).scrollIntoViewIfNeeded();
   let resizeBox = await page.locator(`[data-resize-handle="${P_C2}"]`).boundingBox();
   await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
   await page.mouse.down();
@@ -2555,6 +2329,7 @@ async function main() {
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-resize-handle="${P_C2}"]`);
   daemon.calls.length = 0;
+  await page.locator(`[data-resize-handle="${P_C2}"]`).scrollIntoViewIfNeeded();
   resizeBox = await page.locator(`[data-resize-handle="${P_C2}"]`).boundingBox();
   await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
   await page.mouse.down();
@@ -2568,6 +2343,7 @@ async function main() {
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-resize-handle="${P_C2}"]`);
   daemon.calls.length = 0; daemon.failNextTaskUpdate();
+  await page.locator(`[data-resize-handle="${P_C2}"]`).scrollIntoViewIfNeeded();
   resizeBox = await page.locator(`[data-resize-handle="${P_C2}"]`).boundingBox();
   await page.mouse.move(resizeBox.x + resizeBox.width / 2, resizeBox.y + resizeBox.height / 2);
   await page.mouse.down();
@@ -2632,7 +2408,7 @@ async function main() {
     const target = document.querySelector(`[data-drop-release="${releaseId}"]`);
     if (viewport && sourceRow && target) viewport.scrollTop = Math.max(0, ((sourceRow.offsetTop + target.offsetTop) / 2) - (viewport.clientHeight / 2));
   }, { sourceId: P_C2, releaseId: V_R2 });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`);
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`, { x: 45 });
   await waitForSettledCall(daemon, page, 'task.update');
   const dragMoveCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
@@ -2701,12 +2477,9 @@ async function main() {
   daemon.setScenario(SCENARIOS.populated);
   await page.goto(`http://${HOST}:${port}/#/decisions/${REPO}`);
   await page.waitForSelector('.decision');
-  await page.click('[data-project-picker-toggle]');
-  await page.click('[data-project-picker-menu] a[href="#/decisions/r2"]');
+  await chooseRepository(page, LONG);
   await page.waitForURL(/#\/decisions\/r2$/);
-  await page.waitForFunction(() => /going-and-going/.test(document.querySelector('.project-picker-current')?.textContent || ''));
-  check('interaction: the Decisions project menu switches the project route',
-    /going-and-going/.test(await page.innerText('.project-picker-current')));
+  check('decisions: shared repository selection keeps the current aspect', (await page.locator('#workspace-heading').innerText()) === LONG);
   await page.goto(`http://${HOST}:${port}/#/decisions/${REPO}`);
   await page.waitForSelector('.decision');
   check('decisions: the story so far and the plain entries render',
@@ -2761,89 +2534,17 @@ async function main() {
   ];
   for (const viewport of deploymentSamples) {
     await deploymentPage.setViewportSize(viewport);
-    await deploymentPage.goto(`http://${HOST}:${port}/#/deployments`);
-    await deploymentPage.waitForSelector('.deployment-repository-summary');
+    await deploymentPage.goto(`http://${HOST}:${port}/#/deployments?repository=${REPO}`);
+    await deploymentPage.waitForSelector('.deployment-record');
+    const layout = await deploymentPage.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth - innerWidth,
+      columns: getComputedStyle(document.querySelector('.deployment-record')).gridTemplateColumns.split(' ').length,
+      clipped: [...document.querySelectorAll('.deployment-record-identity, .deployment-record-facts dd')].filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.className),
+      controls: [...document.querySelectorAll('.deployment-record a, .deployment-record button')].filter(element => element.getClientRects().length).every(element => element.getBoundingClientRect().right <= innerWidth + 1),
+    }));
+    const expectedColumns = viewport.width <= 540 ? 1 : viewport.width <= 1100 ? 2 : 4;
+    check(`deployments ${viewport.width}px: selected repository fits the pane with every action reachable`, layout.overflow <= 0 && layout.columns === expectedColumns && layout.clipped.length === 0 && layout.controls, JSON.stringify(layout));
     await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}.png`), fullPage: true });
-    const layout = await deploymentPage.evaluate(() => {
-      const firstSummaryItems = [...document.querySelectorAll('.deployment-repository:first-child .deployment-summary-item')];
-      const summaryRows = new Map();
-      for (const item of firstSummaryItems) {
-        const top = Math.round(item.getBoundingClientRect().top);
-        summaryRows.set(top, (summaryRows.get(top) || 0) + 1);
-      }
-      const record = document.querySelector('.deployment-record');
-      const visibleControls = [...document.querySelectorAll('.deployment-repository a, .deployment-repository button')]
-        .filter((element) => element.offsetParent !== null)
-        .map((element) => element.getBoundingClientRect());
-      const clippedText = [...document.querySelectorAll('.deployment-repository-head, .deployment-summary-item, .deployment-record-identity, .deployment-record-facts dd')]
-        .filter((element) => element.scrollWidth > element.clientWidth + 1)
-        .map((element) => element.textContent.trim().slice(0, 60));
-      return {
-        overflow: document.documentElement.scrollWidth - innerWidth,
-        summaryColumns: Math.max(...summaryRows.values()),
-        recordColumns: getComputedStyle(record).gridTemplateColumns.split(' ').length,
-        controlsContained: visibleControls.every((rect) => rect.left >= -1 && rect.right <= innerWidth + 1),
-        clippedText,
-        repositoryCount: document.querySelectorAll('.deployment-repository').length,
-        summaryCount: document.querySelectorAll('.deployment-summary-item').length,
-        deploymentCount: document.querySelectorAll('.deployment-record').length,
-      };
-    });
-    const expectedSummaryColumns = viewport.width <= 620 ? 1 : viewport.width <= 1240 ? 3 : 6;
-    const expectedRecordColumns = viewport.width <= 620 ? 1 : viewport.width <= 960 ? 2 : viewport.width <= 1180 ? 4 : 5;
-    check(`deployments ${viewport.width}px: repository summaries use the intended responsive grid`,
-      layout.summaryColumns === expectedSummaryColumns,
-      JSON.stringify({ expected: expectedSummaryColumns, actual: layout.summaryColumns }));
-    check(`deployments ${viewport.width}px: deployment facts switch before columns become cramped`,
-      layout.recordColumns === expectedRecordColumns,
-      JSON.stringify({ expected: expectedRecordColumns, actual: layout.recordColumns }));
-    check(`deployments ${viewport.width}px: every repository, summary, and deployment remains present`,
-      layout.repositoryCount === 2 && layout.summaryCount === 12 && layout.deploymentCount === 3,
-      JSON.stringify(layout));
-    check(`deployments ${viewport.width}px: no clipping, off-canvas controls, or document overflow`,
-      layout.overflow <= 0 && layout.controlsContained && layout.clippedText.length === 0,
-      JSON.stringify(layout));
-    if ([390, 1095].includes(viewport.width)) {
-      const firstRepository = deploymentPage.locator('.deployment-repository').first();
-      const repositoryToggle = firstRepository.locator('[data-deployment-repository-toggle]');
-      await repositoryToggle.click();
-      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-repository-collapsed.png`), fullPage: true });
-      const repositoryCollapsed = await deploymentPage.evaluate(() => {
-        const section = document.querySelector('.deployment-repository');
-        const header = section.querySelector('.deployment-repository-head').getBoundingClientRect();
-        const toggle = section.querySelector('[data-deployment-repository-toggle]').getBoundingClientRect();
-        return { hidden: section.querySelector('.deployment-repository-body').hidden,
-          expanded: section.querySelector('[data-deployment-repository-toggle]').getAttribute('aria-expanded'),
-          headerVisible: header.width > 0 && header.height > 0,
-          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
-          overflow: document.documentElement.scrollWidth - innerWidth };
-      });
-      check(`deployments ${viewport.width}px: collapsed repository stays recognizable and contained`,
-        repositoryCollapsed.hidden && repositoryCollapsed.expanded === 'false'
-        && repositoryCollapsed.headerVisible && repositoryCollapsed.toggleContained
-        && repositoryCollapsed.overflow <= 0, JSON.stringify(repositoryCollapsed));
-      await repositoryToggle.click();
-      const workersToggle = firstRepository.locator('[data-deployment-workers-toggle]');
-      await workersToggle.click();
-      await deploymentPage.screenshot({ path: path.join(OUT, `deployments-${viewport.width}-workers-collapsed.png`), fullPage: true });
-      const workersCollapsed = await firstRepository.evaluate((repository) => {
-        const header = repository.querySelector('.deployment-workers-head').getBoundingClientRect();
-        const toggle = repository.querySelector('[data-deployment-workers-toggle]').getBoundingClientRect();
-        return { hidden: repository.querySelector('.deployment-records').hidden,
-          expanded: repository.querySelector('[data-deployment-workers-toggle]').getAttribute('aria-expanded'),
-          workerCount: repository.querySelectorAll('.deployment-record').length,
-          visibleWorkers: [...repository.querySelectorAll('.deployment-record')].filter((record) => record.getClientRects().length).length,
-          headerVisible: header.width > 0 && header.height > 0,
-          toggleContained: toggle.left >= -1 && toggle.right <= innerWidth + 1,
-          overflow: document.documentElement.scrollWidth - innerWidth };
-      });
-      check(`deployments ${viewport.width}px: collapsed Workers group hides every row and stays recognizable without overflow`,
-        workersCollapsed.hidden && workersCollapsed.expanded === 'false'
-        && workersCollapsed.workerCount === 1 && workersCollapsed.visibleWorkers === 0
-        && workersCollapsed.headerVisible && workersCollapsed.toggleContained
-        && workersCollapsed.overflow <= 0, JSON.stringify(workersCollapsed));
-      await workersToggle.click();
-    }
   }
   await deploymentContext.close();
 
@@ -2940,8 +2641,8 @@ async function main() {
   await navPage.waitForSelector('#nav:visible');
   check('interaction: hamburger opens the original navigation links in a DOM menu',
     await navPage.locator('#nav-toggle[aria-expanded="true"]').count() === 1
-    && await navPage.locator('#nav a[href="#/usage"]').count() === 1
-    && await navPage.locator('#nav a[href="#/progress"]').count() === 1
+    && await navPage.locator('#nav a[href="#/plan"]').count() === 1
+    && await navPage.locator('#nav a[href="#/health"]').count() === 1
     && await navPage.locator('#nav button').count() === 0);
   await navPage.screenshot({ path: path.join(OUT, 'navigation-799-open.png'), fullPage: true });
   await navPage.keyboard.press('Escape');
@@ -2949,12 +2650,9 @@ async function main() {
     await navPage.locator('#nav:visible').count() === 0
     && await navPage.locator('#nav-toggle:focus').count() === 1);
   await navPage.click('#nav-toggle');
-  await navPage.click('#nav a[href="#/decisions"]');
-  await navPage.waitForURL(/#\/decisions$/);
-  await navPage.waitForSelector('main h1 a[href="#/decisions"]');
-  check('interaction: a hamburger link navigates and closes the menu',
-    await navPage.locator('#nav:visible').count() === 0
-    && await navPage.locator('main h1 a[href="#/decisions"]').count() === 1);
+  await navPage.click('#nav a[href="#/health"]');
+  await navPage.waitForSelector('.health-summary');
+  check('interaction: Console tools navigation closes the menu and opens the host destination', await navPage.locator('#nav:visible').count() === 0 && await navPage.locator('#repository-sidebar:visible').count() === 0);
   await navPage.setViewportSize({ width: 1240, height: 800 });
   await navPage.waitForFunction(() => document.querySelector('#nav-toggle')?.offsetParent !== null
     && document.querySelector('#nav')?.offsetParent === null);
@@ -2962,28 +2660,20 @@ async function main() {
     await navPage.locator('#nav-toggle:visible').count() === 1
     && await navPage.locator('#nav:visible').count() === 0);
   await navPage.setViewportSize({ width: 1241, height: 800 });
-  await navPage.waitForFunction(() => document.querySelector('#nav-toggle')?.offsetParent === null
-    && document.querySelector('#nav')?.offsetParent !== null);
-  const desktopBoundary = await navPage.evaluate(() => ({
-    headerHeight: document.querySelector('header.top').getBoundingClientRect().height,
-    overflow: document.documentElement.scrollWidth - innerWidth,
-  }));
-  check('responsive navigation: inline links return one pixel above the breakpoint without wrapping',
-    await navPage.locator('#nav-toggle:visible').count() === 0
-    && await navPage.locator('#nav:visible').count() === 1
-    && desktopBoundary.headerHeight <= 64 && desktopBoundary.overflow <= 0,
-    JSON.stringify(desktopBoundary));
+  check('responsive navigation: Console tools stay in one compact menu on desktop', await navPage.locator('#nav-toggle:visible').count() === 1 && await navPage.locator('#nav:visible').count() === 0);
   await navContext.close();
 
-  for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1280, height: 900 }, { width: 713, height: 921 }, { width: 390, height: 844 }]) {
     for (const theme of ['light', 'dark']) {
       const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
       const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
       await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
       const page = await context.newPage();
       page.setDefaultTimeout(8000);
-      try { await verifyTestArtifacts({ page, daemon, check, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
-      catch (error) { check(`Retained files ${theme} ${viewport.width}`, false, error.message); }
+      for (const verifyJourney of [verifyWorkspace, verifyTestsDesign, verifyTestArtifacts, verifyEvidenceLayout, verifyAnnotations]) {
+        try { await verifyJourney({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+        catch (error) { check(`${verifyJourney.name} ${theme} ${viewport.width}`, false, error.message); }
+      }
       await context.close();
     }
   }

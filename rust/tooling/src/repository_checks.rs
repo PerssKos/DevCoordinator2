@@ -15,6 +15,9 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+mod policy_bundle;
+use policy_bundle::read_policy_bundle;
+
 pub const MAX_REPOSITORY_CHECK_FINDINGS: usize = 256;
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
@@ -878,8 +881,25 @@ pub fn audit_agent_neutrality(root: &Path) -> Result<CheckReport, CheckError> {
         if !path.is_file() {
             continue;
         }
-        let text = read_bounded_utf8(&path)?;
-        scan_neutrality_file(&mut collector, &text, &slash_path(&relative), false);
+        if relative == Path::new("reference/universal/AGENTS.md") {
+            for source in read_policy_bundle(&path)?.sources {
+                let source_path = source.path.strip_prefix(&root).map_err(|_| {
+                    CheckError::new(
+                        CheckErrorKind::InvalidInput,
+                        "policy source is outside the repository",
+                    )
+                })?;
+                scan_neutrality_file(
+                    &mut collector,
+                    &source.scan_text,
+                    &slash_path(source_path),
+                    false,
+                );
+            }
+        } else {
+            let text = read_bounded_utf8(&path)?;
+            scan_neutrality_file(&mut collector, &text, &slash_path(&relative), false);
+        }
     }
     for relative in prompts {
         let text = read_bounded_utf8(&root.join(&relative))?;
@@ -2481,7 +2501,7 @@ pub fn audit_user_issue_ledgers(root: &Path) -> UserIssueLedgerResult {
     }
 }
 
-pub const REQUIRED_POLICY_SECTIONS: [&str; 12] = [
+pub const REQUIRED_POLICY_SECTIONS: [&str; 13] = [
     "1. Infer the intended outcome and carry it to completion",
     "2. Load relevant context and keep evidence bounded",
     "3. Apply approval and security gates proportionally",
@@ -2494,6 +2514,7 @@ pub const REQUIRED_POLICY_SECTIONS: [&str; 12] = [
     "10. Preserve lessons from confirmed agent mistakes",
     "11. Protect canonical sources, data, and running systems",
     "12. Explain results through the user's goals and experience",
+    "13. Review outcomes and resource use every 24 hours",
 ];
 
 const FORBIDDEN_POLICY_NAMES: [&str; 13] = [
@@ -2788,15 +2809,15 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "durable unfinished outcomes, not execution attempts",
             "passed, failed, cancelled, timed-out, invalidated, retried, or superseded run",
             "governed run history",
-            "diagnose before changing work state",
+            "execution failures and suggestions require diagnosis before becoming ledger outcomes",
             "create or reopen a task only when evidence establishes",
-            "not already represented",
-            "do not automatically turn failures or suggestions into tasks, or passing runs into completion",
+            "reuse an existing task only when its concrete outcome and acceptance scope match",
+            "passing runs do not automatically complete work",
             "execution-only actions are not tasks",
             "missing test or harness capability",
             "running or rerunning it is not",
-            "keep every agreed gap active until resolved or explicitly removed",
-            "size and split large work",
+            "keep every agreed gap open until verified or explicitly removed from scope by the user",
+            "knowingly leaving in-scope functionality temporarily unimplemented establishes an unfinished outcome",
             "append-only history",
             "externally blocked outcomes open",
             "write tasks for a non-specialist",
@@ -2878,9 +2899,13 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "all due heartbeats through one shared scheduler",
             "fetch bounded authoritative state once",
             "advance its cursor",
-            "one software-owned watcher may poll; the agent does not",
+            "one service-owned watcher may poll using bounded backoff",
+            "resetting on a meaningful state change",
+            "the agent does not poll",
+            "watcher a cancellation path and expected-event deadline",
             "timeouts are failure ceilings",
-            "polling intervals may not exceed 100 ms",
+            "not a blanket 100 ms interval",
+            "deduplicate watchers for the same obligation",
         ],
     ),
     (
@@ -2910,6 +2935,31 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "respect declared shared environments",
             "rather than creating unnecessary per-agent environments",
             "preliminary delivery does not reduce the final agreed result",
+        ],
+    ),
+    (
+        "purpose-aware delivery timing contract",
+        5,
+        &[
+            "without a meaningful deployable result are performance-only",
+            "no delivery targets, obligations, or alarms",
+            "project age alone never creates a delivery obligation",
+            "authorized implementation transition with a real target starts delivery timing",
+            "agent runtime owns durable clocks, deadline revisions, deduplicated wakeups",
+            "coordinator owns authoritative outcomes, decisions, evidence, and capacity",
+            "delivery interval defaults to 24 hours",
+            "defaults to 36 hours",
+            "explicit user postponement, pause, or threshold changes revise the applicable obligation",
+            "retaining the prior revision, reason, confirmation, and actual timestamps",
+            "invalidate obsolete timer wakes and immediately reevaluate existing blocks",
+            "excluding earlier performance-only work",
+            "qualified deliveries and completed reviews are separate receipts",
+            "exactly one delivery request for that scope and deadline revision while independent coding continues",
+            "repeated wakes do not duplicate the request",
+            "before the hard-stop threshold never blocks ordinary implementation",
+            "block ordinary implementation throughout the affected delivery scope",
+            "allow only delivery recovery, necessary diagnosis and repairs",
+            "independent projects may continue",
         ],
     ),
     (
@@ -3182,6 +3232,30 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "facts, inferences, assumptions, and genuine blockers",
             "do not claim fixed, ready, complete, or done while",
             "request-related completion work remains open",
+        ],
+    ),
+    (
+        "daily and deduplicated performance review contract",
+        12,
+        &[
+            "including performance-only specifications and research",
+            "24 elapsed hours and every subsequent 24 hours",
+            "a review does not reset a delivery deadline",
+            "measured tokens, active agent time, elapsed time, and waiting time",
+            "do not double-count parent and descendant totals",
+            "user waiting, inactive periods, and intentional required release revalidation are not waste by themselves",
+            "prioritize elapsed time to the next useful result",
+            "without shrinking the agreed result or weakening required verification",
+            "deduplicated by scope, cause, and relevant evidence revision",
+            "automatically implement only within the reviewed repository and current authorized scope",
+            "specification-only work authorizes improvements to that work, not product implementation",
+            "name the observed delay, affected outcome, scope, baseline, evidence and uncertainty",
+            "compare materially different actions, including keeping the current approach",
+            "success measure and reversible keep/revert condition before changing work",
+            "compare the same observable outcome before and after",
+            "keep demonstrated improvement, revert an ineffective or harmful change safely",
+            "mark evidence inconclusive",
+            "never report only resource totals",
         ],
     ),
 ];
@@ -3965,8 +4039,8 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
 }
 
 pub fn audit_app_wide_policy(path: &Path) -> Vec<String> {
-    match read_bounded_utf8(path) {
-        Ok(text) => find_app_wide_policy_violations(&text),
+    match read_policy_bundle(path) {
+        Ok(bundle) => find_app_wide_policy_violations(&bundle.contract_text),
         Err(error) => vec![format!("could not read policy: {}", error.message)],
     }
 }
@@ -4735,7 +4809,9 @@ mod tests {
     #[test]
     fn canonical_app_wide_policy_and_project_importer_pass() {
         let root = repository_root();
-        let policy = fs::read_to_string(root.join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&root.join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         let violations = find_app_wide_policy_violations(&policy);
         assert!(violations.is_empty(), "{}", violations.join("\n"));
         let importer = audit_project_policy_importer(&root.join("CLAUDE.md"));
@@ -4755,8 +4831,9 @@ mod tests {
 
     #[test]
     fn bug_reports_require_repairs_without_losing_request_limits() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for (required, weakened) in [
             (
@@ -4798,8 +4875,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_autonomy_rejects_regressions_without_blocking_authorized_work() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for (instruction, expected) in INTENT_POLICY_CONTRADICTIONS {
             assert_policy_violation(&format!("{policy}\n- {instruction}.\n"), expected);
@@ -4830,8 +4908,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_interim_answers_preserve_the_active_objective() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for (scenario, instruction, expected) in [
             (
@@ -4899,8 +4978,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_negative_additions_preserve_self_test_recall() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         let cases: &[(&str, &str)] = &[
             (
                 "Always reread every unchanged file and load every skill or tool.",
@@ -5297,8 +5377,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_section_and_required_term_mutations_preserve_self_test_recall() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for heading in REQUIRED_POLICY_SECTIONS {
             assert_policy_violation(
@@ -5331,8 +5412,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_central_corrections_preserve_authority_and_history() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         assert!(find_app_wide_policy_violations(&policy).is_empty());
         for (instruction, label) in CENTRAL_CORRECTION_CONTRADICTIONS {
             assert_policy_violation(&format!("{policy}\n{instruction}.\n"), label);
@@ -5360,8 +5442,9 @@ mod tests {
 
     #[test]
     fn standing_tool_permission_prompts_preserve_self_test_boundaries() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         let bad = [
             (
                 "Ask the user for explicit chat authorization before using Playwright for in-scope browser QA.",
@@ -5491,8 +5574,9 @@ mod tests {
 
     #[test]
     fn app_wide_policy_false_positive_guards_and_importer_scenarios_are_preserved() {
-        let policy =
-            fs::read_to_string(repository_root().join("reference/universal/AGENTS.md")).unwrap();
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
         let allowed = [
             "Never stop deployment at the first failure. Do not request unbounded tool output. Delegated agents may not skip issue ledgers. Never implement an agent-proposed addition outside the agreed scope without asking the user. Silent scope expansion is never permitted.",
             "After completing read-only investigation, present one plain-language decision that explains the problem, recommended outcome, boundaries, consequences, and tradeoffs. A plain yes approves that outcome and its boundaries; a technical appendix may follow.",
@@ -5525,7 +5609,7 @@ mod tests {
             "Serialize two operations only because they mutate the same database record; start unrelated ready work concurrently.",
             "Use every currently available runtime slot and submit newly ready work when the runtime reports another slot; do not invent a worker count.",
             "On the first ordinary failure, start the repair in an isolated worktree while the sealed test continues unchanged and collects its remaining failures.",
-            "A ten-second event deadline is a failure ceiling, while deliberate polling remains at or below 100 ms.",
+            "A ten-second event deadline is a failure ceiling; one service-owned watcher uses bounded backoff with cancellation when events are unavailable.",
             "A copy-only UI change does not add, change, weaken, remove, or intentionally omit a security-posture control, so it requires no security interview.",
             "Read-only discovery may inventory the current deployment and trust boundaries to identify material questions; it does not select or alter a control.",
             "`security-assumptions.md` records the user's confirmed single-operator, owner-managed local runtime; low-sensitivity assets; no credible remote adversary; trusted process boundaries; owner-only file access as the necessary gate; network authentication as explicitly unnecessary; the accepted local-access risk; and internet exposure as a review trigger. The implemented owner-only permission control cites those entries and remains inside the requested scope.",

@@ -236,6 +236,19 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RepositoryPresentationUpdate {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 80))]
+    pub display_name: Option<String>,
+    #[schemars(regex(
+        pattern = r"^(folder|code|app-window|world|rocket|database|device-desktop|device-mobile|tools|flask|palette|star|plane|book|chart-bar|shield)$"
+    ))]
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveRepository {
     #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
     pub repository_id: String,
@@ -468,6 +481,17 @@ pub struct EvidenceReference {
     pub path: String,
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
     pub run_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceLookup {
+    #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
+    pub run_id: String,
+    #[schemars(regex(pattern = r"^[0-9a-f]{64}$"))]
+    pub image_id: Option<String>,
+    #[schemars(regex(pattern = r"^w[0-9a-f]{16}$"))]
+    pub worktree_id: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -750,6 +774,28 @@ pub struct PlanReference {
     pub path: Option<String>,
     #[serde(default)]
     pub repository_id: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSearch {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    #[schemars(length(max = 256))]
+    pub query: String,
+    #[serde(default)]
+    pub status: Option<TaskStatus>,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default = "task_search_limit")]
+    #[schemars(range(min = 1, max = 50))]
+    pub limit: u16,
+}
+fn task_search_limit() -> u16 {
+    50
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1128,4 +1174,13 @@ mod tests {
         assert_eq!(clear.release_id, Some(None));
         assert_eq!(value.release_id, Some(Some("v1".into())));
     }
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestList {
+    #[serde(default)]
+    pub after_worktree_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u16>,
 }

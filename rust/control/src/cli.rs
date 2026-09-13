@@ -19,6 +19,13 @@ use glossary_cli::GlossaryCommand;
 mod configuration_cli;
 use configuration_cli::ConfigCommand;
 
+#[path = "cli_review.rs"]
+mod review_cli;
+use review_cli::ReviewCommand;
+
+#[path = "cli_work_context.rs"]
+mod work_context_cli;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     #[default]
@@ -72,14 +79,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn client_context(&self) -> ClientContext {
-        ClientContext {
-            kind: self.client.into(),
-            session: self.session.clone(),
-            identity: None,
-        }
-    }
-
     pub fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self.command {
             Command::Daemon => Ok(Invocation::Daemon),
@@ -98,6 +97,7 @@ impl Cli {
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
             Command::Decision { command } => command.into_invocation(),
+            Command::Review { command } => command.into_invocation(),
             Command::Glossary { command } => command.into_invocation(),
             Command::Config { command } => command.into_invocation(),
         }
@@ -237,6 +237,10 @@ enum Command {
         #[command(subcommand)]
         command: DecisionCommand,
     },
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommand,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -375,7 +379,12 @@ enum TestCommand {
         #[arg(value_enum)]
         status: TestEventStatus,
     },
-    List,
+    List {
+        #[arg(long)]
+        after_worktree_id: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: Option<u16>,
+    },
     Capacity {
         #[command(subcommand)]
         command: CapacityCommand,
@@ -485,6 +494,14 @@ enum RetentionCommand {
 
 #[derive(Debug, Subcommand)]
 enum EvidenceCommand {
+    Lookup {
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        image_id: Option<String>,
+        #[arg(long)]
+        worktree_id: Option<String>,
+    },
     Show(EvidenceReferenceArgs),
     Image(EvidenceImageArgs),
     Feedback {
@@ -1001,9 +1018,23 @@ impl TaskStatusArg {
 
 #[derive(Debug, Subcommand)]
 enum TaskCommand {
+    Search {
+        #[command(flatten)]
+        path: PathArg,
+        #[arg(long, default_value = "")]
+        query: String,
+        #[arg(long, value_enum)]
+        status: Option<TaskStatusArg>,
+        #[arg(long, default_value_t = 0)]
+        after_sequence: u64,
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: u16,
+    },
     Create(TaskCreateArgs),
     Update(TaskUpdateArgs),
-    History { task_id: String },
+    History {
+        task_id: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1107,6 +1138,20 @@ enum ReleaseCommand {
     Update(ReleaseUpdateArgs),
     Request(ReleaseRequestArgs),
     Deliver(ReleaseDeliverArgs),
+    DeliverEvidence {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    Evidence {
+        reference: String,
+    },
+    EvidenceShow {
+        release_id: String,
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, default_value_t = 10)]
+        limit: u8,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1296,7 +1341,13 @@ impl TestCommand {
                 remote("test.stop", Value::Object(params))
             }
             Self::Event { status } => Ok(Invocation::TestEvent { status }),
-            Self::List => remote("test.list", json!({})),
+            Self::List {
+                after_worktree_id,
+                limit,
+            } => remote(
+                "test.list",
+                json!({"after_worktree_id": after_worktree_id, "limit": limit}),
+            ),
             Self::Capacity { command } => match command {
                 CapacityCommand::Show => remote("test.capacity.get", json!({})),
                 CapacityCommand::Set { cap } => {
@@ -1460,6 +1511,14 @@ impl TestLogCommand {
 impl EvidenceCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::Lookup {
+                run_id,
+                image_id,
+                worktree_id,
+            } => remote(
+                "test.evidence.lookup",
+                json!({"run_id":run_id,"image_id":image_id,"worktree_id":worktree_id}),
+            ),
             Self::Show(args) => remote(
                 "test.evidence.get",
                 json!({"path":args.path.absolute()?,"run_id":args.run_id}),
@@ -1892,6 +1951,18 @@ impl TaskCommand {
                 }
                 remote("task.update", Value::Object(params))
             }
+            Self::Search {
+                path,
+                query,
+                status,
+                after_sequence,
+                limit,
+            } => remote(
+                "task.search",
+                json!({
+                    "path": path.absolute()?, "query": query, "status": status.map(TaskStatusArg::as_str), "after_sequence": after_sequence, "limit": limit
+                }),
+            ),
             Self::History { task_id } => remote("task.history", json!({"task_id":task_id})),
         }
     }
@@ -1900,6 +1971,20 @@ impl TaskCommand {
 impl ReleaseCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::DeliverEvidence { file } => {
+                remote("release.deliver_evidence", review_cli::bounded_file(&file)?)
+            }
+            Self::Evidence { reference } => {
+                remote("release.evidence", json!({"reference":reference}))
+            }
+            Self::EvidenceShow {
+                release_id,
+                offset,
+                limit,
+            } => remote(
+                "release.evidence_show",
+                json!({"release_id":release_id,"offset":offset,"limit":limit}),
+            ),
             Self::Create(args) => {
                 let mut params = Map::new();
                 params.insert("path".to_owned(), Value::String(args.path.absolute()?));
@@ -2200,7 +2285,62 @@ mod tests {
         .unwrap();
         std::fs::write(&settings_file, r#"{"languages":["en"],"guidelines":[]}"#).unwrap();
         std::fs::write(&usages_file, "[]").unwrap();
+        let review_file = glossary_inputs.path().join("review.json");
+        std::fs::write(&review_file, serde_json::to_vec(&json!({
+            "version":1,"repositoryId":"project-alpha","projectId":"project-alpha","windowStartMs":1000000,"windowEndMs":605800000,
+            "experiment":{"hypothesis":"Retain the required checks","evidenceRefs":[],"alternatives":["Keep checks","Remove checks"],"chosenAction":"Keep required checks",
+            "baseline":{"evidenceRefs":[],"interpretation":"No per-task measurements","missingMeasurements":[]},"successCriteria":"Preserve required quality","rollbackCondition":"Reconsider with evidence",
+            "disposition":"proposed","resultEvidenceRefs":[],"scopeRepoId":"project-alpha","preservesQuality":true,"reason":"Retain all required checks","observations":[]}
+        })).unwrap()).unwrap();
+        let delivery_file = glossary_inputs.path().join("delivery.json");
+        std::fs::write(&delivery_file, serde_json::to_vec(&json!({"release_id":"release-alpha","path":"/tmp/repo","run_id":"run","check":"build","artifact":"package","manifest_sha256":"a".repeat(64),"source_sha256":"b".repeat(64),"target":"linux-cli","kind":"local-executable"})).unwrap()).unwrap();
         let cases: &[(&[&str], &str)] = &[
+            (
+                &[
+                    "review",
+                    "prepare",
+                    "--repository-id",
+                    "project-alpha",
+                    "--window-start-ms",
+                    "1000000",
+                    "--window-end-ms",
+                    "605800000",
+                ],
+                "review.prepare",
+            ),
+            (
+                &[
+                    "review",
+                    "record",
+                    "--file",
+                    review_file.to_str().unwrap(),
+                    "--expected-revision",
+                    "0",
+                ],
+                "review.record",
+            ),
+            (
+                &["review", "list", "--repository-id", "project-alpha"],
+                "review.show",
+            ),
+            (&["review", "show", "review-fixture@1"], "review.receipt"),
+            (
+                &[
+                    "release",
+                    "deliver-evidence",
+                    "--file",
+                    delivery_file.to_str().unwrap(),
+                ],
+                "release.deliver_evidence",
+            ),
+            (
+                &["release", "evidence-show", "release-alpha"],
+                "release.evidence_show",
+            ),
+            (
+                &["release", "evidence", "delivery-fixture"],
+                "release.evidence",
+            ),
             (&["ping"], "ping"),
             (&["config", "show"], "config.get"),
             (
@@ -2400,6 +2540,10 @@ mod tests {
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 ],
                 "test.evidence.image",
+            ),
+            (
+                &["test", "evidence", "lookup", "--run-id", "trun"],
+                "test.evidence.lookup",
             ),
             (
                 &[
@@ -2678,6 +2822,20 @@ mod tests {
             (
                 &["task", "update", "p1", "--status", "in_progress"],
                 "task.update",
+            ),
+            (
+                &[
+                    "task",
+                    "search",
+                    "/tmp/repo",
+                    "--query",
+                    "lost",
+                    "--status",
+                    "dropped",
+                    "--limit",
+                    "1",
+                ],
+                "task.search",
             ),
             (&["task", "history", "p1"], "task.history"),
             (

@@ -1,162 +1,151 @@
 ---
 name: full-repo-test-coverage-audit
-description: Run a manifest-verified test assurance audit with deterministic structural target discovery, exact per-target TESTED/UNTESTED/NOT_REASONABLE decisions, real test path/symbol validation, and optional LCOV/Cobertura/coverage.py/Istanbul evidence. Use to find missing tests and scenario gaps or plan unit, integration, visual, and e2e improvements without mislabeling structural review as empirical coverage.
+description: Explicitly audit complete line/branch coverage, meaningful code and UI tests, and efficient focused execution using source-bound native evidence and a manifest-verified review.
 ---
 
 # Full Repo Test Coverage Audit
 
-## Overview
+Run this exhaustive, read-only workflow only when explicitly invoked as
+`$full-repo-test-coverage-audit`. Ordinary implementation or test-gap questions
+do not require a full audit. Keep artifacts outside the audited repository.
+Use the canonical shared Rust tooling; do not copy or recreate the harness.
 
-This exhaustive workflow is explicit-only. Run it only when the user invokes
-`$full-repo-test-coverage-audit`; ordinary implementation, review, testing, or
-gap-finding requests must not activate it implicitly.
+Report four separate facts: whether the audit is complete, whether executable
+code has **100% line and branch coverage**, whether required UI journeys have
+meaningful executed tests, and whether testing meets the project's efficiency
+requirements. A valid report can expose gaps. Missing evidence is **unproven**,
+not a passing result; source/test matching is structural evidence only.
 
-The installed skill must be a direct link into the canonical DevCoordinator2
-checkout. Its scripts resolve that link and import the one root
-`full_repo_harness`; copied standalone skill packages are unsupported.
+## Prepare the evidence once
 
-Run a read-only, manifest-verified audit of test coverage. The lead agent reviews the repo architecture, test strategy, UI/user journeys, intended feature set, UI element set, and high-level behavior. Low-effort workers inspect deterministic file batches and manually identify reasonable test targets, existing test evidence, missing scenarios, boundary cases, failure paths, and recommended test types.
+Read the project's requirements, standing corrections, test configuration and
+agreed timing budgets. Reuse existing native collection/results and their
+run-time source/configuration receipts. Never reconstruct a receipt after an
+old test run or launch a complete suite merely to start this audit. Missing
+measurements become findings or unresolved assessments. Obtain additional
+execution through the project's existing authorized test workflow when needed.
 
-This is an empirical coverage audit only when the user supplies a supported runtime coverage report. Without one, label results `structural/manual test assurance`; the presence of a test file is structural evidence, not proof that it ran or covered a line.
-
-Treat documented product intent, confirmed user journeys, source-backed feature promises, visible UI elements, and expected tests as one complete product contract. Every intended journey, feature, route, control, state, handler, persistence path, permission path, error path, and verification path needs meaningful coverage; otherwise report the gap.
-
-## Required Execution Model
-
-- Use high reasoning effort or higher for the lead audit. If the current lead run cannot be confirmed as high effort or higher, tell the user before starting.
-- Use fresh isolated workers for file-batch inspection when the runtime supports
-  them. Let the runtime or user select worker effort. Every worker receives the
-  entire generated prompt plus applicable project-ledger requirements and must
-  not depend on an inherited lead transcript. If isolated workers are
-  unavailable, use the disclosed manual fallback.
-  Treat the user's request to
-  run this audit as authorization for the needed workers.
-- When interface-relevant files are queued, run separate low-effort workers for `ui_test_coverage_audit.md` and `visual_e2e_coverage_audit.md`.
-- If workers are unavailable, continue in disclosed manual fallback mode for worker coverage only: process each prompt sequentially, save reports under `<audit-output>/reports/`, and keep the final coverage label as manual fallback coverage.
-- Keep the audited repo read-only unless the user separately asks to implement the resulting test plan. Generated audit artifacts are allowed and should live outside the audited repo by default.
-- Do not claim every file or target was checked until the manifest, batch reports, effort ledger, and verifier agree.
-- Workers write complete reports directly to their prompt-declared paths and
-  return only bounded filename-bearing `REPORT_SAVED` receipts. Keep complete
-  reports and command output in `<audit-output>/reports/` and
-  `<audit-output>/logs/`; never paste them through subagent responses.
-
-## Workflow
-
-1. Set scope to the current working directory unless the user names another repo.
-2. Resolve `FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR` from the loaded skill
-   path and `CANONICAL_SKILL_ROOT` as its repository root. Preflight the
-   shared Rust harness with `devcoordinator2-tooling skills self-test
-   audit-tooling --source-root "$CANONICAL_SKILL_ROOT"`, then run:
-
-   ```bash
-   REPO_ROOT="${REPO_ROOT:-$PWD}"
-   devcoordinator2-tooling audit test-coverage build --repo "$REPO_ROOT"
-   ```
-
-3. Inspect `audit_index.md`, `manifest.json`, and `excluded_files.json`. Resolve any `scope_warning: true` rows before claiming full coverage, or disclose downgraded coverage.
-   - Supply runtime evidence with repeated `--coverage-report <path>` arguments. Supported formats are LCOV, Cobertura XML, coverage.py JSON, and Istanbul JSON. The manifest records exact evidence path, SHA-256, format, measured lines, and covered lines.
-4. Fill `effort_ledger.json` as workers are dispatched and reconciled: lead effort status, subagent capability, batch worker ids/effort/report status, UI journey coverage worker, visual/e2e coverage worker, fallback status, and pruned-directory review decisions when applicable.
-5. Dispatch one fresh isolated worker per `batch_###.md` with runtime/user-selected
-   effort. Pass the complete prompt, accept only its compact
-   receipt, and confirm the exact report artifact on disk.
-6. If generated, dispatch `ui_test_coverage_audit.md` and
-   `visual_e2e_coverage_audit.md` with the same isolated context and
-   artifact-first contract.
-7. Confirm one report per batch under `reports/batch_###.md`, then verify:
-
-   ```bash
-   devcoordinator2-tooling audit test-coverage verify --manifest <audit-output>/manifest.json --reports <audit-output>/reports
-   ```
-
-8. Reconcile findings, inspect suspicious high-impact gaps directly as lead, and produce a prioritized implementation plan. For large audits, consolidate first:
-
-   ```bash
-   CANONICAL_SKILL_ROOT="$(dirname "$(dirname "$(realpath "$FULL_REPO_TEST_COVERAGE_AUDIT_SKILL_DIR")")")"
-   devcoordinator2-tooling audit merge-findings \
-     --reports <audit-output>/reports \
-     --markdown-out <audit-output>/consolidated-findings.md
-   ```
-
-   This conservatively deduplicates only findings whose immutable fields all
-   match, ranks P0→P3, and cites the source reports; it supports lead synthesis
-   rather than replacing it.
-
-## Batch Worker Review Rules
-
-For every owned file or range:
-
-- Identify reasonable test targets: exported/public functions, methods with behavior, reducers/hooks, API handlers, command/job entrypoints, domain services, intended feature behavior, UI element behavior, state transitions, permission checks, validation logic, and non-trivial private helpers with branching or side effects.
-- Exclude only with rationale: types/interfaces, pure constants, generated code, static copy-only markup, trivial pass-throughs, and framework boilerplate with no repo-owned behavior.
-- For each target, check existing tests by naming files, test names, fixtures, snapshots, visual stories, or explicit absence.
-- Assess scenario depth: happy path, invalid input, empty/null/boundary values, error paths, async/concurrency behavior, permissions, persistence, navigation, rollback, and integration boundaries as applicable.
-- Recommend the minimum useful test type: unit, component, integration, contract, e2e, visual, snapshot, fixture, or manual-test-mode improvement.
-
-## Required Batch Report Shape
-
-Each batch report must contain exactly these top-level headings in order:
-
-```markdown
-## Run ID
-## Batch ID
-## Batch Summary
-## File Coverage
-## Test Target Inventory
-## Coverage Findings
-## No Gap Notes
-## Open Questions
+```bash
+devcoordinator2-tooling audit test-coverage build --repo /path/to/repo \
+  --out /path/to/audit \
+  --coverage-report /path/to/coverage.info \
+  --assurance-input /path/to/assurance.json
 ```
 
-`File Coverage` must include one row per owned file or range with columns `Unit`, `Status`, `SHA-256`, and `Purpose`; every status must be `CHECKED`.
+Both evidence options are optional for diagnosis. Repeat `--coverage-report`
+for LCOV, Cobertura, coverage.py JSON or Istanbul reports. The builder writes
+`assurance-input.example.json` to help assemble missing scope and evidence.
+Read [the evidence contract](references/evidence.md) when preparing these inputs.
+Use existing runner reports; do not build another scheduler, runner or cache.
 
-`manifest.json.test_coverage_audit.target_inventory` is the deterministic coverage floor. `Test Target Inventory` must map every exact target id once with columns `Target ID`, `Unit`, `File`, `Target`, `Kind`, `Disposition`, `Evidence Level`, `Existing Test Evidence`, `Scenario Assessment`, and `Recommendation`. Disposition is `TESTED`, `UNTESTED`, or `NOT_REASONABLE`. Evidence level is `EMPIRICAL`, `STRUCTURAL`, `MANUAL`, or `NONE`.
-Add behavior the scanner misses with a unique `manual-...` target id bound to an exact unit/file; the verifier accepts these additions but never permits omission of a deterministic target.
+Inspect `manifest.json`, `audit_index.md`, `test_inventory.json` and
+`excluded_files.json`. Resolve or
+explicitly report scope warnings. Classify every source file, justify exclusions,
+and retain zero-hit files in the denominator. A trivial wrapper may need no
+separate unit test but still belongs in measured executable-code coverage.
+Branch-free code needs an explicit measured zero-branch denominator. Unsupported
+or absent instrumentation cannot satisfy the coverage requirement.
 
-- `EMPIRICAL` requires a supplied coverage artifact that marks the target line covered plus a real `test/path#test name` reference.
-- `STRUCTURAL` requires a real test path and test symbol/name present in that file; it does not claim execution.
-- `MANUAL` requires concrete `manual: ...` evidence, or `not reasonable: ...` rationale for excluded targets.
-- `NONE` is required for `UNTESTED` with `None found`.
-- Every `UNTESTED` target needs a finding bound by exact `Target ID`. Invented test paths or symbols fail verification.
+## Review without duplicate work
 
-`Coverage Findings` must use either the exact sentinel `No findings.` or finding blocks with these fields:
+Assign one fresh isolated worker per generated batch when delegation is
+available. Give each the complete prompt and applicable project decisions.
+Every worker inherits the parent's settings; **do not set model or reasoning
+overrides, inspect effort, or record effort levels**. If workers are unavailable,
+use the same reports with disclosed manual fallback. Track assignments,
+provenance and completion in `review_ledger.json`. Use `completed` for normal
+review. For manual fallback, use `manual-fallback-completed` on the lead and
+each required worker, retain the actual reviewing agent/task identity in
+`agent_id`, and describe the manual work in `runtime_provenance`. Set the
+top-level fallback to `{status: "completed", reason: "<actual limitation>"}`.
+Never use null provenance or invent another worker.
 
-- Priority: `P0`, `P1`, `P2`, or `P3`
-- Files: repo-relative files owned by the batch
-- Target ID: exact deterministic target id
-- Target: function, method, component, journey, API, job, or behavior
-- Existing test evidence: concrete tests found or `None found`
-- Missing scenarios/boundaries: concrete missing cases
-- Suggested test direction: specific test type and expected assertion focus
+One coordinated UI reviewer owns `ui_test_coverage_audit.md`, including component,
+integration, e2e and visual evidence. Reuse the shared formal UI verifier's
+existing evidence and review validation. Source workers assess wiring and test
+assertions; they do not repeat rendered judgments. CLI/library packages with no
+owned rendered UI may record a justified not-applicable assessment.
 
-## UI And Journey Coverage
+Workers write complete reports to their exact prompt-declared paths and return
+only bounded `REPORT_SAVED` receipts. Keep verbose output in `logs/`.
 
-The UI test coverage worker checks whether intended routes, controls, forms, UI elements, empty/error/loading states, permission states, feature paths, and user journeys have component, integration, e2e, or visual coverage. If no explicit journey documentation exists, draft likely journeys from routes and visible source, mark them `draft-needs-user-confirmation`, and keep them as assumptions.
+For each deterministic target, inspect the actual tests and expected outcomes:
 
-The visual/e2e coverage worker identifies Playwright, Cypress, Storybook, native preview, screenshot, or browser tooling. For CLI, library, plugin, or skill packages with no repo-owned rendered UI surface, mark visual checks as `not applicable` with evidence rather than reporting a defect.
+- Map its exact target ID to `TESTED`, `UNTESTED` or `NOT_REASONABLE` and retain
+  the required report columns from the generated prompt. Every File Coverage
+  row uses status `CHECKED` and the exact manifest SHA-256. Add overlooked behavior
+  using a unique `manual-...` ID tied to the owned file/unit.
+- Cite an unambiguous source declaration or an exact collected `file#test name`.
+  Native collection supports expanded parameterized identities. A comment,
+  filename, snapshot's existence or collection-only result is not execution.
+- Review happy, boundary, invalid, failure, async, permission, persistence and
+  recovery scenarios where applicable. Cite the observable assertions. Report
+  missing scenarios even when an existing test earns a `TESTED` disposition.
+- Label evidence `STRUCTURAL`, `EMPIRICAL`, `MANUAL` or `NONE` honestly.
+  `EMPIRICAL` requires passing native evidence and source-bound complete line
+  and branch measurements; hitting a declaration line is insufficient.
+- Bind every `UNTESTED` target to a finding. `NOT_REASONABLE` requires a concrete
+  rationale and does not itself exclude executable code from measured coverage.
 
-## Final Audit Artifact And Chat Output
+The UI inventory names each required journey, control, interaction, state,
+theme, viewport, expected outcome and exact test/check identity. Reconcile it
+with discovered controls and requirement-derived dynamic surfaces. Check
+cancellation, validation, recovery and persistence where promised. Different
+configuration cells need distinguishable executed evidence. Screenshots and
+geometry support interaction assertions; they do not replace them.
 
-Write the complete result to `<audit-output>/final-report.md` with exactly these
-top-level headings:
+## Assess test efficiency
 
-```markdown
-## Coverage
-## Test Architecture Findings
-## UI And Journey Coverage Findings
-## Function And Method Coverage Findings
-## Implementation Plan
-## Verification Plan
+Use one categorized check/test inventory and source-bound timings. Distinguish
+unit, component, contract, integration, e2e, visual, static and setup work, and
+its development, pre-merge and release tier.
+
+- Find overlapping filters/jobs/shards that execute the same test and variant
+  repeatedly. Review semantic redundancy by assertions and failure modes;
+  shared code coverage alone does not make two tests redundant. Preserve
+  justified platform variants, distinct risks and deliberate repeatability tests.
+- Review avoidable serial dependencies, actual resource conflicts, independent
+  overlap and admission waiting. Capacity constraints need evidence; do not
+  replace the host scheduler with local worker limits or fake dependencies.
+- Assess repeated builds/seeding, fixture cost, fixed sleeps, retries/flakiness,
+  and expensive browser cases better covered at a lower layer. Prefer the
+  smallest meaningful test while retaining real integration and UI proof.
+- Compare actual wall-clock feedback with the project's focused, pre-merge and
+  release budgets. Keep concurrent work durations separate from elapsed time.
+  Missing limits, measurements or review evidence remain unresolved.
+- Exercise the existing selector with local, shared, UI, fixture, configuration
+  and unmapped changes, or justify a non-applicable case. Include transitive
+  dependencies and prerequisites. Unmapped changes broaden selection; extra
+  checks need a concrete reason. Validate that small changes get focused tests.
+
+Focused tests belong during edits; broader testing belongs after coherent
+integration; a fresh complete run proves the final candidate. Do not count
+required final validation as waste or infer speed from configuration alone.
+
+## Verify and deliver the findings
+
+```bash
+devcoordinator2-tooling audit test-coverage verify \
+  --manifest /path/to/audit/manifest.json --reports /path/to/audit/reports
 ```
 
-`## Coverage` must state `empirical`, `structural`, and `manual` scopes separately. Name each supplied coverage artifact, format, SHA-256, and source-file scope. If none was supplied, say `No empirical runtime coverage evidence supplied`; never report a percentage inferred from source/test matching.
+`ok` describes report integrity/completeness. The separate `coverage`, `ui` and
+`efficiency` verdicts and `assurance_met` describe the requirements above.
+`assurance-report.json` retains full measurements, findings and unknowns. Add
+`--require-assurance` for automation that must fail unless all requirements are
+met: exit 1 means invalid audit evidence, 2 setup failure, and 3 a valid audit
+with gaps or unresolved assurance. Skipping source freshness cannot pass this gate.
+Legacy audit artifacts stay readable without their obsolete effort gates and
+cannot acquire stronger assurance merely by being reverified.
 
-Do not paste `final-report.md`, worker reports, consolidated findings, or raw
-command logs into chat. Return only the overall outcome, incomplete/blocking
-status, high-priority and total gap counts, verifier result, empirical-versus-
-structural caveat, and the final-report/audit-directory paths.
+Reconcile source, UI and efficiency findings; inspect high-impact claims as the
+lead. Software checks identities, scope and evidence consistency; reviewers
+remain responsible for the truth of requirements and assertion-quality judgments.
+Write `final-report.md` with Coverage, Test Architecture Findings, UI And Journey
+Coverage Findings, Function And Method Coverage Findings, Implementation Plan,
+and Verification Plan sections. Preserve actual measured scope and all unresolved
+outcomes. Prioritize missing core behavior or unsafe failure paths above cleanup;
+rank efficiency changes by measured feedback benefit and risk.
 
-Prioritize gaps with:
-
-- `P0`: Missing coverage for security/data-loss/runtime-failure behavior or an untested core path likely to fail silently.
-- `P1`: Missing coverage for major user journeys, intended features, required UI elements, business logic, integration boundaries, permission behavior, or failure paths.
-- `P2`: Missing edge, boundary, accessibility, performance, reliability, or maintainability coverage.
-- `P3`: Low-risk cleanup, naming, fixture, or documentation test improvement.
+Return a compact outcome, priority/count summary, independent verdicts,
+limitations and artifact links. Do not paste complete reports or raw logs.

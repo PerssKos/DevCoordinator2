@@ -16,6 +16,7 @@ use crate::audit_ledger::{
 };
 use crate::audit_queue::{self, ArtifactOwnership, AuditUnit, CollectOptions, FileEntry};
 use crate::audit_targets::{self, TestTarget};
+use crate::test_assurance::{self, AssuranceReport, BoundInput, Verdict};
 
 pub const ARTIFACT_OWNER: &str = "full-repo-test-coverage-audit";
 pub const ARTIFACT_MARKER: &str = ".full-repo-test-coverage-audit-artifacts.json";
@@ -26,10 +27,22 @@ fn ownership() -> ArtifactOwnership {
         marker_name: ARTIFACT_MARKER.to_owned(),
         ..ArtifactOwnership::default()
     };
+    value.known_generated_artifacts.extend(
+        [
+            "ui_test_coverage_audit.md",
+            "visual_e2e_coverage_audit.md",
+            "review_ledger.json",
+            "assurance-input.example.json",
+            "assurance-report.json",
+            "test_inventory.json",
+        ]
+        .map(str::to_owned),
+    );
     value
-        .known_generated_artifacts
-        .extend(["ui_test_coverage_audit.md", "visual_e2e_coverage_audit.md"].map(str::to_owned));
-    value
+}
+
+fn inherited_worker_contract() -> &'static str {
+    "## Dispatch Contract\n\nPass this entire prompt and applicable project decisions in a fresh isolated context. Workers inherit the parent settings; do not pass model or reasoning overrides.\n"
 }
 
 fn target_units(units: &[AuditUnit]) -> Vec<audit_targets::AuditUnit> {
@@ -126,10 +139,10 @@ fn batch_prompt(
         .collect::<Vec<_>>()
         .join("\n");
     Ok(format!(
-        "# Full Repo Test Coverage Audit Batch {index:03}/{total:03}\n\nRun ID: `{run_id}`\nRepo root: `{}`\nBatch ID: `batch_{index:03}`\n\n{}\n{}\n\nYou are a low-effort worker auditing test coverage. Do not edit the audited repository; write only the exact audit artifact authorized above. Inspect every owned unit and report whether reasonable behavior targets, intended features, UI elements, states, handlers, and journeys have meaningful tests.\n\n## Files You Own\n\n{}\n\nFor ranged units use the exact unit id.\n\n## Structurally Discovered Targets You Must Map Exactly\n\n| Target ID | Unit | File | Symbol/Behavior | Kind | Line | Discovery Basis |\n| --- | --- | --- | --- | --- | ---: | --- |\n{target_rows}\n\nEvery deterministic target needs exactly one inventory row. Add manual targets only with stable `manual-` ids. Structural matching is not empirical coverage. Assess happy, invalid, empty/boundary, failure, async/concurrency, permission, persistence, navigation, rollback, integration, UI-state, and feature-completion cases.\n\n## Required Report File\n\n## Run ID\n{run_id}\n\n## Batch ID\nbatch_{index:03}\n\n## Batch Summary\nBriefly summarize the files.\n\n## File Coverage\n| Unit | Status | SHA-256 | Purpose |\n| --- | --- | --- | --- |\n\n## Test Target Inventory\n| Target ID | Unit | File | Target | Kind | Disposition | Evidence Level | Existing Test Evidence | Scenario Assessment | Recommendation |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\nUse TESTED/UNTESTED/NOT_REASONABLE and EMPIRICAL/STRUCTURAL/MANUAL/NONE honestly. Real structural/empirical evidence is `test/path#test name`; manual evidence begins `manual:`; untested is `NONE` / `None found`; exclusions begin `not reasonable:`.\n\n## Coverage Findings\nUse `No findings.` or one block per gap with Priority, Files, Target ID, Target, Existing test evidence, Missing scenarios/boundaries, and Suggested test direction. Every UNTESTED target has one Target-ID-bound finding.\n\n## No Gap Notes\nList adequate targets and why.\n\n## Open Questions\nList unresolved ambiguity or `None.`\n",
+        "# Full Repo Test Coverage Audit Batch {index:03}/{total:03}\n\nRun ID: `{run_id}`\nRepo root: `{}`\nBatch ID: `batch_{index:03}`\n\n{}\n{}\n\nYou are auditing test coverage for this assigned batch. Do not edit the audited repository; write only the exact audit artifact authorized above. Inspect every owned unit and report whether reasonable behavior targets, intended features, UI elements, states, handlers, and journeys have meaningful tests.\n\n## Files You Own\n\n{}\n\nFor ranged units use the exact unit id. Mark every File Coverage row CHECKED.\n\n## Structurally Discovered Targets You Must Map Exactly\n\n| Target ID | Unit | File | Symbol/Behavior | Kind | Line | Discovery Basis |\n| --- | --- | --- | --- | --- | ---: | --- |\n{target_rows}\n\nEvery deterministic target needs exactly one inventory row. Add manual targets only with stable `manual-` ids. Use the shared `test_inventory.json` for discovery and inspect referenced assertion bodies. Structural matching is not empirical coverage. Assess happy, invalid, empty/boundary, failure, async/concurrency, permission, persistence, navigation, rollback, integration, UI-state, and feature-completion cases.\n\n## Required Report File\n\n## Run ID\n{run_id}\n\n## Batch ID\nbatch_{index:03}\n\n## Batch Summary\nBriefly summarize the files.\n\n## File Coverage\n| Unit | Status | SHA-256 | Purpose |\n| --- | --- | --- | --- |\n\n## Test Target Inventory\n| Target ID | Unit | File | Target | Kind | Disposition | Evidence Level | Existing Test Evidence | Scenario Assessment | Recommendation |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n\nUse TESTED/UNTESTED/NOT_REASONABLE and EMPIRICAL/STRUCTURAL/MANUAL/NONE honestly. Real structural/empirical evidence is `test/path#test name`; manual evidence begins `manual:`; untested is `NONE` / `None found`; exclusions begin `not reasonable:`.\n\n## Coverage Findings\nUse `No findings.` or one block per gap with Priority, Files, Target ID, Target, Existing test evidence, Missing scenarios/boundaries, and Suggested test direction. Every UNTESTED target has one Target-ID-bound finding.\n\n## No Gap Notes\nList adequate targets and why.\n\n## Open Questions\nList unresolved ambiguity or `None.`\n",
         repo.display(),
         audit_queue::artifact_delivery_contract(report)?,
-        audit_queue::isolated_light_worker_contract(),
+        inherited_worker_contract(),
         unit_lines(entries),
     ))
 }
@@ -170,7 +183,7 @@ fn auxiliary_prompt(
         "# {title}\n\nRun ID: `{run_id}`\nRepo root: `{}`\nWorker: `{worker}`\n\n{}\n{}\n\nDo not edit the audited repository. Audit intended routes, controls, forms, states, UI elements, feature paths, and journeys for meaningful component, integration, e2e, visual, or fixture-mode coverage. CLI/library packages with no rendered UI may mark visual checks not applicable with evidence.\n\n## Interface-Relevant Files\n\n{files}\n\n## Run ID\n{run_id}\n\n## Worker\n{worker}\n\n## {sources}\nList evidence sources and tooling.\n\n## {checks}\nList journeys, controls, states, features, and existing evidence.\n\n## Findings\nUse `No findings.` or blocks with Priority, Files, Target, Existing test evidence, Missing scenarios/boundaries, and Suggested test direction.\n\n## Open Questions\nList blockers or `None.`\n",
         repo.display(),
         audit_queue::artifact_delivery_contract(report)?,
-        audit_queue::isolated_light_worker_contract(),
+        inherited_worker_contract(),
     ))
 }
 
@@ -213,6 +226,7 @@ pub struct BuildOptions {
     pub max_batch_bytes: usize,
     pub collection: CollectOptions,
     pub coverage_reports: Vec<PathBuf>,
+    pub assurance_input: Option<PathBuf>,
 }
 
 pub fn build(options: &BuildOptions) -> Result<Value, String> {
@@ -237,6 +251,36 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
     audit_queue::validate_generated_artifact_tokens(&collection.entries, &units)?;
     let targets = audit_targets::discover_targets(&repo, &target_units(&units));
     let empirical = audit_targets::ingest_coverage_reports(&repo, &options.coverage_reports)?;
+    let assurance_input = options
+        .assurance_input
+        .as_ref()
+        .map(|path| {
+            test_assurance::bind(&if path.is_absolute() {
+                path.clone()
+            } else {
+                repo.join(path)
+            })
+        })
+        .transpose()?;
+    audit_queue::write_json(
+        &out.join("assurance-input.example.json"),
+        &test_assurance::example(&collection.entries),
+    )?;
+    let initial_assurance = test_assurance::evaluate(
+        &repo,
+        &collection.entries,
+        &targets,
+        &empirical,
+        assurance_input.as_ref(),
+    );
+    audit_queue::write_json(
+        &out.join("test_inventory.json"),
+        &json!({
+            "structural_declarations":crate::test_catalog::source_inventory(&repo,&collection.entries),
+            "native_tests":initial_assurance.tests,"evidence_issues":initial_assurance.evidence_issues,
+            "scope":"source declarations and source-bound native collection; assertions require review"
+        }),
+    )?;
     let mut targets_by_unit: BTreeMap<&str, Vec<&TestTarget>> = BTreeMap::new();
     for target in &targets {
         targets_by_unit
@@ -338,16 +382,6 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
                 false,
             )?,
         )?;
-        write_text(
-            &out.join("visual_e2e_coverage_audit.md"),
-            &auxiliary_prompt(
-                &repo,
-                &options.run_id,
-                &interface,
-                &reports.join("visual_e2e_coverage_audit.md"),
-                true,
-            )?,
-        )?;
     }
     let verifier_args = vec![
         options.verifier_program.to_string_lossy().into_owned(),
@@ -361,7 +395,10 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
     ];
     let mut generated = vec![
         "audit_index.md",
-        "effort_ledger.json",
+        "review_ledger.json",
+        "assurance-input.example.json",
+        "assurance-report.json",
+        "test_inventory.json",
         "excluded_files.json",
         "manifest.json",
         "queue_complete.json",
@@ -372,10 +409,7 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
     .map(str::to_owned)
     .collect::<Vec<_>>();
     if ui_required {
-        generated.extend([
-            "ui_test_coverage_audit.md".to_owned(),
-            "visual_e2e_coverage_audit.md".to_owned(),
-        ]);
+        generated.extend(["ui_test_coverage_audit.md".to_owned()]);
     }
     generated.extend(
         archive
@@ -407,12 +441,12 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
     let all_units_once =
         missing_units.is_empty() && extra_units.is_empty() && duplicate_units.is_empty();
     let manifest = json!({
-        "repo_root":repo.to_string_lossy(),"run_id":options.run_id,"audit_kind":"test-coverage",
+        "repo_root":repo.to_string_lossy(),"run_id":options.run_id,"audit_kind":"test-coverage","assurance_version":2,
         "generated_at":options.generated_at,"reports_dir":reports.to_string_lossy(),
         "logs_dir":logs.to_string_lossy(),"final_report":out.join("final-report.md").to_string_lossy(),
         "archived_reports_dir":archive.as_ref().map(|path|path.to_string_lossy().into_owned()),
         "artifact_marker":out.join(ARTIFACT_MARKER).to_string_lossy(),
-        "effort_ledger":out.join("effort_ledger.json").to_string_lossy(),
+        "review_ledger":out.join("review_ledger.json").to_string_lossy(),
         "generated_artifacts":generated,"verifier_command":verifier_args.iter().map(|arg|shell_quote(arg)).collect::<Vec<_>>().join(" "),
         "verifier_args":verifier_args,"source_file_count":collection.entries.len(),
         "interface_file_count":interface.len(),"scope_warning_count":scope_warnings.len(),
@@ -425,13 +459,14 @@ pub fn build(options: &BuildOptions) -> Result<Value, String> {
             "ui_required":ui_required,"interface_files":interface.iter().map(|entry|entry.rel_path.clone()).collect::<Vec<_>>(),
             "ui_prompt":if ui_required {json!("ui_test_coverage_audit.md")} else {Value::Null},
             "ui_report":if ui_required {json!("reports/ui_test_coverage_audit.md")} else {Value::Null},
-            "visual_prompt":if ui_required {json!("visual_e2e_coverage_audit.md")} else {Value::Null},
-            "visual_report":if ui_required {json!("reports/visual_e2e_coverage_audit.md")} else {Value::Null},
+            "visual_prompt":Value::Null,
+            "visual_report":Value::Null,
             "target_count":targets.len(),"target_inventory":targets,
             "empirical_coverage":empirical,
+            "assurance_input":assurance_input,
             "coverage_claim_scope":if options.coverage_reports.is_empty() {
                 "structural/manual audit only; no runtime coverage evidence supplied"
-            } else {"empirical line evidence supplied and structurally bound to target lines"},
+            } else {"runtime measurements supplied; source-bound line/branch, UI and efficiency verdicts are evaluated separately"},
         },
         "coverage_invariants":{
             "unique_batched_file_count":batched_paths.len(),"unique_batched_unit_count":batched_units.len(),
@@ -462,51 +497,36 @@ fn write_support_artifacts(
 ) -> Result<(), String> {
     let coverage = &manifest["test_coverage_audit"];
     let ui_required = coverage["ui_required"] == true;
-    let batch_workers = manifest["batches"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|batch| {
-            let id = batch["id"].as_str().unwrap_or("");
-            json!({
-                "batch_id":id,"status":"pending","prompt":batch["prompt"],
-                "required_reasoning_effort":"low","report":format!("reports/{id}.md"),
-                "agent_id":Value::Null,"actual_reasoning_effort":Value::Null,
-                "runtime_provenance":Value::Null,"fallback":false,
-            })
-        })
-        .collect::<Vec<_>>();
-    let effort = json!({
+    let batch_workers = manifest["batches"].as_array().into_iter().flatten().map(|batch| {
+        let id = batch["id"].as_str().unwrap_or("");
+        json!({"batch_id":id,"status":"pending","prompt":batch["prompt"],
+            "report":format!("reports/{id}.md"),"agent_id":Value::Null,"runtime_provenance":Value::Null})
+    }).collect::<Vec<_>>();
+    let ledger = json!({
         "run_id":manifest["run_id"],"repo_root":manifest["repo_root"],"audit_kind":"test-coverage",
-        "provenance_scope":"lead-recorded runtime ledger","effort_verification_scope":"ledger-recorded",
-        "subagent_capability_check":{"status":"pending","spawn_tool":Value::Null,"can_set_reasoning_effort":Value::Null,"notes":""},
-        "lead_effort":{"required_reasoning_effort":"high-or-higher","actual_reasoning_effort":Value::Null,"status":"pending","agent_id":Value::Null,"runtime_provenance":Value::Null,"evidence":""},
+        "provenance_scope":"review assignments and completion; settings are inherited",
+        "lead_review":{"status":"pending","agent_id":Value::Null,"runtime_provenance":Value::Null},
         "fallback":{"status":"not-started","reason":""},
         "ui_test_coverage_worker":{
             "status":if ui_required {"pending"} else {"not-applicable"},
-            "prompt":coverage["ui_prompt"],"required_reasoning_effort":if ui_required {json!("low")} else {Value::Null},
-            "report":coverage["ui_report"],"agent_id":Value::Null,"actual_reasoning_effort":Value::Null,"runtime_provenance":Value::Null,
-        },
-        "visual_e2e_coverage_worker":{
-            "status":if ui_required {"pending"} else {"not-applicable"},
-            "prompt":coverage["visual_prompt"],"required_reasoning_effort":if ui_required {json!("low")} else {Value::Null},
-            "report":coverage["visual_report"],"agent_id":Value::Null,"actual_reasoning_effort":Value::Null,"runtime_provenance":Value::Null,
+            "prompt":coverage["ui_prompt"],"report":coverage["ui_report"],
+            "agent_id":Value::Null,"runtime_provenance":Value::Null
         },
         "batch_workers":batch_workers,
         "pruned_directory_review":{
             "status":if manifest["pruned_directory_review_hint_count"].as_u64().unwrap_or(0)>0 {"pending"} else {"not-applicable"},
-            "hint_count":manifest["pruned_directory_review_hint_count"],"decisions":[],
-        },
+            "hint_count":manifest["pruned_directory_review_hint_count"],"decisions":[]
+        }
     });
-    audit_queue::write_json(&out.join("effort_ledger.json"), &effort)?;
+    audit_queue::write_json(&out.join("review_ledger.json"), &ledger)?;
     let marker = json!({
         "run_id":manifest["run_id"],"phase":"queue_generated","audit_verified":false,
         "audit_kind":"test-coverage","manifest":"manifest.json","audit_index":"audit_index.md",
-        "effort_ledger":"effort_ledger.json","excluded_files":"excluded_files.json",
+        "review_ledger":"review_ledger.json","excluded_files":"excluded_files.json",
         "reports_dir":"reports","logs_dir":"logs","final_report":"final-report.md",
         "ownership_marker":ARTIFACT_MARKER,"batch_count":manifest["batch_count"],
         "source_file_count":manifest["source_file_count"],
-        "marker_semantics":"Queue artifacts were generated; worker reports and effort ledger still require verifier completion.",
+        "marker_semantics":"Queue artifacts were generated; worker reports and review ledger still require verifier completion.",
     });
     audit_queue::write_json(&out.join("queue_complete.json"), &marker)?;
     let rows = manifest["batches"]
@@ -528,17 +548,15 @@ fn write_support_artifacts(
         .join("\n");
     let extra = if ui_required {
         format!(
-            "- UI test coverage worker prompt: `{}` -> `{}`\n- Visual/e2e coverage worker prompt: `{}` -> `{}`",
+            "- Coordinated UI coverage prompt: {} -> {}",
             coverage["ui_prompt"].as_str().unwrap_or(""),
-            coverage["ui_report"].as_str().unwrap_or(""),
-            coverage["visual_prompt"].as_str().unwrap_or(""),
-            coverage["visual_report"].as_str().unwrap_or("")
+            coverage["ui_report"].as_str().unwrap_or("")
         )
     } else {
-        "- No UI or visual/e2e coverage prompts were generated because no interface-relevant files were queued.".to_owned()
+        "- No interface-relevant files were queued.".to_owned()
     };
     let index = format!(
-        "# Full Repo Test Coverage Audit Index\n\nRepo root: `{}`\nOutput directory: `{}`\nRun ID: `{}`\nAudit kind: `test-coverage`\n\nSource files queued: **{}**\nCoverage units queued: **{}**\nBatches: **{}**\nScope warnings: **{}**\n\n## Dispatch\n\n1. Fill `effort_ledger.json` as workers are assigned.\n2. Dispatch one fresh isolated worker per batch prompt with runtime/user-selected effort and the full prompt plus project-ledger requirements.\n3. Workers save complete reports and return only bounded `REPORT_SAVED` receipts.\n4. Dispatch UI/visual workers when listed.\n5. Run verifier: `{}`\n6. Keep verbose output in `logs/`, synthesis in `final-report.md`, and chat compact.\n\n{extra}\n\n## Batches\n\n| Batch | Prompt | Files | Units | Interface Files | Purpose |\n| --- | --- | ---: | ---: | ---: | --- |\n{rows}\n",
+        "# Full Repo Test Coverage Audit Index\n\nRepo root: `{}`\nOutput directory: `{}`\nRun ID: `{}`\nAudit kind: `test-coverage`\n\nSource files queued: **{}**\nCoverage units queued: **{}**\nBatches: **{}**\nScope warnings: **{}**\n\n## Dispatch\n\n1. Fill `review_ledger.json` as workers are assigned.\n2. Dispatch one fresh isolated worker per batch prompt inheriting parent settings and the full prompt plus project-ledger requirements.\n3. Workers save complete reports and return only bounded `REPORT_SAVED` receipts.\n4. Dispatch the coordinated UI reviewer when listed.\n5. Run verifier: `{}`\n6. Keep verbose output in `logs/`, synthesis in `final-report.md`, and chat compact.\n\n{extra}\n\n## Batches\n\n| Batch | Prompt | Files | Units | Interface Files | Purpose |\n| --- | --- | ---: | ---: | ---: | --- |\n{rows}\n",
         repo.display(),
         out.display(),
         manifest["run_id"].as_str().unwrap_or(""),
@@ -575,6 +593,8 @@ struct VerifyContext {
     targets_by_batch: BTreeMap<String, BTreeSet<String>>,
     empirical_lines: BTreeMap<String, BTreeSet<usize>>,
     empirical_issues: Vec<Value>,
+    assurance: AssuranceReport,
+    declared_tests: BTreeSet<String>,
 }
 
 fn load_verify_context(path: &Path) -> Result<VerifyContext, String> {
@@ -588,6 +608,12 @@ fn load_verify_context(path: &Path) -> Result<VerifyContext, String> {
     let raw = crate::audit_findings::strict_json_object(&bytes, "manifest")?;
     if raw.get("audit_kind") != Some(&json!("test-coverage")) {
         return Err("manifest audit_kind must be 'test-coverage'.".to_owned());
+    }
+    if raw
+        .get("assurance_version")
+        .is_some_and(|version| version != &json!(2))
+    {
+        return Err("unsupported assurance manifest version".to_owned());
     }
     let repo_text = raw
         .get("repo_root")
@@ -828,6 +854,38 @@ fn load_verify_context(path: &Path) -> Result<VerifyContext, String> {
             }
         }
     }
+    let records: Vec<audit_targets::CoverageEvidence> = serde_json::from_value(
+        coverage
+            .get("empirical_coverage")
+            .cloned()
+            .unwrap_or_else(|| json!([])),
+    )
+    .map_err(|error| format!("invalid coverage evidence: {error}"))?;
+    if raw.get("assurance_version") == Some(&json!(2)) {
+        for record in &records {
+            match audit_targets::ingest_coverage_reports(&repo, &[PathBuf::from(&record.path)]) {
+                Ok(actual) if actual.first() == Some(record) => {}
+                _ => empirical_issues.push(
+                    json!({"reason":"normalized coverage differs from its original artifact"}),
+                ),
+            }
+        }
+    }
+    let bound: Option<BoundInput> = serde_json::from_value(
+        coverage
+            .get("assurance_input")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|error| format!("invalid assurance binding: {error}"))?;
+    let files: Vec<FileEntry> = serde_json::from_value(raw["source_files"].clone())
+        .map_err(|error| format!("invalid source inventory: {error}"))?;
+    let assurance_targets: Vec<TestTarget> =
+        serde_json::from_value(coverage["target_inventory"].clone())
+            .map_err(|error| format!("invalid test target inventory: {error}"))?;
+    let assurance =
+        test_assurance::evaluate(&repo, &files, &assurance_targets, &records, bound.as_ref());
+    let declared_tests = crate::test_catalog::source_inventory(&repo, &files);
     Ok(VerifyContext {
         raw,
         path: root.join(path.file_name().unwrap_or_default()),
@@ -843,6 +901,8 @@ fn load_verify_context(path: &Path) -> Result<VerifyContext, String> {
         targets_by_batch,
         empirical_lines,
         empirical_issues,
+        assurance,
+        declared_tests,
     })
 }
 
@@ -956,7 +1016,7 @@ fn finding_issues(
     issues
 }
 
-fn test_reference_issue(repo: &Path, value: &str) -> Option<Value> {
+fn test_reference_issue(repo: &Path, value: &str, legacy: bool) -> Option<Value> {
     let normalized = value.trim().trim_matches('`');
     let Some((raw_path, symbol)) = normalized.split_once('#') else {
         return Some(json!({
@@ -966,7 +1026,6 @@ fn test_reference_issue(repo: &Path, value: &str) -> Option<Value> {
     };
     if symbol.trim().is_empty()
         || audit_queue::validate_repo_relative_path_token(raw_path, "test evidence").is_err()
-        || !audit_queue::is_test_source_path(raw_path)
     {
         return Some(json!({"reason":"test evidence path#symbol is invalid","actual":value}));
     }
@@ -979,9 +1038,17 @@ fn test_reference_issue(repo: &Path, value: &str) -> Option<Value> {
         None => Some(
             json!({"reason":"test evidence path does not resolve inside the audited repo","actual":value}),
         ),
-        Some(text) if !text.contains(symbol.trim()) => Some(
-            json!({"reason":"test symbol/name is absent from the referenced test file","actual":value}),
-        ),
+        Some(text)
+            if !(if legacy {
+                audit_queue::is_test_source_path(raw_path) && text.contains(symbol.trim())
+            } else {
+                crate::test_catalog::declares_test(raw_path, &text, symbol.trim())
+            }) =>
+        {
+            Some(
+                json!({"reason":"test name is not an unambiguous supported test declaration; supply native collection evidence for dynamic or unsupported tests","actual":value}),
+            )
+        }
         Some(_) => None,
     }
 }
@@ -1178,10 +1245,14 @@ fn verify_batch_report(
         }
         match disposition {
             "TESTED" if matches!(level, "STRUCTURAL" | "EMPIRICAL") => {
-                if let Some(issue) = test_reference_issue(&context.repo, evidence) {
+                if !context.declared_tests.contains(evidence) && !context.assurance.tests.contains_key(evidence) && let Some(issue) = test_reference_issue(&context.repo, evidence, context.raw.get("assurance_version").is_none()) {
                     issues.push(json!({"path":path,"target_id":target_id,"detail":issue}));
                 }
-                if level == "EMPIRICAL"
+                if level == "EMPIRICAL" && context.raw.get("assurance_version") == Some(&json!(2)) {
+                    let measured = context.assurance.test_coverage_files.get(evidence).is_some_and(|files| files.contains(file));
+                    let passed = context.assurance.tests.get(evidence).is_some_and(|test|test.status==test_assurance::TestStatus::Passed);
+                    if !measured || !passed {issues.push(json!({"path":path,"target_id":target_id,"reason":"EMPIRICAL requires passing native test evidence and source-bound complete line and branch measurements; a declaration-line hit is insufficient"}));}
+                } else if level == "EMPIRICAL"
                     && context.targets.get(target_id).is_some_and(|target| {
                         let line = target["line"].as_u64().unwrap_or(0) as usize;
                         let rel = target["rel_path"].as_str().unwrap_or("");
@@ -1307,7 +1378,11 @@ fn marker_issues(context: &VerifyContext) -> Vec<Value> {
         ("audit_kind", json!("test-coverage")),
         ("manifest", json!("manifest.json")),
         ("audit_index", json!("audit_index.md")),
-        ("effort_ledger", json!("effort_ledger.json")),
+        if context.raw.get("assurance_version") == Some(&json!(2)) {
+            ("review_ledger", json!("review_ledger.json"))
+        } else {
+            ("effort_ledger", json!("effort_ledger.json"))
+        },
         ("excluded_files", json!("excluded_files.json")),
         ("reports_dir", json!("reports")),
         ("ownership_marker", json!(ARTIFACT_MARKER)),
@@ -1360,58 +1435,39 @@ fn excluded_issues(context: &VerifyContext) -> Vec<Value> {
     issues
 }
 
-fn effort_issues(context: &VerifyContext) -> Vec<Value> {
-    let path = context.root.join("effort_ledger.json");
+fn review_issues(context: &VerifyContext) -> Vec<Value> {
+    let modern = context.raw.get("assurance_version") == Some(&json!(2));
+    let path = context.root.join(if modern {
+        "review_ledger.json"
+    } else {
+        "effort_ledger.json"
+    });
     let ledger = read_bytes_nofollow(&path, Some(&context.root))
         .ok()
         .flatten()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let Some(Value::Object(ledger)) = ledger else {
-        return vec![json!({"path":path,"reason":"effort_ledger.json is missing or invalid"})];
+        return vec![json!({"path":path,"reason":"review ledger is missing or invalid"})];
     };
     let mut issues = Vec::new();
     if ledger.get("run_id") != context.raw.get("run_id") {
         issues.push(json!({"path":path,"field":"run_id"}));
     }
-    let capability = ledger
-        .get("subagent_capability_check")
-        .and_then(Value::as_object);
-    if capability
-        .and_then(|row| row.get("status"))
-        .and_then(Value::as_str)
-        != Some("completed")
-        || capability
-            .and_then(|row| row.get("can_set_reasoning_effort"))
-            .and_then(Value::as_bool)
-            .is_none()
-        || capability
-            .and_then(|row| row.get("spawn_tool"))
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-    {
-        issues.push(json!({"path":path,"field":"subagent_capability_check","reason":"capability check is incomplete"}));
-    }
-    let lead = ledger.get("lead_effort").and_then(Value::as_object);
-    if lead
-        .and_then(|row| row.get("status"))
-        .and_then(Value::as_str)
-        .is_none_or(|status| {
-            !matches!(
-                status,
-                "completed" | "confirmed" | "manual-fallback-completed"
-            )
+    let complete = |row: Option<&Value>| {
+        row.is_some_and(|row| {
+            matches!(
+                row["status"].as_str(),
+                Some("completed" | "confirmed" | "manual-fallback-completed")
+            ) && row["agent_id"]
+                .as_str()
+                .is_some_and(|id| !id.trim().is_empty())
+                && row["runtime_provenance"]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
         })
-        || lead
-            .and_then(|row| row.get("actual_reasoning_effort"))
-            .and_then(Value::as_str)
-            .is_none_or(|effort| !matches!(effort, "high" | "xhigh" | "high-or-higher"))
-        || lead
-            .and_then(|row| row.get("runtime_provenance"))
-            .and_then(Value::as_str)
-            .is_none_or(str::is_empty)
-    {
-        issues
-            .push(json!({"path":path,"field":"lead_effort","reason":"lead effort is incomplete"}));
+    };
+    if !complete(ledger.get(if modern { "lead_review" } else { "lead_effort" })) {
+        issues.push(json!({"path":path,"reason":"lead review needs completed, confirmed or manual-fallback-completed status with nonempty agent_id and runtime_provenance"}));
     }
     let workers = ledger
         .get("batch_workers")
@@ -1422,49 +1478,19 @@ fn effort_issues(context: &VerifyContext) -> Vec<Value> {
         let id = batch["id"].as_str().unwrap_or("");
         let rows = workers
             .iter()
-            .filter_map(Value::as_object)
-            .filter(|row| row.get("batch_id").and_then(Value::as_str) == Some(id))
+            .filter(|row| row["batch_id"] == id)
             .collect::<Vec<_>>();
-        if rows.len() != 1 {
-            issues.push(json!({"path":path,"field":"batch_workers","missing":id}));
-            continue;
-        }
-        let row = rows[0];
-        let status = row.get("status").and_then(Value::as_str).unwrap_or("");
-        if !matches!(status, "completed" | "manual-fallback-completed")
-            || (status != "manual-fallback-completed"
-                && row.get("actual_reasoning_effort").and_then(Value::as_str) != Some("low"))
-            || row
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-            || row
-                .get("runtime_provenance")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-        {
-            issues.push(json!({"path":path,"batch_id":id,"reason":"batch worker is incomplete"}));
+        if rows.len() != 1 || !complete(rows.first().copied()) {
+            issues.push(json!({"path":path,"batch_id":id,"reason":"batch review needs one completed, confirmed or manual-fallback-completed row with nonempty agent_id and runtime_provenance"}));
         }
     }
-    let coverage = &context.raw["test_coverage_audit"];
-    if coverage["ui_required"] == true {
+    if context.raw["test_coverage_audit"]["ui_required"] == true {
         for name in ["ui_test_coverage_worker", "visual_e2e_coverage_worker"] {
-            let row = ledger.get(name).and_then(Value::as_object);
-            let status = row
-                .and_then(|row| row.get("status"))
-                .and_then(Value::as_str);
-            if status
-                .is_none_or(|status| !matches!(status, "completed" | "manual-fallback-completed"))
-                || row
-                    .and_then(|row| row.get("agent_id"))
-                    .and_then(Value::as_str)
-                    .is_none_or(str::is_empty)
-                || row
-                    .and_then(|row| row.get("runtime_provenance"))
-                    .and_then(Value::as_str)
-                    .is_none_or(str::is_empty)
-            {
-                issues.push(json!({"path":path,"field":format!("{name}.status")}));
+            if modern && name == "visual_e2e_coverage_worker" {
+                continue;
+            }
+            if !complete(ledger.get(name)) {
+                issues.push(json!({"path":path,"field":name,"reason":"UI review is incomplete"}));
             }
         }
     }
@@ -1555,6 +1581,11 @@ pub fn verify(
                 "visual_e2e_coverage",
             ),
         ] {
+            if context.raw.get("assurance_version") == Some(&json!(2))
+                && name == "visual_e2e_coverage_audit.md"
+            {
+                continue;
+            }
             let candidates = reports_by_name.get(name).cloned().unwrap_or_default();
             if candidates.len() != 1 {
                 missing_reports.push(json!({"report":name,"count":candidates.len()}));
@@ -1568,19 +1599,45 @@ pub fn verify(
     let issues = json!({
         "completion_marker_mismatches":marker_issues(&context),
         "excluded_file_issues":excluded_issues(&context),
-        "effort_ledger_issues":effort_issues(&context),
+        "review_ledger_issues":review_issues(&context),
         "missing_reports":missing_reports,"report_issues":report_issues,
         "current_hash_mismatches":if skip_current_hash_check {Vec::new()} else {current_hash_issues(&context)},
         "empirical_coverage_issues":context.empirical_issues,
+        "assurance_evidence_issues":context.assurance.evidence_issues,
     });
     let ok = issues
         .as_object()
         .expect("issues object")
         .values()
         .all(|value| value.as_array().is_some_and(Vec::is_empty));
+    let assurance_path = context.root.join("assurance-report.json");
+    if context.raw.get("assurance_version") == Some(&json!(2)) {
+        audit_queue::write_json(
+            &assurance_path,
+            &serde_json::to_value(&context.assurance).map_err(|error| error.to_string())?,
+        )?;
+    }
+    let status = |assessment: &test_assurance::Assessment| {
+        if skip_current_hash_check && assessment.status == Verdict::Met {
+            Verdict::Unproven
+        } else {
+            assessment.status
+        }
+    };
+    let coverage_status = status(&context.assurance.coverage);
+    let ui_status = status(&context.assurance.ui);
+    let efficiency_status = status(&context.assurance.efficiency);
+    let assurance_met = context.raw.get("assurance_version") == Some(&json!(2))
+        && ok
+        && coverage_status == Verdict::Met
+        && matches!(ui_status, Verdict::Met | Verdict::NotApplicable)
+        && efficiency_status == Verdict::Met;
     Ok(json!({
         "ok":ok,"manifest":context.path.to_string_lossy(),
         "run_id":context.raw["run_id"],"issues":issues,
+        "assurance_met":assurance_met,
+        "assurance":{"coverage":coverage_status,"ui":ui_status,"efficiency":efficiency_status,
+            "source_check_skipped":skip_current_hash_check,"report":if context.raw.get("assurance_version")==Some(&json!(2)){Some(assurance_path)}else{None}},
     }))
 }
 
@@ -1588,6 +1645,79 @@ pub fn verify(
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn regression_test_references_resolve_declarations_not_comments_or_filenames() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("tests/math.test.ts"),
+            "// test('adds', () => {});\n",
+        );
+        assert!(test_reference_issue(dir.path(), "tests/math.test.ts#adds", false).is_some());
+        write(
+            &dir.path().join("src/lib.rs"),
+            "#[cfg(test)] mod tests {\n#[test]\nfn adds() { assert_eq!(1 + 1, 2); }\n}\n",
+        );
+        assert!(test_reference_issue(dir.path(), "src/lib.rs#adds", false).is_none());
+        write(
+            &dir.path().join("tests/example_test.go"),
+            "func TestWorks(t *testing.T) { /* legacy source reference */ }\n",
+        );
+        assert!(
+            test_reference_issue(dir.path(), "tests/example_test.go#TestWorks", true).is_none()
+        );
+        assert!(
+            test_reference_issue(dir.path(), "tests/example_test.go#TestWorks", false).is_some()
+        );
+    }
+
+    #[test]
+    fn regression_new_queues_do_not_select_or_record_agent_effort() {
+        let fixture = fixture(true, Vec::new());
+        let ledger = std::fs::read_to_string(fixture.out.join("review_ledger.json")).unwrap();
+        assert!(!ledger.contains("effort"));
+        assert!(!fixture.out.join("visual_e2e_coverage_audit.md").exists());
+        let prompt = std::fs::read_to_string(fixture.out.join("batch_001.md")).unwrap();
+        assert!(!prompt.contains("low-effort"));
+        assert!(!prompt.contains("runtime/user-selected effort"));
+    }
+
+    #[test]
+    fn legacy_review_ledgers_ignore_obsolete_effort_without_gaining_assurance() {
+        let fixture = fixture(true, Vec::new());
+        let mut manifest = write_reports(&fixture);
+        let path = fixture.out.join("review_ledger.json");
+        let mut ledger: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        ledger["lead_effort"] = ledger["lead_review"].take();
+        ledger["lead_effort"]["actual_reasoning_effort"] = json!("inherited");
+        ledger["visual_e2e_coverage_worker"] = ledger["ui_test_coverage_worker"].clone();
+        for worker in ledger["batch_workers"].as_array_mut().unwrap() {
+            worker
+                .as_object_mut()
+                .unwrap()
+                .remove("actual_reasoning_effort");
+        }
+        audit_queue::write_json(&fixture.out.join("effort_ledger.json"), &ledger).unwrap();
+        manifest
+            .as_object_mut()
+            .unwrap()
+            .remove("assurance_version");
+        audit_queue::write_json(&fixture.out.join("manifest.json"), &manifest).unwrap();
+        let marker_path = fixture.out.join("queue_complete.json");
+        let mut marker: Value =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+        marker.as_object_mut().unwrap().remove("review_ledger");
+        marker["effort_ledger"] = json!("effort_ledger.json");
+        audit_queue::write_json(&marker_path, &marker).unwrap();
+        let result = verify(
+            &fixture.out.join("manifest.json"),
+            &[fixture.out.join("reports")],
+            false,
+        )
+        .unwrap();
+        assert_eq!(result["ok"], true, "{result:#}");
+        assert_eq!(result["assurance_met"], false);
+    }
 
     struct Fixture {
         _directory: tempfile::TempDir,
@@ -1656,6 +1786,7 @@ mod tests {
                 ..Default::default()
             },
             coverage_reports: coverage,
+            assurance_input: None,
         })
         .unwrap();
         Fixture {
@@ -1666,12 +1797,12 @@ mod tests {
     }
 
     fn complete_ledger(out: &Path) {
-        let path = out.join("effort_ledger.json");
+        let path = out.join("review_ledger.json");
         let mut ledger: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         ledger["subagent_capability_check"] = json!({
             "status":"completed","spawn_tool":"self-test","can_set_reasoning_effort":true,"notes":"fixture"
         });
-        ledger["lead_effort"] = json!({
+        ledger["lead_review"] = json!({
             "required_reasoning_effort":"high-or-higher","actual_reasoning_effort":"high",
             "status":"completed","agent_id":"self-test-lead",
             "runtime_provenance":"self-test fixture","evidence":"self-test fixture"
@@ -1724,18 +1855,6 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let empirical = manifest["test_coverage_audit"]["empirical_coverage"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|record| {
-                record["files"]["src/math.ts"]["covered_lines"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-            })
-            .filter_map(Value::as_u64)
-            .collect::<BTreeSet<_>>();
         let mut inventory = Vec::new();
         let mut findings = Vec::new();
         for target in manifest["test_coverage_audit"]["target_inventory"]
@@ -1753,11 +1872,7 @@ mod tests {
             let (disposition, level, evidence, assessment, recommendation) = if symbol == "clamp" {
                 (
                     "TESTED",
-                    if empirical.contains(&target["line"].as_u64().unwrap()) {
-                        "EMPIRICAL"
-                    } else {
-                        "STRUCTURAL"
-                    },
+                    "STRUCTURAL",
                     "tests/math.test.ts#clamp returns in-range values",
                     "Happy path exists; invalid ranges and boundaries are missing",
                     "Add boundary and thrown-error unit tests",
@@ -1856,7 +1971,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_target_bad_reference_weak_exclusion_and_effort_fail() {
+    fn missing_target_bad_reference_weak_exclusion_and_review_fail() {
         let fixture = fixture(true, Vec::new());
         let manifest = write_reports(&fixture);
         let batch = fixture.out.join("reports/batch_001.md");
@@ -1899,7 +2014,11 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(invalid.to_string().contains("test symbol/name is absent"));
+        assert!(
+            invalid
+                .to_string()
+                .contains("unambiguous supported test declaration")
+        );
         write(&batch, &original.replace("Not reasonable: supporting fixture or config has no independently executable behavior target", "Not reasonable: trivial"));
         assert!(
             verify(
@@ -1912,10 +2031,10 @@ mod tests {
             .contains("NOT_REASONABLE")
         );
         write(&batch, &original);
-        let ledger_path = fixture.out.join("effort_ledger.json");
+        let ledger_path = fixture.out.join("review_ledger.json");
         let mut ledger: Value =
             serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
-        ledger["batch_workers"][0]["actual_reasoning_effort"] = Value::Null;
+        ledger["batch_workers"][0]["agent_id"] = Value::Null;
         audit_queue::write_json(&ledger_path, &ledger).unwrap();
         assert!(
             !verify(
@@ -1923,7 +2042,7 @@ mod tests {
                 &[fixture.out.join("reports")],
                 false
             )
-            .unwrap()["issues"]["effort_ledger_issues"]
+            .unwrap()["issues"]["review_ledger_issues"]
                 .as_array()
                 .unwrap()
                 .is_empty()
@@ -1958,6 +2077,7 @@ mod tests {
                 ..Default::default()
             },
             coverage_reports: vec![coverage.clone()],
+            assurance_input: None,
         })
         .unwrap();
         write_reports(&fixture);
@@ -2039,6 +2159,7 @@ mod tests {
                 ..Default::default()
             },
             coverage_reports: Vec::new(),
+            assurance_input: None,
         })
         .unwrap();
         complete_ledger(&out);

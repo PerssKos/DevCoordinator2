@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::progress::ProcessUpdate;
+use devcoordinator2_executor_protocol::ExecutionProgress;
 use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CapacityReport, CaseManifest, CaseReport, CaseSpec, CheckPlan, CheckReport,
     CompletionMode, DiagnosticExit, DiagnosticOrigin, DiagnosticReportSource, ErrorCategory,
@@ -13,6 +15,7 @@ use devcoordinator2_executor_protocol::{
     TerminationReason,
 };
 use rustix::process::Signal;
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::task::JoinSet;
 
 use crate::ExecutorError;
@@ -214,8 +217,15 @@ impl Executor {
         let mut service_pgids = BTreeMap::<String, i32>::new();
         let mut abort: Option<Abort> = None;
         let mut cancellation_seen = false;
+        let (progress, mut progress_rx) = unbounded_channel();
 
         loop {
+            while let Ok(update) = progress_rx.try_recv() {
+                apply_process_update(&mut checks, &capacity, update)?;
+            }
+            for check in &mut checks {
+                refresh_execution(check);
+            }
             while let Some(joined) = services.try_join_next() {
                 let (name, exit) = joined.map_err(|error| {
                     ExecutorError::new(format!("event service task failed: {error}"))
@@ -253,7 +263,7 @@ impl Executor {
                     let index = check_index(&checks, &name)?;
                     let runtime = &mut checks[index];
                     runtime.report.status = LeafStatus::Running;
-                    runtime.report.started_at = Some(iso_now());
+                    runtime.report.started_at = None;
                     runtime.started_epoch_ms = Some(epoch_ms());
                     let check = runtime.plan.clone();
                     let plan = plan.clone();
@@ -261,18 +271,18 @@ impl Executor {
                     let current = current.clone();
                     let permits = self.permits.clone();
                     let cancellation = self.cancellation.clone();
-                    let capacity = capacity.clone();
                     let log_lease = log_lease.clone();
                     let log_dir = log_dir.clone();
+                    let progress = progress.clone();
                     running.spawn(async move {
                         let outcome = execute_check(
+                            progress.clone(),
                             plan,
                             check,
                             root,
                             current,
                             permits,
                             cancellation,
-                            capacity,
                             log_lease,
                             log_dir,
                         )
@@ -303,6 +313,7 @@ impl Executor {
             }
 
             tokio::select! {
+                Some(update) = progress_rx.recv() => { apply_process_update(&mut checks, &capacity, update)?; }
                 joined = running.join_next(), if !running.is_empty() => {
                     let Some(joined) = joined else { continue };
                     let (name, outcome) = joined.map_err(|error| {
@@ -363,6 +374,12 @@ impl Executor {
             &log_dir,
         )
         .await?;
+        while let Ok(update) = progress_rx.try_recv() {
+            apply_process_update(&mut checks, &capacity, update)?;
+        }
+        for check in &mut checks {
+            refresh_execution(check);
+        }
         let digest_root = root.clone();
         let final_digest = tokio::task::spawn_blocking(move || source_digest(&digest_root)).await;
         let (source_changed, source_error) = match final_digest {
@@ -416,7 +433,136 @@ impl Executor {
     }
 }
 
+fn apply_process_update(
+    checks: &mut [CheckRuntime],
+    capacity: &Mutex<CapacityReport>,
+    update: ProcessUpdate,
+) -> Result<(), ExecutorError> {
+    if let Some(observation) = update.capacity {
+        observe_capacity(capacity, observation);
+    } else if update.progress.finished == 1 && update.progress.admitted_at_epoch_ms.is_none() {
+        observe_capacity(
+            capacity,
+            CapacityObservation {
+                waited: true,
+                ..Default::default()
+            },
+        );
+    }
+    let name = update
+        .selector
+        .check
+        .as_deref()
+        .ok_or_else(|| ExecutorError::new("process update has no check"))?;
+    let index = check_index(checks, name)?;
+    checks[index]
+        .processes
+        .insert(update.leaf_id.clone(), update);
+    refresh_execution(&mut checks[index]);
+    Ok(())
+}
+
+fn refresh_execution(check: &mut CheckRuntime) {
+    if check.processes.is_empty() {
+        return;
+    }
+    let mut execution = ExecutionProgress {
+        queued_at_epoch_ms: u64::MAX,
+        ..Default::default()
+    };
+    for update in check.processes.values() {
+        let p = &update.progress;
+        execution.waiting += p.waiting;
+        execution.admitted += p.admitted;
+        execution.executing += p.executing;
+        execution.finished += p.finished;
+        execution.queued_at_epoch_ms = execution.queued_at_epoch_ms.min(p.queued_at_epoch_ms);
+        execution.admitted_at_epoch_ms = execution
+            .admitted_at_epoch_ms
+            .into_iter()
+            .chain(p.admitted_at_epoch_ms)
+            .min();
+        execution.started_at_epoch_ms = execution
+            .started_at_epoch_ms
+            .into_iter()
+            .chain(p.started_at_epoch_ms)
+            .min();
+        execution.finished_at_epoch_ms = execution
+            .finished_at_epoch_ms
+            .into_iter()
+            .chain(p.finished_at_epoch_ms)
+            .max();
+        execution.capacity_wait_ms = execution
+            .capacity_wait_ms
+            .saturating_add(p.capacity_wait_ms);
+        execution.process_duration_ms = execution
+            .process_duration_ms
+            .saturating_add(p.process_duration_ms);
+        if let Some(case_id) = &update.selector.case_id {
+            if let Some(case) = check
+                .report
+                .cases
+                .iter_mut()
+                .find(|case| &case.id == case_id)
+            {
+                case.execution = Some(p.clone());
+                if let Some(status) = update.status {
+                    case.status = status;
+                }
+                case.duration_ms = p.process_duration_ms;
+            } else if !check.report.status.is_terminal() && check.report.cases.len() < 64 {
+                check.report.cases.push(CaseReport {
+                    execution: Some(p.clone()),
+                    id: case_id.clone(),
+                    status: update.status.unwrap_or(LeafStatus::Running),
+                    exit: DiagnosticExit::default(),
+                    duration_ms: 0,
+                    streams: Vec::new(),
+                });
+            }
+        }
+    }
+    if execution.waiting + execution.admitted + execution.executing > 0 {
+        execution.finished_at_epoch_ms = None;
+    }
+    if let Some(started) = execution.started_at_epoch_ms {
+        check.report.started_at = Some(iso_at(started / 1000));
+    }
+    if !check.report.status.is_terminal() {
+        check.report.case_count = check
+            .processes
+            .values()
+            .filter(|update| update.selector.case_id.is_some())
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        check.report.cases_truncated = check.report.case_count as usize > check.report.cases.len();
+    }
+    if check.report.status.is_terminal() {
+        let first = check
+            .processes
+            .values()
+            .filter_map(|update| update.started_mono)
+            .min();
+        let last = if check.plan.completion == CompletionMode::Event {
+            check.completed_mono
+        } else {
+            check
+                .processes
+                .values()
+                .filter_map(|update| update.finished_mono)
+                .max()
+        };
+        if let (Some(first), Some(last)) = (first, last) {
+            check.report.duration_seconds = Some(seconds(last.saturating_duration_since(first)));
+        }
+    }
+    check.report.execution = Some(execution);
+}
+
 struct CheckRuntime {
+    completed_mono: Option<Instant>,
+    processes: BTreeMap<String, ProcessUpdate>,
     plan: CheckPlan,
     report: CheckReport,
     failures: Vec<FailureIndexEntry>,
@@ -612,7 +758,10 @@ fn initialize_checks(
         };
         result.push(CheckRuntime {
             plan: check.clone(),
+            completed_mono: None,
+            processes: BTreeMap::new(),
             report: CheckReport {
+                execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
                 role: check.role,
@@ -705,6 +854,29 @@ fn publish_reused_leaf_metadata(
 }
 
 fn mark_blocked(
+    checks: &mut [CheckRuntime],
+    invalidators: &BTreeMap<String, Vec<String>>,
+    run_id: &str,
+    log_lease: &RunLogLease,
+) {
+    loop {
+        let pending = checks
+            .iter()
+            .filter(|check| check.report.status == LeafStatus::Pending)
+            .count();
+        mark_blocked_once(checks, invalidators, run_id, log_lease);
+        if checks
+            .iter()
+            .filter(|check| check.report.status == LeafStatus::Pending)
+            .count()
+            == pending
+        {
+            break;
+        }
+    }
+}
+
+fn mark_blocked_once(
     checks: &mut [CheckRuntime],
     invalidators: &BTreeMap<String, Vec<String>>,
     run_id: &str,
@@ -900,13 +1072,13 @@ fn resources_conflict(left: &ResourceClaim, right: &ResourceClaim) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn execute_check(
+    progress: UnboundedSender<ProcessUpdate>,
     plan: Arc<ExecutionPlan>,
     check: CheckPlan,
     root: PathBuf,
     current: PathBuf,
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
-    capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
     log_dir: Arc<PathBuf>,
 ) -> CheckOutcome {
@@ -930,6 +1102,7 @@ async fn execute_check(
     if let Some(command) = &check.command {
         let selector = LeafSelector::check(check.name.clone()).expect("validated check selector");
         let request = process_request(
+            progress.clone(),
             &plan,
             &check,
             &root,
@@ -943,7 +1116,6 @@ async fn execute_check(
             false,
         );
         let mut process = run_process(request, permits, cancellation).await;
-        observe_capacity(&capacity, process.capacity);
         finalize_leaf_evidence(
             &plan,
             &check,
@@ -1029,13 +1201,13 @@ async fn execute_check(
         )
     } else {
         let mut outcome = execute_fanout(
+            progress.clone(),
             &plan,
             &check,
             &root,
             &current,
             permits,
             cancellation,
-            capacity,
             log_lease,
             log_dir,
             started,
@@ -1111,13 +1283,13 @@ fn direct_outcome(
 
 #[allow(clippy::too_many_arguments)]
 async fn execute_fanout(
+    progress: UnboundedSender<ProcessUpdate>,
     plan: &ExecutionPlan,
     check: &CheckPlan,
     root: &Path,
     current: &Path,
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
-    capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
     log_dir: Arc<PathBuf>,
     started: Instant,
@@ -1131,6 +1303,7 @@ async fn execute_fanout(
         let selector =
             LeafSelector::discovery(check.name.clone()).expect("validated discovery selector");
         let request = process_request(
+            progress.clone(),
             plan,
             check,
             root,
@@ -1144,7 +1317,6 @@ async fn execute_fanout(
             true,
         );
         let mut discovery = run_process(request, permits.clone(), cancellation.clone()).await;
-        observe_capacity(&capacity, discovery.capacity);
         finalize_leaf_evidence(
             plan,
             check,
@@ -1296,12 +1468,13 @@ async fn execute_fanout(
         let current = current.to_path_buf();
         let permits = permits.clone();
         let cancellation = cancellation.clone();
-        let capacity = capacity.clone();
         let case_command = case_command.clone();
         let log_lease = log_lease.clone();
         let log_dir = log_dir.clone();
+        let progress = progress.clone();
         tasks.spawn(async move {
             run_case(
+                progress.clone(),
                 &plan,
                 &check,
                 &case,
@@ -1310,7 +1483,6 @@ async fn execute_fanout(
                 &current,
                 permits,
                 cancellation,
-                capacity,
                 log_lease,
                 log_dir,
             )
@@ -1457,6 +1629,7 @@ async fn execute_fanout(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_case(
+    progress: UnboundedSender<ProcessUpdate>,
     plan: &ExecutionPlan,
     check: &CheckPlan,
     case: &CaseSpec,
@@ -1465,7 +1638,6 @@ async fn run_case(
     current: &Path,
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
-    capacity: Arc<Mutex<CapacityReport>>,
     log_lease: Arc<RunLogLease>,
     log_dir: Arc<PathBuf>,
 ) -> CaseOutcome {
@@ -1477,6 +1649,7 @@ async fn run_case(
     let selector =
         LeafSelector::case(check.name.clone(), case.id.clone()).expect("validated case selector");
     let mut request = process_request(
+        progress.clone(),
         plan,
         check,
         root,
@@ -1497,7 +1670,6 @@ async fn run_case(
         }
     }
     let mut process = run_process(request, permits, cancellation).await;
-    observe_capacity(&capacity, process.capacity);
     finalize_leaf_evidence(
         plan,
         check,
@@ -1509,6 +1681,7 @@ async fn run_case(
     );
     CaseOutcome {
         report: CaseReport {
+            execution: None,
             id: case.id.clone(),
             status: process.status.into(),
             exit: diagnostic_exit(process.exit_code),
@@ -1536,6 +1709,7 @@ fn database_url_with_database(url: &str, database: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn process_request(
+    progress: UnboundedSender<ProcessUpdate>,
     plan: &ExecutionPlan,
     check: &CheckPlan,
     root: &Path,
@@ -1560,6 +1734,7 @@ fn process_request(
     let diagnostics_dir = leaf_log_directory(log_dir, &log_selector).join("diagnostics");
     let evidence_dir = leaf_log_directory(log_dir, &log_selector).join("evidence");
     ProcessRequest {
+        progress,
         run_id: plan.run_id.clone(),
         check_name: check.name.clone(),
         leaf_id: leaf.into(),
@@ -2019,9 +2194,19 @@ fn apply_outcome(
     services: &mut JoinSet<(String, ServiceExit)>,
     service_pgids: &mut BTreeMap<String, i32>,
 ) {
+    runtime.completed_mono = Some(Instant::now());
     runtime.report.status = outcome.status;
     runtime.report.finished_at = Some(iso_now());
-    runtime.report.duration_seconds = Some(outcome.duration_seconds);
+    runtime.report.duration_seconds = if runtime.plan.completion == CompletionMode::Event {
+        runtime
+            .processes
+            .values()
+            .filter_map(|update| update.started_mono)
+            .min()
+            .map(|started| seconds(started.elapsed()))
+    } else {
+        Some(outcome.duration_seconds)
+    };
     runtime.report.exit = diagnostic_exit(outcome.exit_code);
     let _ = outcome.reason;
     runtime.report.artifacts = outcome.artifacts;
@@ -2234,6 +2419,17 @@ fn write_report(
             checks,
         })
         .collect();
+    let mut observed_capacity = capacity
+        .lock()
+        .map_err(|_| ExecutorError::new("capacity report lock poisoned"))?
+        .clone();
+    observed_capacity.capacity_wait_count = observed_capacity.capacity_wait_count.saturating_add(
+        checks
+            .iter()
+            .filter_map(|check| check.report.execution.as_ref())
+            .map(|execution| u64::from(execution.waiting))
+            .sum::<u64>(),
+    );
     let report = ExecutionReport {
         schema: Schema2,
         run_id: plan.run_id.clone(),
@@ -2250,10 +2446,7 @@ fn write_report(
         source_digest: plan.source_digest.clone(),
         config_digest: plan.config_digest.clone(),
         source_changed,
-        capacity: capacity
-            .lock()
-            .map_err(|_| ExecutorError::new("capacity report lock poisoned"))?
-            .clone(),
+        capacity: observed_capacity,
         counts,
         checks: checks.iter().map(|check| check.report.clone()).collect(),
         phase_durations,
@@ -2325,7 +2518,10 @@ fn iso_now() -> String {
     let since_epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let seconds = since_epoch.as_secs();
+    iso_at(since_epoch.as_secs())
+}
+
+fn iso_at(seconds: u64) -> String {
     let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
     let day_seconds = seconds % 86_400;
     let (year, month, day) = civil_from_days(days);

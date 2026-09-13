@@ -36,10 +36,10 @@ use crate::repository::Registry;
 #[path = "usage_cache.rs"]
 mod cache;
 
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5];
+const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6];
 const SUPPORTED_TAXONOMY: u32 = 1;
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
-const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
 const SQLITE_VARIABLE_CHUNK: usize = 20_000;
@@ -208,6 +208,26 @@ impl UsageService {
         Ok(report)
     }
 
+    pub(crate) fn review_window(
+        &self,
+        repository: &RepositoryRecord,
+        start_ms: u64,
+        end_ms: u64,
+        deadline: Instant,
+    ) -> Result<UsageRepository, ProtocolError> {
+        self.usage.repository_window(
+            repository,
+            UsageRange::Hours24,
+            self.usage.now_ms()?,
+            start_ms,
+            end_ms,
+            end_ms - start_ms,
+            1,
+            false,
+            Some(deadline),
+        )
+    }
+
     fn records(&self) -> Result<Vec<RepositoryRecord>, ProtocolError> {
         Ok(self
             .registry
@@ -296,7 +316,9 @@ impl CodexUsage {
         now_ms: u64,
     ) -> Result<UsageRepository, ProtocolError> {
         let (start, end, bucket, count) = usage_window(&range, now_ms);
-        self.repository_window(repository, range, now_ms, start, end, bucket, count, true)
+        self.repository_window(
+            repository, range, now_ms, start, end, bucket, count, true, None,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -376,6 +398,7 @@ impl CodexUsage {
                 bucket_ms,
                 bucket_count,
                 resolve_missing,
+                None,
             )
         }))
     }
@@ -391,14 +414,26 @@ impl CodexUsage {
         bucket_ms: u64,
         bucket_count: usize,
         resolve_missing: bool,
+        deadline: Option<Instant>,
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
         for source in &self.config.codex_usage_sources {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                increment(&mut failures, "query_budget_exhausted");
+                continue;
+            }
             match self.repository_key(source, repository, now_ms, resolve_missing) {
                 Ok(key) => {
-                    match self.read_source(source, &key, start_ms, end_ms, bucket_ms, bucket_count)
-                    {
+                    match self.read_source(
+                        source,
+                        &key,
+                        start_ms,
+                        end_ms,
+                        bucket_ms,
+                        bucket_count,
+                        deadline,
+                    ) {
                         Ok(report) => reports.push((source.uid, report)),
                         Err(reason) if reason == "mapping_unavailable" && resolve_missing => {
                             self.delete_link(source.uid, &repository.repository_id)?;
@@ -412,6 +447,7 @@ impl CodexUsage {
                                         end_ms,
                                         bucket_ms,
                                         bucket_count,
+                                        deadline,
                                     )
                                     .map_err(source_error)
                                 }) {
@@ -499,6 +535,7 @@ impl CodexUsage {
             .map_err(database_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn read_source(
         &self,
         source: &CodexUsageSource,
@@ -507,28 +544,44 @@ impl CodexUsage {
         end_ms: u64,
         bucket_ms: u64,
         bucket_count: usize,
+        deadline: Option<Instant>,
     ) -> Result<SourceReport, String> {
-        let connection = open_source(source)?;
-        let schema = maximum_version(&connection, "_sqlx_migrations")?;
-        let taxonomy = maximum_version(&connection, "taxonomy_versions")?;
-        if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
-            return Err("schema_unsupported".into());
+        let inherited_deadline = deadline;
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
+        if Instant::now() >= deadline {
+            return Err("query_budget_exhausted".into());
         }
-        let canonical = canonical_repository(&connection, repository_key)?;
-        let family = repository_family(&connection, &canonical)?;
-        if !repository_exists(&connection, &family)? {
-            return Err("mapping_unavailable".into());
+        let result = (|| {
+            let connection = match inherited_deadline {
+                Some(deadline) => open_source_until(source, deadline)?,
+                None => open_source(source)?,
+            };
+            let schema = maximum_version(&connection, "_sqlx_migrations")?;
+            let taxonomy = maximum_version(&connection, "taxonomy_versions")?;
+            if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
+                return Err("schema_unsupported".into());
+            }
+            let canonical = canonical_repository(&connection, repository_key)?;
+            let family = repository_family(&connection, &canonical)?;
+            if !repository_exists(&connection, &family)? {
+                return Err("mapping_unavailable".into());
+            }
+            source_report(
+                &connection,
+                &family,
+                schema,
+                taxonomy,
+                start_ms,
+                end_ms,
+                bucket_ms,
+                bucket_count,
+            )
+        })();
+        if Instant::now() >= deadline {
+            Err("query_budget_exhausted".into())
+        } else {
+            result
         }
-        source_report(
-            &connection,
-            &family,
-            schema,
-            taxonomy,
-            start_ms,
-            end_ms,
-            bucket_ms,
-            bucket_count,
-        )
     }
 
     fn now_ms(&self) -> Result<u64, ProtocolError> {
@@ -552,6 +605,10 @@ impl CodexUsage {
 }
 
 fn open_source(source: &CodexUsageSource) -> Result<Connection, String> {
+    open_source_until(source, Instant::now() + QUERY_TIMEOUT)
+}
+
+fn open_source_until(source: &CodexUsageSource, deadline: Instant) -> Result<Connection, String> {
     let path = source.codex_home.join("usage/usage.sqlite3");
     let descriptor = open(
         &path,
@@ -581,7 +638,6 @@ fn open_source(source: &CodexUsageSource) -> Result<Connection, String> {
     connection
         .busy_timeout(Duration::from_millis(250))
         .map_err(|_| "source_unavailable".to_owned())?;
-    let deadline = Instant::now() + QUERY_TIMEOUT;
     connection
         .progress_handler(10_000, Some(move || Instant::now() > deadline))
         .map_err(|_| "source_unavailable".to_owned())?;
@@ -1854,7 +1910,7 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::platform::FixedClock;
     use std::collections::HashSet;
@@ -1901,7 +1957,7 @@ mod tests {
         }
     }
 
-    fn source_database(codex_home: &Path, schema: i64) -> (String, u64) {
+    pub(crate) fn source_database(codex_home: &Path, schema: i64) -> (String, u64) {
         let usage = codex_home.join("usage");
         std::fs::create_dir_all(&usage).unwrap();
         let connection = Connection::open(usage.join("usage.sqlite3")).unwrap();
@@ -2027,7 +2083,7 @@ mod tests {
                 [start + 3_000],
             )
             .unwrap();
-        if schema == 5 {
+        if matches!(schema, 5 | 6) {
             connection.execute_batch(
                 "CREATE TABLE model_request_context_sources (
                     model_request_id TEXT PRIMARY KEY NOT NULL REFERENCES model_requests(id),
@@ -2043,6 +2099,16 @@ mod tests {
                  INSERT INTO model_request_context_sources VALUES
                     ('request-private',9000,8000,7000,'approx_model_visible_v1',0);",
             ).unwrap();
+        }
+        if schema == 6 {
+            connection
+                .execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY);")
+                .unwrap();
+            connection
+                .execute_batch(include_str!(
+                    "../tests/fixtures/codex-usage-0006-work-bindings.sql"
+                ))
+                .unwrap();
         }
         drop(connection);
         (canonical, now_ms)
@@ -2081,6 +2147,133 @@ mod tests {
     #[test]
     fn schema_five_usage_preserves_provider_measurements_and_privacy() {
         assert_repository_usage(5);
+    }
+
+    #[test]
+    fn work_context_schema_six_addition_preserves_measurements_and_privacy() {
+        assert_repository_usage(6);
+    }
+
+    #[test]
+    fn review_usage_reads_exact_indexed_window_without_persistent_measurements() {
+        let temporary = tempdir().unwrap();
+        let codex_home = temporary.path().join("codex-home");
+        let (canonical, now_ms) = source_database(&codex_home, 5);
+        let authority = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let repository = RepositoryRecord {
+            repository_id: "project-alpha".into(),
+            display_name: "Project Alpha".into(),
+            root_path: temporary.path().join("repo"),
+        };
+        let usage = CodexUsage::with_probe(
+            config(temporary.path(), codex_home.clone()),
+            authority.clone(),
+            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+            Arc::new(FixtureProbe),
+        );
+        let uid = rustix::process::getuid().as_raw();
+        authority.call(move |connection| {
+            connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/fixture','Project Alpha','t',1,'t')", [])?;
+            connection.execute("INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')", rusqlite::params![uid,canonical])?;
+            Ok(())
+        }).unwrap();
+        let service = UsageService {
+            registry: Registry::new(authority.clone()),
+            usage,
+        };
+        let included = service
+            .review_window(
+                &repository,
+                now_ms - 60_000,
+                now_ms - 49_999,
+                Instant::now() + QUERY_TIMEOUT,
+            )
+            .unwrap();
+        let excluded = service
+            .review_window(
+                &repository,
+                now_ms - 49_999,
+                now_ms,
+                Instant::now() + QUERY_TIMEOUT,
+            )
+            .unwrap();
+        let broad = service
+            .review_window(&repository, 0, now_ms, Instant::now() + QUERY_TIMEOUT)
+            .unwrap();
+        assert_eq!(broad.totals, included.totals);
+        assert_eq!(included.totals.total_tokens, Some(100));
+        assert_eq!(excluded.totals.model_requests, 0);
+        let source = Connection::open(codex_home.join("usage/usage.sqlite3")).unwrap();
+        assert_eq!(source.query_row("SELECT SUM(token_count) FROM token_observations WHERE category_path='total_tokens'", [], |row| row.get::<_, i64>(0)).unwrap(), 100);
+        let mirrored: i32 = authority
+            .call(|connection| {
+                Ok(connection
+                    .query_row("SELECT COUNT(*) FROM review_records", [], |row| row.get(0))?)
+            })
+            .unwrap();
+        assert_eq!(mirrored, 0);
+    }
+
+    #[test]
+    fn review_usage_exhaustion_and_missing_mapping_are_explicit_without_probes() {
+        let temporary = tempdir().unwrap();
+        let codex_home = temporary.path().join("codex-home");
+        let (_, now_ms) = source_database(&codex_home, 5);
+        let authority = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let repository = RepositoryRecord {
+            repository_id: "project-alpha".into(),
+            display_name: "Project Alpha".into(),
+            root_path: temporary.path().join("repo"),
+        };
+        let probe = Arc::new(BlockingProbe {
+            entered: AtomicU64::new(0),
+            released: AtomicBool::new(true),
+        });
+        let usage = CodexUsage::with_probe(
+            config(temporary.path(), codex_home),
+            authority,
+            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+            probe.clone(),
+        );
+        for (deadline, reason) in [
+            (Instant::now(), "query_budget_exhausted"),
+            (Instant::now() + QUERY_TIMEOUT, "mapping_pending"),
+        ] {
+            let report = usage
+                .repository_window(
+                    &repository,
+                    UsageRange::Hours24,
+                    now_ms,
+                    0,
+                    now_ms,
+                    now_ms,
+                    1,
+                    false,
+                    Some(deadline),
+                )
+                .unwrap();
+            assert!(report.coverage.has_gaps);
+            assert_eq!(
+                report.coverage.unavailable_reasons,
+                BTreeMap::from([(reason.to_owned(), 1)])
+            );
+            assert_eq!(report.totals.total_tokens, None);
+        }
+        assert_eq!(probe.entered.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn review_source_query_deadline_interrupts_sql_instead_of_scanning_without_a_limit() {
+        let temporary = tempdir().unwrap();
+        let codex_home = temporary.path().join("codex-home");
+        source_database(&codex_home, 5);
+        let settings = config(temporary.path(), codex_home);
+        let connection =
+            open_source_until(&settings.codex_usage_sources[0], Instant::now()).unwrap();
+        let result = connection.query_row("WITH RECURSIVE numbers(value) AS (VALUES(0) UNION ALL SELECT value+1 FROM numbers WHERE value<1000000) SELECT SUM(value) FROM numbers", [], |row| row.get::<_, i64>(0));
+        assert!(
+            matches!(result, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::OperationInterrupted)
+        );
     }
 
     fn assert_repository_usage(schema: i64) {
@@ -2291,7 +2484,7 @@ mod tests {
     fn unsupported_and_unconfigured_collectors_are_unavailable_not_zero() {
         let temporary = tempdir().unwrap();
         let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 6);
+        let (canonical, now_ms) = source_database(&codex_home, 7);
         let mut config = config(temporary.path(), codex_home);
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let authority = Database::open(config.database_path()).unwrap();
@@ -2305,7 +2498,7 @@ mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,6,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,7,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(

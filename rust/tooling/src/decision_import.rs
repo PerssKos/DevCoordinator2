@@ -249,6 +249,7 @@ pub fn call(socket: &Path, params: Value) -> Result<ResponseEnvelope, String> {
             kind: ClientKind::Other,
             session: Some("decision-import".to_owned()),
             identity: None,
+            ..ClientContext::default()
         },
     };
     let mut encoded = serde_json::to_vec(&request)

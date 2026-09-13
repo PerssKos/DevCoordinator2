@@ -8,15 +8,51 @@ fakes success, and no view carries fixture numbers.
 
 ## Navigation shell
 
-The header is one non-wrapping row. Its destinations are ordinary hash links
-at wide widths and the same links move into a custom DOM hamburger menu at
-1240 px and below. The menu exposes expanded state, closes on outside click,
-link activation, or Escape, and returns focus to its button after keyboard
-dismissal. Every page's destination title links back to its collection. Plan,
-Progress, Decisions, and Codex Usage repository details place the current project beside
-a compact custom project menu whose entries are real same-destination links;
-Arrow keys, Home/End, Escape, outside click, and focus restoration work without
-a native select.
+One shared workspace owns repository selection across the Console. Its left
+sidebar provides search and a checkout disclosure. Drag its right edge or focus
+the separator and use arrow keys to resize it; Home/End select the limits and
+Enter hides it. The header button restores the list. Width and visibility are
+remembered in this browser. Ordinary names stay on one line, with full names in
+tooltips when a long name needs truncation. Below 761 px, the same list
+opens as a keyboard-accessible drawer without displacing the requested content.
+Repository aspects are ordinary hash links: **Plan & progress**, **Deployments**,
+**Tests**, **Decisions**, and **Glossary**. Plan, Progress, and Usage are views
+within Plan & progress, not independent repository pickers. On phones, aspect
+links wrap so the selected destination remains visible without sideways scrolling.
+Multiline checkout paths retain their own row height in long repository lists.
+Each repository shows its root beneath the name and in the selected header.
+The Plan repository index supplies roots and verified Git source identity even
+when no test results exist or the Tests request fails. Matching source clones
+share a name and keep their exact checkout links; folder names and nesting alone
+never combine repositories. Unavailable ancestry retains the registered root.
+Checkout context below the root uses a relative path when it is inside that root;
+the checkout disclosure retains every full path and exact record link.
+Plan and Decisions reuse the shared repository selection without rereading the
+index for a hidden picker. Tests load when opened, or as a fallback if the Plan
+index is unavailable, so ordinary repository navigation does not wait for them.
+Administrators can use the pencil beside the selected repository name to choose
+a Console-only name and icon. Save persists these in repository presentation
+metadata; Cancel leaves the saved appearance unchanged, and Use defaults restores
+the original name and folder icon on Save. Repository IDs, Git names, checkout
+paths, record ownership, and access grants do not change.
+Repository selection
+is encoded in the URL and remembered for unscoped legacy links; Back, forward,
+and reload preserve the exact context. Deployment and screenshot deep links
+select their owning repository. Unknown explicit identities never silently
+switch to another repository.
+
+The header's Console menu holds host-wide Health, Bugs, Shared glossary,
+Test capacity, Log retention, and authorized Administration. These tools do not
+pretend to be scoped to the current repository. Returning to Repositories
+restores the remembered selection. Menus close on outside click, activation,
+or Escape and restore focus after keyboard dismissal.
+
+The shared catalogue combines authorized planning, usage, progress, deployment,
+and test indexes. Only verified origin keys combine separate checkout records.
+The checkout disclosure preserves access to separate plans and decision records;
+test and deployment actions always use their original exact identifiers.
+This is presentation grouping, not a database ownership merge
+(DC2-2026-09-07-SHARED-REPOSITORY-WORKSPACE).
 
 ## Shared visual language
 
@@ -33,31 +69,10 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
 
 ## Destinations
 
-1. **Deployments** — a repository-by-repository operations dashboard. Every
-   repository section keeps its display name, repository id, deployment count,
-   and overall deployment condition together with six strictly attributed
-   summaries: current Plan release/open work, measured Progress, 24-hour Codex
-   Usage, current or latest Tests, repository Health, and the latest Decision.
-   Missing, restricted, and unavailable evidence remains explicit instead of
-   becoming zero or borrowing another repository's value. Plan, Progress,
-   Codex Usage, and Decisions continue to the exact repository route; Tests
-   and Health links retain the repository name while continuing to their
-   existing destinations. Tests also names the selected run's tier, elapsed
-   time, output size, recency, and proof type; Health adds current repository
-   CPU, memory, storage, and deployment count. A Usage card whose fast
-   collection read has only an uninitialized mapping resolves that exact
-   repository through the authorized detail read and updates in place; genuine
-   no-measurement, source-failure, and access states remain unchanged. Each
-   repository starts expanded and has an independent keyboard-operable collapse
-   control that keeps its identity, count, and overall condition visible. One
-   **Workers** disclosure follows the summaries and hides or restores every
-   worker row together. Individual worker rows have no expanders and show their
-   complete identity, state,
-   domain, port, generation, and recency. At tablet widths the summaries become
-   a 3-by-2 grid and deployment facts use two rows; on mobile both become
-   labelled stacked layouts without document-level horizontal scrolling. The
-   current session preserves both repository and Workers choices while the
-   Console rerenders. An
+1. **Deployments** — the selected repository's deployments appear directly,
+   with state, domain, port, generation, and recency. Cross-aspect summaries and
+   another repository list do not precede them. Deployment facts adapt to the
+   remaining workspace width and stack on phones without document overflow. An
    **edit** button beside every administrator-visible domain opens the pop-up
    domain editor in place; start/stop/restart remain available to operators —
    observed ones drive the exact recorded containers
@@ -76,9 +91,9 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    heading. While a deployment is applying, conflicting mutations are disabled
    and a notice explains that closing the page does not cancel the accepted
    operation; the caller refreshes status after it finishes.
-2. **Plan** — the completion ledger as a per-repository interactive Gantt workspace
-   (picker first: every visible repository with its current release,
-   done-lines progress, open-task count, and a preview-requested badge).
+2. **Plan** — the completion ledger as an interactive Gantt workspace for the
+   selected repository, with its current release, done-lines progress,
+   open-task count, and preview-requested state.
    A sticky, collapsible and resizable task navigator keeps the arbitrary-depth
    tree aligned with a dominant, independently scrollable cumulative-lines
    canvas. The canvas supports pointer and keyboard pan, zoom, fit, a draggable
@@ -129,16 +144,23 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    becomes unavailable when there is no release or measurable completion pace.
    Missing test/token history stays blank rather than becoming zero. Exact
    bucket values and counting semantics remain available without hover.
+   The complete legend stays in the visible card while the chart pans. Hover,
+   focus, or tap a bucket to see its UTC period and values, including completed
+   and added work and the completed running total. Arrow keys move between
+   buckets; Home/End select the first/last, and Escape dismisses the values.
+   Test and token points expose only observed data; missing points stay blank.
 4. **Decisions** — the per-repository decision history in plain language:
-   "The story so far" (latest rolling summary), a full-text search box over
+   "The story so far" (latest rolling summary, expandable in place), a full-text search box over
    every decision ever recorded, an aspect filter (server-side), entries
    newest-first with aspect badge, optional stable ref, and age; superseded
    decisions collapse and dim; "Show older decisions" pages the permanent
    history.
-5. **Tests** — the left pane holds the heading and repository selection. The
-   selected repository's results appear immediately on the right, newest first,
+5. **Tests** — the shared sidebar retains repository selection. The
+   selected repository's results appear immediately, newest first,
    without repeating its name. Matching verified Git origins group independent
-   release clones under the source repository name, while every action retains
+   release clones under the source repository name, including bounded,
+   caller-readable chains of local Git origins and linked worktrees. Missing
+   ancestors, cycles, and ordinary subdirectories never infer a parent. Every action retains
    the exact run and checkout. Repositories without a usable origin keep their
    registered identity; equal display names alone never merge repositories.
    Selection persists across reloads. Each result shows its test, status, date,
@@ -154,14 +176,21 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    remains explicit. Numbers and common syntax/status tokens are highlighted;
    valid JSON and JSON-lines are pretty-printed, textually labelled, and still
    escaped and labelled untrusted.
-   **Test settings** contains **Log retention**, which edits the host age/depth
+   The Console menu contains **Log retention**, which edits the host age/depth
    boundaries and re-reads the stored state. **Run tests** reveals an inline
    form for the selected repository with release selected by default.
    **Run again** directly repeats the exact checkout and recorded tier; a
-   running row instead offers **Stop run**. Settings also contains **Capacity**, which opens a
+   running row instead offers **Stop run**. The menu also contains **Test capacity**, which opens a
    focused dialog showing learned/effective capacity, the optional maximum,
    active/waiting leaves, admission pause state, and the last adjustment's
    measured evidence. Saving or clearing the host-wide maximum acts directly.
+   Screenshot previews open a gallery with previous/next buttons, arrow-key and
+   Home/End navigation, a current-image count, and a horizontally scrollable
+   thumbnail strip. All available viewport and full-page captures are included;
+   image bytes load on demand. Native retained images use the same gallery.
+   The active image's viewer/comment or file action retains its exact run and
+   image identity. Earlier-run provenance stays visible; Escape restores the
+   originating thumbnail or more-images button even after a background refresh.
    **Files** opens declared retained files from the exact selected run and
    check, including native screenshots and nonvisual reports. **Run** also lists
    earlier runs from the bounded `test.history` record; choosing
@@ -199,9 +228,26 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    horizontal step picker and the inspector becomes a focused bottom sheet.
    Select, pin, rectangle, arrow, freehand, highlight, text, colour,
    undo/redo, zoom, fit, pan, and clear are functional. Saving a marked
+   suggestion starts with an immediately focused, nonmodal comment editor after
+   a pin or completed drawing. Another pin click repositions the current unsaved
+   pin, preserving its comment. Text labels have explicit Add and Cancel actions
+   and accept short labels such as “X”. Selecting a draft mark allows moving,
+   recoloring, deleting, and undoing changes. Cancelled pointer gestures add no
+   mark. Switching journey steps or screenshot variants preserves each image's
+   unsaved comment and marks for the current page session; they are not saved
+   across a browser reload. Failed saves preserve the draft for retry. Journey
+   and Details controls independently hide and restore the side panels; normal
+   panel choices persist in the browser. Full screen initially hides both panels
+   and keeps the same interactive canvas, image navigation and comment editor.
+   Panels can be reopened there without changing the normal layout. The exit
+   control or Escape restores that layout without discarding the draft. Browsers
+   without native fullscreen use the full browser viewport. Saving a marked
    suggestion atomically creates a Plan `user_feedback` task; replies, author
    edits, resolve/reopen, and explicitly labelled author deletion remain linked
-   to the exact screenshot. Missing, expired, invalid, tampered, or unauthorized
+   to the exact screenshot. Retained screenshot links remain usable after newer
+   runs replace the recent-results list; links retain their worktree identity and
+   ambiguous copied captures never silently select a different repository.
+   Missing, expired, invalid, tampered, or unauthorized
    evidence is stated honestly and never replaced with a mock image.
 6. **Health** — host condition first as one aligned capacity group (CPU,
    memory, root filesystem, load/swap) beside a separate operational-status
@@ -223,10 +269,9 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    deployment/test, caller and client, CPU/memory/layer size, creation
    time, TTL; removal is offered only for orphaned-managed and managed-test
    containers (unmanaged ones say "decide manually").
-7. **Codex Usage** — operator/administrator repository collection first, with
-   combined 24h totals and a plain-language **Data included** status. The
-   collection reads every environment once across all rows and settles in under
-   one second on the configured production repository/source set. A neutral
+7. **Codex Usage** — an operator/administrator view within Plan & progress,
+   scoped to the selected repository, with combined 24h totals and a
+   plain-language **Data included** status. A neutral
    status means setup is not connected everywhere; amber means measured data is
    partial, green means complete, and red is reserved for a real read failure.
    Repository details lead with one
@@ -253,12 +298,12 @@ Non-administrators see only the destinations and data their grants allow;
 server-wide health and the Containers/Tests/Administration views render an
 explicit permission-denied notice instead of partial data.
 
-## Interaction inventory (all verified by `console/verify.mjs`)
+## Interaction inventory
 
 | Control | API call | Proof of state change |
 |---|---|---|
-| Repository dashboard continuations | `plan.overview`, `progress.repositories`, `usage.repositories`, `test.list`, `health.repositories`, and repository-scoped `decision.tail` reads; pending Usage mappings resolve once through `usage.repository`; then real hash links | Every value remains inside the matching repository section. An available pending Usage card updates in place without a page repaint; genuine missing/error/access states do not trigger detail reads. Plan, Progress, Codex Usage, and Decisions open that repository; Tests and Health open their existing destinations with the repository named in the originating link. |
-| Collapse/expand repository or Workers | — (client-side) | Repository collapse hides the complete project dashboard; the independent Workers control hides or restores every worker row together. Sibling repositories do not change, keyboard focus stays on the toggle, and both choices survive same-session rerenders. |
+| Shared repository selection | Authorized Plan, Tests, Deployments, Progress, and Usage indexes; then real hash links and selected-detail reads | One searchable list preserves repository context across aspects, Back, and reload. Verified checkout groups retain exact run and record identities; unrelated matching names remain separate. |
+| Repository drawer and Checkouts | — (client-side) | The narrow-screen drawer focuses search, traps focus while open, and restores focus on Escape or cancellation. Checkouts reveals verified paths and explicit links to separate records. |
 | Deployment start/stop/restart (list, detail, component; managed and observed) | `deployment.start/stop/restart` | view re-fetches `deployment.status`; header/component badges change |
 | Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
@@ -270,9 +315,8 @@ explicit permission-denied notice instead of partial data.
 | Select release work | — (client-side) | only row selection and the Plan-continuation target change; the workspace node, scroll, focus, task order, and release scope remain unchanged |
 | Open selected in plan | — (real hash navigation with local task continuation) | opens the same repository Plan with the exact selected task highlighted |
 | Progress exact values disclosure | — (client-side) | exposes every visible bucket value, coverage status, and counting method without hover |
-| Destination heading link (every route and state) | — (real hash link) | returns to that destination's collection |
-| Plan / Progress / Decisions / Codex Usage project menu | destination collection read followed by the selected detail read | custom DOM menu lists every visible project; choosing one changes the same-destination route and visible project |
-| Responsive hamburger | — (client-side) | the original navigation links open in a DOM menu; Escape closes it and restores focus; link activation navigates and closes it |
+| Aspect and work-view links | — (real hash links followed by selected-detail reads) | Changes the current aspect or Plan/Progress/Usage view without losing the repository; legacy destination links resolve to the remembered selection. |
+| Console tools menu | — (client-side) | Opens host-level destinations and test settings; Escape closes the menu and restores focus. Settings dialogs return focus to the menu trigger after saving or cancelling. |
 | Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
@@ -337,22 +381,15 @@ zero-refetch/zero-replacement selection and disclosure, and read-only or
 delivered-release protections. The Codex Usage interaction pass additionally
 proves linked navigation, repository selection, phase stacks, all time ranges,
 focus restoration, separate timing rails, plain complete/missing/empty/unavailable
-data explanations, and exact non-hover values and large-scale axis-label separation. The shared navigation
-pass additionally verifies the correct heading link on all 13 routes in every
-fixture state, custom project menus on all three repository details, the
-reported 799×964 surface, and 1240/1241 px boundary behavior. Last complete
-run: 1,493 checks, 0 failures. Current-source formal usage verification checked
-closed missing/complete/unavailable states plus the opened completeness hint at
-390×844, the owner-marked 858×915 surface, and 1440×900: 12/12 cells, zero
-critical findings, and all 24 final viewport/full-page images passed the
-manual-review manifest.
-
-The repository collection has an additional one-second gate. A production-scale
-source-wide read returns the default 24-hour rows directly; longer cold ranges
-return an honest **Updating usage data…** state with dashes inside the same
-budget, prepare one ephemeral in-memory result, and refresh the table in place.
-No aggregate usage record is persisted. Mixed collection states and responsive
-cards/tables are checked at 390×844, 858×915, and 1440×900.
+data explanations, and exact non-hover values and large-scale axis-label separation.
+`CONSOLE_VERIFY_WORKSPACE_ONLY=1` checks shared repository selection, all aspect
+links, Plan/Progress/Usage context, Back and reload, domains, search, drawer
+focus, and host-tool separation at 1280, 713, and 390 px in both themes.
+`CONSOLE_VERIFY_TESTS_DESIGN_ONLY=1` checks the scoped test results, gallery,
+earlier-run provenance, exact viewer continuation, and test actions.
+`CONSOLE_VERIFY_ARTIFACTS_ONLY=1` checks retained native files and previews.
+These are focused development passes; final validation must reference its own
+exact source candidate and retained report, not an earlier pass count.
 
 The Health layout has an additional focused journey gate at 390×844,
 856×915, 1440×1024, 959/960/961×915, and 1199/1200/1201×915. It verifies
@@ -363,12 +400,8 @@ document or attribution scrolling. The current focused interaction pass has
 with zero critical findings, and all 18 viewport/full-page images passed the
 manual review manifest.
 
-The Deployments dashboard has an additional repository-attribution gate. Its
-fixtures deliberately give two repositories different Plan, Progress, Codex
-Usage, Test, Health, Decision, and deployment states, then assert that no value
-or deployment crosses sections. Every repository continuation and deployment
-action is invoked. The focused browser pass checks 320, 390, 430, 619/620/621,
-834, 959/960/961, 1179/1180/1181, 1239/1240/1241, and 1440 px; its current
-229 checks all pass. Formal verification checked 16 planned cells with zero
-critical findings, and all 32 initial/full-page images passed the finalized
-manual-review manifest.
+The Deployments attribution gate gives different repositories distinct managed
+and observed deployments. Switching repositories must replace the collection
+without mixing records, while each lifecycle action and domain editor still
+addresses its original deployment. The responsive pass checks small phones,
+intermediate widths, and desktop layouts with the shared sidebar present.

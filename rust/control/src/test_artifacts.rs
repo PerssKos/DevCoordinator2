@@ -156,6 +156,26 @@ impl TestArtifactService {
         })
     }
 
+    pub(crate) fn delivery_run_start(
+        &self,
+        path: &str,
+        run_id: &str,
+        check: &str,
+        expected_metadata: &str,
+        caller: &Caller,
+    ) -> Result<u64, ProtocolError> {
+        let resolved = self.resolve(Path::new(path), caller)?;
+        validate_run_id(run_id)?;
+        validate_check_name(check, "check")?;
+        let verified = self.manifest(&resolved.worktree, run_id, check)?;
+        if verified.run_metadata_sha256 != expected_metadata {
+            return Err(tampered(
+                "Retained run metadata changed during delivery verification.",
+            ));
+        }
+        Ok(verified.run.started_at_epoch_ms)
+    }
+
     /// Read one exact chunk after revalidating its manifest and file identity.
     pub fn file(
         &self,
@@ -1032,6 +1052,7 @@ mod tests {
                 gid: 999,
                 client_kind: ClientKind::Edge,
                 client_session: None,
+                work: None,
                 identity: Some("reader@example.test".into()),
             };
             Self {

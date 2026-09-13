@@ -74,6 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ClientKind::Other
             },
             client_session: None,
+            work: None,
             identity: request.client.identity,
         };
         let response = match plane.execute(&request.operation, request.params, &caller) {

@@ -23,6 +23,8 @@ pub mod repository_checks;
 pub mod skill_links;
 pub mod skill_selftest;
 pub mod skill_validation;
+pub mod test_assurance;
+pub mod test_catalog;
 pub mod test_coverage_audit;
 pub mod ui_audit;
 pub mod ui_audit_verify;

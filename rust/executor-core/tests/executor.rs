@@ -151,6 +151,78 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admission_wait_is_visible_before_grant_and_excluded_from_process_duration() {
+    use devcoordinator2_executor_core::{PermitProvider, PermitRequest};
+    let repository = Repository::new("admission-progress");
+    let provider = Arc::new(LocalPermitProvider::new(1).unwrap());
+    let held = provider
+        .acquire(PermitRequest {
+            run_id: "held".into(),
+            leaf_id: "held".into(),
+        })
+        .await
+        .unwrap();
+    let run_id = "run-admission-progress";
+    let execution = Executor::new(
+        plan(&repository, run_id, vec![direct("quick", fixture_exit(0))]),
+        provider,
+        Cancellation::default(),
+    )
+    .unwrap();
+    let running = tokio::spawn(execution.run());
+    let report_path = repository.current(run_id).join("check-report.json");
+    let queued = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(bytes) = fs::read(&report_path)
+                && let Ok(report) =
+                    devcoordinator2_executor_core::protocol::ExecutionReport::from_json(&bytes)
+                && report.checks[0]
+                    .execution
+                    .as_ref()
+                    .is_some_and(|progress| progress.waiting == 1)
+            {
+                break report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("waiting observation");
+    assert!(queued.checks[0].started_at.is_none());
+    assert_eq!(queued.checks[0].execution.as_ref().unwrap().executing, 0);
+    assert_eq!(queued.capacity.capacity_wait_count, 1);
+    assert!(
+        !repository
+            .logs(run_id)
+            .join("checks/quick/check/stdout.log")
+            .exists()
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    drop(held);
+    let report = running.await.unwrap().unwrap();
+    assert_eq!(report.status, RunStatus::Passed);
+    let execution = report.checks[0].execution.as_ref().unwrap();
+    assert_eq!(
+        (
+            execution.waiting,
+            execution.admitted,
+            execution.executing,
+            execution.finished
+        ),
+        (0, 0, 0, 1)
+    );
+    assert!(execution.capacity_wait_ms >= 50);
+    assert!(execution.admitted_at_epoch_ms.unwrap() >= execution.queued_at_epoch_ms);
+    assert!(execution.started_at_epoch_ms.unwrap() >= execution.admitted_at_epoch_ms.unwrap());
+    assert_eq!(report.capacity.capacity_wait_count, 1);
+    assert!(
+        ((report.checks[0].duration_seconds.unwrap() * 1000.0) as u64)
+            .abs_diff(execution.process_duration_ms)
+            <= 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn symlinked_platform_ancestor_resolves_before_containment_check() {
     let repository = Repository::new("symlink-ancestor");
     let alias = repository.root.with_extension("alias");
@@ -306,6 +378,30 @@ async fn failed_preflight_invalidates_only_its_targets_and_siblings_finish() {
             .join("checks/target/check/stdout.log")
             .exists()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transitive_failed_requirements_finish_in_reverse_order_without_stalling() {
+    let repository = Repository::new("transitive-requirements");
+    let first = direct("first", fixture_exit(7));
+    let mut second = direct("second", fixture_exit(0));
+    second.requires = vec!["first".into()];
+    let mut third = direct("third", fixture_exit(0));
+    third.requires = vec!["second".into()];
+    let independent = direct("independent", fixture_exit(0));
+    let report = execute(plan(
+        &repository,
+        "run-transitive",
+        vec![third, second, first, independent],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(status(&report, "first"), LeafStatus::Failed);
+    assert_eq!(status(&report, "second"), LeafStatus::NotMeaningful);
+    assert_eq!(status(&report, "third"), LeafStatus::NotMeaningful);
+    assert_eq!(status(&report, "independent"), LeafStatus::Passed);
+    assert!(report.checks.iter().all(|check| check.status.is_terminal()));
+    report.validate().expect("terminal report");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -558,6 +654,48 @@ async fn passed_event_keeps_service_alive_for_dependents_then_cleans_it_up() {
     assert_eq!(leaf["complete"], true);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn event_ready_service_remains_executing_while_its_dependent_uses_it() {
+    let repository = Repository::new("event-live-progress");
+    let mut service = direct("service", fixture(&["event", "valid"]));
+    service.completion = CompletionMode::Event;
+    let mut dependent = direct("dependent", fixture(&["sleep", "1"]));
+    dependent.requires = vec!["service".into()];
+    let run_id = "run-event-live-progress";
+    let execution = Executor::new(
+        plan(&repository, run_id, vec![service, dependent]),
+        Arc::new(LocalPermitProvider::unbounded()),
+        Cancellation::default(),
+    )
+    .unwrap();
+    let running = tokio::spawn(execution.run());
+    let path = repository.current(run_id).join("check-report.json");
+    let observed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(bytes) = fs::read(&path)
+                && let Ok(report) =
+                    devcoordinator2_executor_core::protocol::ExecutionReport::from_json(&bytes)
+                && report.checks[0].status == LeafStatus::Passed
+                && report.checks[1]
+                    .execution
+                    .as_ref()
+                    .is_some_and(|p| p.executing == 1)
+            {
+                break report;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("live service observation");
+    assert_eq!(observed.checks[0].execution.as_ref().unwrap().executing, 1);
+    assert_eq!(observed.checks[0].execution.as_ref().unwrap().finished, 0);
+    let complete = running.await.unwrap().unwrap();
+    assert_eq!(complete.status, RunStatus::Passed);
+    assert_eq!(complete.checks[0].execution.as_ref().unwrap().executing, 0);
+    assert_eq!(complete.checks[0].execution.as_ref().unwrap().finished, 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn logs_larger_than_four_mibibytes_are_complete_and_hashed() {
     let repository = Repository::new("logs");
@@ -756,7 +894,13 @@ async fn command_spawn_failure_is_internal_with_truthful_empty_streams() {
         )],
     ))
     .await;
-    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(
+        report.checks[0].status,
+        LeafStatus::Failed,
+        "{:?}; {:?}",
+        report.failure_index,
+        report.checks[0].streams
+    );
     assert_eq!(report.checks[0].streams.len(), 2);
     assert!(
         report.checks[0]

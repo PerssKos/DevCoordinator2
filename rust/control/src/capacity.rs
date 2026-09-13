@@ -31,6 +31,8 @@ pub const MIN_EPOCH_SECONDS: f64 = 600.0;
 const PRESSURE_PERCENT: f64 = 98.0;
 const RECOVERY_PERCENT: f64 = 95.0;
 const UNDERUSED_PERCENT: f64 = 90.0;
+pub const MEMORY_EMERGENCY_PERCENT: f64 = 90.0;
+const MEMORY_RECOVERY_PERCENT: f64 = 85.0;
 const MAX_REQUEST_BYTES: usize = 4096;
 const READ_DEADLINE: Duration = Duration::from_secs(5);
 const WRITE_DEADLINE: Duration = Duration::from_secs(10);
@@ -40,6 +42,52 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 pub trait Metrics: Send + 'static {
     fn sample(&mut self) -> (Option<f64>, Option<f64>);
 }
+
+/// Host accounting uses available memory, including reclaimable caches.
+#[derive(Clone, Copy, Debug)]
+pub struct HostMemory {
+    pub total: u64,
+    pub available: u64,
+}
+
+impl HostMemory {
+    pub fn read(root: &Path) -> Option<Self> {
+        let text = std::fs::read_to_string(root.join("meminfo")).ok()?;
+        let mut total = None;
+        let mut available = None;
+        for line in text.lines() {
+            let (key, value) = line.split_once(':')?;
+            let destination = match key {
+                "MemTotal" => &mut total,
+                "MemAvailable" => &mut available,
+                _ => continue,
+            };
+            let mut fields = value.split_whitespace();
+            let kib = fields.next()?.parse::<u64>().ok()?;
+            if fields.next()? != "kB" || destination.is_some() {
+                return None;
+            }
+            *destination = Some(kib.checked_mul(1024)?);
+        }
+        let value = Self {
+            total: total?,
+            available: available?,
+        };
+        value.percent_used().map(|_| value)
+    }
+
+    pub fn percent_used(self) -> Option<f64> {
+        (self.total > 0 && self.available <= self.total)
+            .then(|| 100.0 * (self.total - self.available) as f64 / self.total as f64)
+    }
+
+    pub fn emergency(self) -> bool {
+        self.percent_used()
+            .is_some_and(|used| used >= MEMORY_EMERGENCY_PERCENT)
+    }
+}
+
+type MemoryPressureHandler = Arc<dyn Fn() + Send + Sync>;
 
 pub struct ProcMetrics {
     root: PathBuf,
@@ -88,6 +136,7 @@ struct Inner {
     monotonic: Arc<dyn MonotonicClock>,
     random: Arc<dyn RandomSource>,
     metrics: Mutex<Box<dyn Metrics>>,
+    memory_pressure_handler: Mutex<Option<MemoryPressureHandler>>,
     sample_interval: Duration,
     min_epoch_seconds: f64,
 }
@@ -104,10 +153,12 @@ struct State {
     next_pending_id: u64,
     stopping: bool,
     paused: bool,
+    memory_emergency: bool,
     cpu_pressure_streak: u8,
     memory_pressure_streak: u8,
     recovery_streak: u8,
     pending_decrease: bool,
+    epoch_memory_emergency: bool,
     epoch_started: Option<f64>,
     epoch_runs: BTreeSet<String>,
     samples: Vec<(Option<f64>, Option<f64>, bool)>,
@@ -140,6 +191,22 @@ struct Grant {
 #[derive(Clone, Debug)]
 struct ActivePermit {
     run_id: String,
+}
+
+/// Holds exact connection ownership across every I/O error and task cancellation.
+struct ConnectionPermit {
+    broker: CapacityBroker,
+    pending_id: u64,
+    permit_id: Option<String>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        if let Some(id) = &self.permit_id {
+            let _ = self.broker.release(id);
+        }
+        let _ = self.broker.cancel_pending(self.pending_id);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +318,7 @@ impl CapacityBroker {
                 monotonic,
                 random,
                 metrics: Mutex::new(metrics),
+                memory_pressure_handler: Mutex::new(None),
                 sample_interval,
                 min_epoch_seconds,
             }),
@@ -393,16 +461,34 @@ impl CapacityBroker {
     }
 
     pub fn record_sample(&self, cpu_percent: Option<f64>, memory_percent: Option<f64>) {
-        if let Ok(mut state) = self.inner.state.lock() {
+        let now = self.inner.monotonic.seconds();
+        let adjustment = if let Ok(mut state) = self.inner.state.lock() {
             state.record_sample(
                 bounded_percent(cpu_percent),
                 bounded_percent(memory_percent),
             );
+            let adjustment = state.finish_epoch(now, self.inner.min_epoch_seconds);
             if !state.paused {
                 let _ = state.grant_ready(self.inner.random.as_ref());
             }
+            adjustment.map(|adjustment| (adjustment, state.learned, state.cap))
+        } else {
+            None
+        };
+        if let Some((adjustment, learned, cap)) = adjustment
+            && let Err(error) = self.persist_adjustment(learned, cap, &adjustment)
+        {
+            error!(%error, "capacity sample adjustment could not be persisted");
         }
         self.inner.notify.notify_waiters();
+    }
+
+    pub fn set_memory_pressure_handler(&self, handler: MemoryPressureHandler) {
+        *self
+            .inner
+            .memory_pressure_handler
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
@@ -413,9 +499,9 @@ impl CapacityBroker {
             std::fs::Permissions::from_mode(0o666),
         )?;
         let mut connections = JoinSet::new();
+        let mut emergency = JoinSet::new();
         let mut sampler = interval(self.inner.sample_interval);
         sampler.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        sampler.tick().await;
         let result = loop {
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -440,6 +526,22 @@ impl CapacityBroker {
                     let sample = self.inner.metrics.lock().ok().map(|mut metrics| metrics.sample());
                     if let Some((cpu, memory)) = sample {
                         self.record_sample(cpu, memory);
+                        if bounded_percent(memory).is_some_and(|used| used >= MEMORY_EMERGENCY_PERCENT)
+                            && emergency.is_empty()
+                        {
+                            let handler = self.inner.memory_pressure_handler.lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+                            if let Some(handler) = handler {
+                                // Slow systemd cleanup must not block capacity sampling or requests.
+                                // One owned worker prevents duplicate cancellation of the same run.
+                                emergency.spawn_blocking(move || handler());
+                            }
+                        }
+                    }
+                }
+                completed = emergency.join_next(), if !emergency.is_empty() => {
+                    if let Some(Err(error)) = completed {
+                        error!(%error, "memory emergency worker failed");
                     }
                 }
                 completed = connections.join_next(), if !connections.is_empty() => {
@@ -451,6 +553,11 @@ impl CapacityBroker {
         };
         drop(listener);
         self.stop();
+        while let Some(completed) = emergency.join_next().await {
+            if let Err(error) = completed {
+                error!(%error, "memory emergency worker failed during shutdown");
+            }
+        }
         let _ = tokio::fs::remove_file(&self.inner.socket_path).await;
         while let Some(completed) = connections.join_next().await {
             if let Err(error) = completed {
@@ -492,6 +599,11 @@ impl CapacityBroker {
             }
         };
         let mut early_input = [0_u8; 4096];
+        let mut ownership = ConnectionPermit {
+            broker: self.clone(),
+            pending_id,
+            permit_id: None,
+        };
         let grant = loop {
             let notified = self.inner.notify.notified();
             match self.take_outcome(pending_id).map_err(protocol_io)? {
@@ -520,6 +632,7 @@ impl CapacityBroker {
             waited: Some(grant.waited),
             error: None,
         };
+        ownership.permit_id = Some(grant.permit_id.clone());
         write_response(&mut stream, &response).await?;
 
         let mut release = [0_u8; 4096];
@@ -604,6 +717,9 @@ impl CapacityBroker {
         let Some(pending) = state.pending.remove(&pending_id) else {
             return Ok(());
         };
+        if let PendingOutcome::Granted(grant) = &pending.outcome {
+            state.active.remove(&grant.permit_id);
+        }
         if let Some(queue) = state.queues.get_mut(&pending.run_id) {
             queue.retain(|candidate| *candidate != pending_id);
             if queue.is_empty() {
@@ -614,6 +730,7 @@ impl CapacityBroker {
             }
         }
         state.finish_run(&pending.run_id, now);
+        state.grant_ready(self.inner.random.as_ref())?;
         let adjustment = state.finish_epoch(now, self.inner.min_epoch_seconds);
         let learned = state.learned;
         let cap = state.cap;
@@ -721,10 +838,12 @@ impl State {
             next_pending_id: 1,
             stopping: false,
             paused: false,
+            memory_emergency: false,
             cpu_pressure_streak: 0,
             memory_pressure_streak: 0,
             recovery_streak: 0,
             pending_decrease: false,
+            epoch_memory_emergency: false,
             epoch_started: None,
             epoch_runs: BTreeSet::new(),
             samples: Vec::new(),
@@ -747,6 +866,7 @@ impl State {
             self.samples.clear();
             self.run_durations.clear();
             self.pending_decrease = false;
+            self.epoch_memory_emergency = false;
             self.epoch_runs.clear();
         }
         self.epoch_runs.insert(run_id.to_owned());
@@ -798,12 +918,20 @@ impl State {
     }
 
     fn record_sample(&mut self, cpu: Option<f64>, memory: Option<f64>) {
-        if self.epoch_started.is_none() {
+        if memory.is_some_and(|value| value >= MEMORY_EMERGENCY_PERCENT) {
+            self.memory_emergency = true;
+            self.epoch_memory_emergency = true;
+            self.paused = true;
+            self.pending_decrease = true;
+        }
+        if self.epoch_started.is_none() && !self.memory_emergency {
             return;
         }
         let saturated = self.waiting() > 0
             || (!self.active.is_empty() && self.active.len() >= self.effective() as usize);
-        self.samples.push((cpu, memory, saturated));
+        if self.epoch_started.is_some() {
+            self.samples.push((cpu, memory, saturated));
+        }
         self.cpu_pressure_streak = if cpu.is_some_and(|value| value >= PRESSURE_PERCENT) {
             self.cpu_pressure_streak.saturating_add(1)
         } else {
@@ -820,7 +948,14 @@ impl State {
         }
         if self.paused
             && cpu.is_some_and(|value| value < RECOVERY_PERCENT)
-            && memory.is_some_and(|value| value < RECOVERY_PERCENT)
+            && memory.is_some_and(|value| {
+                value
+                    < if self.memory_emergency {
+                        MEMORY_RECOVERY_PERCENT
+                    } else {
+                        RECOVERY_PERCENT
+                    }
+            })
         {
             self.recovery_streak = self.recovery_streak.saturating_add(1);
         } else if self.paused {
@@ -828,6 +963,7 @@ impl State {
         }
         if self.paused && self.recovery_streak >= 2 {
             self.paused = false;
+            self.memory_emergency = false;
             self.cpu_pressure_streak = 0;
             self.memory_pressure_streak = 0;
             self.recovery_streak = 0;
@@ -856,12 +992,14 @@ impl State {
                 .iter()
                 .any(|run| self.registered_runs.contains_key(run));
         let longest_run = self.run_durations.iter().copied().fold(0.0, f64::max);
-        // A continuous backlog must not prevent learning from completed long
-        // runs. Short completions retain the current observation window.
-        if busy && longest_run < minimum {
+        let duration = (now - started).max(0.0);
+        // Evaluate a full live workload epoch as well as completed long runs.
+        // Otherwise one long, underused permit can strand the queue forever.
+        // An idle/registered-only queue is not evidence of executing work.
+        let eligible = longest_run >= minimum || (!self.active.is_empty() && duration >= minimum);
+        if busy && !eligible {
             return None;
         }
-        let duration = (now - started).max(0.0);
         let cpu_values = self
             .samples
             .iter()
@@ -883,11 +1021,17 @@ impl State {
         let previous = self.learned;
         let mut reason = None;
         let mut new = previous;
-        if longest_run >= minimum {
+        if eligible {
             if self.pending_decrease && previous > 1 {
                 new = (previous - 1).min(previous.saturating_mul(3) / 4).max(1);
-                reason = Some("sustained_pressure");
-            } else if complete
+                reason = Some(if self.epoch_memory_emergency {
+                    "memory_emergency"
+                } else {
+                    "sustained_pressure"
+                });
+            } else if !self.pending_decrease
+                && !self.paused
+                && complete
                 && self.cap.is_none_or(|cap| cap > previous)
                 && saturation.is_some_and(|value| value >= 0.5)
                 && cpu.is_some_and(|value| value < UNDERUSED_PERCENT)
@@ -929,10 +1073,15 @@ impl State {
         self.samples.clear();
         self.run_durations.clear();
         self.pending_decrease = false;
-        self.cpu_pressure_streak = 0;
-        self.memory_pressure_streak = 0;
-        self.recovery_streak = 0;
-        self.paused = false;
+        self.epoch_memory_emergency = false;
+        // A live epoch boundary is not pressure recovery. Keep the pause until
+        // its existing two low-utilization samples have actually arrived.
+        if !busy {
+            self.cpu_pressure_streak = 0;
+            self.memory_pressure_streak = 0;
+            self.recovery_streak = 0;
+            self.paused = self.memory_emergency;
+        }
         adjustment
     }
 }
@@ -1082,20 +1231,7 @@ fn cpu_totals(root: &Path) -> Option<(u64, u64)> {
 }
 
 fn memory_percent(root: &Path) -> Option<f64> {
-    let text = std::fs::read_to_string(root.join("meminfo")).ok()?;
-    let mut total = None;
-    let mut available = None;
-    for line in text.lines() {
-        let (key, value) = line.split_once(':')?;
-        let value = value.split_whitespace().next()?.parse::<u64>().ok()?;
-        match key {
-            "MemTotal" => total = Some(value),
-            "MemAvailable" => available = Some(value),
-            _ => {}
-        }
-    }
-    let (total, available) = (total?, available?);
-    (total > 0 && available <= total).then_some(100.0 * (total - available) as f64 / total as f64)
+    HostMemory::read(root)?.percent_used()
 }
 
 fn bounded_percent(value: Option<f64>) -> Option<f64> {
@@ -1267,6 +1403,205 @@ mod tests {
     }
 
     #[test]
+    fn memory_emergency_is_immediate_and_survives_the_last_run() {
+        let temporary = tempdir().unwrap();
+        let broker = make_broker(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker.record_sample(None, Some(89.99));
+        assert!(!broker.snapshot().unwrap().paused);
+        broker.record_sample(None, Some(90.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.register_run("pressure-run", 1000).unwrap();
+        let queued = broker.enqueue("pressure-run", "work", 1000).unwrap();
+        assert!(matches!(
+            broker.take_outcome(queued).unwrap(),
+            Some(PendingOutcome::Waiting)
+        ));
+        broker.unregister_run("pressure-run").unwrap();
+        assert!(
+            broker.snapshot().unwrap().paused,
+            "run completion must not reopen memory admission"
+        );
+        broker.record_sample(Some(20.0), Some(85.0));
+        broker.record_sample(Some(20.0), Some(85.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.record_sample(Some(20.0), Some(84.0));
+        broker.record_sample(None, Some(84.0));
+        assert!(
+            broker.snapshot().unwrap().paused,
+            "missing evidence cannot confirm recovery"
+        );
+        broker.record_sample(Some(20.0), Some(84.0));
+        assert!(broker.snapshot().unwrap().paused);
+        broker.record_sample(Some(20.0), Some(84.0));
+        assert!(!broker.snapshot().unwrap().paused);
+    }
+
+    #[test]
+    fn host_memory_uses_available_instead_of_free_and_rejects_invalid_measurements() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("meminfo");
+        std::fs::write(
+            &path,
+            "MemTotal: 1000 kB\nMemFree: 1 kB\nMemAvailable: 200 kB\nCached: 199 kB\n",
+        )
+        .unwrap();
+        let memory = HostMemory::read(temporary.path()).unwrap();
+        assert_eq!(memory.total, 1_024_000);
+        assert_eq!(memory.percent_used(), Some(80.0));
+        assert!(!memory.emergency());
+        for contents in [
+            "MemTotal: 1000 kB\nMemFree: 1 kB\n",
+            "MemTotal: 0 kB\nMemAvailable: 0 kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 1001 kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: invalid kB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 10 MB\n",
+            "MemTotal: 1000 kB\nMemAvailable: 10 kB\nMemAvailable: 999 kB\n",
+            "MemTotal: 18446744073709551615 kB\nMemAvailable: 0 kB\n",
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            assert!(
+                HostMemory::read(temporary.path()).is_none(),
+                "invalid sample: {contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_late_memory_emergency_cannot_teach_an_underused_epoch_to_grow() {
+        let temporary = tempdir().unwrap();
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker.register_run("late-growth", 1000).unwrap();
+        for index in 0..9 {
+            broker
+                .enqueue("late-growth", &format!("leaf-{index}"), 1000)
+                .unwrap();
+        }
+        for _ in 0..40 {
+            broker.record_sample(Some(20.0), Some(20.0));
+        }
+        broker.record_sample(Some(20.0), Some(91.0));
+        broker.record_sample(Some(20.0), Some(20.0));
+        broker.record_sample(Some(20.0), Some(20.0));
+        monotonic.advance(601);
+        broker.unregister_run("late-growth").unwrap();
+        let state = broker.snapshot().unwrap();
+        assert_eq!(state.learned_capacity, 6);
+        assert_eq!(state.last_adjustment.unwrap().reason, "memory_emergency");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn emergency_cleanup_is_single_flight_and_does_not_block_sampling() {
+        struct SampledPressure {
+            cpu: Arc<AtomicU64>,
+            percent: Arc<AtomicU64>,
+            sampled: std::sync::mpsc::Sender<()>,
+        }
+        impl Metrics for SampledPressure {
+            fn sample(&mut self) -> (Option<f64>, Option<f64>) {
+                let value = self.percent.load(Ordering::SeqCst);
+                let _ = self.sampled.send(());
+                (
+                    Some(self.cpu.load(Ordering::SeqCst) as f64),
+                    Some(value as f64),
+                )
+            }
+        }
+        let temporary = tempdir().unwrap();
+        let cpu = Arc::new(AtomicU64::new(99));
+        let percent = Arc::new(AtomicU64::new(40));
+        let (sampled, samples) = std::sync::mpsc::channel();
+        let broker = CapacityBroker::with_adapters(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            2,
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+            Arc::new(ManualMonotonic::new()),
+            Arc::new(SequenceRandom(AtomicU64::new(1))),
+            Box::new(SampledPressure {
+                cpu: cpu.clone(),
+                percent: percent.clone(),
+                sampled,
+            }),
+            Duration::from_millis(25),
+            600.0,
+        )
+        .unwrap();
+        broker.register_run("cpu-only", 1000).unwrap();
+        broker.enqueue("cpu-only", "active", 1000).unwrap();
+        let calls = Arc::new(AtomicU64::new(0));
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = Arc::new(Mutex::new(released));
+        let counted = calls.clone();
+        broker.set_memory_pressure_handler(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            entered.send(()).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }));
+        let (shutdown, receiver) = watch::channel(false);
+        let server = {
+            let broker = broker.clone();
+            tokio::spawn(async move { broker.serve(receiver).await })
+        };
+        let samples = tokio::task::spawn_blocking(move || {
+            for _ in 0..5 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            samples
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "CPU saturation alone must not terminate work"
+        );
+        assert!(broker.snapshot().unwrap().paused);
+        percent.store(92, Ordering::SeqCst);
+        tokio::task::spawn_blocking(move || entry.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        let samples = tokio::task::spawn_blocking(move || {
+            for _ in 0..5 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            samples
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(broker.snapshot().unwrap().paused);
+        percent.store(40, Ordering::SeqCst);
+        cpu.store(20, Ordering::SeqCst);
+        release.send(()).unwrap();
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..3 {
+                samples.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!broker.state().unwrap().memory_emergency);
+    }
+
+    #[test]
     fn a_complete_saturated_underused_epoch_increases_and_survives_restart() {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
@@ -1363,6 +1698,225 @@ mod tests {
     }
 
     #[test]
+    fn active_underused_epoch_recovers_without_waiting_for_a_run_to_finish() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database.clone(),
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        // Reproduce the existing learned floor without changing an admin cap:
+        // one long-running leaf occupies the grant; a second run must wait.
+        broker.state().expect("state").learned = 1;
+        broker
+            .register_run("long-active", 1000)
+            .expect("active run");
+        broker.register_run("waiting", 1000).expect("waiting run");
+        let first = broker
+            .enqueue("long-active", "long-leaf", 1000)
+            .expect("first");
+        let first_permit = match broker.take_outcome(first).expect("first outcome") {
+            Some(PendingOutcome::Granted(permit)) => permit,
+            _ => panic!("first leaf must be admitted"),
+        };
+        let second = broker
+            .enqueue("waiting", "short-leaf", 1000)
+            .expect("second");
+        for _ in 0..40 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(
+            snapshot.learned_capacity, 2,
+            "active underused work must not strand the queue"
+        );
+        assert_eq!(
+            snapshot.active, 2,
+            "the existing leaf is preserved and the waiting leaf is admitted"
+        );
+        assert_eq!(snapshot.waiting, 0);
+        assert!(matches!(
+            broker.take_outcome(second).expect("second outcome"),
+            Some(PendingOutcome::Granted(_))
+        ));
+        assert!(
+            broker
+                .state()
+                .expect("state")
+                .active
+                .contains_key(&first_permit.permit_id)
+        );
+        for _ in 0..10 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        assert_eq!(
+            broker
+                .snapshot()
+                .expect("no double credit")
+                .learned_capacity,
+            2
+        );
+        broker.unregister_run("long-active").expect("finish first");
+        broker.unregister_run("waiting").expect("finish second");
+        assert_eq!(broker.snapshot().expect("complete").learned_capacity, 2);
+        let restarted = make_broker(database, temporary.path().join("restarted.sock"), monotonic);
+        assert_eq!(
+            restarted
+                .snapshot()
+                .expect("persisted learning")
+                .learned_capacity,
+            2
+        );
+    }
+
+    #[test]
+    fn live_epochs_preserve_duration_complete_samples_saturation_and_caps() {
+        for (ticks, cpu, memory, cap, saturated, missing_sample) in [
+            (39, 40.0, 40.0, None, true, false),
+            (40, 40.0, 40.0, None, true, true),
+            (40, 95.0, 40.0, None, true, false),
+            (40, 40.0, 99.0, None, true, false),
+            (40, 40.0, 40.0, Some(1), true, false),
+            (40, 40.0, 40.0, None, false, false),
+        ] {
+            let temporary = tempdir().expect("tempdir");
+            let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+            let monotonic = Arc::new(ManualMonotonic::new());
+            let broker = make_broker(
+                database,
+                temporary.path().join("capacity.sock"),
+                monotonic.clone(),
+            );
+            let learned = if saturated { 1 } else { 8 };
+            broker.state().expect("state").learned = learned;
+            if cap.is_some() {
+                broker.set_cap(cap, "test:admin").expect("cap");
+            }
+            broker.register_run("active", 1000).expect("active run");
+            broker
+                .enqueue("active", "long-leaf", 1000)
+                .expect("active leaf");
+            if saturated {
+                broker.register_run("waiting", 1000).expect("waiting run");
+                broker
+                    .enqueue("waiting", "next-leaf", 1000)
+                    .expect("waiting leaf");
+            }
+            for index in 0..ticks {
+                monotonic.advance(15);
+                let observed_cpu = if missing_sample && index == 20 {
+                    None
+                } else {
+                    Some(cpu)
+                };
+                broker.record_sample(observed_cpu, Some(memory));
+            }
+            let snapshot = broker.snapshot().expect("snapshot");
+            assert_eq!(
+                snapshot.learned_capacity, learned,
+                "no unsupported live-epoch growth"
+            );
+            assert_eq!(
+                snapshot.active, 1,
+                "no admitted work may be killed or extra work admitted"
+            );
+            assert_eq!(snapshot.waiting, u32::from(saturated));
+            if memory >= 98.0 {
+                assert!(
+                    snapshot.paused,
+                    "an epoch boundary must not clear sustained pressure"
+                );
+            }
+            broker.unregister_run("active").expect("cleanup active");
+            if saturated {
+                broker.unregister_run("waiting").expect("cleanup waiting");
+            }
+        }
+    }
+
+    #[test]
+    fn live_pressure_epoch_reduces_future_grants_without_stopping_active_work() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker.register_run("busy", 1000).expect("busy run");
+        for index in 0..9 {
+            broker
+                .enqueue("busy", &format!("leaf-{index}"), 1000)
+                .expect("leaf");
+        }
+        let original_permits = broker
+            .state()
+            .expect("state")
+            .active
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        for _ in 0..40 {
+            monotonic.advance(15);
+            broker.record_sample(Some(99.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("pressure snapshot");
+        assert_eq!(snapshot.learned_capacity, 6);
+        assert_eq!(snapshot.active, 8);
+        assert_eq!(snapshot.waiting, 1);
+        assert!(snapshot.paused);
+        assert_eq!(
+            broker
+                .state()
+                .expect("state")
+                .active
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            original_permits
+        );
+        for _ in 0..2 {
+            monotonic.advance(15);
+            broker.record_sample(Some(40.0), Some(40.0));
+        }
+        let snapshot = broker.snapshot().expect("recovery snapshot");
+        assert!(!snapshot.paused);
+        assert_eq!(snapshot.learned_capacity, 6);
+        assert_eq!(snapshot.active, 8);
+        assert_eq!(snapshot.waiting, 1);
+        broker.unregister_run("busy").expect("cleanup");
+        assert_eq!(broker.snapshot().expect("complete").learned_capacity, 6);
+    }
+
+    #[test]
+    fn registered_without_executing_work_does_not_manufacture_a_live_epoch() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let monotonic = Arc::new(ManualMonotonic::new());
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            monotonic.clone(),
+        );
+        broker
+            .register_run("registered-only", 1000)
+            .expect("registered run");
+        for _ in 0..80 {
+            monotonic.advance(15);
+            broker.record_sample(Some(10.0), Some(10.0));
+        }
+        let snapshot = broker.snapshot().expect("snapshot");
+        assert_eq!(snapshot.learned_capacity, 8);
+        assert_eq!(snapshot.active, 0);
+        broker.unregister_run("registered-only").expect("cleanup");
+    }
+
+    #[test]
     fn backlog_learning_keeps_duration_sample_pressure_and_cap_guards() {
         for (seconds, cpu, memory, cap) in [
             (30, Some(40.0), Some(40.0), None),
@@ -1399,6 +1953,67 @@ mod tests {
             assert_eq!(broker.snapshot().expect("other survives").active, 1);
             broker.unregister_run("run-other").expect("cleanup");
         }
+    }
+
+    #[tokio::test]
+    async fn cancelled_connection_handler_releases_its_active_permit() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker
+            .register_run("run-cancel", rustix::process::getuid().as_raw())
+            .expect("run");
+        let (mut client, server) = UnixStream::pair().expect("pair");
+        let serving = broker.clone();
+        let handler = tokio::spawn(async move { serving.serve_connection(server).await });
+        let request = serde_json::json!({"schema": CAPACITY_PROTOCOL_SCHEMA, "action": "acquire", "run_id": "run-cancel", "leaf_id": "check"});
+        client
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .expect("request");
+        let response = timeout(Duration::from_secs(2), read_line(&mut client))
+            .await
+            .expect("grant deadline")
+            .expect("grant");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response).unwrap()["status"],
+            "granted"
+        );
+        assert_eq!(broker.snapshot().unwrap().active, 1);
+        handler.abort();
+        assert!(handler.await.unwrap_err().is_cancelled());
+        assert_eq!(broker.snapshot().unwrap().active, 0);
+        assert!(broker.state().unwrap().pending.is_empty());
+    }
+
+    #[test]
+    fn abandoned_untaken_grant_releases_capacity_for_the_next_request() {
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        broker.set_cap(Some(1), "uid:1").unwrap();
+        broker.register_run("run-cancel", 1000).unwrap();
+        let abandoned = broker.enqueue("run-cancel", "abandoned", 1000).unwrap();
+        let following = broker.enqueue("run-cancel", "following", 1000).unwrap();
+        assert!(matches!(
+            broker.take_outcome(following).unwrap(),
+            Some(PendingOutcome::Waiting)
+        ));
+        broker.cancel_pending(abandoned).unwrap();
+        let Some(PendingOutcome::Granted(grant)) = broker.take_outcome(following).unwrap() else {
+            panic!("next request was not admitted");
+        };
+        broker.release(&grant.permit_id).unwrap();
+        assert_eq!(broker.snapshot().unwrap().active, 0);
+        assert!(broker.state().unwrap().pending.is_empty());
     }
 
     #[tokio::test]

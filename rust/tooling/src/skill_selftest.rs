@@ -60,7 +60,7 @@ const WORKFLOW_TERMS: &[&str] = &[
     "`superseded_run_id`",
     "never describe the replaced run as still running",
     "After diagnosis establishes a durable missing or regressed outcome",
-    "check whether it is already represented",
+    "check whether an equivalent concrete task already exists",
     "Execution attempts stay in governed run history",
     "failures and suggestions do not automatically create tasks",
     "passing runs do not automatically complete work",

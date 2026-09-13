@@ -12,6 +12,8 @@ pub mod config;
 pub mod control_plane;
 pub mod daemon;
 pub mod database;
+mod delivery;
+mod deployment_cancellation;
 pub mod deployment_files;
 pub mod deployment_git;
 pub mod deployment_health;
@@ -33,6 +35,8 @@ pub mod ports;
 pub mod progress;
 pub mod repository;
 pub mod repository_config;
+mod review;
+mod review_validation;
 pub mod routes;
 pub mod runtime_configuration;
 mod socket_endpoint;
@@ -46,6 +50,9 @@ pub mod test_lifecycle;
 pub mod test_logs;
 pub mod test_state;
 pub mod usage;
+
+#[cfg(test)]
+mod automation_test_support;
 
 pub use devcoordinator2_api::DATABASE_SCHEMA_VERSION;
 pub const SOURCE_COMMIT: &str = match option_env!("DEVCOORDINATOR2_SOURCE_COMMIT") {

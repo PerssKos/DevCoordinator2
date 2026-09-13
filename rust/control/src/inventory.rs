@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use devcoordinator2_api::results::{
     ContainerClassification, ContainerList, ContainerRow, RemovedContainer,
@@ -25,6 +25,9 @@ const CLASSES: &[(&str, ContainerClassification)] = &[
     ("orphaned-managed", ContainerClassification::OrphanedManaged),
     ("unmanaged", ContainerClassification::Unmanaged),
 ];
+
+const INVENTORY_LIMIT: usize = 2048;
+const INVENTORY_BATCH_SIZE: usize = 32;
 
 #[derive(Clone)]
 pub struct ContainerInventory {
@@ -233,6 +236,7 @@ impl ContainerInventory {
     }
 
     fn all_containers(&self) -> Result<Vec<DockerRow>, ProtocolError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
         let output = self
             .docker
             .invoke(
@@ -249,6 +253,9 @@ impl ContainerInventory {
                 .expect("static Docker inventory invocation is valid"),
             )
             .map_err(docker_error)?;
+        if output.success() && output.stdout_truncated && !output.stderr_truncated {
+            return self.batched_containers(deadline);
+        }
         if !output.success() || output.stdout_truncated || output.stderr_truncated {
             return Err(docker_error(DockerError::Command(
                 "Docker inventory failed or exceeded its capture bound".into(),
@@ -263,6 +270,85 @@ impl ContainerInventory {
                 )
             })?;
             rows.push(row);
+        }
+        Ok(rows)
+    }
+
+    fn batched_containers(&self, deadline: Instant) -> Result<Vec<DockerRow>, ProtocolError> {
+        let query = |arguments| {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|remaining| !remaining.is_zero())
+                .ok_or_else(|| {
+                    docker_error(DockerError::Command("inventory query timed out".into()))
+                })?;
+            let output = self
+                .docker
+                .invoke(DockerInvocation::new(arguments, remaining).map_err(docker_error)?)
+                .map_err(docker_error)?;
+            if Instant::now() >= deadline
+                || !output.success()
+                || output.stdout_truncated
+                || output.stderr_truncated
+            {
+                return Err(docker_error(DockerError::Command(
+                    "inventory query failed or exceeded its shared deadline or capture bound"
+                        .into(),
+                )));
+            }
+            Ok(output.stdout)
+        };
+        let index = query(vec![
+            "ps".into(),
+            "--all".into(),
+            "--no-trunc".into(),
+            "--format".into(),
+            "{{.ID}}".into(),
+        ])?;
+        let mut identities = Vec::new();
+        let mut indexed = HashSet::new();
+        for identity in index.lines().filter(|line| !line.trim().is_empty()) {
+            let identity = ExactContainerId::parse(identity.trim())
+                .map_err(docker_error)?
+                .to_string();
+            if identities.len() == INVENTORY_LIMIT || !indexed.insert(identity.clone()) {
+                return Err(docker_error(DockerError::InvalidOutput(
+                    "inventory ID index is duplicate or exceeds its bounded container limit".into(),
+                )));
+            }
+            identities.push(identity);
+        }
+        let mut rows = Vec::new();
+        let mut returned = HashSet::new();
+        for batch in identities.chunks(INVENTORY_BATCH_SIZE) {
+            let mut arguments = vec![
+                "ps".into(),
+                "--all".into(),
+                "--no-trunc".into(),
+                "--format".into(),
+                "{{json .}}".into(),
+            ];
+            for identity in batch {
+                arguments.push("--filter".into());
+                arguments.push(format!("id={identity}").into());
+            }
+            let output = query(arguments)?;
+            for line in output.lines().filter(|line| !line.trim().is_empty()) {
+                let row: DockerRow = serde_json::from_str(line).map_err(|_| {
+                    docker_error(DockerError::InvalidOutput(
+                        "inventory batch contains malformed JSON".into(),
+                    ))
+                })?;
+                let identity = ExactContainerId::parse(row.id.clone())
+                    .map_err(docker_error)?
+                    .to_string();
+                if !batch.contains(&identity) || !returned.insert(identity) {
+                    return Err(docker_error(DockerError::InvalidOutput(
+                        "inventory batch returned an unrequested or repeated container".into(),
+                    )));
+                }
+                rows.push(row);
+            }
         }
         Ok(rows)
     }
@@ -385,6 +471,10 @@ fn database_error(error: DatabaseError) -> ProtocolError {
         .with_detail(other.to_string()),
     }
 }
+
+#[cfg(test)]
+#[path = "inventory_batch_tests.rs"]
+mod batch_tests;
 
 #[cfg(test)]
 mod tests {

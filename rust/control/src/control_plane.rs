@@ -64,6 +64,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.register",
     "repository.list",
     "repository.status",
+    "repository.presentation.update",
     "repository.archive",
     "repository.unarchive",
     "deployment.list",
@@ -83,6 +84,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.stop",
     "test.list",
     "test.evidence.get",
+    "test.evidence.lookup",
     "test.evidence.image",
     "test.evidence.feedback.create",
     "test.evidence.feedback.reply",
@@ -126,12 +128,20 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "glossary.check",
     "glossary.impact",
     "task.history",
+    "task.search",
     "task.create",
     "task.update",
     "release.create",
     "release.update",
     "release.request",
     "release.deliver",
+    "release.deliver_evidence",
+    "release.evidence_show",
+    "release.evidence",
+    "review.prepare",
+    "review.record",
+    "review.show",
+    "review.receipt",
     "decision.tail",
     "decision.search",
     "decision.record",
@@ -148,6 +158,8 @@ pub struct ControlPlane {
     access: Access,
     registry: Registry,
     plan: PlanService,
+    reviews: crate::review::ReviewService,
+    deliveries: crate::delivery::DeliveryService,
     glossary: GlossaryService,
     logs: TestLogService,
     tests: TestLifecycle,
@@ -216,6 +228,12 @@ impl ControlPlane {
             registry.clone(),
             usage.usage().clone(),
             Arc::clone(&clock),
+        );
+        let reviews = crate::review::ReviewService::new(database.clone(), usage.clone());
+        let deliveries = crate::delivery::DeliveryService::new(
+            database.clone(),
+            artifacts.clone(),
+            config.base_domain.clone(),
         );
         let tests = TestLifecycle::new(
             config.clone(),
@@ -286,6 +304,8 @@ impl ControlPlane {
             access,
             registry,
             plan,
+            reviews,
+            deliveries,
             glossary,
             logs,
             tests,
@@ -525,6 +545,22 @@ impl ControlPlane {
                 result.current_test = self.tests.current_summary_ref(&params.path, caller);
                 encode(result)
             }
+            "repository.presentation.update" => {
+                let params: params::RepositoryPresentationUpdate = decode(params)?;
+                self.repository_by_id(&params.repository_id, false)?;
+                let result = self.registry.update_presentation(params, caller.uid)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "repository.presentation.updated".to_owned(),
+                        repository_id: Some(result.repository_id.clone()),
+                        deployment_id: None,
+                        subject_kind: "repository".to_owned(),
+                        subject_id: result.repository_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
             "repository.archive" => {
                 let params: params::ArchiveRepository = decode(params)?;
                 let result = self.registry.archive(
@@ -667,22 +703,23 @@ impl ControlPlane {
             }
             "test.history" => encode(self.tests.history(decode(params)?, caller)?),
             "test.list" => {
-                let _: params::Empty = decode(params)?;
-                let mut result = self.tests.list_current()?;
+                let params: params::TestList = decode(params)?;
+                let mut result = self.tests.list_current_page(params)?;
                 self.test_evidence.enrich_list(&mut result);
                 encode(result)
             }
             "test.evidence.get" => encode(self.test_evidence.get(decode(params)?, caller)?),
+            "test.evidence.lookup" => encode(self.test_evidence.lookup(decode(params)?, caller)?),
             "test.evidence.image" => encode(self.test_evidence.image(decode(params)?, caller)?),
             "test.evidence.feedback.create" => {
                 let params: params::CreateFeedback = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.create_feedback(params, caller)?;
                 self.publish_feedback(
                     "feedback.created",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     result
                         .feedback
@@ -692,7 +729,7 @@ impl ControlPlane {
                 );
                 self.publish_planning(
                     "task.created",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.task_id,
                     enum_text(&result.feedback.task_status),
@@ -701,13 +738,13 @@ impl ControlPlane {
             }
             "test.evidence.feedback.reply" => {
                 let params: params::FeedbackReply = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.reply(params, caller)?;
                 self.publish_feedback(
                     "feedback.replied",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     result
                         .feedback
@@ -720,19 +757,19 @@ impl ControlPlane {
             "test.evidence.feedback.edit" => {
                 let params: params::FeedbackEdit = decode(params)?;
                 let comment_id = params.comment_id.clone();
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.edit(params, caller)?;
                 self.publish_feedback(
                     "feedback.edited",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     Some(comment_id),
                 );
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),
@@ -741,19 +778,19 @@ impl ControlPlane {
             }
             "test.evidence.feedback.state" => {
                 let params: params::FeedbackStateChange = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.set_state(params, caller)?;
                 self.publish_feedback(
                     "feedback.state_changed",
-                    &repository.repository_id,
+                    &repository_id,
                     &result.feedback,
                     None,
                 );
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),
@@ -762,19 +799,14 @@ impl ControlPlane {
             }
             "test.evidence.feedback.delete" => {
                 let params: params::FeedbackDelete = decode(params)?;
-                let repository = self
-                    .registry
-                    .repository_status(Path::new(&params.path), Some((caller.uid, caller.gid)))?;
+                let repository_id = self
+                    .test_evidence
+                    .repository_id_for(Path::new(&params.path), caller)?;
                 let result = self.test_evidence.delete(params, caller)?;
-                self.publish_feedback(
-                    "feedback.deleted",
-                    &repository.repository_id,
-                    &result.feedback,
-                    None,
-                );
+                self.publish_feedback("feedback.deleted", &repository_id, &result.feedback, None);
                 self.publish_planning(
                     "task.updated",
-                    &repository.repository_id,
+                    &repository_id,
                     "task",
                     &result.feedback.task_id,
                     enum_text(&result.feedback.task_status),
@@ -931,6 +963,16 @@ impl ControlPlane {
                 )?;
                 encode(self.plan.overview(Some(&repository.repository_id))?)
             }
+            "task.search" => {
+                let params: params::TaskSearch = decode(params)?;
+                let repository = self.resolve_repository(
+                    params.path.as_deref(),
+                    params.repository_id.as_deref(),
+                    caller,
+                    true,
+                )?;
+                encode(self.plan.search_tasks(&repository.repository_id, params)?)
+            }
             "task.history" => {
                 let params: params::TaskHistory = decode(params)?;
                 encode(self.plan.task_history(&params.task_id)?)
@@ -1060,6 +1102,40 @@ impl ControlPlane {
                 )?;
                 encode(self.plan.decision_tail(&repository.repository_id, params)?)
             }
+            "review.prepare" => encode(
+                self.reviews.prepare(
+                    decode(params)?,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "review.record" => encode(
+                self.reviews.record(
+                    decode(params)?,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "review.show" => encode(self.reviews.show(decode(params)?)?),
+            "review.receipt" => encode(self.reviews.receipt(decode(params)?)?),
+            "release.evidence" => encode(self.deliveries.receipt(decode(params)?)?),
+            "release.deliver_evidence" => encode(
+                self.deliveries.deliver(
+                    decode(params)?,
+                    caller,
+                    &actor,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "release.evidence_show" => encode(self.deliveries.show(decode(params)?)?),
             "decision.search" => {
                 let params: params::DecisionSearch = decode(params)?;
                 let repository = self.resolve_repository(
@@ -1616,6 +1692,7 @@ mod tests {
             gid: 1000,
             client_kind: devcoordinator2_api::ClientKind::Codex,
             client_session: Some("fixture".into()),
+            work: None,
             identity: None,
         }
     }
@@ -1627,6 +1704,7 @@ mod tests {
             gid: 999,
             client_kind: devcoordinator2_api::ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some(identity.into()),
         }
     }

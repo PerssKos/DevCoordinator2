@@ -224,7 +224,7 @@ window.DevCoordinatorArtifacts = (() => {
       activeRun = record.run;
       choices = [];
       renderCollections();
-      if (activeRun.run_id === run.run_id) {
+      if (activeRun.run_id === run.run_id && !run.checks_truncated) {
         choices = bundles(run);
         renderCollections();
         return;
@@ -324,7 +324,8 @@ window.DevCoordinatorArtifacts = (() => {
       const index = choices.findIndex((choice) => choice.check === initialFile.check && choice.name === initialFile.artifact);
       if (index >= 0) query('.artifact-bundle select').value = String(index);
     }
-    loadCollection();
+    if (run.checks_truncated) selectRun();
+    else loadCollection();
     loadHistory();
   }
 
@@ -341,21 +342,23 @@ window.DevCoordinatorArtifacts = (() => {
         for (const entry of catalog.entries) {
           const mime = imageTypes[entry.path.split('.').pop().toLowerCase()];
           if (!mime || entry.size > FILE_BYTES) continue;
-          const parts = [];
-          let position = 0;
-          do {
+          const load = async () => {
+            const parts = [];
+            let position = 0;
+            do {
+              if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+              const chunk = await api('test.artifact.file', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, manifest_sha256: manifest, file: entry.path, offset: position, max_bytes: CHUNK_BYTES });
+              const block = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0));
+              const end = position + block.length;
+              if (chunk.run_id !== run.run_id || chunk.check !== collection.check || chunk.artifact !== collection.name || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size || chunk.offset !== position || chunk.bytes !== block.length || !block.length || end > entry.size || chunk.next_offset !== (end < entry.size ? end : null)) throw new Error('The retained image changed.');
+              parts.push(block); position = end;
+            } while (position < entry.size);
             if (signal.aborted) throw new Error('Screenshot loading cancelled.');
-            const chunk = await api('test.artifact.file', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, manifest_sha256: manifest, file: entry.path, offset: position, max_bytes: CHUNK_BYTES });
-            const block = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0));
-            const end = position + block.length;
-            if (chunk.run_id !== run.run_id || chunk.check !== collection.check || chunk.artifact !== collection.name || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size || chunk.offset !== position || chunk.bytes !== block.length || !block.length || end > entry.size || chunk.next_offset !== (end < entry.size ? end : null)) throw new Error('The retained image changed.');
-            parts.push(block); position = end;
-          } while (position < entry.size);
-          if (signal.aborted) throw new Error('Screenshot loading cancelled.');
-          const url = URL.createObjectURL(new Blob(parts, { type: mime }));
-          urls.add(url);
-          images.push({ native: true, url, label: window.DevCoordinatorArtifactContent.describe(entry.path).title, path: entry.path, check: collection.check, artifact: collection.name });
-          if (images.length === 4) return { run, images, count: images.length };
+            const url = URL.createObjectURL(new Blob(parts, { type: mime }));
+            urls.add(url);
+            return url;
+          };
+          images.push({ native: true, load, label: window.DevCoordinatorArtifactContent.describe(entry.path).title, path: entry.path, check: collection.check, artifact: collection.name });
         }
         if (catalog.next_offset != null && catalog.next_offset <= offset) throw new Error('The retained file catalogue was incomplete.');
         offset = catalog.next_offset;

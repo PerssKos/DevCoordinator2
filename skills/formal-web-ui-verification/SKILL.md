@@ -34,6 +34,16 @@ Native modal dialogs exclude their browser-inert background from active-content
 defects. Fixed descendants count as reachable only when an actual inner scroll
 range on the cut axis can expose them within the viewport. Locked scroll regions,
 unscrollable fixed controls and occlusion inside the active dialog still fail.
+Deliberately temporary,
+positioned dialog/menu/listbox/tooltip/popover surfaces may declare
+`data-ui-contextual-overlay="reason"` so their coverage of outside content is
+recorded as `allowed-contextual-overlay`. This does not exempt their own
+contents from occlusion, clipping, contrast or geometry checks. An empty reason,
+unpositioned element or unrelated undeclared cover receives no exception.
+If a real gutter-scroll probe reaches that contextual surface, record the
+declared cover rather than claiming the token is still hidden by the gutter.
+Undeclared covers reached after scrolling remain failures; probes restore their
+original scroll offsets.
 Native input placeholders and every selectable native option label are measured
 against the control's rendered inner content width, including the native select
 affordance, without retaining the measured text or any entered value. Visible
@@ -370,12 +380,20 @@ Critical findings by default:
   warning because closed accordions/tabs/slides are often intentional.
 - Unrelated overlap/occlusion of meaningful text or controls: fully covered
   (`occluded`) or covered on ≥60% of sampled points (`partially-occluded`).
-  Every candidate starts from the verification state's original document
-  position so a probe's scroll cannot move a later measurement.
+  Every candidate starts from the verification state's original document and
+  inner-scroll positions, including open shadow roots. Probes restore those
+  exact coordinates after each candidate and on failure, without smooth-scroll
+  animation, so they cannot move a later measurement or the final page.
   Elements already in the viewport are checked at their natural on-screen
   position; only off-screen elements are scrolled into view first and their
   findings are tagged `measuredAfterScroll`. A near-transparent occluder is
   downgraded to a warning.
+  Text behind a horizontally edge-pinned sticky sibling is reachable only when
+  scrolling their shared container actually exposes the same sampled text
+  points. This is not a selector allowance: oversized gutters, exhausted scroll
+  ranges, non-scrollable clipping and unrelated overlays remain checked.
+  Focused rendered regression proof lives in
+  `rust/tooling/tests/formal_occlusion.mjs` and runs in the Rust state self-test.
 - An active focused custom modal (`role=dialog|alertdialog`, `aria-modal=true`)
   excludes only outside subtrees that are both `inert` and `aria-hidden=true`.
   Modal contents remain fully checked; an unfocused or mislabeled modal and
@@ -390,6 +408,10 @@ Critical findings by default:
   origin (`offcanvas-cut`), fixed-position content cut by the viewport
   (`fixed-offscreen-cut`), or interactive controls beyond the horizontal
   document scroll range (`interactive-offscreen-x`).
+  Negative coordinates caused by an existing inner scroll position are not
+  unreachable when the visible scroll container can expose that content.
+  This applies to fixed and non-fixed layouts; content outside the actual
+  scroll range still fails, and measurements preserve the original offsets.
 - Controls or text outside a configured area of interest (`outside-area`).
 - Broken images/videos (`broken-image`/`broken-video`), including broken
   images that collapsed to ~0x0 because their source failed.

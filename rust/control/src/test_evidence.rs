@@ -122,6 +122,93 @@ impl TestEvidenceService {
         })
     }
 
+    pub fn lookup(
+        &self,
+        params: devcoordinator2_api::params::EvidenceLookup,
+        caller: &Caller,
+    ) -> Result<devcoordinator2_api::results::EvidenceLookup, ProtocolError> {
+        validate_run_id(&params.run_id)?;
+        if let Some(image_id) = &params.image_id {
+            validate_digest(image_id, "image_id")?;
+        }
+        let worktrees = self.database.call(|connection| {
+            let mut statement = connection.prepare("SELECT w.worktree_id,w.worktree_path,w.repository_id,r.display_name FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id ORDER BY w.worktree_id")?;
+            Ok(statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?.collect::<Result<Vec<_>, _>>()?)
+        }).map_err(database_error)?;
+        let mut found = None;
+        for (worktree_id, worktree_path, repository_id, display_name) in worktrees {
+            if params
+                .worktree_id
+                .as_ref()
+                .is_some_and(|requested| requested != &worktree_id)
+            {
+                continue;
+            }
+            let worktree = Path::new(&worktree_path);
+            let Ok(loaded) = self.load(worktree, &params.run_id) else {
+                continue;
+            };
+            if loaded.images.is_empty()
+                || params
+                    .image_id
+                    .as_ref()
+                    .is_some_and(|image_id| !loaded.images.contains_key(image_id))
+            {
+                continue;
+            }
+            if found.is_some() {
+                return Err(invalid_argument(
+                    "More than one registered worktree contains this screenshot. Open the run from its repository in Tests.",
+                ));
+            }
+            let history = crate::test_state::TestRunStore
+                .read_history(worktree)
+                .unwrap_or_default();
+            let previous = history
+                .into_iter()
+                .find(|entry| entry.run_id == params.run_id);
+            let current = crate::test_state::TestRunStore
+                .read_current_summary(worktree)
+                .ok()
+                .flatten()
+                .filter(|entry| entry.run_id == params.run_id);
+            let context = devcoordinator2_api::results::EvidenceRunContext {
+                repository_id: repository_id.clone(),
+                worktree_id: worktree_id.clone(),
+                worktree_path,
+                display_name,
+                run_id: params.run_id.clone(),
+                test: previous
+                    .as_ref()
+                    .map(|entry| entry.test.clone())
+                    .or_else(|| current.as_ref().map(|entry| entry.test.clone())),
+                started_at: previous
+                    .as_ref()
+                    .map(|entry| entry.started_at.clone())
+                    .or_else(|| current.as_ref().map(|entry| entry.started_at.clone())),
+            };
+            let feedback = self.feedback_for_run(
+                &repository_id,
+                &worktree_id,
+                &params.run_id,
+                &caller.actor(),
+            )?;
+            let evidence = EvidenceGet {
+                repository_id,
+                worktree_id,
+                run_id: params.run_id.clone(),
+                status: availability(&loaded.bundles),
+                image_count: bounded_u32(loaded.images.len()),
+                issues_truncated: loaded.issues.len() >= 64,
+                bundles: loaded.bundles,
+                feedback,
+                issues: loaded.issues,
+            };
+            found = Some(devcoordinator2_api::results::EvidenceLookup { context, evidence });
+        }
+        found.ok_or_else(expired)
+    }
+
     /// Attach bounded evidence availability to lifecycle-owned current runs
     /// without repeating caller Git discovery for every row.
     pub fn enrich_list(&self, list: &mut TestList) {
@@ -258,6 +345,14 @@ impl TestEvidenceService {
             images,
             issues,
         })
+    }
+
+    pub(crate) fn repository_id_for(
+        &self,
+        path: &Path,
+        caller: &Caller,
+    ) -> Result<String, ProtocolError> {
+        Ok(self.resolve(path, caller)?.repository_id)
     }
 
     fn resolve(&self, path: &Path, caller: &Caller) -> Result<ResolvedWorktree, ProtocolError> {
@@ -2264,7 +2359,7 @@ fn validate_marks(marks: Vec<Mark>) -> Result<Vec<Mark>, ProtocolError> {
                 color: checked_color(color, index)?,
                 x: coordinate(x, "x")?,
                 y: coordinate(y, "y")?,
-                text: comment_text(&text, "text", 120)?,
+                text: bounded_text(&text, "text", 1, 120)?,
             },
             Mark::Rectangle {
                 id,
@@ -2417,11 +2512,20 @@ fn validate_mark_id(value: &str, label: &str) -> Result<(), ProtocolError> {
 }
 
 fn comment_text(value: &str, label: &str, maximum: usize) -> Result<String, ProtocolError> {
+    bounded_text(value, label, 3, maximum)
+}
+
+fn bounded_text(
+    value: &str,
+    label: &str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<String, ProtocolError> {
     let value = value.trim();
     let length = value.chars().count();
-    if length < 3 || length > maximum {
+    if length < minimum || length > maximum {
         return Err(invalid_argument(format!(
-            "'{label}' must be plain text of 3..{maximum} characters"
+            "'{label}' must be plain text of {minimum}..{maximum} characters"
         )));
     }
     Ok(value.to_owned())
@@ -2512,6 +2616,7 @@ fn id_error(error: ids::IdError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::OperationExecutor;
     use devcoordinator2_api::{
         ClientKind,
         params::Point,
@@ -2546,6 +2651,7 @@ mod tests {
             gid: rustix::process::getgid().as_raw(),
             client_kind: ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some(identity.to_owned()),
         }
     }
@@ -2692,6 +2798,246 @@ mod tests {
             Screenshot::Available(image) => image.image_id.clone(),
             Screenshot::Unavailable(_) => panic!("fixture screenshot is unavailable"),
         }
+    }
+
+    #[test]
+    fn public_dispatcher_preserves_feedback_lifecycle_without_edge_git_access() {
+        let world = world();
+        fs::rename(
+            world.repo.join(".git"),
+            world.repo.join(".git-unavailable-fixture"),
+        )
+        .unwrap();
+        let edge_uid = rustix::process::getuid().as_raw() + 1;
+        let mut owner = caller("owner@example.test");
+        owner.uid = edge_uid;
+        owner.gid = edge_uid;
+        assert!(
+            world
+                .service
+                .registry
+                .repository_status(&world.repo, Some((edge_uid, edge_uid)))
+                .is_err()
+        );
+        world.database.transaction(|connection| {
+            connection.execute("INSERT INTO users(user_id,email,administrator,created_at,created_by) VALUES('u1111111111111111','owner@example.test',1,'now','fixture')", [])?;
+            Ok(())
+        }).unwrap();
+        let root = world._temporary.path();
+        let plane = crate::control_plane::ControlPlane::with_adapters(
+            crate::config::Config {
+                socket_path: root.join("daemon.sock"),
+                state_dir: root.join("state"),
+                unit_prefix: "devcoordinator2-evidence-fixture".into(),
+                slice_name: "unused-fixture.slice".into(),
+                client_group: "unused-fixture".into(),
+                port_range: (40000, 40100),
+                base_domain: "example.test".into(),
+                edge_uid: Some(edge_uid),
+                admin_emails: Vec::new(),
+                telegram_token_file: None,
+                telegram_api: "https://api.telegram.org".into(),
+                bugs_dir: root.join("bugs"),
+                compose_env_allowlist_file: None,
+                compose_env_authorizations: HashSet::new(),
+                codex_usage_sources_file: None,
+                codex_usage_sources: Vec::new(),
+            },
+            world.database.clone(),
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-08 17:00 UTC))),
+        )
+        .unwrap();
+        let reference = json!({"path":world.repo,"run_id":RUN_ID});
+        let readable = plane
+            .execute("test.evidence.get", reference.clone(), &owner)
+            .unwrap();
+        assert_eq!(readable["image_count"], 1);
+        let lookup = plane
+            .execute(
+                "test.evidence.lookup",
+                json!({"run_id":RUN_ID,"image_id":image_id(&evidence(&world))}),
+                &owner,
+            )
+            .unwrap();
+        assert_eq!(lookup["context"]["worktree_id"], world.worktree_id);
+        assert_eq!(lookup["context"]["repository_id"], world.repository_id);
+        assert_eq!(lookup["evidence"]["image_count"], 1);
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":"../invalid"}),
+                    &owner
+                )
+                .is_err()
+        );
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":RUN_ID,"image_id":"f".repeat(64)}),
+                    &owner
+                )
+                .is_err()
+        );
+        assert!(
+            plane
+                .execute(
+                    "test.evidence.lookup",
+                    json!({"run_id":"unretained-run"}),
+                    &owner
+                )
+                .is_err()
+        );
+        let mut create = reference.clone();
+        create["image_id"] = json!(image_id(&evidence(&world)));
+        create["body"] = json!("Align the visible port and line");
+        create["marks"] = json!([
+            {"id":"pin-1","type":"pin","color":"#f59e0b","x":0.81,"y":0.24},
+            {"id":"rectangle-1","type":"rectangle","color":"#f59e0b","x":0.76,"y":0.18,"width":0.20,"height":0.24}
+        ]);
+        let mut unregistered = create.clone();
+        unregistered["path"] = json!(world.repo.join("unregistered"));
+        assert_eq!(
+            plane
+                .execute("test.evidence.feedback.create", unregistered, &owner)
+                .unwrap_err()
+                .code,
+            ErrorCode::RepositoryNotFound
+        );
+        let mut outsider = owner.clone();
+        outsider.identity = Some("uninvited@example.test".into());
+        assert!(
+            plane
+                .execute("test.evidence.lookup", json!({"run_id":RUN_ID}), &outsider)
+                .is_err()
+        );
+        assert!(
+            plane
+                .execute("test.evidence.feedback.create", create.clone(), &outsider)
+                .is_err()
+        );
+        let created = plane
+            .execute("test.evidence.feedback.create", create, &owner)
+            .unwrap();
+        let task_id = created["task_id"].as_str().unwrap();
+        let overview = plane
+            .execute(
+                "plan.overview",
+                json!({"repository_id":world.repository_id}),
+                &owner,
+            )
+            .unwrap();
+        assert!(
+            overview["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["task_id"] == task_id)
+        );
+        let readback = plane
+            .execute("test.evidence.get", reference.clone(), &owner)
+            .unwrap();
+        assert_eq!(readback["feedback"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            readback["feedback"][0]["marks"].as_array().unwrap().len(),
+            2
+        );
+        let mut target = reference;
+        target["feedback_id"] = created["feedback_id"].clone();
+        let mut reply = target.clone();
+        reply["body"] = json!("Retain this exact screenshot context");
+        let replied = plane
+            .execute("test.evidence.feedback.reply", reply, &owner)
+            .unwrap();
+        assert_eq!(replied["feedback"]["comments"].as_array().unwrap().len(), 2);
+        let mut edit = target.clone();
+        edit["comment_id"] = created["feedback"]["comments"][0]["comment_id"].clone();
+        edit["body"] = json!("Align the port with the visible line");
+        assert!(
+            plane
+                .execute("test.evidence.feedback.edit", edit, &owner)
+                .is_ok()
+        );
+        for state in ["resolved", "open"] {
+            let mut change = target.clone();
+            change["state"] = json!(state);
+            assert_eq!(
+                plane
+                    .execute("test.evidence.feedback.state", change, &owner)
+                    .unwrap()["feedback"]["state"],
+                state
+            );
+        }
+        let deleted = plane
+            .execute("test.evidence.feedback.delete", target, &owner)
+            .unwrap();
+        assert_eq!(deleted["feedback"]["state"], "deleted");
+        world
+            .database
+            .call(move |connection| {
+                let count: u32 = connection.query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE repository_id=?1 AND kind='user_feedback'",
+                    [&world.repository_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn retained_lookup_does_not_guess_between_copied_worktrees() {
+        let world = world();
+        let copied = world._temporary.path().join("copied-worktree");
+        let evidence_path = copied
+            .join(".devcoordinator/test/logs/runs")
+            .join(RUN_ID)
+            .join("checks/formal-ui/check/evidence");
+        fs::create_dir_all(evidence_path.join("screenshots")).unwrap();
+        fs::copy(
+            &world.screenshot,
+            evidence_path.join("screenshots/cell-1-desktop-viewport.png"),
+        )
+        .unwrap();
+        write_manifest(&evidence_path, &world.manifest);
+        let repository_id = world.repository_id.clone();
+        world
+            .database
+            .transaction(move |connection| {
+                connection.execute(
+                    "INSERT INTO worktrees VALUES('w2222222222222222',?1,?2,'now','now')",
+                    rusqlite::params![repository_id, copied.display().to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let error = world
+            .service
+            .lookup(
+                devcoordinator2_api::params::EvidenceLookup {
+                    run_id: RUN_ID.into(),
+                    image_id: Some(image_id(&evidence(&world))),
+                    worktree_id: None,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("More than one registered worktree"));
+        let exact = world
+            .service
+            .lookup(
+                devcoordinator2_api::params::EvidenceLookup {
+                    run_id: RUN_ID.into(),
+                    image_id: Some(image_id(&evidence(&world))),
+                    worktree_id: Some(world.worktree_id.clone()),
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(exact.context.worktree_id, world.worktree_id);
     }
 
     #[test]
@@ -3078,7 +3424,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
                             color: "#f8fafc".to_owned(),
                             x: 0.3,
                             y: 0.3,
-                            text: "Needs more room".to_owned(),
+                            text: "X".to_owned(),
                         },
                     ],
                 },
@@ -3268,6 +3614,7 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
         );
         assert_eq!(summary.status, TestStatus::Running);
         let mut list = TestList {
+            next_worktree_id: None,
             runs: vec![TestListRow {
                 worktree_id: world.worktree_id,
                 worktree_path: world.repo.display().to_string(),

@@ -1714,6 +1714,17 @@ fn case_root_caller_rejected(world: &mut World) -> Result<(), String> {
 }
 
 fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Result<(), String> {
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:16-alpine")
+}
+
+fn case_postgres_18_data_directory_query_and_cleanup(world: &mut World) -> Result<(), String> {
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:18-alpine")
+}
+
+fn postgres_real_query_labels_secrecy_and_cleanup(
+    world: &mut World,
+    image: &str,
+) -> Result<(), String> {
     let command = vec![
         "/usr/bin/psql".to_owned(),
         "-v".to_owned(),
@@ -1724,7 +1735,7 @@ fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Res
     world.write_config(&unit_config_postgres(
         &command,
         120,
-        "postgres:16-alpine",
+        image,
         Some("app_test"),
         Some("app"),
     )?)?;
@@ -2674,6 +2685,33 @@ fn case_failed_component_is_degraded_and_busy_is_immediate(
         .ok_or_else(|| "failed deployment id is missing".to_owned())?;
     let volume = format!("devcoordinator2-{deployment_id}-db-pgdata");
     world.track_volume(&volume);
+    // A process that failed before its binding was retained can leave the
+    // candidate name occupied. Reapply must recover that exact empty unit.
+    let stale_unit = format!(
+        "{}-deploy-{deployment_id}-api-g1.service",
+        world.unit_prefix.replace("-test", "")
+    );
+    ensure!(
+        systemctl_property(&stale_unit, "LoadState")?.contains("LoadState=not-found"),
+        "failed candidate fixture name is unexpectedly occupied"
+    );
+    let seeded = Command::new("systemd-run")
+        .args([
+            "--quiet",
+            "--wait",
+            "--unit",
+            &stale_unit,
+            "--uid",
+            &world.harness.caller_uid.to_string(),
+            "/usr/bin/false",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    ensure!(
+        !seeded.status.success()
+            && systemctl_property(&stale_unit, "ActiveState")?.contains("ActiveState=failed"),
+        "fixture did not leave the failed transient name reserved"
+    );
     world.write_config(&web_deployment_config(world, "v1", None)?)?;
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
     let mut threads = Vec::new();
@@ -2774,10 +2812,249 @@ fn case_readiness_allows_process_to_recover_within_restart_policy(
     Ok(())
 }
 
+fn setup_finite_only(world: &World, script: &str) -> Result<(), String> {
+    world.write_config("schema=2\n[deployment.finite]\nsource='worktree'\ncomponents=['probe']\n[deployment.finite.component.probe]\ntype='compose'\nfiles=['finite-compose.yml']\nservices=['probe']\nfinite_services=['probe']\ntimeout_seconds=3300\n")?;
+    let content = format!(
+        "services:\n  probe:\n    image: postgres:16-alpine\n    network_mode: none\n    user: '1000:1000'\n    entrypoint: ['/bin/sh','-c']\n    command: {}\n    restart: 'no'\n",
+        json!([script])
+    );
+    world.write_owned(
+        "finite-compose.yml",
+        compose_fixture(&content, world.harness.compose_subnet),
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "finite fixture"])?;
+    Ok(())
+}
+
+fn case_failed_finite_sibling_finishes_and_evidence_service_can_restart(
+    world: &mut World,
+) -> Result<(), String> {
+    world.write_config("schema=2\n[deployment.siblings]\nsource='worktree'\ncomponents=['stack']\n[deployment.siblings.component.stack]\ntype='compose'\nfiles=['siblings.yml']\nservices=['failed','refined','artifacts']\nfinite_services=['failed','refined']\nindependent_services=['artifacts']\ntimeout_seconds=30\n")?;
+    world.write_owned(
+        "siblings.yml",
+        compose_fixture(
+            r#"services:
+  failed:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 1; exit 7']
+    restart: 'no'
+  refined:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['sleep 3; echo refined-complete > /evidence/result; echo refined-complete']
+    restart: 'no'
+    volumes: ['evidence:/evidence']
+  artifacts:
+    image: postgres:16-alpine
+    entrypoint: ['/bin/sh', '-c']
+    command: ['while :; do cat /evidence/result 2>/dev/null; sleep 1; done']
+    restart: 'no'
+    volumes: ['evidence:/evidence']
+volumes:
+  evidence:
+"#,
+            world.harness.compose_subnet,
+        ),
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "independent finite sibling fixture"])?;
+    let applied = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"siblings"}),
+    )?;
+    ensure!(
+        error_code(&applied) == Some("deployment_apply_failed"),
+        "ordinary failure became success"
+    );
+    let status = world.call(
+        "deployment.status",
+        json!({"path":world.repo,"name":"siblings"}),
+    )?;
+    let status = data(&status)?;
+    let project = component(status, "stack")?["binding"]["identity"]
+        .as_str()
+        .ok_or("Compose identity missing")?
+        .to_owned();
+    let volume = format!("{project}_evidence");
+    world.track_volume(&volume);
+    let refined = compose_service_id(&project, "refined")?;
+    let finished = docker_inspect_json(&refined, "{{json .State}}")?;
+    ensure!(
+        finished["Status"] == "exited" && finished["ExitCode"] == 0,
+        "safe sibling was interrupted before producing its result"
+    );
+    let restarted = world.call(
+        "deployment.start",
+        json!({"path":world.repo,"name":"siblings","component":"stack/artifacts"}),
+    )?;
+    data(&restarted)?;
+    let evidence = compose_service_id(&project, "artifacts")?;
+    ensure!(
+        docker_inspect_json(&evidence, "{{json .State}}")?["Running"] == true,
+        "selected evidence service did not start"
+    );
+    ensure!(
+        compose_service_id(&project, "refined")? == refined
+            && docker_inspect_json(&refined, "{{json .State}}")?["StartedAt"]
+                == finished["StartedAt"],
+        "retrieving evidence reran the calculation"
+    );
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"siblings","component":"stack","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("refined-complete")),
+        "completed sibling evidence is unavailable"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"path":world.repo,"name":"siblings","delete_data":true}),
+    )?)?;
+    world.forget_volume(&volume);
+    Ok(())
+}
+
+fn case_finite_only_container_completion_failure_cancellation_and_cleanup(
+    world: &mut World,
+) -> Result<(), String> {
+    setup_finite_only(world, "test $$(id -u) -ne 0 && printf 'finite-success\\n'")?;
+    let first = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    let first = data(&first)?.clone();
+    ensure!(
+        first["state"] == "completed",
+        "finite workload did not complete truthfully"
+    );
+    let project = component(&first, "probe")?["binding"]["identity"]
+        .as_str()
+        .ok_or("missing project")?
+        .to_owned();
+    let first_container = compose_service_id(&project, "probe")?;
+    ensure!(
+        component(&first, "probe")?.pointer("/completed_services/0/exit_code") == Some(&json!(0)),
+        "finite exit receipt missing"
+    );
+    let again = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    ensure!(
+        data(&again)?["unchanged"] == true,
+        "unchanged finite apply reran"
+    );
+    ensure!(
+        compose_service_id(&project, "probe")? == first_container,
+        "unchanged finite container replaced"
+    );
+
+    setup_finite_only(world, "printf 'finite-failure\\n'; exit 7")?;
+    let failure = world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+    )?;
+    ensure!(failure["ok"] == false, "nonzero finite exit accepted");
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"finite","component":"probe","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("finite-failure")),
+        "finite failure logs missing"
+    );
+
+    setup_finite_only(world, "printf 'finite-recovered\\n'")?;
+    ensure!(
+        data(&world.call(
+            "deployment.apply",
+            json!({"path":world.repo,"name":"finite"})
+        )?)?["state"]
+            == "completed",
+        "finite recovery failed"
+    );
+    setup_finite_only(world, "printf 'finite-waiting\\n'; sleep 60")?;
+    let harness = world.harness.clone();
+    let socket = world.socket.clone();
+    let apply_request = request(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"finite"}),
+        "other",
+        None,
+    );
+    let applying = thread::spawn(move || {
+        call_as(
+            &harness.executable,
+            harness.caller_uid,
+            harness.caller_gid,
+            &socket,
+            apply_request,
+        )
+    });
+    let waiting = wait_for_value("finite running", Duration::from_secs(15), || {
+        let status = world.call(
+            "deployment.status",
+            json!({"path":world.repo,"name":"finite"}),
+        )?;
+        let state = data(&status)?;
+        Ok(component(state, "probe")?["services"]
+            .as_array()
+            .is_some_and(|services| {
+                services
+                    .iter()
+                    .any(|service| service["state"] == "starting")
+            })
+            .then(|| state.clone()))
+    });
+    let stopped = world.call(
+        "deployment.stop",
+        json!({"path":world.repo,"name":"finite"}),
+    );
+    let apply_result = applying
+        .join()
+        .map_err(|_| "finite apply worker panicked")??;
+    waiting?;
+    ensure!(
+        data(&stopped?)?["state"] == "cancelled",
+        "finite stop did not settle cancellation"
+    );
+    ensure!(
+        apply_result["ok"] == false,
+        "cancelled apply claimed success"
+    );
+    let logs = world.call(
+        "deployment.logs",
+        json!({"path":world.repo,"name":"finite","component":"probe","tail_lines":20}),
+    )?;
+    ensure!(
+        data(&logs)?["tail"]
+            .as_str()
+            .is_some_and(|text| text.contains("finite-waiting")),
+        "cancelled finite output missing"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"path":world.repo,"name":"finite","delete_data":true}),
+    )?)?;
+    let ids = docker_ids("com.docker.compose.project", &project)?;
+    ensure!(ids.is_empty(), "owned finite containers survived removal");
+    Ok(())
+}
+
 fn case_native_compose_finite_service_receipt_and_start_semantics(
     world: &mut World,
 ) -> Result<(), String> {
     setup_compose(world, COMPOSE_ROUTE_YAML, "compose fixture")?;
+    world.write_config(&COMPOSE_TOML.replace("timeout_seconds = 90", "timeout_seconds = 3300"))?;
+    world.git(&["add", ".devcoordinator.toml"])?;
+    world.git(&["commit", "-qm", "long finite setup deadline"])?;
     let first = world.call(
         "deployment.apply",
         json!({"path": world.repo, "name": "stack@worktree"}),
@@ -3642,30 +3919,38 @@ health = {{ tcp = true, timeout_seconds = 30 }}
                 .is_some(),
         "host storage reconciliation drifted"
     );
-    let postgres_detail =
-        data(&world.call("health.repository", json!({"path": world.repo}))?)?.clone();
-    let postgres = postgres_detail["components"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter()
-                .find(|row| row["id"] == format!("{deployment_id}/db"))
-        })
-        .ok_or_else(|| "PostgreSQL component health row is missing".to_owned())?;
-    ensure!(
-        postgres
-            .pointer("/storage/pg_connections")
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value >= 1)
-            && postgres
-                .pointer("/storage/pg_wal_bytes")
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > 0)
-            && postgres
-                .pointer("/storage/pg_database_bytes")
-                .and_then(Value::as_u64)
-                .is_some_and(|value| value > 0),
-        "PostgreSQL operational storage facts were unavailable"
-    );
+    let mut last_postgres_storage = Value::Null;
+    wait_for_value(
+        "PostgreSQL operational storage facts",
+        Duration::from_secs(90),
+        || {
+            let detail =
+                data(&world.call("health.repository", json!({"path": world.repo}))?)?.clone();
+            let postgres = detail["components"].as_array().and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["id"] == format!("{deployment_id}/db"))
+            });
+            last_postgres_storage = postgres
+                .and_then(|row| row.get("storage"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            Ok(["pg_connections", "pg_wal_bytes", "pg_database_bytes"]
+                .iter()
+                .all(|metric| {
+                    last_postgres_storage
+                        .get(metric)
+                        .and_then(Value::as_u64)
+                        .is_some_and(|value| value > 0)
+                })
+                .then(|| last_postgres_storage.clone()))
+        },
+    )
+    .map_err(|error| {
+        format!(
+            "{error}; last numeric PostgreSQL storage={}",
+            bounded_json(&last_postgres_storage)
+        )
+    })?;
     let history = wait_for_value("minute health history", Duration::from_secs(90), || {
         let response = world.call(
             "health.history",
@@ -4214,6 +4499,10 @@ fn cases() -> Vec<Case> {
             case_postgres_real_query_labels_secrecy_and_cleanup,
         ),
         (
+            "postgres_18_data_directory_query_and_cleanup",
+            case_postgres_18_data_directory_query_and_cleanup,
+        ),
+        (
             "digest_pinned_postgis_fixture_is_pulled_injected_and_removed",
             case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed,
         ),
@@ -4260,6 +4549,14 @@ fn cases() -> Vec<Case> {
         (
             "readiness_allows_process_to_recover_within_restart_policy",
             case_readiness_allows_process_to_recover_within_restart_policy,
+        ),
+        (
+            "finite_only_container_completion_failure_cancellation_and_cleanup",
+            case_finite_only_container_completion_failure_cancellation_and_cleanup,
+        ),
+        (
+            "failed_finite_sibling_finishes_and_evidence_service_can_restart",
+            case_failed_finite_sibling_finishes_and_evidence_service_can_restart,
         ),
         (
             "native_compose_finite_service_receipt_and_start_semantics",

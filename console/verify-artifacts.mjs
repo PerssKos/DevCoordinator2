@@ -31,7 +31,8 @@ export function artifactResponse(command, params, scenario) {
     run_id: RUN, test: 'native-editor', status: 'passed', display_name: 'Native editor',
     worktree_path: '/srv/repos/native-editor', worktree_id: 'native-worktree',
     repository_id: 'native-repository', started_at: '2026-01-01T00:01:00Z', duration_seconds: 4,
-    checks: scenario.artifactCurrentEmpty ? [] : [{ name: 'native-session', status: 'passed', retained_artifacts: [artifact] }],
+    checks_truncated: !!scenario.artifactSummaryTruncated,
+    checks: scenario.artifactCurrentEmpty || scenario.artifactSummaryTruncated ? [] : [{ name: 'native-session', status: 'passed', retained_artifacts: [artifact] }],
     visual_evidence: { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0 },
   }] } };
   if (command === 'test.history') {
@@ -84,7 +85,7 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   daemon.setScenario({ artifactFiles: true });
-  await page.goto(`${baseUrl}#/tests`);
+  await page.goto(`${baseUrl}#/tests?repository=native-repository`);
   await page.waitForSelector('.test-result-summary');
   await page.locator('.test-result-summary').click();
   verify('retained files are discoverable without a formal web bundle', await page.locator('[data-test-artifacts]').count() === 1);
@@ -174,6 +175,12 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
     verify(`${scenario} recovers on exact retry`, await dialog.locator('img').evaluate((image) => image.naturalWidth === 1));
     await dialog.getByRole('button', { name: 'Close evidence files', exact: true }).click();
   }
+  daemon.setScenario({ artifactFiles: true, artifactSummaryTruncated: true });
+  await page.goto(`${baseUrl}#/tests?repository=native-repository`);
+  await page.locator('[data-test-artifacts]').click();
+  await page.locator('#test-artifacts-dialog [data-artifact-file="capture.png"]').waitFor();
+  verify('compact current summaries still expose their complete retained files', daemon.calls.some((call) => call.operation === 'test.artifact.catalog' && call.params.run_id === RUN));
+  await page.keyboard.press('Escape');
   daemon.setScenario({ artifactFiles: true, artifactCurrentEmpty: true });
   await page.reload();
   await page.locator('.test-detail>summary').click();

@@ -3735,9 +3735,6 @@ function pageVerifier() {
       }
     }
 
-    // Off-canvas geometry. Fixed-context content cannot be scrolled into view,
-    // so any viewport cut is a defect. Static/absolute content before the
-    // document origin (negative document coordinates) is equally unreachable.
     if (meaningful && !complexArtifact) {
       if (hasFixedContext(el)) {
         const reachableX = reachableByInnerScroll(el, 'x');
@@ -3768,12 +3765,14 @@ function pageVerifier() {
         }
       } else {
         const rtl = (document.documentElement.getAttribute("dir") || "").toLowerCase() === "rtl";
+        const reachableX = reachableByInnerScroll(el, 'x');
+        const reachableY = reachableByInnerScroll(el, 'y');
         const absLeft = rect.left + window.scrollX;
         const absTop = rect.top + window.scrollY;
-        const cutLeft = rtl ? 0 : Math.max(0, -absLeft);
-        const cutTop = Math.max(0, -absTop);
+        const cutLeft = rtl || reachableX ? 0 : Math.max(0, -absLeft);
+        const cutTop = reachableY ? 0 : Math.max(0, -absTop);
         if ((cutLeft > 4 && cutLeft / Math.max(1, rect.width) > 0.08) || (cutTop > 4 && cutTop / Math.max(1, rect.height) > 0.08)) {
-          const fullyOut = absLeft + rect.width <= 0 || absTop + rect.height <= 0;
+          const fullyOut = (!reachableX && !rtl && absLeft + rect.width <= 0) || (!reachableY && absTop + rect.height <= 0);
           if (fullyOut) {
             add("warning", "offcanvas-hidden", el, "Text/control is positioned entirely before the document origin (possible visually-hidden pattern); verify it is intentional.", {
               evidence: { documentLeft: round(absLeft), documentTop: round(absTop) },
@@ -3886,6 +3885,12 @@ function pageVerifier() {
     ...candidates.filter((el) => !isControl(el) && isLeafText(el) && !overlapReason(el) && !complexArtifactContext(el)),
   ].slice(0, 400);
   const originalScroll = { x: window.scrollX, y: window.scrollY };
+  const originalInnerScroll = allElements
+    .filter((element) => element !== document.scrollingElement && (
+      element.scrollLeft !== 0 || element.scrollTop !== 0 ||
+      element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight
+    ))
+    .map((element) => ({ element, left: element.scrollLeft, top: element.scrollTop }));
   const inViewport = (rect) =>
     rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
   const occluderOpacity = (node) => {
@@ -3911,7 +3916,7 @@ function pageVerifier() {
     // legitimately paints in that space (e.g. a neighboring panel).
     const box = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
     if (cs(element).position === "fixed") return box;
-    let anc = element.parentElement;
+    let anc = composedParent(element);
     while (anc && anc.nodeType === Node.ELEMENT_NODE) {
       if (anc === document.body || anc === document.documentElement) break;
       const style = cs(anc);
@@ -3929,27 +3934,102 @@ function pageVerifier() {
         }
       }
       if (style.position === "fixed") break;
-      anc = anc.parentElement;
+      anc = composedParent(anc);
     }
     return box;
   };
-  const restoreDocumentScroll = () => {
+  const restoreScrollPositions = () => {
+    for (const { element, left, top } of originalInnerScroll) {
+      if (element.isConnected && (element.scrollLeft !== left || element.scrollTop !== top)) {
+        element.scrollTo({ left, top, behavior: "instant" });
+      }
+    }
     if (window.scrollX !== originalScroll.x || window.scrollY !== originalScroll.y) {
       window.scrollTo({ left: originalScroll.x, top: originalScroll.y, behavior: "instant" });
     }
   };
-  for (const el of occlusionCandidates) {
-    restoreDocumentScroll();
-    if (!el.isConnected || !visible(el)) continue;
+  const topAtPoint = (element, point) => {
+    const root = element.getRootNode?.() || document;
+    const hitTestRoot = typeof root.elementsFromPoint === "function" ? root : document;
+    return hitTestRoot.elementsFromPoint(point.x, point.y).find((node) =>
+      node.nodeType === Node.ELEMENT_NODE && !isIgnored(node) && cs(node).pointerEvents !== "none"
+    );
+  };
+  const containsComposed = (ancestor, element) => {
+    for (let current = element; current; current = composedParent(current)) {
+      if (current === ancestor) return true;
+    }
+    return false;
+  };
+  const contextualCover = (element, occluder) => {
+    for (let owner = occluder; owner && !containsComposed(owner, element); owner = composedParent(owner)) {
+      const reason = owner.getAttribute?.("data-ui-contextual-overlay")?.trim();
+      if (reason && owner.matches('[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover]') &&
+          ["fixed", "absolute"].includes(cs(owner).position)) return { owner, reason };
+    }
+    return null;
+  };
+  const pinnedSibling = (element, occluder) => {
+    for (let sticky = occluder; sticky && !containsComposed(sticky, element); sticky = composedParent(sticky)) {
+      const style = cs(sticky);
+      if (style.position === "fixed") return null;
+      if (style.position !== "sticky") continue;
+      let container = composedParent(sticky);
+      while (container && ![cs(container).overflowX, cs(container).overflowY].some((overflow) =>
+        ["auto", "scroll", "overlay", "hidden"].includes(overflow)
+      )) container = composedParent(container);
+      if (!container || container === document.scrollingElement || !containsComposed(container, element) ||
+          !["auto", "scroll", "overlay"].includes(cs(container).overflowX) ||
+          container.scrollWidth <= container.clientWidth + 2) return null;
+      const containerRect = nowRect(container);
+      const left = containerRect.left + container.clientLeft;
+      const right = left + container.clientWidth;
+      const stickyRect = nowRect(sticky);
+      if (style.left !== "auto" && Math.abs(stickyRect.left - left) <= 2) {
+        return { container, sticky, edge: "left" };
+      }
+      if (style.right !== "auto" && Math.abs(stickyRect.right - right) <= 2) {
+        return { container, sticky, edge: "right" };
+      }
+      return null;
+    }
+    return null;
+  };
+  const reachablePastPinnedSibling = (element, pinned, point, rect) => {
+    if (!pinned) return false;
+    const { container, sticky, edge } = pinned;
+    const clip = scrollAncestorClipBox(element);
+    const stickyRect = nowRect(sticky);
+    const left = edge === "left" ? Math.max(clip.left, stickyRect.right + 2) : clip.left;
+    const right = edge === "right" ? Math.min(clip.right, stickyRect.left - 2) : clip.right;
+    if (right - left <= 2) return false;
+    const original = { left: container.scrollLeft, top: container.scrollTop };
+    try {
+      container.scrollTo({ left: original.left + point.x - (left + right) / 2, top: original.top, behavior: "instant" });
+      if (container.scrollLeft === original.left) return false;
+      const movedRect = nowRect(element);
+      const movedPoint = { x: movedRect.left + point.x - rect.left, y: movedRect.top + point.y - rect.top };
+      const movedClip = scrollAncestorClipBox(element);
+      if (movedPoint.x < movedClip.left || movedPoint.x > movedClip.right ||
+          movedPoint.y < movedClip.top || movedPoint.y > movedClip.bottom) return false;
+      const top = topAtPoint(element, movedPoint);
+      if (top && (top === element || element.contains(top) || top.contains(element))) return { visible: true };
+      return top ? { contextual: contextualCover(element, top) } : null;
+    } finally {
+      container.scrollTo({ ...original, behavior: "instant" });
+    }
+  };
+  const measureOcclusion = (el) => {
+    if (!el.isConnected || !visible(el)) return;
     let measuredAfterScroll = false;
     if (!inViewport(nowRect(el))) {
       // Only elements outside the current viewport may be scrolled into view; those
       // are flagged so the finding reflects "occluded when scrolled to" not "as seen".
-      el.scrollIntoView({ block: "center", inline: "center" });
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       measuredAfterScroll = true;
     }
     let rect = nowRect(el);
-    if (rect.width <= 1 || rect.height <= 1) continue;
+    if (rect.width <= 1 || rect.height <= 1) return;
     // Scroll-container reachability: an element scrolled out of an inner
     // overflow container can still sit inside the window viewport. Scroll it
     // into view within its container first (mirroring the window case above);
@@ -3959,11 +4039,11 @@ function pageVerifier() {
       Math.min(rect.right, clip.right) - Math.max(rect.left, clip.left) <= 2 ||
       Math.min(rect.bottom, clip.bottom) - Math.max(rect.top, clip.top) <= 2
     ) {
-      el.scrollIntoView({ block: "center", inline: "center" });
+      el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       measuredAfterScroll = true;
       rect = nowRect(el);
       clip = scrollAncestorClipBox(el);
-      if (rect.width <= 1 || rect.height <= 1) continue;
+      if (rect.width <= 1 || rect.height <= 1) return;
     }
     const insetX = Math.min(8, Math.max(2, rect.width / 4));
     const insetY = Math.min(8, Math.max(2, rect.height / 4));
@@ -3978,26 +4058,37 @@ function pageVerifier() {
       { x: rect.left + insetX, y: rect.bottom - insetY },
       { x: rect.right - insetX, y: rect.bottom - insetY },
     ].filter((point) => point.x >= sampleLeft && point.y >= sampleTop && point.x <= sampleRight && point.y <= sampleBottom);
-    if (points.length < 2) continue;
+    if (points.length < 2) return;
     let covered = 0;
+    const contextualCovers = new Map();
     let maxOccluderOpacity = 0;
     const evidencePoints = [];
     for (const point of points) {
-      const root = el.getRootNode?.() || document;
-      const hitTestRoot = typeof root.elementsFromPoint === "function" ? root : document;
-      const stack = hitTestRoot.elementsFromPoint(point.x, point.y).filter((node) => node.nodeType === Node.ELEMENT_NODE && !isIgnored(node));
-      const top = stack.find((node) => getComputedStyle(node).pointerEvents !== "none");
+      const top = topAtPoint(el, point);
       const ok = top && (top === el || el.contains(top) || top.contains(el));
+      const pinned = !ok && top ? pinnedSibling(el, top) : null;
+      const probed = !ok ? reachablePastPinnedSibling(el, pinned, point, rect) : null;
+      const reachableAfterScroll = probed?.visible === true;
+      const contextual = (!ok && top ? contextualCover(el, top) : null) || probed?.contextual;
+      if (contextual) contextualCovers.set(contextual.owner, contextual.reason);
       evidencePoints.push({
         x: round(point.x),
         y: round(point.y),
         topSelector: top ? selectorPath(top) : "",
-        covered: !ok,
+        covered: !ok && !reachableAfterScroll && !contextual,
+        ...(reachableAfterScroll ? { reachableAfterScroll: true } : {}),
+        ...(contextual ? { contextualOverlay: selectorPath(contextual.owner) } : {}),
       });
-      if (!ok) {
+      if (!ok && !reachableAfterScroll && !contextual) {
         covered += 1;
         if (top) maxOccluderOpacity = Math.max(maxOccluderOpacity, occluderOpacity(top));
+        if (pinned) maxOccluderOpacity = Math.max(maxOccluderOpacity, occluderOpacity(pinned.sticky));
       }
+    }
+    if (contextualCovers.size) {
+      add("warning", "allowed-contextual-overlay", el, "A declared temporary contextual surface covers this background item; its own content remains fully checked.", {
+        evidence: { overlays: [...contextualCovers].map(([owner, reason]) => ({ selector: selectorPath(owner), reason })), samplePoints: evidencePoints, measuredAfterScroll },
+      });
     }
     if (covered >= 2) {
       const coveredFraction = covered / points.length;
@@ -4019,8 +4110,15 @@ function pageVerifier() {
         add("warning", "partially-occluded", el, "Meaningful text/control is partially covered by an unrelated element.", evidence);
       }
     }
+  };
+  for (const element of occlusionCandidates) {
+    try {
+      restoreScrollPositions();
+      measureOcclusion(element);
+    } finally {
+      restoreScrollPositions();
+    }
   }
-  restoreDocumentScroll();
 
   function parseCssColor(value) {
     const raw = String(value || "").trim();
@@ -6731,7 +6829,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, performanceThresholdStatus, writeJourneyEvidenceArtifact };
+export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {

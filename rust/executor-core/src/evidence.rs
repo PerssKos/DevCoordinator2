@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use devcoordinator2_executor_protocol::{
@@ -88,11 +88,17 @@ pub fn source_digest(worktree_root: &Path) -> Result<String, ExecutorError> {
 
     let mut digest = Sha256::new();
     digest.update(b"devcoordinator2-source-v2\0index\0");
-    digest.update(index);
+    digest.update(&index);
     digest.update(b"\0");
     let paths: BTreeSet<String> = modified.into_iter().chain(untracked).collect();
     for relative in paths {
         if relative == ".devcoordinator" || relative.starts_with(".devcoordinator/") {
+            continue;
+        }
+        // diff-files reports stat-cache candidates, not necessarily changed
+        // bytes. Never make the identity depend on whether git status happened
+        // to refresh that cache. Compare raw blobs without clean/text filters.
+        if matches_index_blob(&root, &relative, &index)? {
             continue;
         }
         hash_source_path(&root, &relative, &mut digest)?;
@@ -584,16 +590,22 @@ pub fn write_bytes_atomic(
     result
 }
 
-fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, ExecutorError> {
-    let output = Command::new("/usr/bin/git")
+fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("/usr/bin/git");
+    command
         .arg("-C")
         .arg(root)
-        .args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "safe.directory")
-        .env("GIT_CONFIG_VALUE_0", "*")
+        .env("GIT_CONFIG_VALUE_0", "*");
+    command
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, ExecutorError> {
+    let output = git_command(root)
+        .args(args)
         .output()
         .map_err(|error| ExecutorError::new(format!("cannot inventory source: {error}")))?;
     if !output.status.success() {
@@ -609,6 +621,81 @@ fn git_output(root: &Path, args: &[&str]) -> Result<Vec<u8>, ExecutorError> {
         ));
     }
     Ok(output.stdout)
+}
+
+fn matches_index_blob(root: &Path, relative: &str, index: &[u8]) -> Result<bool, ExecutorError> {
+    let indexed = index.split(|byte| *byte == 0).find_map(|entry| {
+        let tab = entry.iter().position(|byte| *byte == b'\t')?;
+        if &entry[tab + 1..] != relative.as_bytes() {
+            return None;
+        }
+        let header = std::str::from_utf8(&entry[..tab]).ok()?;
+        let mut fields = header.split(' ');
+        let mode = fields.next()?;
+        let object = fields.next()?;
+        if fields.next()? != "0" {
+            return None;
+        }
+        Some((mode, object))
+    });
+    let Some((mode, object)) = indexed else {
+        return Ok(false);
+    };
+    validate_relative(relative)?;
+    let path = root.join(relative);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(ExecutorError::new(format!(
+                "cannot inspect source candidate: {error}"
+            )));
+        }
+    };
+    let hash = if metadata.is_file() && matches!(mode, "100644" | "100755") {
+        let executable = metadata.permissions().mode() & 0o111 != 0;
+        if executable != (mode == "100755") {
+            return Ok(false);
+        }
+        git_output(root, &["hash-object", "--no-filters", "--", relative])?
+    } else if metadata.file_type().is_symlink() && mode == "120000" {
+        // Hash the link's own bytes; never follow its destination for identity.
+        let target = fs::read_link(&path)
+            .map_err(|error| ExecutorError::new(format!("cannot read source link: {error}")))?;
+        let mut child = git_command(root)
+            .args(["hash-object", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| ExecutorError::new(format!("cannot hash source link: {error}")))?;
+        let written = child
+            .stdin
+            .take()
+            .ok_or_else(|| ExecutorError::new("missing source hash input"))?
+            .write_all(target.as_os_str().as_encoded_bytes());
+        let output = child
+            .wait_with_output()
+            .map_err(|error| ExecutorError::new(format!("cannot finish source hash: {error}")))?;
+        written
+            .map_err(|error| ExecutorError::new(format!("cannot supply source link: {error}")))?;
+        if !output.status.success() {
+            return Err(ExecutorError::new("cannot hash source link"));
+        }
+        output.stdout
+    } else {
+        return Ok(false);
+    };
+    let after = fs::symlink_metadata(&path)
+        .map_err(|error| ExecutorError::new(format!("cannot restat source candidate: {error}")))?;
+    if identity(&metadata) != identity(&after)
+        || metadata.permissions().mode() != after.permissions().mode()
+    {
+        return Err(ExecutorError::new(
+            "source candidate changed during blob comparison",
+        ));
+    }
+    Ok(hash.strip_suffix(b"\n").unwrap_or(&hash) == object.as_bytes())
 }
 
 fn decode_paths(payload: Vec<u8>) -> Result<Vec<String>, ExecutorError> {

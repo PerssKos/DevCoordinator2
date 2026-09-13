@@ -382,8 +382,10 @@ impl MetricSampler {
             .working
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.inner.storage_requested.store(false, Ordering::SeqCst);
         let (repositories, worktrees, deployments, components, observed) =
-            self.storage_records()?;
+            self.storage_records()
+                .inspect_err(|_| self.request_storage())?;
         let mut storage = BTreeMap::new();
         let mut per_repository = repositories
             .iter()
@@ -596,7 +598,6 @@ impl MetricSampler {
                 meta: BTreeMap::new(),
             });
         }
-        self.inner.storage_requested.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1164,6 +1165,7 @@ mod tests {
 
     struct FakeSource {
         cpu: AtomicU64,
+        request_during_scan: Mutex<Option<MetricSampler>>,
     }
     impl MetricSource for FakeSource {
         fn host_cpu_ticks(&self) -> (u64, u64) {
@@ -1199,6 +1201,9 @@ mod tests {
             PathBuf::from(format!("/cgroup/{id}"))
         }
         fn directory_size(&self, _: &Path, _: StdDuration) -> Option<u64> {
+            if let Some(sampler) = self.request_during_scan.lock().unwrap().take() {
+                sampler.request_storage();
+            }
             Some(10)
         }
         fn container_sizes(&self) -> BTreeMap<String, u64> {
@@ -1219,8 +1224,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn host_sampling_storage_and_minute_flush_are_consistent() {
+    fn storage_fixture() -> (tempfile::TempDir, MetricSampler, Arc<FakeSource>) {
         let temporary = tempdir().unwrap();
         let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
         let config = Config {
@@ -1243,17 +1247,25 @@ mod tests {
         };
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let docker = Arc::new(FakeDocker);
+        let source = Arc::new(FakeSource {
+            cpu: AtomicU64::new(10),
+            request_during_scan: Mutex::new(None),
+        });
         let sampler = MetricSampler::with_adapters(
             config,
             database,
             docker,
             Arc::new(FakeSystemd),
-            Arc::new(FakeSource {
-                cpu: AtomicU64::new(10),
-            }),
+            source.clone(),
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
             Arc::new(StepMonotonic(AtomicU64::new(0))),
         );
+        (temporary, sampler, source)
+    }
+
+    #[test]
+    fn host_sampling_storage_and_minute_flush_are_consistent() {
+        let (_temporary, sampler, _source) = storage_fixture();
         sampler.tick().unwrap();
         sampler.storage_tick().unwrap();
         let snapshot = sampler.snapshot().unwrap();
@@ -1265,5 +1277,17 @@ mod tests {
         );
         sampler.flush().unwrap();
         assert!(sampler.metrics().table_size().unwrap() >= 3);
+    }
+
+    #[test]
+    fn storage_refresh_requested_during_a_scan_is_not_lost() {
+        let (_temporary, sampler, source) = storage_fixture();
+        sampler.storage_tick().unwrap();
+        assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
+        *source.request_during_scan.lock().unwrap() = Some(sampler.clone());
+        sampler.storage_tick().unwrap();
+        assert!(sampler.inner.storage_requested.load(Ordering::SeqCst));
+        sampler.storage_tick().unwrap();
+        assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
     }
 }

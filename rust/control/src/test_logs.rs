@@ -728,6 +728,7 @@ mod tests {
             gid: 999,
             client_kind: devcoordinator2_api::ClientKind::Edge,
             client_session: None,
+            work: None,
             identity: Some("reader@example.test".into()),
         };
         let error = service

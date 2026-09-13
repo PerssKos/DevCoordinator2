@@ -393,7 +393,29 @@ fn internal_command(options: &ValidationOptions, name: &str) -> Vec<String> {
 }
 
 fn cargo_test_command(options: &ValidationOptions, filter: &str) -> Vec<String> {
-    vec![
+    let filters: &[&str] = match filter {
+        "audit_" => &[
+            "audit_common::tests::",
+            "audit_evidence::tests::",
+            "audit_findings::tests::",
+            "audit_ledger::tests::",
+            "audit_queue::tests::",
+            "audit_targets::tests::",
+            "audit_verify::tests::",
+        ],
+        "ui_" => &[
+            "ui_audit::tests::",
+            "ui_audit_verify::tests::",
+            "ui_gate::tests::",
+        ],
+        "test_coverage_audit::tests" => &[
+            "test_coverage_audit::tests::",
+            "test_catalog::tests::",
+            "test_assurance::tests::",
+        ],
+        _ => &[filter],
+    };
+    let mut command = vec![
         options.cargo_program.clone(),
         "test".to_owned(),
         "--locked".to_owned(),
@@ -402,10 +424,15 @@ fn cargo_test_command(options: &ValidationOptions, filter: &str) -> Vec<String> 
         "--features".to_owned(),
         "selftest-fixtures".to_owned(),
         "--lib".to_owned(),
-        filter.to_owned(),
         "--".to_owned(),
         "--test-threads=1".to_owned(),
-    ]
+    ];
+    command.extend(filters.iter().map(|filter| (*filter).to_owned()));
+    // libtest filters are substrings: audit_verify also matches ui_audit_verify.
+    if filter == "audit_" {
+        command.extend(["--skip".to_owned(), "ui_audit_verify::tests::".to_owned()]);
+    }
+    command
 }
 
 pub fn validation_checks(options: &ValidationOptions) -> Vec<CheckPlan> {
@@ -1024,6 +1051,53 @@ pub fn self_test(executor: &Path, leaf: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_skill_filters_partition_actual_collected_tests() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--list", "--format", "terse"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let list = String::from_utf8(output.stdout).unwrap();
+        let options = options();
+        let groups = ["audit_", "ui_", "test_coverage_audit::tests"].map(|filter| {
+            let mut args = cargo_test_command(&options, filter)
+                .into_iter()
+                .skip_while(|arg| arg != "--")
+                .skip(1);
+            let (mut filters, mut skips) = (Vec::new(), Vec::new());
+            while let Some(arg) = args.next() {
+                if arg == "--skip" {
+                    skips.push(args.next().unwrap());
+                } else if !arg.starts_with('-') {
+                    filters.push(arg);
+                }
+            }
+            (filters, skips)
+        });
+        let mut assurance_count = 0;
+        for name in list.lines().filter_map(|line| line.strip_suffix(": test")) {
+            let owners = groups
+                .iter()
+                .filter(|(filters, skips)| {
+                    filters.iter().any(|filter| name.contains(filter))
+                        && !skips.iter().any(|skip| name.contains(skip))
+                })
+                .count();
+            assert!(
+                owners <= 1,
+                "test selected by multiple audit skills: {name}"
+            );
+            if name.starts_with("test_assurance::tests::")
+                || name.starts_with("test_catalog::tests::")
+            {
+                assert_eq!(owners, 1);
+                assurance_count += 1;
+            }
+        }
+        assert!(assurance_count > 0);
+    }
 
     fn options() -> ValidationOptions {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
