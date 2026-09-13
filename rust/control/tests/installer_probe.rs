@@ -1,6 +1,63 @@
 use std::process::Command;
 
 #[test]
+fn installer_accepts_deployment_only_but_rejects_invalid_declared_capabilities() {
+    let temporary = tempfile::tempdir().unwrap();
+    let deployment = r#"schema = 2
+[deployment.site]
+source = ["worktree"]
+domain = "site"
+components = ["web"]
+public = false
+[deployment.site.component.web]
+type = "process"
+command = ["python3", "serve.py"]
+cwd = "."
+port = true
+route = true
+health = { path = "/healthz", timeout_seconds = 30 }
+"#;
+    let probe = |config: &str| {
+        std::fs::write(temporary.path().join(".devcoordinator.toml"), config).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_devcoordinator2"))
+            .arg("--validate-repository-config")
+            .arg(temporary.path())
+            .output()
+            .unwrap()
+    };
+    let valid = probe(deployment);
+    assert!(
+        valid.status.success(),
+        "{}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&valid.stdout).unwrap();
+    assert_eq!(value["tests"], serde_json::json!([]));
+    assert_eq!(value["deployments"], serde_json::json!(["site"]));
+    let mixed = probe(&format!(
+        "{deployment}\n[test.unit]\n[[test.unit.check]]\nname = 'main'\ntier = 'release'\ncommand = ['true']\n"
+    ));
+    assert!(mixed.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&mixed.stdout).unwrap();
+    assert_eq!(value["tests"], serde_json::json!(["unit"]));
+    assert_eq!(value["deployments"], serde_json::json!(["site"]));
+    for invalid in [
+        deployment.replace("schema = 2", "schema = 1"),
+        deployment.replace("schema = 2", "schema = 2\ntest = false"),
+        deployment.replace("schema = 2", "schema = 2\nunknown = true"),
+        deployment.replace("type = \"process\"", "type = \"unknown\""),
+        format!("{deployment}\n[test.invalid]\n"),
+        format!("{deployment}\n[test]\n"),
+        "schema = 2\n".to_owned(),
+    ] {
+        assert!(
+            !probe(&invalid).status.success(),
+            "invalid configuration accepted"
+        );
+    }
+}
+
+#[test]
 fn installer_probes_report_embedded_commit_and_strict_repository_configuration() {
     let binary = env!("CARGO_BIN_EXE_devcoordinator2");
     let commit = Command::new(binary)

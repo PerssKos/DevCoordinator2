@@ -154,14 +154,9 @@ fn repository_config_validation_requested() -> Option<std::path::PathBuf> {
 
 fn validate_repository_config(path: &std::path::Path) -> ExitCode {
     let result = (|| {
-        let tests = devcoordinator2_control::repository_config::validate_test_config(path)
-            .map_err(|error| error.to_string())?;
-        let deployments = devcoordinator2_control::repository_config::list_deployment_names(path)
-            .map_err(|error| error.to_string())?;
-        for name in &deployments {
-            devcoordinator2_control::repository_config::load_deployment_spec(path, name)
+        let (tests, deployments) =
+            devcoordinator2_control::repository_config::validate_repository_config(path)
                 .map_err(|error| error.to_string())?;
-        }
         Ok::<_, String>(serde_json::json!({
             "schema":2,
             "tests":tests.into_iter().map(|test| test.name).collect::<Vec<_>>(),

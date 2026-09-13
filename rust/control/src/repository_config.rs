@@ -247,6 +247,29 @@ pub fn validate_test_config(
         .collect())
 }
 
+/// Validate the declared capabilities without requiring a deployment-only
+/// repository to invent a test suite. Test execution still requires a test.
+pub fn validate_repository_config(
+    worktree_root: &Path,
+) -> Result<(Vec<TestConfigSummary>, Vec<String>), RepositoryConfigError> {
+    let parsed = read_config(worktree_root)?;
+    let tests = if parsed.table.contains_key("test") {
+        validate_test_config(worktree_root)?
+    } else {
+        Vec::new()
+    };
+    let deployments = list_deployment_names(worktree_root)?;
+    for name in &deployments {
+        load_deployment_spec(worktree_root, name)?;
+    }
+    if tests.is_empty() && deployments.is_empty() {
+        return Err(RepositoryConfigError::new(
+            "at least one named test or deployment is required",
+        ));
+    }
+    Ok((tests, deployments))
+}
+
 pub fn load_test_spec(
     worktree_root: &Path,
     test_name: Option<&str>,
