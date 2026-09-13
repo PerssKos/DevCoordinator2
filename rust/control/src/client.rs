@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use devcoordinator2_api::{
@@ -8,7 +11,9 @@ use devcoordinator2_api::{
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep, timeout};
+
+use crate::sandbox_bridge::DEFAULT_DIR as DEFAULT_SANDBOX_BRIDGE_DIR;
 
 pub async fn call(
     socket_path: &Path,
@@ -28,24 +33,37 @@ pub async fn call(
             | "deployment.restart"
             | "deployment.remove"
     );
-    let mut stream = timeout(Duration::from_secs(5), UnixStream::connect(socket_path))
-        .await
-        .map_err(|_| {
-            ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon connection timed out")
-        })?
-        .map_err(|error| {
-            ProtocolError::new(
-                ErrorCode::DaemonUnavailable,
-                format!("cannot reach daemon at {}", socket_path.display()),
-            )
-            .with_detail(error.to_string())
-        })?;
     let request = RequestEnvelope {
         protocol: PROTOCOL_VERSION,
         id: request_id(),
         operation,
         params,
         client,
+    };
+    let mut stream = match timeout(Duration::from_secs(5), UnixStream::connect(socket_path)).await {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(error)) if error.raw_os_error() == Some(libc::EPERM) => {
+            return call_via_sandbox_bridge(
+                &request,
+                blocking_wait,
+                deployment_action,
+                review_action,
+            )
+            .await;
+        }
+        Ok(Err(error)) => {
+            return Err(ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                format!("cannot reach daemon at {}", socket_path.display()),
+            )
+            .with_detail(error.to_string()));
+        }
+        Err(_) => {
+            return Err(ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "daemon connection timed out",
+            ));
+        }
     };
     let mut encoded = serde_json::to_vec(&request).map_err(|error| {
         ProtocolError::new(ErrorCode::ProtocolInvalid, "cannot encode request")
@@ -97,6 +115,99 @@ pub async fn call(
         ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
             .with_detail(error.to_string())
     })
+}
+
+async fn call_via_sandbox_bridge(
+    request: &RequestEnvelope,
+    blocking_wait: bool,
+    deployment_action: bool,
+    review_action: bool,
+) -> Result<ResponseEnvelope, ProtocolError> {
+    let directory = std::env::var_os("DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SANDBOX_BRIDGE_DIR));
+    let id = &request.id;
+    let request_path = directory.join(format!("{id}.request"));
+    let response_path = directory.join(format!("{id}.response"));
+    let mut encoded = serde_json::to_vec(request).map_err(|error| {
+        ProtocolError::new(ErrorCode::ProtocolInvalid, "cannot encode request")
+            .with_detail(error.to_string())
+    })?;
+    encoded.push(b'\n');
+    if encoded.len() > devcoordinator2_api::MAX_REQUEST_BYTES {
+        return Err(ProtocolError::new(
+            ErrorCode::RequestTooLarge,
+            "request exceeds 64 KiB frame cap",
+        ));
+    }
+    write_bridge_request(&directory, &request_path, &encoded)?;
+    let deadline = if blocking_wait || deployment_action {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs(if review_action { 20 } else { 10 }))
+    };
+    let mut delay = Duration::from_millis(10);
+    loop {
+        match tokio::fs::read(&response_path).await {
+            Ok(bytes) => {
+                let _ = tokio::fs::remove_file(&response_path).await;
+                if bytes.len() > MAX_RESPONSE_BYTES {
+                    return Err(ProtocolError::new(
+                        ErrorCode::ProtocolInvalid,
+                        "daemon response exceeds size cap",
+                    ));
+                }
+                return serde_json::from_slice(&bytes).map_err(|error| {
+                    ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
+                        .with_detail(error.to_string())
+                });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(bridge_error("cannot read sandbox bridge response", error)),
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(ProtocolError::new(
+                ErrorCode::DaemonUnavailable,
+                "sandbox bridge response timed out; re-query accepted operations",
+            ));
+        }
+        sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_millis(100));
+    }
+}
+
+fn write_bridge_request(
+    directory: &Path,
+    request: &Path,
+    bytes: &[u8],
+) -> Result<(), ProtocolError> {
+    let metadata = std::fs::symlink_metadata(directory)
+        .map_err(|error| bridge_error("sandbox bridge is unavailable", error))?;
+    if !metadata.is_dir() || metadata.permissions().mode() & 0o1777 != 0o1777 {
+        return Err(ProtocolError::new(
+            ErrorCode::DaemonUnavailable,
+            "sandbox bridge is unavailable",
+        ));
+    }
+    let temporary = request.with_extension(format!("request.{}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)
+        .map_err(|error| bridge_error("cannot create sandbox bridge request", error))?;
+    if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(bridge_error("cannot write sandbox bridge request", error));
+    }
+    drop(file);
+    std::fs::rename(temporary, request)
+        .map_err(|error| bridge_error("cannot publish sandbox bridge request", error))
+}
+
+fn bridge_error(message: &str, error: std::io::Error) -> ProtocolError {
+    ProtocolError::new(ErrorCode::DaemonUnavailable, message).with_detail(error.to_string())
 }
 
 fn transport_error(error: std::io::Error) -> ProtocolError {

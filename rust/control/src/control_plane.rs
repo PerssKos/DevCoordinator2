@@ -1667,6 +1667,7 @@ mod tests {
     fn config(root: &Path) -> Config {
         Config {
             socket_path: root.join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: root.join("state"),
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),

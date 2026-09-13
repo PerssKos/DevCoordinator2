@@ -23,6 +23,7 @@ pub struct CodexUsageSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub socket_path: PathBuf,
+    pub sandbox_bridge_dir: PathBuf,
     pub state_dir: PathBuf,
     pub unit_prefix: String,
     pub slice_name: String,
@@ -110,6 +111,11 @@ impl Config {
         }
         Ok(Self {
             socket_path: value("DEVCOORDINATOR2_SOCKET", "/run/devcoordinator2/daemon.sock").into(),
+            sandbox_bridge_dir: value(
+                "DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR",
+                "/tmp/devcoordinator2-bridge",
+            )
+            .into(),
             state_dir: value("DEVCOORDINATOR2_STATE_DIR", "/var/lib/devcoordinator2").into(),
             unit_prefix: value("DEVCOORDINATOR2_UNIT_PREFIX", "devcoordinator2-test"),
             slice_name: value("DEVCOORDINATOR2_SLICE", "devcoordinator2-tests.slice"),

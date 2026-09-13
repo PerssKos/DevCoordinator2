@@ -18,6 +18,7 @@ stripping one pair of surrounding quotes.
 | Variable | Default | Meaning |
 |---|---|---|
 | `DEVCOORDINATOR2_SOCKET` | `/run/devcoordinator2/daemon.sock` | daemon Unix socket path |
+| `DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR` | `/tmp/devcoordinator2-bridge` | daemon-owned file transport used only when a client sandbox denies socket syscalls |
 | `DEVCOORDINATOR2_STATE_DIR` | `/var/lib/devcoordinator2` | authority DB and runtime state |
 | `DEVCOORDINATOR2_UNIT_PREFIX` | `devcoordinator2-test` | transient test unit prefix (dev instances use e.g. `devcoordinator2-dev`) |
 | `DEVCOORDINATOR2_SLICE` | `devcoordinator2-tests.slice` | parent slice for test units |
@@ -44,6 +45,17 @@ and the first upgrade from an older daemon temporarily fences its socket with a
 parent-death guard so an interrupted installer restores connectivity. None of
 these files is completion evidence for a check, contains a command, output,
 path, credential, or caller identity, or changes REQ-TEST-08 crash recovery.
+
+Clients that receive `EPERM` while creating or connecting a socket use the
+same protocol-2 request and response envelope through the daemon-owned
+`DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR`. The bridge directory is root-owned and
+sticky; request and response files are private (`0600`), bounded by the normal
+protocol limits, and responses are owned by the request file's UID/GID. The
+daemon validates the envelope before dispatch and never treats its client
+identity field as authority. The Unix socket remains the first path. The
+bridge does not listen on TCP or change operation authorization. Interrupted
+processing files produce a bounded re-query error rather than replaying a
+mutation.
 
 ## Compose environment-file authorization
 

@@ -621,6 +621,7 @@ command=["true"]
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: runtime.join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -2032,6 +2033,7 @@ database="app_test"
     let database = Database::open(state.join("authority.sqlite3")).unwrap();
     let config = Config {
         socket_path: runtime.join("daemon.sock"),
+        sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
         state_dir: state,
         unit_prefix: "devcoordinator2-test".into(),
         slice_name: "devcoordinator2-tests.slice".into(),
@@ -2147,6 +2149,7 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
     let database = Database::open(state.join("authority.sqlite3")).unwrap();
     let config = Config {
         socket_path: runtime.join("daemon.sock"),
+        sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
         state_dir: state,
         unit_prefix: "devcoordinator2-test".into(),
         slice_name: "devcoordinator2-tests.slice".into(),

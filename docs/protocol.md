@@ -13,6 +13,11 @@ Coordinator stores structured review revisions and verified delivery receipts.
 
 - Unix stream socket. Default path `/run/devcoordinator2/daemon.sock`,
   overridable via instance configuration (`docs/instance-configuration.md`).
+- If a local client receives `EPERM` while creating or connecting a socket, it
+  submits the identical envelope through the daemon-owned file bridge at
+  `DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR` (default
+  `/tmp/devcoordinator2-bridge`). This transport is for socket-denying
+  sandboxes; it does not add a TCP listener or a second authorization model.
 - Socket mode 0666, owned by root and the daemon client group
   (DC2-2026-08-24-OPEN-LOCAL-ACCESS: every local Unix account is a trusted
   caller, connectable even from sandboxes whose user namespace maps the
@@ -34,6 +39,14 @@ Coordinator stores structured review revisions and verified delivery receipts.
   10-second response deadline; `event.wait` has no client response deadline
   beyond its per-filter deadlines and is still one bounded response, never a
   stream, session, or pipeline.
+
+File-bridge requests are atomically published as private `0600` files named
+with the request id. The daemon claims each request once, derives the local
+caller UID/GID from the claimed file, validates the protocol envelope, and
+publishes a private response file owned by that caller. Responses are removed
+by the client or bounded daemon cleanup. A processing file left by a daemon
+restart receives a `daemon_unavailable` response; accepted mutations are
+re-queried rather than replayed.
 
 ## Request
 

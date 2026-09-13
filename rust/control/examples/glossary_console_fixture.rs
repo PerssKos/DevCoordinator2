@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     let config = Config {
         socket_path: root.join("daemon.sock"),
+        sandbox_bridge_dir: root.join("bridge"),
         state_dir: root.join("state"),
         unit_prefix: "devcoordinator2-glossary-fixture".into(),
         slice_name: "unused-fixture.slice".into(),

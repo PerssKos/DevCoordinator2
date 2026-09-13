@@ -39,6 +39,7 @@ mod review;
 mod review_validation;
 pub mod routes;
 pub mod runtime_configuration;
+pub mod sandbox_bridge;
 mod socket_endpoint;
 pub mod systemd;
 pub mod telegram;

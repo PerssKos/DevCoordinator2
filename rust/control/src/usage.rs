@@ -2117,6 +2117,7 @@ pub(crate) mod tests {
     fn config(root: &Path, codex_home: PathBuf) -> Config {
         Config {
             socket_path: root.join("daemon.sock"),
+            sandbox_bridge_dir: root.join("bridge"),
             state_dir: root.join("state"),
             unit_prefix: "fixture".into(),
             slice_name: "fixture.slice".into(),

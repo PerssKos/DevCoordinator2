@@ -2827,6 +2827,7 @@ mod tests {
         let plane = crate::control_plane::ControlPlane::with_adapters(
             crate::config::Config {
                 socket_path: root.join("daemon.sock"),
+                sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
                 state_dir: root.join("state"),
                 unit_prefix: "devcoordinator2-evidence-fixture".into(),
                 slice_name: "unused-fixture.slice".into(),

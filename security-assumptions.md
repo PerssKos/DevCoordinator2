@@ -278,6 +278,13 @@ untracked `instance/` directory and in the installed instance configuration
   from a malicious local account replacing the lease itself.
 - No local per-repository or per-agent permissions are consulted. Any
   trusted local account may invoke any local command.
+- Sandboxed trusted agents may be unable to create or connect any socket,
+  including loopback sockets, while still writing bounded files in the host
+  temporary filesystem. A daemon-owned sticky bridge directory may carry the
+  same local protocol when the client observes `EPERM`; request-file ownership
+  supplies the same trusted local UID/GID attribution, responses are private,
+  and no network listener or public access is added. If local accounts become
+  mutually distrusting, this bridge must be redesigned and reviewed.
 - The public edge authenticates users and enforces per-deployment grants.
   Public authority never derives from the local trust boundary.
 - Decision summarization is an append-only maintenance write over existing

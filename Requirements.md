@@ -526,6 +526,15 @@ not contradict them.
 - **REQ-ACCESS-04**: Local agent calls via the Unix socket are independent
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
+- **REQ-ACCESS-05**: Agents running under a sandbox that denies socket
+  syscalls can use the same protocol-2 CLI and MCP workflow without owner
+  intervention. On client-side `EPERM` only, the client uses the daemon-owned
+  bounded file bridge. The daemon derives caller UID/GID from the private
+  request file owner, validates the same envelope and operation schemas, and
+  publishes a private response file. No TCP listener, public proxy, second
+  scheduler, or alternate authorization model is introduced. Interrupted
+  bridge processing returns a bounded re-query error rather than replaying an
+  accepted mutation.
 
 ## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8, 11, and 13)
 

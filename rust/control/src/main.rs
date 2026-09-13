@@ -332,6 +332,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
         let _ = signal_shutdown.send(true);
     });
     let mut services = JoinSet::new();
+    let bridge_app = Arc::clone(&app);
     let mut daemon_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         (
@@ -340,6 +341,20 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 .serve(&mut daemon_shutdown, app)
                 .await
                 .map_err(|error| error.to_string()),
+        )
+    });
+    let bridge_directory = config.sandbox_bridge_dir.clone();
+    let bridge_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        (
+            "sandbox request bridge",
+            devcoordinator2_control::sandbox_bridge::serve(
+                bridge_app,
+                &bridge_directory,
+                bridge_shutdown,
+            )
+            .await
+            .map_err(|error| error.to_string()),
         )
     });
     let capacity_shutdown = shutdown_rx.clone();
@@ -451,6 +466,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: temporary.path().join("unopened-state"),
             unit_prefix: "isolated-duplicate-test".to_owned(),
             slice_name: "isolated-duplicate-test.slice".to_owned(),
