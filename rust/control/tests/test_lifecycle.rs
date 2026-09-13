@@ -1040,6 +1040,120 @@ fn interrupted_executor_retains_a_retry_receipt_without_rewriting_its_report() {
 }
 
 #[test]
+fn legacy_terminal_snapshot_is_reconciled_and_can_recover_its_missing_retry_receipt() {
+    let world = LifecycleWorld::new();
+    let started = world.start();
+    let current = world.worktree.join(".devcoordinator/test/current");
+    let mut report =
+        ExecutionReport::from_json(&std::fs::read(current.join(REPORT_FILE)).unwrap()).unwrap();
+    report.status = RunStatus::Running;
+    report.finished_at = None;
+    report.checks[0].status = LeafStatus::Running;
+    report.checks[0].finished_at = None;
+    report.checks[0].exit = DiagnosticExit {
+        code: None,
+        signal: None,
+    };
+    report.counts.insert("passed".into(), 0);
+    report.counts.insert("running".into(), 1);
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    world.systemd.timed_out.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    let mut old = world.wait_status(TestStatus::TimedOut);
+    old.report_issue = None;
+    old.readiness_eligible = true;
+    old.checks.as_mut().unwrap()[0].status = devcoordinator2_api::results::LeafStatus::Running;
+    old.check_summary
+        .as_mut()
+        .unwrap()
+        .insert("timed_out".into(), 0);
+    old.check_summary
+        .as_mut()
+        .unwrap()
+        .insert("running".into(), 1);
+    std::fs::write(
+        current.join("summary.json"),
+        serde_json::to_vec(&old).unwrap(),
+    )
+    .unwrap();
+    std::fs::remove_file(world.worktree.join(".devcoordinator/test/evidence.json")).unwrap();
+    let status = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_eq!(
+        status.checks.as_ref().unwrap()[0].status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    assert_eq!(
+        world.lifecycle.list_current().unwrap().runs[0]
+            .summary
+            .checks
+            .as_ref()
+            .unwrap()[0]
+            .status,
+        devcoordinator2_api::results::LeafStatus::TimedOut
+    );
+    world.systemd.timed_out.store(false, Ordering::SeqCst);
+    let mut other = report.clone();
+    other.run_id = "t20260904T000000Z-ffffff".into();
+    for check in &mut other.checks {
+        for stream in &mut check.streams {
+            stream.log_ref.run_id.clone_from(&other.run_id);
+        }
+    }
+    other.validate().unwrap();
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&other).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        world
+            .lifecycle
+            .retry(
+                RetryTest {
+                    path: world.worktree.display().to_string(),
+                    test: Some("all".into()),
+                    run_id: started.run_id.clone(),
+                    check: "unit".into()
+                },
+                &world.caller
+            )
+            .is_err()
+    );
+    assert!(
+        !world
+            .worktree
+            .join(".devcoordinator/test/evidence.json")
+            .exists()
+    );
+    std::fs::write(
+        current.join(REPORT_FILE),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let retry = world
+        .lifecycle
+        .retry(
+            RetryTest {
+                path: world.worktree.display().to_string(),
+                test: Some("all".into()),
+                run_id: started.run_id,
+                check: "unit".into(),
+            },
+            &world.caller,
+        )
+        .expect("matching retained legacy report can restore diagnostic retry evidence");
+    world.systemd.finish(&retry.unit);
+    assert!(!world.wait_status(TestStatus::Passed).readiness_eligible);
+}
+
+#[test]
 fn passing_checks_do_not_become_retry_targets() {
     let world = LifecycleWorld::new();
     let started = world.start();

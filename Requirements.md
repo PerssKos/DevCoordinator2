@@ -85,8 +85,10 @@ not contradict them.
   retry of a failed, timed-out, or cancelled check are diagnostic only.
   When the outer unit ends before its executor seals its report, retain a
   failed-run retry receipt with reconciled child states while preserving the
-  original report bytes. Missing or invalid reports never become invented
-  successful evidence. Retry begins only after an original
+  original report bytes. Existing terminal snapshots are reconciled on read;
+  an explicit retry may recover a missing receipt from the exact matching,
+  stopped current run's retained report. Missing or invalid reports never
+  become invented successful evidence. Retry begins only after an original
   complete run finishes, includes the target's prerequisite closure, reuses
   only exact matching regular-file artifact receipts, reruns non-reusable
   setup, and rejects changed source, config, artifacts, origin, or target

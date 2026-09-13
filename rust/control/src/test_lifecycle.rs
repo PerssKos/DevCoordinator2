@@ -361,11 +361,54 @@ impl TestLifecycle {
             .source_digest(&self.inner.executor, &worktree, caller.uid, caller.gid)
             .map_err(command_start_error)?;
         let origin = if let Some((run_id, check)) = retry {
-            let origin = self
+            let mut origin = self
                 .inner
                 .store
                 .find_evidence(&worktree, run_id)
                 .map_err(state_start_error)?;
+            if origin.is_none()
+                && let Some(summary) = self
+                    .inner
+                    .store
+                    .read_current_summary(&worktree)
+                    .map_err(state_start_error)?
+                && summary.run_id == run_id
+                && summary.status != TestStatus::Running
+                && let Some(current) = self
+                    .inner
+                    .store
+                    .open_current(&worktree)
+                    .map_err(state_start_error)?
+                && let Some(report) = self.inner.store.read_report(&current).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::TestStartFailed,
+                        "retained check report cannot establish retry evidence",
+                    )
+                })?
+                && report.run_id == run_id
+                && report.test == summary.test
+                && api_proof(report.proof) == summary.proof
+                && report.selection == summary.selection
+                && report.origin_run_id == summary.origin_run_id
+                && api_tier(report.requested_tier) == summary.requested_tier
+            {
+                self.inner
+                    .store
+                    .record_evidence(
+                        &worktree,
+                        &report,
+                        &summary.status,
+                        summary.work.as_ref(),
+                        caller.uid,
+                        caller.gid,
+                    )
+                    .map_err(state_start_error)?;
+                origin = self
+                    .inner
+                    .store
+                    .find_evidence(&worktree, run_id)
+                    .map_err(state_start_error)?;
+            }
             let origin = origin.ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::TestStartFailed,
@@ -652,6 +695,7 @@ impl TestLifecycle {
             self.project_live(&mut summary, &handle)?;
         }
         summary.capacity = Some(self.inner.capacity.snapshot()?);
+        reconcile_terminal_checks(&mut summary);
         bound_summary_response(&mut summary, 128 * 1024)?;
         Ok(summary)
     }
@@ -1030,6 +1074,7 @@ impl TestLifecycle {
                 break;
             }
             summary.capacity = Some(capacity.clone());
+            reconcile_terminal_checks(&mut summary);
             compact_list_summary(&mut summary);
             bound_summary_response(&mut summary, 48 * 1024)?;
             let repository_source = sources

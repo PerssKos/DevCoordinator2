@@ -146,6 +146,9 @@ report payloads. Partial check results remain available and all interrupted
 children have terminal status. A valid partial report from a stopped executor
 also yields a diagnostic retry receipt for failed, timed-out, or cancelled checks;
 the original report bytes are retained, and the retry cannot establish readiness.
+Existing terminal snapshots are reconciled when read. An explicit retry may
+recover its missing receipt from the exact matching stopped current run's report;
+a report from another run cannot supply that evidence.
 
 A mixed Compose component waits for safe finite siblings to settle even if
 another finite service exits unsuccessfully. Cancellation and the declared
