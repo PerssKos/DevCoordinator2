@@ -348,13 +348,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
     services.spawn(async move {
         (
             "sandbox request bridge",
-            devcoordinator2_control::sandbox_bridge::serve(
-                bridge_app,
-                &bridge_directory,
-                bridge_shutdown,
-            )
-            .await
-            .map_err(|error| error.to_string()),
+            serve_sandbox_bridge(bridge_app, bridge_directory, bridge_shutdown).await,
         )
     });
     let capacity_shutdown = shutdown_rx.clone();
@@ -414,6 +408,36 @@ async fn run_daemon(config: &Config) -> ExitCode {
         Some((surface, error)) => {
             eprintln!("{surface} failed: {error}");
             ExitCode::from(1)
+        }
+    }
+}
+
+async fn serve_sandbox_bridge(
+    app: Arc<daemon::App>,
+    directory: std::path::PathBuf,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let mut retry_delay = Duration::from_secs(1);
+    loop {
+        match devcoordinator2_control::sandbox_bridge::serve(
+            Arc::clone(&app),
+            &directory,
+            shutdown.clone(),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::error!(path = %directory.display(), %error, "sandbox request bridge unavailable");
+                tokio::select! {
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                    }
+                    () = tokio::time::sleep(retry_delay) => {
+                        retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
+                    }
+                }
+            }
         }
     }
 }

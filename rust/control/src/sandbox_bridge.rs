@@ -10,7 +10,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use devcoordinator2_api::{
@@ -26,10 +26,19 @@ use tracing::{error, info};
 use crate::daemon::{App, PeerCredentials};
 
 pub const DEFAULT_DIR: &str = "/tmp/devcoordinator2-bridge";
+pub const DEFAULT_SOCKET: &str = "/run/devcoordinator2/daemon.sock";
 const MAX_IN_FLIGHT: usize = 64;
 const RESPONSE_TTL: Duration = Duration::from_secs(15 * 60);
 const MIN_POLL: Duration = Duration::from_millis(25);
 const MAX_POLL: Duration = Duration::from_millis(500);
+
+pub fn default_directory(socket_path: &Path) -> PathBuf {
+    if socket_path == Path::new(DEFAULT_SOCKET) {
+        PathBuf::from(DEFAULT_DIR)
+    } else {
+        socket_path.with_file_name("sandbox-bridge")
+    }
+}
 
 pub async fn serve(
     app: std::sync::Arc<App>,
@@ -48,11 +57,12 @@ async fn serve_with_owner(
     prepare_directory(directory, expected_owner)?;
     recover_processing(directory)?;
     info!(path = %directory.display(), "serving sandbox request bridge");
+    let lock = acquire_lock(directory, expected_owner)?;
     let mut work = JoinSet::new();
     let mut poll = MIN_POLL;
     loop {
         while work.try_join_next().is_some() {}
-        let claimed = scan_requests(directory, &app, &mut work)?;
+        let claimed = scan_requests(directory, &app, &mut work, &shutdown)?;
         if claimed > 0 {
             poll = MIN_POLL;
         } else {
@@ -67,7 +77,39 @@ async fn serve_with_owner(
         }
     }
     while work.join_next().await.is_some() {}
+    drop(lock);
     Ok(())
+}
+
+fn acquire_lock(directory: &Path, expected_owner: u32) -> io::Result<std::fs::File> {
+    let path = directory.join("daemon.lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if metadata.uid() != expected_owner || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "sandbox bridge lock has an unexpected owner",
+        ));
+    }
+    let result = unsafe {
+        libc::flock(
+            std::os::unix::io::AsRawFd::as_raw_fd(&file),
+            libc::LOCK_EX | libc::LOCK_NB,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "another daemon owns the sandbox bridge",
+        ));
+    }
+    Ok(file)
 }
 
 fn prepare_directory(directory: &Path, expected_owner: u32) -> io::Result<()> {
@@ -90,6 +132,7 @@ fn scan_requests(
     directory: &Path,
     app: &std::sync::Arc<App>,
     work: &mut JoinSet<()>,
+    shutdown: &watch::Receiver<bool>,
 ) -> io::Result<usize> {
     let mut claimed = 0;
     for entry in fs::read_dir(directory)? {
@@ -118,8 +161,9 @@ fn scan_requests(
         let app = std::sync::Arc::clone(app);
         let directory = directory.to_owned();
         let id = id.to_owned();
+        let shutdown = shutdown.clone();
         work.spawn(async move {
-            if let Err(error) = process_claimed(&directory, &id, &processing, app).await {
+            if let Err(error) = process_claimed(&directory, &id, &processing, app, shutdown).await {
                 error!(request = %id, %error, "sandbox request bridge failed");
             }
         });
@@ -132,6 +176,7 @@ async fn process_claimed(
     id: &str,
     processing: &Path,
     app: std::sync::Arc<App>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let (owner, raw) = match read_claimed(processing) {
         Ok(value) => value,
@@ -146,7 +191,23 @@ async fn process_claimed(
         gid: owner.1,
     };
     let response = match parse_request(&raw) {
-        Ok(request) if request.id == id => app.dispatch(request, peer).await,
+        Ok(request) if request.id == id => {
+            let event_wait = request.operation == "event.wait";
+            if event_wait {
+                tokio::select! {
+                    response = app.dispatch(request, peer) => response,
+                    changed = shutdown.changed() => {
+                        let _ = changed;
+                        ResponseEnvelope::failure(id, ProtocolError::new(
+                            ErrorCode::DaemonUnavailable,
+                            "coordinator is restarting; re-query the operation with its last cursor",
+                        ))
+                    }
+                }
+            } else {
+                app.dispatch(request, peer).await
+            }
+        }
         Ok(_) => ResponseEnvelope::failure(
             id,
             ProtocolError::new(
@@ -374,5 +435,17 @@ mod tests {
         let response: ResponseEnvelope = serde_json::from_slice(&raw).unwrap();
         assert!(!response.is_ok());
         assert!(!temporary.path().join(format!("{id}.processing")).exists());
+    }
+
+    #[test]
+    fn custom_socket_instances_get_isolated_bridge_directories() {
+        assert_eq!(
+            default_directory(Path::new(DEFAULT_SOCKET)),
+            Path::new(DEFAULT_DIR)
+        );
+        assert_eq!(
+            default_directory(Path::new("/var/tmp/isolated/daemon.sock")),
+            Path::new("/var/tmp/isolated/sandbox-bridge")
+        );
     }
 }

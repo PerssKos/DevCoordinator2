@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use devcoordinator2_api::{
@@ -12,8 +12,6 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::time::{Instant, sleep, timeout};
-
-use crate::sandbox_bridge::DEFAULT_DIR as DEFAULT_SANDBOX_BRIDGE_DIR;
 
 pub async fn call(
     socket_path: &Path,
@@ -43,8 +41,10 @@ pub async fn call(
     let mut stream = match timeout(Duration::from_secs(5), UnixStream::connect(socket_path)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) if error.raw_os_error() == Some(libc::EPERM) => {
+            let bridge_directory = crate::config::sandbox_bridge_directory(socket_path);
             return call_via_sandbox_bridge(
                 &request,
+                &bridge_directory,
                 blocking_wait,
                 deployment_action,
                 review_action,
@@ -119,13 +119,11 @@ pub async fn call(
 
 async fn call_via_sandbox_bridge(
     request: &RequestEnvelope,
+    directory: &Path,
     blocking_wait: bool,
     deployment_action: bool,
     review_action: bool,
 ) -> Result<ResponseEnvelope, ProtocolError> {
-    let directory = std::env::var_os("DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SANDBOX_BRIDGE_DIR));
     let id = &request.id;
     let request_path = directory.join(format!("{id}.request"));
     let response_path = directory.join(format!("{id}.response"));
@@ -140,7 +138,7 @@ async fn call_via_sandbox_bridge(
             "request exceeds 64 KiB frame cap",
         ));
     }
-    write_bridge_request(&directory, &request_path, &encoded)?;
+    write_bridge_request(directory, &request_path, &encoded)?;
     let deadline = if blocking_wait || deployment_action {
         None
     } else {
@@ -148,21 +146,19 @@ async fn call_via_sandbox_bridge(
     };
     let mut delay = Duration::from_millis(10);
     loop {
-        match tokio::fs::read(&response_path).await {
+        match read_bridge_response(&response_path) {
             Ok(bytes) => {
                 let _ = tokio::fs::remove_file(&response_path).await;
-                if bytes.len() > MAX_RESPONSE_BYTES {
-                    return Err(ProtocolError::new(
-                        ErrorCode::ProtocolInvalid,
-                        "daemon response exceeds size cap",
-                    ));
-                }
-                return serde_json::from_slice(&bytes).map_err(|error| {
-                    ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
-                        .with_detail(error.to_string())
-                });
+                return decode_bridge_response(&bytes, id);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                let _ = std::fs::remove_file(&response_path);
+                return Err(ProtocolError::new(
+                    ErrorCode::ProtocolInvalid,
+                    error.to_string(),
+                ));
+            }
             Err(error) => return Err(bridge_error("cannot read sandbox bridge response", error)),
         }
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -174,6 +170,50 @@ async fn call_via_sandbox_bridge(
         sleep(delay).await;
         delay = (delay * 2).min(Duration::from_millis(100));
     }
+}
+
+fn read_bridge_response(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > (MAX_RESPONSE_BYTES + 1) as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "bridge response is not a bounded regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take((MAX_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn decode_bridge_response(
+    bytes: &[u8],
+    expected_id: &str,
+) -> Result<ResponseEnvelope, ProtocolError> {
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err(ProtocolError::new(
+            ErrorCode::ProtocolInvalid,
+            "daemon response exceeds size cap",
+        ));
+    }
+    let response: ResponseEnvelope = serde_json::from_slice(bytes).map_err(|error| {
+        ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
+            .with_detail(error.to_string())
+    })?;
+    let id = match &response {
+        ResponseEnvelope::Success { id, .. } | ResponseEnvelope::Failure { id, .. } => id,
+    };
+    if id != expected_id {
+        return Err(ProtocolError::new(
+            ErrorCode::ProtocolInvalid,
+            "daemon response id does not match request",
+        ));
+    }
+    Ok(response)
 }
 
 fn write_bridge_request(
@@ -232,8 +272,41 @@ fn request_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::App;
+    use std::sync::Arc;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::net::UnixListener;
+
+    #[tokio::test]
+    async fn sandbox_bridge_client_round_trip_preserves_the_protocol_envelope() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o1777))
+            .unwrap();
+        let (signal, shutdown) = tokio::sync::watch::channel(false);
+        let directory = temporary.path().to_owned();
+        let bridge_directory = directory.clone();
+        let bridge = tokio::spawn(async move {
+            crate::sandbox_bridge::serve(
+                Arc::new(App::new(Path::new("/run/test-daemon.sock"))),
+                &bridge_directory,
+                shutdown,
+            )
+            .await
+        });
+        let request = RequestEnvelope {
+            protocol: PROTOCOL_VERSION,
+            id: "a1b2c3d4".into(),
+            operation: "ping".into(),
+            params: serde_json::json!({}),
+            client: ClientContext::default(),
+        };
+        let response = call_via_sandbox_bridge(&request, &directory, false, false, false)
+            .await
+            .unwrap();
+        assert!(response.is_ok());
+        signal.send(true).unwrap();
+        bridge.await.unwrap().unwrap();
+    }
 
     #[tokio::test(start_paused = true)]
     async fn deployment_waits_for_the_result_beyond_the_ordinary_deadline() {
