@@ -668,7 +668,13 @@ impl World {
         let state = self.state.with_file_name("devcoordinator2-edge");
         fs::create_dir(&state).map_err(|error| error.to_string())?;
         chown_path(&state, uid, gid)?;
-        let module = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../edge/lib/routes-store.mjs");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../edge/lib/routes-store.mjs");
+        // The fixture edge reads a candidate copy because development worktrees
+        // can be private to their owner. Source access remains unchanged.
+        let module = self.base.join("routes-store.mjs");
+        fs::copy(source, &module).map_err(|error| error.to_string())?;
+        fs::set_permissions(&module, fs::Permissions::from_mode(0o644))
+            .map_err(|error| error.to_string())?;
         let script = r#"
 import {pathToFileURL} from 'node:url';
 const {createRoutesStore} = await import(pathToFileURL(process.argv[1]));

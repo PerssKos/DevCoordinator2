@@ -543,15 +543,27 @@ pub fn supplementary_groups(uid: u32) -> Result<Vec<(u32, OsString)>, SystemdErr
     // SAFETY: getgrouplist reads the NUL-terminated user name and uses the
     // null/zero pair only to report the required element count.
     unsafe {
-        libc::getgrouplist(user.as_ptr(), primary_gid, std::ptr::null_mut(), &mut count);
+        libc::getgrouplist(
+            user.as_ptr(),
+            primary_gid as _,
+            std::ptr::null_mut(),
+            &mut count,
+        );
     }
     if count <= 0 || count > 65_536 {
         return Ok(Vec::new());
     }
-    let mut groups = vec![0 as libc::gid_t; count as usize];
-    // SAFETY: `groups` has exactly `count` writable gid_t elements.
-    let status =
-        unsafe { libc::getgrouplist(user.as_ptr(), primary_gid, groups.as_mut_ptr(), &mut count) };
+    // Infer getgrouplist's native element type: macOS uses c_int, Linux gid_t.
+    let mut groups = vec![0; count as usize];
+    // SAFETY: `groups` has exactly `count` writable elements of the API's type.
+    let status = unsafe {
+        libc::getgrouplist(
+            user.as_ptr(),
+            primary_gid as _,
+            groups.as_mut_ptr(),
+            &mut count,
+        )
+    };
     if status < 0 {
         return Err(SystemdError::Operation(
             "cannot resolve supplementary groups".into(),
@@ -563,7 +575,10 @@ pub fn supplementary_groups(uid: u32) -> Result<Vec<(u32, OsString)>, SystemdErr
     groups
         .into_iter()
         .filter(|gid| *gid != 0)
-        .map(|gid| Ok((gid, group_name(gid)?)))
+        .map(|gid| {
+            let gid: u32 = gid as _;
+            Ok((gid, group_name(gid)?))
+        })
         .collect()
 }
 

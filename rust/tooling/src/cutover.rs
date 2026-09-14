@@ -756,7 +756,9 @@ pub fn recover_host(
             "recovery target is required; specify one in-progress transaction directory".to_owned(),
         );
     }
-    let snapshot = read_snapshot(&config.transaction_dir, expected_owner.0)?;
+    let invalid_target = |error| format!("recovery target invalid: {error}");
+    let snapshot =
+        read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
     if !matches!(
         snapshot.status.as_str(),
         "prepared" | "activating" | "rolling_back"
@@ -790,10 +792,10 @@ pub fn recover_host(
         }
     }
     let backup_path = config.transaction_dir.join("authority-before.sqlite3");
-    if install::hash_file(&backup_path)? != snapshot.backup_sha256 {
+    if install::hash_file(&backup_path).map_err(invalid_target)? != snapshot.backup_sha256 {
         return Err("recovery target backup does not match its transaction".into());
     }
-    if !database_integrity(&backup_path)? {
+    if !database_integrity(&backup_path).map_err(invalid_target)? {
         return Err("recovery target backup failed integrity verification".into());
     }
     run_systemctl_all(runner, &config.systemctl, &[("stop", &config.daemon_unit)])?;
@@ -2268,6 +2270,16 @@ mod tests {
             recover_host(&missing, runner.as_ref(), world.expected_owner)
                 .unwrap_err()
                 .contains("target")
+        );
+        assert!(runner.requests.lock().unwrap().is_empty());
+        let unavailable = RecoveryConfig {
+            transaction_dir: world.config.transaction_dir.join("missing"),
+            ..RecoveryConfig::default()
+        };
+        assert!(
+            recover_host(&unavailable, runner.as_ref(), world.expected_owner)
+                .unwrap_err()
+                .starts_with("recovery target invalid:")
         );
         assert!(runner.requests.lock().unwrap().is_empty());
         let mut host =
