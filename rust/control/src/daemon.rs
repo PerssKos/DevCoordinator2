@@ -127,10 +127,11 @@ impl App {
     ) -> ResponseEnvelope {
         let id = request.id.clone();
         if self.installation_endpoint.as_ref().is_some_and(|path| {
-            // The old daemon loses its normal endpoint when it is fenced.
-            // Its replacement owns that endpoint while the prior socket is
-            // retained for rollback. That retained socket must not fence it.
-            !path.exists() && path.with_file_name("daemon.pre-cutover.sock").exists()
+            // The replacement answers readiness while rollback remains
+            // possible, but must not accept user writes that rollback could
+            // discard. Removing the retained socket commits normal admission.
+            path.with_file_name("daemon.pre-cutover.sock").exists()
+                && (!path.exists() || request.operation != "ping")
         }) {
             return ResponseEnvelope::failure(
                 id,
@@ -679,6 +680,11 @@ mod tests {
             replacement.dispatch(ping(), peer).await,
             ResponseEnvelope::Success { .. }
         ));
+        let mut mutation = ping();
+        mutation.operation = "repository.register".into();
+        assert!(
+            matches!(replacement.dispatch(mutation, peer).await, ResponseEnvelope::Failure {error,..} if error.code == ErrorCode::DaemonUnavailable)
+        );
         std::fs::remove_file(&fence).unwrap();
         std::fs::rename(&socket, &fence).unwrap();
         assert!(
