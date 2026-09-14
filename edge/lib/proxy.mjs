@@ -5,6 +5,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import { REVIEW_IDENTITY_HEADER } from './review-identity.mjs';
 
 const LOOPBACK = '127.0.0.1';
 const CONNECT_TIMEOUT_MS = 5_000;
@@ -226,6 +227,7 @@ export function createProxy({
     // header is also stripped so no application can accidentally keep trusting
     // a stale client-supplied token after the local transport cutover.
     delete headers[LEGACY_IDENTITY_ASSERTION_HEADER];
+    delete headers[REVIEW_IDENTITY_HEADER];
     for (const name of Object.values(LOCAL_ATTRIBUTION_HEADERS)) delete headers[name];
     if (!consoleTrustDomain) {
       const safeCookie = filterRequestCookieHeader(headers.cookie, protectedCookieNames);
@@ -258,6 +260,11 @@ export function createProxy({
       headers.connection = 'Upgrade';
       if (req.headers.upgrade) headers.upgrade = req.headers.upgrade;
       // Sec-WebSocket-* are end-to-end headers and already passed through.
+    }
+    // Add only the per-request assertion minted after route authorization.
+    // Do this after hop-by-hop filtering so Connection cannot nominate it away.
+    if (!upgrade && !consoleTrustDomain && target.route?.auth === 'authenticated' && target.reviewIdentity) {
+      headers[REVIEW_IDENTITY_HEADER] = target.reviewIdentity;
     }
     return headers;
   }

@@ -22,6 +22,7 @@ import { createDaemonClient } from './lib/daemon-client.mjs';
 import { createOidc } from './lib/oidc.mjs';
 import { createPages } from './lib/pages.mjs';
 import { createProxy } from './lib/proxy.mjs';
+import { loadReviewIdentity } from './lib/review-identity.mjs';
 import { createRoutesStore } from './lib/routes-store.mjs';
 import { createSessionManager, parseCookies } from './lib/session.mjs';
 import { createStaticServer } from './lib/static.mjs';
@@ -85,6 +86,7 @@ export function loadConfig(e = process.env) {
     oidcClientSecret: readSecretFile(e.EDGE_OIDC_CLIENT_SECRET_FILE, 'oidc client secret') || e.EDGE_OIDC_CLIENT_SECRET || '',
     routesFile: e.EDGE_ROUTES_FILE || '/var/lib/devcoordinator2/routes.json',
     upstreamAuthFile: e.EDGE_UPSTREAM_AUTH_FILE || '',
+    reviewIdentityFile: e.EDGE_REVIEW_IDENTITY_FILE || '',
     acmeWebroot: e.EDGE_ACME_WEBROOT || '',
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
@@ -141,6 +143,7 @@ async function readJsonBody(req, limit = 65536) {
 
 export async function createEdge(config, { log = console } = {}) {
   const upstreamAuthorization = readUpstreamAuthorization(config.upstreamAuthFile);
+  const reviewIdentity = loadReviewIdentity(config.reviewIdentityFile, { oidcIssuer: config.oidcIssuer });
   const acmeRoot = config.acmeWebroot ? fs.realpathSync(config.acmeWebroot) : null;
   const acmeCertificate = acmeRoot && !config.httpOnly ? new X509Certificate(fs.readFileSync(config.tlsCert)) : null;
   const scheme = config.httpOnly ? 'http' : 'https';
@@ -277,7 +280,13 @@ export async function createEdge(config, { log = console } = {}) {
       if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname + url.search)}`);
       return writePage(res, pages.renderDenied({ email: identity.email, resource: host, sessionSet: true }));
     }
-    return proxy.forward(req, res, target(route, host, identity));
+    const destination = target(route, host, identity);
+    try {
+      destination.reviewIdentity = reviewIdentity.assertionFor({ route, identity, method: req.method, target: req.url });
+    } catch {
+      return writeJson(res, 503, { ok: false, error: { code: 'review_identity_unavailable' } });
+    }
+    return proxy.forward(req, res, destination);
   }
 
   // Authenticated routes tell the upstream who signed in (verified identity)

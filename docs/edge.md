@@ -61,6 +61,7 @@ authenticated routes only), and a static file server for the Console.
 | `EDGE_OIDC_CLIENT_ID_FILE` / `EDGE_OIDC_CLIENT_SECRET_FILE` | credentials |
 | `EDGE_ROUTES_FILE` | daemon route document (default instance state dir) |
 | `EDGE_UPSTREAM_AUTH_FILE` | optional private JSON file mapping route labels to upstream Authorization headers |
+| `EDGE_REVIEW_IDENTITY_FILE` | optional private policy for an existing request-bound review identity integration |
 | `EDGE_ACME_WEBROOT` | optional existing certificate-renewal webroot; HTTP serves only its `.well-known/acme-challenge/<token>` files |
 | `EDGE_STATE_DIR` | last-known-good copy |
 | `EDGE_DAEMON_SOCKET` | daemon socket (world-connectable since DC2-2026-08-24-OPEN-LOCAL-ACCESS; no group membership needed) |
@@ -87,6 +88,56 @@ and retain their existing caller-header behavior. Remove the mapping before
 reassigning a route label to a different application. These boundaries preserve
 existing access and upstream authentication during migration, as recorded in
 `security-assumptions.md` under “Existing upstream credential migration”.
+
+## Existing review identity integration
+
+Applications that already verify `X-Spectre-Review-Identity` can retain their
+existing review authorship through `EDGE_REVIEW_IDENTITY_FILE`. This optional
+compatibility policy is loaded once at startup and does not change deployment
+grants. It follows the confirmed same-owner migration boundary and
+`DC2-MIGRATION-20260907`: preserve existing online access and credentials without
+making applications public or granting additional authority.
+
+The private JSON shape is:
+
+```json
+{
+  "schema": 1,
+  "issuer": "<existing assertion issuer>",
+  "identity_provider_issuer": "<existing OIDC issuer>",
+  "kid": "<existing signing key identifier>",
+  "private_key_file": "<absolute private Ed25519 PEM credential path>",
+  "routes": [{
+    "label": "<exact route label>",
+    "deployment_id": "<exact deployment identifier>",
+    "component": "<exact component>",
+    "audience": "<existing route:instance audience>"
+  }]
+}
+```
+
+Both files must be private regular files owned by root or the edge service,
+without group/world access; symlinks and hard links are refused. Keep them
+outside the repository, for example in systemd credentials. Invalid policy or
+keys stop startup with a content-free error. The configured identity-provider
+issuer must equal `EDGE_OIDC_ISSUER`; keep the existing immutable session
+subject, signer issuer, key identifier and audience to preserve upstream
+identity and editor bindings. The existing receiver's public-key trust remains
+the authority. Restart the edge after changing this private configuration.
+
+After current session and deployment-grant checks, the edge signs a fresh
+Ed25519 assertion only for an exact authenticated label/deployment/component
+binding and an exact review endpoint: context, whoami, reviews, review messages,
+positions, decisions, review-media upload/content, or review export. Assertions
+include the HTTP method, unchanged raw path/query, a 30-second expiry and a
+unique nonce. The receiver enforces that binding and single-use lifetime. No
+role is asserted: the receiver retains its existing review permission rules.
+
+Every caller-supplied `X-Spectre-Review-Identity` is stripped, including duplicate
+headers and `Connection` nominations. A fresh server assertion is added after
+hop-by-hop filtering. Public routes, unconfigured or reassigned bindings,
+non-review paths and all WebSocket upgrades receive no assertion. Session
+cookies, keys and assertions never enter route documents or normal logs.
 
 ## Existing certificate renewal
 
