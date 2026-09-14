@@ -504,6 +504,9 @@ impl CutoverAdapter for HostCutover {
             .map_err(|error| format!("cannot back up Coordinator database: {error}"))?;
         std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("cannot protect database backup: {error}"))?;
+        if !database_integrity(&backup)? {
+            return Err("captured database backup failed integrity verification".into());
+        }
         path_text(&backup)
     }
 
@@ -1446,7 +1449,9 @@ fn database_integrity(path: &Path) -> Result<bool, String> {
         [],
         |row| row.get::<_, String>(0),
     ) {
-        Ok(schema) => Ok(schema == "15"),
+        Ok(schema) => Ok(schema.parse::<u32>().is_ok_and(|version| {
+            (MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION).contains(&version)
+        })),
         Err(error) if sqlite_corruption(&error) => Ok(false),
         Err(error) => Err(format!("cannot confirm database schema: {error}")),
     }
@@ -2163,6 +2168,7 @@ mod tests {
                     )
                     .unwrap();
                 assert!(open_database_read_only(&world.config.database_path).is_err());
+                assert!(!database_integrity(&world.config.database_path).unwrap());
             }
         }
     }
@@ -2220,6 +2226,60 @@ mod tests {
                 .database_matches_backup(backup.to_str().unwrap())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn all_supported_schemas_preserve_intact_data_after_failed_activation() {
+        for schema in MINIMUM_SUPPORTED_DATABASE_SCHEMA..=DATABASE_SCHEMA_VERSION {
+            let world = host_world();
+            let connection = Connection::open(&world.config.database_path).unwrap();
+            connection
+                .execute(
+                    "UPDATE meta SET value=?1 WHERE key='schema_version'",
+                    [schema.to_string()],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO meta(key,value) VALUES('preserve-on-failure','current-data')",
+                    [],
+                )
+                .unwrap();
+            drop(connection);
+            assert!(database_integrity(&world.config.database_path).unwrap());
+            let runner = Arc::new(HostFake {
+                commit: world.commit.clone(),
+                fail_ping: true,
+                ..HostFake::default()
+            });
+            let mut host =
+                HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+            let error = activate(&mut host).unwrap_err();
+            assert!(
+                error.contains("without replacing the intact database"),
+                "schema {schema}: {error}"
+            );
+            let backup = world
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3");
+            assert!(database_integrity(&backup).unwrap());
+            assert_eq!(
+                database_schema(&world.config.database_path).unwrap(),
+                schema.to_string()
+            );
+            let connection = Connection::open(&world.config.database_path).unwrap();
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT value FROM meta WHERE key='preserve-on-failure'",
+                        [],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                "current-data"
+            );
+        }
     }
 
     #[test]
