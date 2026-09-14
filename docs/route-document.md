@@ -66,4 +66,8 @@ The edge persists an acknowledgement containing only its accepted schema,
 generation and checksum in its own state directory. Withdrawal must be
 acknowledged before a routed lease can be released for another deployment.
 The installer compares that acknowledgement with the published document and
-checks the referenced leases and listeners before reporting recovery complete.
+checks the referenced managed leases, hostnames and listeners before reporting
+recovery complete. An observed-only route must still match its recorded hostname,
+deployment, component and port. Its external application's availability remains
+an application health result; an external outage does not roll back the
+Coordinator installation or change that application's declared endpoint.

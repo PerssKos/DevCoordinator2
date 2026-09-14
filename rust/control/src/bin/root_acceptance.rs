@@ -4454,6 +4454,13 @@ fn case_replacement_daemon_accepts_requests_with_prior_socket_fenced(
         "fixture did not retain the prior socket for rollback"
     );
     data(&world.call("ping", json!({}))?)?;
+    let blocked = world.call("repository.register", json!({"path": world.repo}))?;
+    ensure!(
+        error_code(&blocked) == Some("daemon_unavailable"),
+        "replacement accepted a write before activation committed"
+    );
+    fs::remove_file(&fence).map_err(|error| error.to_string())?;
+    data(&world.call("repository.register", json!({"path": world.repo}))?)?;
     Ok(())
 }
 

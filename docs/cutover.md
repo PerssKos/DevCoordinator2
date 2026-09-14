@@ -67,7 +67,10 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    waits for finite accepted requests to finish, rejects an
    applying deployment, creates the private SQLite backup and installation
    snapshot, switches the units and direct binary links, and verifies the v2
-   daemon and Node edge. If interrupted, run
+   daemon and Node edge. The replacement answers readiness pings while the
+   prior socket is retained, but resumes normal API admission only after the
+   activation commits, so rollback cannot discard newly accepted user writes.
+   If interrupted, run
    `devcoordinator2-tooling install recover --transaction-dir <the interrupted transaction> --yes`;
    identify the unfinished transaction from the activation receipt. Recovery
    rejects a missing target, a completed transaction, a mismatched installation,

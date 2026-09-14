@@ -651,13 +651,14 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn commit_activation(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String> {
+        write_snapshot(snapshot, "committed", self.expected_owner)?;
         let fence = self.config.runtime_dir.join("daemon.pre-cutover.sock");
         if fence.exists() {
             std::fs::remove_file(&fence)
                 .map_err(|error| format!("cannot retire legacy socket fence: {error}"))?;
         }
         self.fenced = false;
-        write_snapshot(snapshot, "committed", self.expected_owner)
+        Ok(())
     }
 
     fn stop_rust(&mut self) -> Result<(), String> {
@@ -878,21 +879,38 @@ pub fn verify_reconciled_routes(database_path: &Path, edge_state: &Path) -> Resu
                     .as_u64()
                     .and_then(|p| u16::try_from(p).ok())
                     .ok_or("route port is invalid")?;
-                if route["observed"] != true {
+                if route["observed"] == true {
+                    // Imported applications keep their declared endpoint, but
+                    // their lifecycle is outside this daemon's lease ownership.
+                    // An external outage must not roll back a healthy Coordinator.
                     let valid: bool = connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM domain_routes r JOIN port_assignments p ON p.lease_id=r.lease_id AND p.port=r.port AND p.deployment_id=r.deployment_id AND p.component=r.component JOIN deployments d ON d.deployment_id=r.deployment_id WHERE p.generation=0 AND r.deployment_id=?1 AND r.component=?2 AND r.port=?3 AND r.lease_id=?4 AND r.generation=d.current_generation)",
-                        rusqlite::params![route["deployment_id"].as_str(), route["component"].as_str(), port, route["lease_id"].as_str()],
+                        "SELECT EXISTS(SELECT 1 FROM observed_routes WHERE domain=?1 AND observed_deployment_id=?2 AND component=?3 AND port=?4)",
+                        rusqlite::params![route["label"].as_str(), route["deployment_id"].as_str(), route["component"].as_str(), port],
+                        |row|row.get(0),
+                    ).map_err(|_| "cannot verify observed route reservation")?;
+                    if !valid {
+                        return Err(
+                            "recovery incomplete: observed route reservation mismatch".into()
+                        );
+                    }
+                } else {
+                    let valid: bool = connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM domain_routes r JOIN port_assignments p ON p.lease_id=r.lease_id AND p.port=r.port AND p.deployment_id=r.deployment_id AND p.component=r.component JOIN deployments d ON d.deployment_id=r.deployment_id WHERE p.generation=0 AND r.deployment_id=?1 AND r.component=?2 AND r.port=?3 AND r.lease_id=?4 AND r.domain=?5 AND r.generation=d.current_generation)",
+                        rusqlite::params![route["deployment_id"].as_str(), route["component"].as_str(), port, route["lease_id"].as_str(), route["label"].as_str()],
                         |row|row.get(0),
                     ).map_err(|_| "cannot verify route leases")?;
                     if !valid {
                         return Err("recovery incomplete: route lease ownership mismatch".into());
                     }
-                }
-                let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-                if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1))
+                    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                    if std::net::TcpStream::connect_timeout(
+                        &address,
+                        std::time::Duration::from_secs(1),
+                    )
                     .is_err()
-                {
-                    return Err("recovery incomplete: routed listener is unavailable".into());
+                    {
+                        return Err("recovery incomplete: routed listener is unavailable".into());
+                    }
                 }
             }
             return Ok(());
@@ -2226,6 +2244,95 @@ mod tests {
                 .database_matches_backup(backup.to_str().unwrap())
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn failed_commit_keeps_new_user_writes_fenced() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        host.backup_database().unwrap();
+        let snapshot = host.capture_installation().unwrap();
+        host.fence_legacy_socket().unwrap();
+        let record = world
+            .config
+            .transaction_dir
+            .join("installation-snapshot.json");
+        std::fs::remove_file(&record).unwrap();
+        std::fs::create_dir(&record).unwrap();
+        assert!(host.commit_activation(&snapshot).is_err());
+        assert!(
+            world
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn recovery_checks_owned_listeners_and_exact_external_reservations() {
+        let world = host_world();
+        let managed_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let managed_port = managed_listener.local_addr().unwrap().port();
+        let external_listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let external_port = external_listener.local_addr().unwrap().port();
+        drop(external_listener);
+        let connection = Connection::open(&world.config.database_path).unwrap();
+        connection.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r','/fixture','Fixture','now',1000,'now');
+            INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w','r','/fixture','now','now');
+            INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) VALUES('managed','r','w','web','worktree','f','{}','running',1,'now',1000,'other','now');
+            INSERT INTO observed_deployments(observed_deployment_id,repository_id,name,native_project,state,health,source,evidence_json,observed_at,imported_at) VALUES('external','r','external','external','stopped','unknown','fixture','{}','now','now');").unwrap();
+        connection.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(?1,'managed','web',0,'now','lease-managed')", [managed_port]).unwrap();
+        connection.execute("INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES('managed','managed','web',?1,1,'now','lease-managed')", [managed_port]).unwrap();
+        connection.execute("INSERT INTO observed_routes(domain,observed_deployment_id,component,port,public,evidence_json,observed_at) VALUES('external','external','app',?1,0,'{}','now')", [external_port]).unwrap();
+        drop(connection);
+        let mut routes = serde_json::json!([
+            {"label":"managed","deployment_id":"managed","component":"web","port":managed_port,"lease_id":"lease-managed"},
+            {"label":"external","deployment_id":"external","component":"app","port":external_port,"observed":true}
+        ]);
+        let publish = |routes: &Value| {
+            let doc = serde_json::json!({"schema":2,"generation":101,"payload_sha256":"a".repeat(64),"routes":routes});
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            std::fs::write(
+                world
+                    .config
+                    .database_path
+                    .parent()
+                    .unwrap()
+                    .join("public/routes.json"),
+                &bytes,
+            )
+            .unwrap();
+            std::fs::write(
+                world.config.edge_state_dir.join("routes.accepted.json"),
+                &bytes,
+            )
+            .unwrap();
+        };
+        let verify =
+            || verify_reconciled_routes(&world.config.database_path, &world.config.edge_state_dir);
+        publish(&routes);
+        verify().expect("offline external application does not block Coordinator");
+        routes[1]["port"] = serde_json::json!(managed_port);
+        publish(&routes);
+        assert!(verify().unwrap_err().contains("reservation mismatch"));
+        routes[1]["port"] = serde_json::json!(external_port);
+        routes[0]["label"] = serde_json::json!("external");
+        publish(&routes);
+        assert!(verify().unwrap_err().contains("lease ownership mismatch"));
+        routes[0]["label"] = serde_json::json!("managed");
+        routes[0]["observed"] = serde_json::json!(true);
+        publish(&routes);
+        assert!(verify().unwrap_err().contains("reservation mismatch"));
+        routes[0].as_object_mut().unwrap().remove("observed");
+        drop(managed_listener);
+        publish(&routes);
+        assert!(verify().unwrap_err().contains("listener is unavailable"));
     }
 
     #[test]

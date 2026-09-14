@@ -311,7 +311,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PathBuf>, CheckError> {
                 )
             })?;
             if relative.components().any(|component| {
-                matches!(component, Component::Normal(value) if value == OsStr::new(".git") || value == OsStr::new("node_modules") || value == OsStr::new("__pycache__") || value == OsStr::new("target"))
+                matches!(component, Component::Normal(value) if value == OsStr::new(".git") || value == OsStr::new("node_modules") || value == OsStr::new("__pycache__") || value == OsStr::new("target") || value == OsStr::new(".devcoordinator"))
             }) {
                 continue;
             }
@@ -4374,6 +4374,27 @@ mod tests {
             root.join("docs/holy-skills-snapshot.md"),
             "Imported /home/holyskills historically.\n",
         );
+    }
+
+    #[test]
+    fn repository_boundaries_exclude_private_runtime_evidence() {
+        use std::os::unix::fs::PermissionsExt;
+        let tree = TestTree::new("private-runtime-boundary");
+        repository_boundary_fixture(&tree.path);
+        let evidence = tree.path.join(".devcoordinator/private-evidence");
+        write(
+            evidence.join("captured-output.md"),
+            "reference/codex-app-wide is quoted private evidence\n",
+        );
+        fs::set_permissions(&evidence, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = audit_repository_boundaries(&tree.path);
+        fs::set_permissions(&evidence, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.unwrap().is_clean());
+        write(
+            tree.path.join("src/incorrect.rs"),
+            "// reference/codex-app-wide\n",
+        );
+        assert!(!audit_repository_boundaries(&tree.path).unwrap().is_clean());
     }
 
     #[test]
