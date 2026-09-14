@@ -1173,7 +1173,7 @@ async function main() {
 
   // Interaction proofs (populated, wide): controls call the API and the view re-renders.
   daemon.setScenario(SCENARIOS.populated);
-  const context = await browser.newContext({ viewport: VIEWPORTS.wide });
+  const context = await browser.newContext({ viewport: VIEWPORTS.wide, hasTouch: true });
   const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
   await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: `.${BASE}`, path: '/' }]);
   const page = await context.newPage();
