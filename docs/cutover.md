@@ -68,10 +68,18 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
    applying deployment, creates the private SQLite backup and installation
    snapshot, switches the units and direct binary links, and verifies the v2
    daemon and Node edge. If interrupted, run
-   `devcoordinator2-tooling install recover --yes`; it restores the captured
+   `devcoordinator2-tooling install recover --transaction-dir <the interrupted transaction> --yes`;
+   identify the unfinished transaction from the activation receipt. Recovery
+   rejects a missing target, a completed transaction, a mismatched installation,
+   or a changed backup; it never selects an old historical transaction by default.
+   It restores the captured
    installation and restores the database when integrity fails or the failed
    candidate changed its schema beyond the captured prior installation.
    Same-schema startup failures preserve intact current data.
+   Before reporting success, activation and recovery reconcile stable route
+   leases and live listeners, publish above the durable route-generation floor,
+   and verify that the edge accepted that document. The edge retains its last
+   valid route while this reconciliation runs.
    Subsequent source updates are developed and validated in worktrees, merged
    to `origin/main`, then fetched and fast-forwarded into the clean
    `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and

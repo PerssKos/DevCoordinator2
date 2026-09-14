@@ -332,7 +332,7 @@ fn atomic_write_json(
             .map_err(|error| filesystem("write temporary test admission document", error))?;
         file.sync_all()
             .map_err(|error| filesystem("sync temporary test admission document", error))?;
-        unix_fs::fchmod(&file, Mode::from_raw_mode(mode))
+        unix_fs::fchmod(&file, Mode::from_raw_mode(mode as _))
             .map_err(|error| filesystem("set test admission document mode", error))?;
         renameat(
             &runtime.descriptor,

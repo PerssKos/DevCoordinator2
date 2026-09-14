@@ -732,13 +732,13 @@ fn ensure_directory(
     owner: Option<(u32, u32)>,
 ) -> Result<File, TestStateError> {
     validate_atom(name)?;
-    match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode)) {
+    match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode as _)) {
         Ok(()) | Err(rustix::io::Errno::EXIST) => {}
         Err(error) => return Err(errno("create governed-test directory", error)),
     }
     let directory = open_child(parent, name)?
         .ok_or_else(|| TestStateError::Filesystem("governed-test directory vanished".into()))?;
-    unix_fs::fchmod(&directory, Mode::from_raw_mode(mode))
+    unix_fs::fchmod(&directory, Mode::from_raw_mode(mode as _))
         .map_err(|error| errno("set governed-test directory mode", error))?;
     if let Some((uid, gid)) = owner {
         fchown(&directory, uid, gid)?;
@@ -753,7 +753,7 @@ fn create_directory(
     owner: Option<(u32, u32)>,
 ) -> Result<File, TestStateError> {
     validate_atom(name)?;
-    unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode)).map_err(|error| {
+    unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode as _)).map_err(|error| {
         if error == rustix::io::Errno::EXIST {
             TestStateError::Invalid(format!("governed-test directory {name:?} already exists"))
         } else {
@@ -778,10 +778,10 @@ fn create_file(
     } else {
         flags |= OFlags::TRUNC;
     }
-    let file = unix_fs::openat(parent, name, flags, Mode::from_raw_mode(mode))
+    let file = unix_fs::openat(parent, name, flags, Mode::from_raw_mode(mode as _))
         .map(File::from)
         .map_err(|error| errno("create governed-test file", error))?;
-    unix_fs::fchmod(&file, Mode::from_raw_mode(mode))
+    unix_fs::fchmod(&file, Mode::from_raw_mode(mode as _))
         .map_err(|error| errno("set governed-test file mode", error))?;
     fchown(&file, uid, gid)?;
     Ok(file)

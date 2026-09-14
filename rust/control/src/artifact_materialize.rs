@@ -1169,7 +1169,7 @@ fn remove_contents(directory: &std::fs::File) -> io::Result<()> {
 
 fn file_identity(file: &std::fs::File) -> io::Result<(u64, u64)> {
     let stat = unix_fs::fstat(file).map_err(io::Error::from)?;
-    Ok((stat.st_dev, stat.st_ino))
+    Ok((stat.st_dev as _, stat.st_ino))
 }
 
 fn decode_base64(value: &str) -> Result<Vec<u8>, String> {

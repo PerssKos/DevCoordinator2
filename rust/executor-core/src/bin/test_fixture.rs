@@ -62,7 +62,14 @@ fn serve_http(version: &str) -> Result<i32, String> {
     for connection in listener.incoming() {
         let mut stream = connection.map_err(|error| error.to_string())?;
         let mut request = [0u8; 4096];
-        let _ = stream.read(&mut request);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| error.to_string())?;
+        // TCP readiness probes close without an HTTP request. A disconnected
+        // client must not terminate the server used to test live ownership.
+        if !matches!(stream.read(&mut request), Ok(count) if count > 0) {
+            continue;
+        }
         let body = serde_json::to_vec(&json!({
             "version": version,
             "generation": env::var("DC2_GENERATION").ok(),
@@ -71,13 +78,12 @@ fn serve_http(version: &str) -> Result<i32, String> {
             "port": env::var("PORT").ok(),
         }))
         .map_err(|error| error.to_string())?;
-        write!(
+        let _ = write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
-        .and_then(|()| stream.write_all(&body))
-        .map_err(|error| error.to_string())?;
+        .and_then(|()| stream.write_all(&body));
     }
     Ok(0)
 }

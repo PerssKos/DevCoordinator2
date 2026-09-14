@@ -393,13 +393,13 @@ struct FileIdentity {
 impl FileIdentity {
     fn from_stat(stat: &unix_fs::Stat) -> Self {
         Self {
-            device: stat.st_dev,
+            device: stat.st_dev as _,
             inode: stat.st_ino,
             size: stat.st_size as u64,
             modified_seconds: stat.st_mtime,
-            modified_nanoseconds: stat.st_mtime_nsec,
+            modified_nanoseconds: stat.st_mtime_nsec as _,
             changed_seconds: stat.st_ctime,
-            changed_nanoseconds: stat.st_ctime_nsec,
+            changed_nanoseconds: stat.st_ctime_nsec as _,
         }
     }
 }
@@ -499,7 +499,7 @@ pub fn create_directory_all_nofollow(path: &Path, mode: u32) -> Result<PathBuf, 
         ) {
             Ok(next) => next,
             Err(rustix::io::Errno::NOENT) => {
-                unix_fs::mkdirat(&directory, &component, Mode::from_raw_mode(mode)).map_err(
+                unix_fs::mkdirat(&directory, &component, Mode::from_raw_mode(mode as _)).map_err(
                     |error| {
                         LedgerError(format!(
                             "cannot create non-symlinked directory {}: {error}",
@@ -552,7 +552,7 @@ pub fn write_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), 
             | OFlags::CLOEXEC
             | OFlags::NOFOLLOW
             | OFlags::NONBLOCK,
-        Mode::from_raw_mode(mode),
+        Mode::from_raw_mode(mode as _),
     )
     .map_err(|error| {
         LedgerError(format!(
@@ -612,7 +612,7 @@ pub fn write_new_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<
             | OFlags::CLOEXEC
             | OFlags::NOFOLLOW
             | OFlags::NONBLOCK,
-        Mode::from_raw_mode(mode),
+        Mode::from_raw_mode(mode as _),
     )
     .map_err(|error| {
         LedgerError(format!(

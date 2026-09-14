@@ -473,7 +473,7 @@ fn atomic_publish_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Route
         .map_err(std::io::Error::from)?;
         let mut file = File::from(descriptor);
         file.write_all(bytes)?;
-        rustix::fs::fchmod(&file, Mode::from_raw_mode(mode)).map_err(std::io::Error::from)?;
+        rustix::fs::fchmod(&file, Mode::from_raw_mode(mode as _)).map_err(std::io::Error::from)?;
         file.sync_all()?;
         renameat(&directory, temporary.as_str(), &directory, name).map_err(std::io::Error::from)?;
         directory.sync_all()?;

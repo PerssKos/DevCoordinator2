@@ -3579,12 +3579,19 @@ impl Deployments {
                     .ok()?
                     .into_iter()
                     .find(|r| r.name == component_name)?;
-                let live = self
-                    .component_status(&row, &binding, Some(&component), Some(port))
-                    .ok()?;
+                // A Compose stack can contain a stopped independent worker or a
+                // failed finite job while its previously committed endpoint is
+                // still healthy. Prove the serving container, not aggregate health.
+                let runtime_healthy = if component.kind == ComponentKind::Compose {
+                    binding.desired_state != "stopped"
+                } else {
+                    let live = self
+                        .component_status(&row, &binding, Some(&component), Some(port))
+                        .ok()?;
+                    live.state == "running" && live.health == "healthy"
+                };
                 Some(
-                    live.state == "running"
-                        && live.health == "healthy"
+                    runtime_healthy
                         && self.binding_owns_port(
                             &component,
                             &(binding.binding_kind?, binding.binding_identity?),

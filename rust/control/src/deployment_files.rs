@@ -154,7 +154,7 @@ impl DeploymentFiles {
                 open_child_directory(&deployment, name, true, mode)?.ok_or_else(|| {
                     DeploymentFileError::Io("runtime directory is unavailable".into())
                 })?;
-            unix_fs::fchmod(&directory, Mode::from_raw_mode(mode))
+            unix_fs::fchmod(&directory, Mode::from_raw_mode(mode as _))
                 .map_err(|error| io_error("set runtime directory mode", error))?;
             if let Some((uid, gid)) = owner {
                 fchown(&directory, uid, gid)?;
@@ -717,7 +717,7 @@ fn open_directory_path(
             }
         };
         if create {
-            match unix_fs::mkdirat(&directory, name, Mode::from_raw_mode(mode)) {
+            match unix_fs::mkdirat(&directory, name, Mode::from_raw_mode(mode as _)) {
                 Ok(()) | Err(rustix::io::Errno::EXIST) => {}
                 Err(error) => return Err(io_error("create runtime directory", error)),
             }
@@ -748,7 +748,7 @@ fn open_child_directory(
         ));
     }
     if create {
-        match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode)) {
+        match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode as _)) {
             Ok(()) | Err(rustix::io::Errno::EXIST) => {}
             Err(error) => return Err(io_error("create runtime child directory", error)),
         }
@@ -790,13 +790,13 @@ pub(crate) fn atomic_write(
             directory,
             temporary.as_str(),
             OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::from_raw_mode(mode),
+            Mode::from_raw_mode(mode as _),
         )
         .map_err(|error| io_error("create atomic deployment file", error))?;
         let mut file = File::from(descriptor);
         file.write_all(payload)
             .map_err(|error| DeploymentFileError::Io(error.to_string()))?;
-        unix_fs::fchmod(&file, Mode::from_raw_mode(mode))
+        unix_fs::fchmod(&file, Mode::from_raw_mode(mode as _))
             .map_err(|error| io_error("set deployment file mode", error))?;
         fchown(&file, owner_uid, owner_gid)?;
         file.sync_all()

@@ -1961,6 +1961,14 @@ fn container_state_from_inspect(info: &Value) -> ContainerState {
 }
 
 fn inspect_publishes_port(info: &Value, host_port: u16) -> bool {
+    if info.pointer("/State/Status").and_then(Value::as_str) != Some("running")
+        || info
+            .pointer("/State/Health/Status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| status != "healthy")
+    {
+        return false;
+    }
     info.get("NetworkSettings")
         .and_then(|value| value.get("Ports"))
         .and_then(Value::as_object)
@@ -2482,6 +2490,27 @@ mod tests {
             vec![container.clone()]
         );
         assert_eq!(fake.container_logs(&container, 20).unwrap(), "stdoutstderr");
+    }
+
+    #[test]
+    fn port_publication_proof_requires_a_running_healthy_container() {
+        for (state, health, port, expected) in [
+            ("running", None, "20003", true),
+            ("running", Some("healthy"), "20003", true),
+            ("running", Some("unhealthy"), "20003", false),
+            ("running", Some("starting"), "20003", false),
+            ("exited", None, "20003", false),
+            ("running", None, "20004", false),
+        ] {
+            let mut info = serde_json::json!({
+                "State": {"Status": state},
+                "NetworkSettings": {"Ports": {"8080/tcp": [{"HostPort": port}]}}
+            });
+            if let Some(health) = health {
+                info["State"]["Health"] = serde_json::json!({"Status": health});
+            }
+            assert_eq!(inspect_publishes_port(&info, 20003), expected);
+        }
     }
 
     #[test]

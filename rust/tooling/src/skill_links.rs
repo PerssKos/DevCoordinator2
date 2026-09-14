@@ -404,7 +404,7 @@ fn atomic_write_at(
             | rustix::fs::OFlags::EXCL
             | rustix::fs::OFlags::NOFOLLOW
             | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::from_raw_mode(mode),
+        rustix::fs::Mode::from_raw_mode(mode as _),
     )
     .map_err(|error| {
         LinkError::io(
