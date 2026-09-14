@@ -30,14 +30,29 @@ function boundedText(value, maximum) {
     && !CONTROL_RE.test(value);
 }
 
+function isSystemdCredential(file) {
+  const directory = process.env.CREDENTIALS_DIRECTORY;
+  if (!directory || !path.isAbsolute(directory)) return false;
+  // systemd grants the service account read access with an ACL. Its mask
+  // appears as group-read in st_mode even though the owning group has no
+  // access. Only direct files in the runtime-owned credential directory use
+  // that read-only rule; ordinary private files keep their strict mode check.
+  const info = fs.lstatSync(directory);
+  return info.isDirectory() && !info.isSymbolicLink()
+    && fs.realpathSync(path.dirname(file)) === fs.realpathSync(directory);
+}
+
 function readPrivateFile(file, maximum) {
   if (typeof file !== 'string' || !path.isAbsolute(file)) throw new Error(CONFIG_ERROR);
   const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const info = fs.fstatSync(descriptor);
     const uid = typeof process.getuid === 'function' ? process.getuid() : info.uid;
+    const privateMode = isSystemdCredential(file)
+      ? (info.mode & 0o222) === 0 && (info.mode & 0o007) === 0
+      : (info.mode & 0o077) === 0;
     if (!info.isFile() || info.nlink !== 1 || (info.uid !== 0 && info.uid !== uid)
-      || (info.mode & 0o077) !== 0 || info.size < 1 || info.size > maximum) throw new Error(CONFIG_ERROR);
+      || !privateMode || info.size < 1 || info.size > maximum) throw new Error(CONFIG_ERROR);
     const content = fs.readFileSync(descriptor);
     if (content.length !== info.size) throw new Error(CONFIG_ERROR);
     return content;

@@ -107,6 +107,58 @@ test('invalid or mismatched private policy and unsafe key files fail without dis
   assert.throws(() => loadReviewIdentity(f.file, { oidcIssuer: f.policy.identity_provider_issuer }), expected);
 });
 
+test('systemd read-only credential ACL modes work only inside the runtime credential directory', async (context) => {
+  const f = await fixture(context);
+  const originalDirectory = process.env.CREDENTIALS_DIRECTORY;
+  context.after(() => {
+    if (originalDirectory === undefined) delete process.env.CREDENTIALS_DIRECTORY;
+    else process.env.CREDENTIALS_DIRECTORY = originalDirectory;
+  });
+  const expected = { message: 'review identity: cannot read or validate private configuration' };
+  const load = () => loadReviewIdentity(f.file, { oidcIssuer: f.policy.identity_provider_issuer });
+  const setPolicy = async (policy) => {
+    await fs.chmod(f.file, 0o600);
+    await fs.writeFile(f.file, JSON.stringify(policy));
+    await fs.chmod(f.file, 0o440);
+  };
+  await fs.chmod(f.file, 0o440);
+  await fs.chmod(f.keyFile, 0o440);
+  delete process.env.CREDENTIALS_DIRECTORY;
+  assert.throws(load, expected, 'ordinary group-readable private files remain refused');
+  process.env.CREDENTIALS_DIRECTORY = f.directory;
+  assert.ok(load().assertionFor({ route: f.route, identity: f.identity, method: 'GET', target: '/api/help/review-context?lang=uk' }));
+  for (const file of [f.file, f.keyFile]) {
+    for (const mode of [0o640, 0o460, 0o442, 0o444]) {
+      await fs.chmod(file, mode);
+      assert.throws(load, expected, 'credential files cannot be writable or world-readable');
+    }
+    await fs.chmod(file, 0o440);
+  }
+  const subdirectory = path.join(f.directory, 'nested');
+  await fs.mkdir(subdirectory);
+  const nestedKey = path.join(subdirectory, 'key.pem');
+  await fs.copyFile(f.keyFile, nestedKey);
+  await fs.chmod(nestedKey, 0o440);
+  await setPolicy({ ...f.policy, private_key_file: nestedKey });
+  assert.throws(load, expected, 'nested files are not direct credentials');
+  await setPolicy(f.policy);
+  const hardLink = path.join(f.directory, 'hardlink.pem');
+  await fs.link(f.keyFile, hardLink);
+  assert.throws(load, expected, 'hard-linked credentials remain refused');
+  await fs.unlink(hardLink);
+  const symbolicLink = path.join(f.directory, 'symlink.pem');
+  await fs.symlink(f.keyFile, symbolicLink);
+  await setPolicy({ ...f.policy, private_key_file: symbolicLink });
+  assert.throws(load, expected, 'symlink credentials remain refused');
+  await setPolicy(f.policy);
+  process.env.CREDENTIALS_DIRECTORY = subdirectory;
+  assert.throws(load, expected, 'an unrelated credential directory cannot relax ordinary file modes');
+  const linkedDirectory = path.join(f.directory, 'directory-link');
+  await fs.symlink(f.directory, linkedDirectory);
+  process.env.CREDENTIALS_DIRECTORY = linkedDirectory;
+  assert.throws(load, expected, 'a symlinked directory cannot grant the credential-mode exception');
+});
+
 test('real edge signs admitted reviewer requests, replaces spoofed headers and excludes all other paths and upgrades', async (context) => {
   const f = await fixture(context);
   const seen = [];

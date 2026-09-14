@@ -116,8 +116,13 @@ The private JSON shape is:
 }
 ```
 
-Both files must be private regular files owned by root or the edge service,
-without group/world access; symlinks and hard links are refused. Keep them
+Both files must be private regular files owned by root or the edge service;
+symlinks and hard links are refused. Ordinary private files must have no
+group/world permissions. Direct files in the process's systemd
+`CREDENTIALS_DIRECTORY` may use its read-only service ACL: the ACL mask can
+appear as group-read (`0440`) in the file mode even when `group::---` grants
+the owning group no access. Such credential files must have no write or world
+permission bits. Other locations do not inherit that exception. Keep these files
 outside the repository, for example in systemd credentials. Invalid policy or
 keys stop startup with a content-free error. The configured identity-provider
 issuer must equal `EDGE_OIDC_ISSUER`; keep the existing immutable session
