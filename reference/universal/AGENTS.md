@@ -55,8 +55,7 @@ earlier model messages or reload unchanged instructions.
   user waiting or intentional required release revalidation as waste.
 - Submit dependency-ready work concurrently, preserve ownership boundaries,
   track every asynchronous operation, and verify completion. Prefer events;
-  if unavailable, use one service-owned bounded-backoff watcher, not agent
-  polling or a universal 100 ms interval. Do not add a competing scheduler.
+  if unavailable, use one service-owned bounded-backoff watcher. Do not add a competing scheduler.
 - Preserve canonical sources, valuable dirty work, shared services, credentials,
   and recoverable data. Mutate derived/install copies only by reviewed source
   workflows. Keep user-visible behavior real and verify the original affected
