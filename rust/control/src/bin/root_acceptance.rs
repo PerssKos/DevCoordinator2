@@ -4433,6 +4433,30 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
     Ok(())
 }
 
+fn case_replacement_daemon_accepts_requests_with_prior_socket_fenced(
+    world: &mut World,
+) -> Result<(), String> {
+    let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
+    fs::rename(&world.socket, &fence).map_err(|error| error.to_string())?;
+    let rejected = request_over_socket_with_timeout(
+        &fence,
+        &request("ping", json!({}), "other", None),
+        Duration::from_secs(5),
+    )?;
+    ensure!(
+        error_code(&rejected) == Some("daemon_unavailable"),
+        "old daemon accepted a request after fencing"
+    );
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
+    ensure!(
+        fence.exists(),
+        "fixture did not retain the prior socket for rollback"
+    );
+    data(&world.call("ping", json!({}))?)?;
+    Ok(())
+}
+
 fn case_live_configuration_and_socket_recovery(world: &mut World) -> Result<(), String> {
     world.write_owned("compose.yml", "services: {}\n")?;
     world.write_owned(".gitignore", "live.env\n")?;
@@ -4597,6 +4621,10 @@ fn case_live_configuration_in_service_sandbox(world: &mut World) -> Result<(), S
 
 fn cases() -> Vec<Case> {
     vec![
+        (
+            "replacement_daemon_accepts_requests_with_prior_socket_fenced",
+            case_replacement_daemon_accepts_requests_with_prior_socket_fenced,
+        ),
         (
             "live_configuration_in_service_sandbox",
             case_live_configuration_in_service_sandbox,

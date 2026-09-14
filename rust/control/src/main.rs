@@ -298,7 +298,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
     }
     let app = Arc::new(
         daemon::App::with_executor(config.edge_uid, Arc::new(plane.clone()))
-            .with_installation_fence(config.socket_path.with_file_name("daemon.pre-cutover.sock")),
+            .with_installation_fence(config.socket_path.clone()),
     );
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
