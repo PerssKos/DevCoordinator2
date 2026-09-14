@@ -3181,13 +3181,6 @@ impl Deployments {
                     "routed Compose component has no allocated host port",
                 )
             })?;
-            let (published, note) = self
-                .docker
-                .compose_publishes_host_port(&binding.1, port)
-                .map_err(|error| apply_runtime_error("cannot verify Compose route", error))?;
-            if !published {
-                return Ok(Readiness::failed(note));
-            }
             Some(port)
         } else {
             None
@@ -3306,7 +3299,21 @@ impl Deployments {
                     generation,
                     &candidates,
                 )?;
-                if ready && let Some(port) = routed_compose_port {
+                if !ready {
+                    return Ok(Readiness::failed(note));
+                }
+                if let Some(port) = routed_compose_port {
+                    let (published, note) = self
+                        .docker
+                        .compose_publishes_host_port(&binding.1, port)
+                        .map_err(|error| {
+                            apply_runtime_error("cannot verify Compose route", error)
+                        })?;
+                    if !published {
+                        return Ok(Readiness::failed(note));
+                    }
+                }
+                if let Some(port) = routed_compose_port {
                     return Ok(self.health.tcp_ready(
                         "127.0.0.1",
                         port,
@@ -3314,11 +3321,7 @@ impl Deployments {
                         &terminal,
                     ));
                 }
-                Ok(if ready {
-                    Readiness::ready(note)
-                } else {
-                    Readiness::failed(note)
-                })
+                Ok(Readiness::ready(note))
             }
             _ => Ok(Readiness::ready("no check")),
         }
@@ -4714,6 +4717,8 @@ mod tests {
         next: AtomicU64,
         fail_create: std::sync::atomic::AtomicBool,
         fail_compose: std::sync::atomic::AtomicBool,
+        compose_starting: std::sync::atomic::AtomicBool,
+        compose_missing_port: std::sync::atomic::AtomicBool,
         block_finite: std::sync::atomic::AtomicBool,
         finite_started: std::sync::atomic::AtomicBool,
     }
@@ -4726,6 +4731,8 @@ mod tests {
                 next: AtomicU64::new(1),
                 fail_create: std::sync::atomic::AtomicBool::new(false),
                 fail_compose: std::sync::atomic::AtomicBool::new(false),
+                compose_starting: std::sync::atomic::AtomicBool::new(false),
+                compose_missing_port: std::sync::atomic::AtomicBool::new(false),
                 block_finite: std::sync::atomic::AtomicBool::new(false),
                 finite_started: std::sync::atomic::AtomicBool::new(false),
             }
@@ -4918,6 +4925,7 @@ mod tests {
                     "fixture build progress\n".repeat(400)
                 )));
             }
+            self.compose_starting.store(true, Ordering::Release);
             Ok(())
         }
 
@@ -4968,8 +4976,34 @@ mod tests {
             host_port: u16,
         ) -> Result<(bool, String), DockerError> {
             Ok((
-                true,
+                !self.compose_starting.load(Ordering::Acquire)
+                    && !self.compose_missing_port.load(Ordering::Acquire),
                 format!("allocated host port {host_port} is published"),
+            ))
+        }
+
+        fn compose_ready(
+            &self,
+            project: &str,
+            services: &[String],
+            finite_services: &[String],
+            completions: &BTreeSet<String>,
+            desired_states: &BTreeMap<String, RuntimeState>,
+            _timeout: Duration,
+            _cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
+        ) -> Result<(bool, String, DockerComposeState), DockerError> {
+            self.compose_starting.store(false, Ordering::Release);
+            let state = self.compose_state(
+                project,
+                services,
+                finite_services,
+                completions,
+                desired_states,
+            )?;
+            Ok((
+                matches!(state.state, RuntimeState::Running | RuntimeState::Completed),
+                format!("compose {}", state.state.as_str()),
+                state,
             ))
         }
 
@@ -6200,6 +6234,15 @@ command=["serve"]
 
     #[test]
     fn compose_finite_receipts_independent_control_logs_and_removal_are_preserved() {
+        assert_compose_lifecycle(false);
+    }
+
+    #[test]
+    fn compose_healthy_without_allocated_port_is_not_ready() {
+        assert_compose_lifecycle(true);
+    }
+
+    fn assert_compose_lifecycle(missing_port: bool) {
         let temporary = tempdir().unwrap();
         let worktree = temporary.path().join("repository");
         std::fs::create_dir(&worktree).unwrap();
@@ -6280,9 +6323,16 @@ route=true
             identity: None,
         };
         assert_ne!(caller.uid, 0, "Compose fixture requires a non-root caller");
-        let applied = deployments
-            .apply(Some(worktree.to_str().unwrap()), Some("web"), None, &caller)
-            .unwrap();
+        docker
+            .compose_missing_port
+            .store(missing_port, Ordering::Release);
+        let result =
+            deployments.apply(Some(worktree.to_str().unwrap()), Some("web"), None, &caller);
+        if missing_port {
+            assert_eq!(result.unwrap_err().code, ErrorCode::DeploymentApplyFailed);
+            return;
+        }
+        let applied = result.unwrap();
         let stack = &applied.components[0];
         assert_eq!(stack.state, "running");
         assert_eq!(applied.domain.as_deref(), Some("app"));
