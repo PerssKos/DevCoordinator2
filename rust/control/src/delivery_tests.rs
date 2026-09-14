@@ -119,7 +119,7 @@ impl World {
         self.fixture.database.transaction(move |transaction| {
             transaction.execute("INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at,public) VALUES('d1111111111111111','project-alpha','w1111111111111111','web','worktree',?1,?2,'running',1,?3,999,'fixture',?3,0)",rusqlite::params![fingerprint,spec.to_string(),created])?;
             transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,?1,0,'/fixture/web',?2,?3,'current')",rusqlite::params!["c".repeat(40),fingerprint,created])?;
-            transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,?1)",[created])?;
+            transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,?1,'lfixture')",[created])?;
             Ok(())
         }).unwrap();
     }

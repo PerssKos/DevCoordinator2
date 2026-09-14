@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::DATABASE_SCHEMA_VERSION;
@@ -225,11 +226,114 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
         "merged_into_repository_id",
         "TEXT",
     )?;
+    ensure_column(&connection, "port_assignments", "lease_id", "TEXT")?;
+    ensure_column(&connection, "domain_routes", "lease_id", "TEXT")?;
+    backfill_lease_ids(&connection)?;
     connection.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1)",
         [DATABASE_SCHEMA_VERSION.to_string()],
     )?;
     Ok(connection)
+}
+
+fn backfill_lease_ids(connection: &Connection) -> Result<(), DatabaseError> {
+    let transaction = connection.unchecked_transaction()?;
+    let connection = &transaction;
+    let assignments = {
+        let mut statement = connection.prepare(
+            "SELECT port,deployment_id,component,generation FROM port_assignments WHERE lease_id IS NULL OR lease_id=''",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, u16>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (port, deployment_id, component, generation) in assignments {
+        let mut digest = Sha256::new();
+        digest.update(b"devcoordinator2.lease\0");
+        digest.update(deployment_id.as_bytes());
+        digest.update([0]);
+        digest.update(component.as_bytes());
+        digest.update([0]);
+        digest.update(generation.to_le_bytes());
+        digest.update(port.to_le_bytes());
+        let lease_id = format!(
+            "l{}",
+            digest
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        connection.execute(
+            "UPDATE port_assignments SET lease_id=?1 WHERE port=?2",
+            rusqlite::params![lease_id, port],
+        )?;
+    }
+    let routes = {
+        let mut statement = connection.prepare(
+            "SELECT domain,deployment_id,component,port,generation FROM domain_routes WHERE port IS NOT NULL AND (lease_id IS NULL OR lease_id='')",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u16>(3)?,
+                    row.get::<_, Option<u32>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for (domain, deployment_id, component, port, generation) in routes {
+        let lease_id: Option<String> = connection
+            .query_row(
+                "SELECT lease_id FROM port_assignments WHERE port=?1 AND deployment_id=?2 AND component=?3 AND generation IN (?4,0) ORDER BY CASE WHEN generation=?4 THEN 0 ELSE 1 END LIMIT 1",
+                rusqlite::params![port, deployment_id, component, generation.unwrap_or(0)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let conflicting: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0 AND port!=?3)",
+            rusqlite::params![deployment_id,component,port], |row| row.get(0),
+        )?;
+        if let Some(lease_id) = lease_id.filter(|_| !conflicting) {
+            connection.execute(
+                "UPDATE port_assignments SET generation=0 WHERE lease_id=?1",
+                [&lease_id],
+            )?;
+            connection.execute(
+                "UPDATE domain_routes SET lease_id=?1 WHERE domain=?2",
+                rusqlite::params![lease_id, domain],
+            )?;
+        } else {
+            connection.execute(
+                "UPDATE domain_routes SET port=NULL,lease_id=NULL WHERE domain=?1",
+                [domain],
+            )?;
+            connection.execute(
+                "UPDATE deployments SET state='degraded' WHERE deployment_id=?1",
+                [&deployment_id],
+            )?;
+            connection.execute("UPDATE components SET last_error='route_lease_conflict' WHERE deployment_id=?1 AND name=?2", rusqlite::params![deployment_id,component])?;
+        }
+    }
+    connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS port_lease_identity ON port_assignments(lease_id);
+        CREATE TRIGGER IF NOT EXISTS immutable_port_lease BEFORE UPDATE OF lease_id,port,deployment_id,component ON port_assignments
+        WHEN OLD.lease_id IS NOT NULL AND (NEW.lease_id IS NOT OLD.lease_id OR NEW.port IS NOT OLD.port OR NEW.deployment_id IS NOT OLD.deployment_id OR NEW.component IS NOT OLD.component)
+        BEGIN SELECT RAISE(ABORT,'immutable port lease'); END;
+        CREATE TRIGGER IF NOT EXISTS unique_lease_owner BEFORE INSERT ON port_assignments
+        WHEN NEW.lease_id IS NULL OR EXISTS(SELECT 1 FROM port_assignments WHERE deployment_id=NEW.deployment_id AND component=NEW.component AND generation=NEW.generation)
+        BEGIN SELECT RAISE(ABORT,'missing or duplicate port lease identity'); END;")?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn relax_observed_state_checks(connection: &Connection) -> Result<(), DatabaseError> {
@@ -351,6 +455,74 @@ mod tests {
             );
         }
         database.close().expect("close");
+    }
+
+    #[test]
+    fn schema_twenty_migration_preserves_lease_port_and_withdraws_conflicts() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("authority.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(FINAL_SCHEMA).unwrap();
+        connection
+            .execute_batch("ALTER TABLE domain_routes DROP COLUMN lease_id;")
+            .unwrap();
+        // The old table has no identity column or its unique index.
+        connection.execute_batch("DROP TABLE port_assignments; CREATE TABLE port_assignments(port INTEGER PRIMARY KEY,deployment_id TEXT,component TEXT,generation INTEGER,assigned_at TEXT);
+            INSERT INTO meta VALUES('schema_version','20');
+            INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/x','x','t',1,'t');
+            INSERT INTO worktrees VALUES('w1','r1','/x','t','t');
+            INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','app','worktree','f','{}','running',7,'t',1,'other','t');
+            INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,generation,updated_at) VALUES('d1','api','process',0,'f','running','running','healthy',7,'t');
+            INSERT INTO port_assignments VALUES(20000,'d1','api',7,'t');
+            INSERT INTO domain_routes VALUES('good','d1','api',20000,7,'t');").unwrap();
+        drop(connection);
+        let db = Database::open(&path).unwrap();
+        let identity: String = db
+            .call(|c| {
+                let (port, generation, lease): (u16, u32, String) = c.query_row(
+                    "SELECT port,generation,lease_id FROM port_assignments",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                assert_eq!((port, generation), (20000, 0));
+                assert_eq!(
+                    c.query_row("SELECT lease_id FROM domain_routes", [], |r| r
+                        .get::<_, String>(0))?,
+                    lease
+                );
+                assert!(
+                    c.execute("UPDATE port_assignments SET port=20014", [])
+                        .is_err()
+                );
+                Ok(lease)
+            })
+            .unwrap();
+        db.call(|c| {
+            c.execute("UPDATE domain_routes SET port=20014,lease_id=NULL", [])?;
+            super::backfill_lease_ids(c)?;
+            assert!(
+                c.query_row("SELECT port FROM domain_routes", [], |r| r
+                    .get::<_, Option<u16>>(0))?
+                    .is_none()
+            );
+            assert_eq!(
+                c.query_row("SELECT state FROM deployments", [], |r| r
+                    .get::<_, String>(0))?,
+                "degraded"
+            );
+            Ok(())
+        })
+        .unwrap();
+        let retained = db
+            .call(|c| {
+                Ok(c.query_row(
+                    "SELECT lease_id FROM port_assignments WHERE port=20000",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(identity, retained);
     }
 
     #[test]

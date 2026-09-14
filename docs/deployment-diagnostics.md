@@ -30,3 +30,10 @@ prove the application's release scope complete.
 
 Decisions: `DC2-2026-09-07-TRUSTED-AGENT-REPAIR-AUTHORITY` and
 `DC2-2026-09-07-RETAIN-COMPOSE-FAILURES`.
+
+Installer activation selects a fresh transaction directory by default. Recovery
+requires the explicit unfinished transaction returned for that installation;
+completed transactions and mismatched backups or installation identities are
+refused before services change. Ordinary daemon or route errors are not grounds
+for restoring a historical database. Installation fences cover the Unix socket
+and sandbox bridge, and accepted requests drain before backup.

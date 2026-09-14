@@ -2267,3 +2267,61 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
     );
     assert!(systemd.stops.load(Ordering::SeqCst) >= 1);
 }
+
+#[test]
+fn reconciler_preserves_a_live_supervised_test() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .status,
+        TestStatus::Running
+    );
+    world.systemd.finish(&run.unit);
+}
+
+#[test]
+fn reconciler_interrupts_unsupervised_state_once_and_preserves_history() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.systemd.finish(&run.unit);
+    // Wait for the actual fixture completion, then simulate a lost durable
+    // terminal write. Reconciliation must not resurrect or repeat the run.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap()
+        .status
+        == TestStatus::Running
+    {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let store = TestRunStore;
+    let current = store.open_current(&world.worktree).unwrap().unwrap();
+    let mut summary = store
+        .read_current_summary(&world.worktree)
+        .unwrap()
+        .unwrap();
+    summary.status = TestStatus::Running;
+    summary.finished_at = None;
+    store
+        .write_summary(&current, &summary, world.caller.uid, world.caller.gid)
+        .unwrap();
+    // Reaper map removal follows event delivery; its stale handle must also be
+    // treated as terminal, without rewriting a passing run to running.
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.lifecycle.reconcile_orphans().unwrap();
+    let status = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_ne!(status.status, TestStatus::Running);
+    assert_eq!(store.read_history(&world.worktree).unwrap().len(), 1);
+}

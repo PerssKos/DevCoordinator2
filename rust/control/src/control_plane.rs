@@ -182,7 +182,11 @@ impl ControlPlane {
             config.routes_path(),
             config.base_domain.clone(),
         ));
-        Self::with_adapters(config, database, publisher, Arc::new(HostClock))
+        let plane = Self::with_adapters(config, database, publisher, Arc::new(HostClock))?;
+        if let Err(error) = plane.deployments.reconcile_routes() {
+            tracing::error!(code=%error.code, "route recovery incomplete");
+        }
+        Ok(plane)
     }
 
     pub fn with_adapters(
@@ -364,6 +368,10 @@ impl ControlPlane {
 
     pub fn recover_tests(&self) -> Result<(), ProtocolError> {
         self.tests.recover()
+    }
+
+    pub fn reconcile_routes(&self) -> Result<(), ProtocolError> {
+        self.deployments.reconcile_routes()
     }
 
     pub fn telegram(&self) -> &TelegramService {

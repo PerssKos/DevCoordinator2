@@ -25,10 +25,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint Rust workspace
         run: cargo clippy --locked --workspace --all-targets --features devcoordinator2-tooling/selftest-fixtures,devcoordinator2-control/root-acceptance -- -D warnings
-      - name: Test Rust workspace
-        run: cargo test --locked --workspace --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
       - name: Build release binaries
         run: cargo build --locked --release --package devcoordinator2-control --package devcoordinator2-tooling --package devcoordinator2-executor --features devcoordinator2-tooling/selftest-fixtures
+      - name: Test Rust workspace
+        run: cargo test --locked --workspace --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
       - name: Build Linux root-acceptance fixtures
         run: cargo build --locked --release --package devcoordinator2-control --features root-acceptance --bin devcoordinator2-root-acceptance --package devcoordinator2-executor-core --bin devcoordinator2-executor-test-fixture
 
@@ -45,7 +45,7 @@ jobs:
           node-version: "20"
       - name: Run edge tests and syntax checks
         run: |
-          node --test edge/test/edge.test.mjs
+          node --test edge/test/*.test.mjs
           node --check console/app.js
           node --check console/verify.mjs
 

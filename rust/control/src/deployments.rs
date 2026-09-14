@@ -990,6 +990,11 @@ impl Deployments {
         let mut components = target.specification.components.clone();
         components.reverse();
         self.stop_components(&target, &row, &components)?;
+        if self.config.edge_uid.is_some() {
+            self.routes.publish_current()?;
+            let edge_state = self.config.state_dir.with_file_name("devcoordinator2-edge");
+            self.routes.wait_for_edge(&edge_state)?;
+        }
         let stored = self.store.components(&target.deployment_id)?;
         let mut deleted_volumes = Vec::new();
         for component in stored {
@@ -1929,8 +1934,59 @@ impl Deployments {
         let port_map = self.allocate_ports(target, generation)?;
         let mut started = Vec::new();
         let mut failed_component = None;
+        let mut stopped_route_component = None;
         let convergence = (|| {
             for component in &target.specification.components {
+                if target
+                    .specification
+                    .route_component()
+                    .is_some_and(|route| route.name == component.name)
+                    && DeploymentStore::is_generation_scoped(component)
+                    && let Some(old) = old_components.get(&component.name)
+                    && old.state == "running"
+                    && let Some(identity) = old.binding_identity.as_deref()
+                {
+                    let previous_spec: ComponentSpec = target
+                        .row
+                        .as_ref()
+                        .and_then(|row| {
+                            serde_json::from_str::<serde_json::Value>(&row.spec_json).ok()
+                        })
+                        .and_then(|value| {
+                            value
+                                .get("components")
+                                .and_then(|v| v.as_array())
+                                .and_then(|components| {
+                                    components.iter().find(|value| {
+                                        value.get("name").and_then(|v| v.as_str())
+                                            == Some(component.name.as_str())
+                                    })
+                                })
+                                .cloned()
+                        })
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::DeploymentApplyFailed,
+                                "cannot restore prior routed component specification",
+                            )
+                        })?;
+                    let old_generation = old.generation.unwrap_or(0);
+                    let old_path = self
+                        .store
+                        .generation(&target.deployment_id, old_generation)?
+                        .map(|generation| generation.path)
+                        .unwrap_or_else(|| target.worktree.clone());
+                    self.stop_binding(
+                        target,
+                        old.binding_kind.as_deref().unwrap_or(""),
+                        identity,
+                        Some(component),
+                        &old_path,
+                        old_generation,
+                    )?;
+                    stopped_route_component = Some((previous_spec, old_generation, old_path));
+                }
                 let binding = match self.bring_up(
                     target,
                     component,
@@ -2040,6 +2096,20 @@ impl Deployments {
                         ..Default::default()
                     },
                 )?;
+                if readiness.ready
+                    && target
+                        .specification
+                        .route_component()
+                        .is_some_and(|route| route.name == component.name)
+                    && port_map
+                        .get(&component.name)
+                        .is_some_and(|port| !self.binding_owns_port(component, &binding, *port))
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RouteLeaseConflict,
+                        "the routed listener is not owned by the selected component",
+                    ));
+                }
                 if !readiness.ready {
                     return Err(ProtocolError::new(
                         ErrorCode::DeploymentApplyFailed,
@@ -2069,6 +2139,34 @@ impl Deployments {
                 old_components,
                 &desired,
             )?;
+            if let Some((component, old_generation, old_path)) = stopped_route_component.take() {
+                let mut old_ports =
+                    crate::ports::assigned(&self.database, &target.deployment_id, 0)
+                        .map_err(runtime_error)?;
+                old_ports.extend(
+                    crate::ports::assigned(&self.database, &target.deployment_id, old_generation)
+                        .map_err(runtime_error)?,
+                );
+                let restored = self
+                    .start_component(target, &component, old_generation, &old_path, &old_ports)
+                    .and_then(|binding| {
+                        self.prove_health(target, &component, &binding, &old_ports, old_generation)
+                    });
+                if !restored.is_ok_and(|health| health.ready) {
+                    self.store.set_component_runtime(
+                        &target.deployment_id,
+                        &component.name,
+                        ComponentRuntimePatch {
+                            state: Some("failed".into()),
+                            health: Some("unhealthy".into()),
+                            last_error: Some(Some(
+                                "previous routed component could not be restored".into(),
+                            )),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+            }
             if let Some(name) = failed_component
                 && self
                     .store
@@ -2237,11 +2335,43 @@ impl Deployments {
         let stable = crate::ports::assigned(&self.database, &target.deployment_id, 0)
             .map_err(runtime_error)?;
         let now = self.store.current_timestamp()?;
+        let routed_component = target
+            .specification
+            .route_component()
+            .map(|component| component.name.as_str());
         for component in &target.specification.components {
             if !component.wants_port || !DeploymentStore::is_owned(component) {
                 continue;
             }
-            let port = if DeploymentStore::is_generation_scoped(component) {
+            let port = if routed_component == Some(component.name.as_str()) {
+                if let Some(port) = stable.get(&component.name) {
+                    *port
+                } else if let Some(port) = crate::ports::adopt_stable(
+                    &self.database,
+                    &target.deployment_id,
+                    &component.name,
+                    target
+                        .row
+                        .as_ref()
+                        .and_then(|row| row.current_generation)
+                        .unwrap_or(generation),
+                )
+                .map_err(runtime_error)?
+                {
+                    port
+                } else {
+                    crate::ports::lease_with_availability(
+                        &self.database,
+                        self.config.port_range,
+                        &target.deployment_id,
+                        &component.name,
+                        0,
+                        &now,
+                        self.port_availability.as_ref(),
+                    )
+                    .map_err(runtime_error)?
+                }
+            } else if DeploymentStore::is_generation_scoped(component) {
                 crate::ports::lease_with_availability(
                     &self.database,
                     self.config.port_range,
@@ -3341,30 +3471,144 @@ impl Deployments {
         }
     }
 
+    fn binding_owns_port(
+        &self,
+        component: &ComponentSpec,
+        binding: &(String, String),
+        port: u16,
+    ) -> bool {
+        match binding.0.as_str() {
+            "unit" => self.systemd.owns_tcp_listener(&binding.1, port),
+            "container" => ExactContainerId::parse(binding.1.clone())
+                .ok()
+                .zip(component.container_port)
+                .is_some_and(|(id, inner)| {
+                    self.docker
+                        .published_host_port(&id, &format!("{inner}/tcp"))
+                        .ok()
+                        == Some(port)
+                }),
+            "compose" => self
+                .docker
+                .compose_publishes_host_port(&binding.1, port)
+                .is_ok_and(|proof| proof.0),
+            _ => false,
+        }
+    }
+
+    pub fn reconcile_routes(&self) -> Result<(), ProtocolError> {
+        let ids = self
+            .database
+            .call(|connection| {
+                let mut statement = connection
+                    .prepare("SELECT deployment_id FROM domain_routes WHERE port IS NOT NULL")?;
+                Ok(statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_error)?;
+        for id in ids {
+            let Ok(_busy) = self.acquire_busy(&id) else {
+                continue;
+            };
+            if let Err(error) = self.validate_or_withdraw_route(&id) {
+                tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+            }
+        }
+        self.routes.publish_current()?;
+        Ok(())
+    }
+
     fn validate_or_withdraw_route(&self, deployment_id: &str) -> Result<bool, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
-        let port = self
+        let route = self
             .database
             .call(move |connection| {
                 connection
                     .query_row(
-                        "SELECT port FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
                         [&deployment_id_owned],
-                        |row| row.get::<_, Option<u16>>(0),
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<u16>>(2)?,
+                                row.get::<_, Option<u32>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(DatabaseError::from)
             })
             .map_err(database_error)?
-            .flatten();
-        let Some(port) = port else {
+            ;
+        let Some((_, component, Some(port), generation, lease_id)) = route else {
             return Ok(false);
         };
-        if self.health.tcp_probe("127.0.0.1", port) {
+        let component_name = component.clone();
+        let deployment_id_for_lease = deployment_id.to_owned();
+        let valid_lease = self
+            .database
+            .call(move |connection| {
+                Ok(connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=?1 AND p.port=?2 AND p.deployment_id=?3 AND p.component=?4 AND p.generation IN (?5,0) AND c.state='running' AND c.health='healthy')",
+                    rusqlite::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
+                    |row| row.get::<_, i64>(0),
+                )? != 0)
+            })
+            .map_err(database_error)?;
+        let runtime_matches = self
+            .store
+            .get(deployment_id)?
+            .and_then(|row| {
+                let spec: serde_json::Value = serde_json::from_str(&row.spec_json).ok()?;
+                let component: ComponentSpec = serde_json::from_value(
+                    spec.get("components")?
+                        .as_array()?
+                        .iter()
+                        .find(|v| {
+                            v.get("name").and_then(|v| v.as_str()) == Some(component_name.as_str())
+                        })?
+                        .clone(),
+                )
+                .ok()?;
+                let binding = self
+                    .store
+                    .components(deployment_id)
+                    .ok()?
+                    .into_iter()
+                    .find(|r| r.name == component_name)?;
+                // A Compose stack can contain a stopped independent worker or a
+                // failed finite job while its previously committed endpoint is
+                // still healthy. Prove the serving container, not aggregate health.
+                let runtime_healthy = if component.kind == ComponentKind::Compose {
+                    binding.desired_state != "stopped"
+                } else {
+                    let live = self
+                        .component_status(&row, &binding, Some(&component), Some(port))
+                        .ok()?;
+                    live.state == "running" && live.health == "healthy"
+                };
+                Some(
+                    runtime_healthy
+                        && self.binding_owns_port(
+                            &component,
+                            &(binding.binding_kind?, binding.binding_identity?),
+                            port,
+                        ),
+                )
+            })
+            .unwrap_or(false);
+        if valid_lease && runtime_matches && self.health.tcp_probe("127.0.0.1", port) {
             return Ok(true);
         }
-        self.store
-            .set_route(None, deployment_id, None, None, None)?;
+        let id = deployment_id.to_owned();
+        self.database
+            .transaction(move |connection| {
+                crate::ports::withdraw_conflict(connection, &id, &component_name)
+            })
+            .map_err(database_error)?;
         self.routes.publish_current()?;
         Ok(false)
     }
@@ -3780,6 +4024,14 @@ impl Deployments {
             None
         };
         Ok(Component {
+            lease_id: match port {
+                Some(port) => {
+                    let deployment_id = row.deployment_id.clone();
+                    let name = row.name.clone();
+                    self.database.call(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=?1 AND deployment_id=?2 AND component=?3",rusqlite::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
+                }
+                None => None,
+            },
             name: row.name.clone(),
             display_name: None,
             r#type: row.kind.clone(),
@@ -4246,6 +4498,9 @@ mod tests {
     struct FakeSystemd;
 
     impl SystemdControl for FakeSystemd {
+        fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+            true
+        }
         fn spawn_transient(
             &self,
             _specification: &TransientUnitSpec,
@@ -4351,6 +4606,9 @@ mod tests {
     }
 
     impl SystemdControl for MutationSystemd {
+        fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+            true
+        }
         fn spawn_transient(
             &self,
             specification: &TransientUnitSpec,
@@ -5135,8 +5393,12 @@ tcp="127.0.0.1:25"
                     },
                 )
                 .unwrap();
+            self.deployments
+                .store
+                .set_deployment_runtime(&deployment_id, "running", Some(1), None)
+                .unwrap();
             self.database.transaction({let deployment_id=deployment_id.clone(); move |transaction| {
-                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at) VALUES(20001,?1,'api',1,'t')",[deployment_id])?;
+                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,'api',0,'t','lfixture')",[deployment_id])?;
                 Ok(())
             }}).unwrap();
             self.deployments

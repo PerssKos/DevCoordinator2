@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS port_assignments (
   deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
   component TEXT NOT NULL,
   generation INTEGER NOT NULL,
-  assigned_at TEXT NOT NULL
+  assigned_at TEXT NOT NULL,
+  lease_id TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS domain_routes (
   domain TEXT PRIMARY KEY,
@@ -90,7 +91,8 @@ CREATE TABLE IF NOT EXISTS domain_routes (
   component TEXT NOT NULL,
   port INTEGER,
   generation INTEGER,
-  published_at TEXT
+  published_at TEXT,
+  lease_id TEXT
 );
 CREATE TABLE IF NOT EXISTS metric_minutes (
   subject_kind TEXT NOT NULL,

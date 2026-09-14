@@ -186,7 +186,14 @@ export async function createEdge(config, { log = console } = {}) {
 
   async function handleConsole(req, res, url) {
     if (url.pathname === '/healthz') {
-      return writeJson(res, 200, { ok: true, route_generation: store.current().generation, source: store.source() });
+      return writeJson(res, 200, {
+        ok: store.rejectedGeneration() === null,
+        route_generation: store.current().generation,
+        route_schema: store.current().schema,
+        route_sha256: store.current().payload_sha256,
+        rejected_route_generation: store.rejectedGeneration(),
+        source: store.source(),
+      });
     }
     if (url.pathname.startsWith('/api/v2/')) {
       const identity = identityOf(req);

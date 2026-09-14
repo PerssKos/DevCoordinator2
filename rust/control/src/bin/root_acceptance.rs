@@ -1,6 +1,6 @@
 //! Linux-only, test-only real-system acceptance for the Rust control plane.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -74,6 +74,7 @@ struct World {
     sandboxed: bool,
     unit_prefix: String,
     daemon: Option<Child>,
+    route_consumer: Option<Child>,
     cleanup_volumes: Vec<String>,
 }
 
@@ -169,6 +170,7 @@ impl World {
             sandboxed: false,
             unit_prefix,
             daemon: None,
+            route_consumer: None,
             cleanup_volumes: Vec::new(),
         };
         world.start_daemon(None, None, None)?;
@@ -514,6 +516,12 @@ impl World {
         if let Err(error) = self.stop_daemon(false) {
             failures.push(error);
         }
+        if let Some(mut child) = self.route_consumer.take() {
+            let _ = child.kill();
+            if let Err(error) = child.wait() {
+                failures.push(error.to_string());
+            }
+        }
         for pattern in [
             format!("{}-*.service", self.unit_prefix),
             format!("{}-deploy*.service", self.unit_prefix.replace("-test", "")),
@@ -545,6 +553,9 @@ impl World {
             Ok(_) => {}
             Err(error) => failures.push(error),
         }
+        if let Err(error) = self.cleanup_compose() {
+            failures.push(error);
+        }
         for volume in std::mem::take(&mut self.cleanup_volumes) {
             let output = Command::new("docker")
                 .args(["volume", "rm", "--force", &volume])
@@ -575,6 +586,126 @@ impl World {
         } else {
             Err(failures.join("; "))
         }
+    }
+
+    fn cleanup_compose(&self) -> Result<(), String> {
+        // Compose does not inherit the transient-run instance label. Bind its
+        // cleanup to this marker, fixture database and exact working directory.
+        ensure!(
+            fs::read(self.base.join(OWNERSHIP_MARKER)).is_ok_and(|bytes| bytes == b"schema=1\n"),
+            "Compose fixture ownership marker is missing"
+        );
+        let mut projects = BTreeSet::new();
+        let database = self.state.join("authority.sqlite3");
+        if database.is_file() {
+            let connection = rusqlite::Connection::open_with_flags(
+                database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(|error| error.to_string())?;
+            let mut query = connection
+                .prepare("SELECT deployment_id,name,binding_identity FROM components WHERE binding_kind='compose'")
+                .map_err(|error| error.to_string())?;
+            let rows = query
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            for row in rows {
+                let (deployment, component, project) = row.map_err(|error| error.to_string())?;
+                ensure!(
+                    project
+                        == devcoordinator2_control::docker::compose_project(
+                            &deployment,
+                            &component
+                        ),
+                    "fixture Compose project does not match its recorded owner"
+                );
+                projects.insert(project);
+            }
+        }
+        let working_directory = format!(
+            "label=com.docker.compose.project.working_dir={}",
+            self.repo.display()
+        );
+        let containers = command_stdout(
+            "docker",
+            &["ps", "-aq", "--no-trunc", "--filter", &working_directory],
+        )?;
+        for container in containers.lines().filter(|id| !id.is_empty()) {
+            let labels = docker_inspect_json(container, "{{json .Config.Labels}}")?;
+            if let Some(project) = labels["com.docker.compose.project"].as_str() {
+                projects.insert(project.to_owned());
+            }
+        }
+        for project in projects {
+            let filter = format!("label=com.docker.compose.project={project}");
+            let containers =
+                command_stdout("docker", &["ps", "-aq", "--no-trunc", "--filter", &filter])?;
+            for container in containers.lines().filter(|id| !id.is_empty()) {
+                let labels = docker_inspect_json(container, "{{json .Config.Labels}}")?;
+                ensure!(
+                    labels["com.docker.compose.project.working_dir"].as_str() == self.repo.to_str(),
+                    "refusing to remove a Compose container outside the fixture"
+                );
+                run_status("docker", &["rm", "-f", "-v", container])?;
+            }
+            for resource in ["network", "volume"] {
+                let ids = command_stdout("docker", &[resource, "ls", "-q", "--filter", &filter])?;
+                for id in ids.lines().filter(|id| !id.is_empty()) {
+                    run_status("docker", &[resource, "rm", id])?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn start_route_consumer(&mut self, uid: u32, gid: u32) -> Result<(), String> {
+        let state = self.state.with_file_name("devcoordinator2-edge");
+        fs::create_dir(&state).map_err(|error| error.to_string())?;
+        chown_path(&state, uid, gid)?;
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../edge/lib/routes-store.mjs");
+        // The fixture edge reads a candidate copy because development worktrees
+        // can be private to their owner. Source access remains unchanged.
+        let module = self.base.join("routes-store.mjs");
+        fs::copy(source, &module).map_err(|error| error.to_string())?;
+        fs::set_permissions(&module, fs::Permissions::from_mode(0o644))
+            .map_err(|error| error.to_string())?;
+        let script = r#"
+import {pathToFileURL} from 'node:url';
+const {createRoutesStore} = await import(pathToFileURL(process.argv[1]));
+await createRoutesStore({file: process.argv[2], stateDir: process.argv[3]});
+process.stdin.resume();
+"#;
+        self.route_consumer = Some(
+            Command::new("setpriv")
+                .args([
+                    format!("--reuid={uid}"),
+                    format!("--regid={gid}"),
+                    "--clear-groups".into(),
+                ])
+                .args(["node", "--input-type=module", "-e", script])
+                .arg(module)
+                .arg(self.state.join("public/routes.json"))
+                .arg(state)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(
+                    OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(self.base.join("route-consumer.log"))
+                        .map_err(|error| error.to_string())?,
+                )
+                .spawn()
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(())
     }
 }
 
@@ -2468,6 +2599,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     let old_port = component(&started, "api")?["port"]
         .as_u64()
         .ok_or_else(|| "old API port is missing".to_owned())?;
+    let old_lease = component(&started, "api")?["lease_id"].clone();
     let old_unit = component(&started, "api")?["binding"]["identity"]
         .as_str()
         .ok_or_else(|| "old API unit is missing".to_owned())?
@@ -2482,13 +2614,17 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         reapplied["current_generation"] == 2,
         "reapply did not create generation 2"
     );
+    ensure!(
+        component(&reapplied, "api")?["lease_id"] == old_lease && old_lease.is_string(),
+        "routed lease identity changed"
+    );
     let new_port = component(&reapplied, "api")?["port"]
         .as_u64()
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "new API port is missing".to_owned())?;
     ensure!(
-        u64::from(new_port) != old_port && http_get_json(new_port)?["version"] == "v2",
-        "new API generation was not independently reachable"
+        u64::from(new_port) == old_port && http_get_json(new_port)?["version"] == "v2",
+        "new API generation did not keep its stable reachable port"
     );
     ensure!(
         !world
@@ -2499,7 +2635,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     );
     ensure!(
         routes(world)?.pointer("/routes/0/port") == Some(&json!(new_port)),
-        "route did not move to the new generation"
+        "route lost the stable port on the new generation"
     );
     ensure!(
         component(&reapplied, "db")?["binding"]["identity"] == database_id,
@@ -3384,7 +3520,7 @@ fn case_unchanged_apply_rechecks_already_bad_published_compose_route(
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at) VALUES(?1,?2,'compose',?3,?4,'seeded')",
+                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES(?1,?2,'compose',?3,?4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=?2 AND component='compose' AND port=?3))",
                 rusqlite::params![
                     "upgrade-stack",
                     deployment_id,
@@ -3583,6 +3719,7 @@ fn case_edge_identity_trust_roles_and_revocation(world: &mut World) -> Result<()
         Some("owner@example.test"),
         Some("example.test"),
     )?;
+    world.start_route_consumer(edge_uid, edge_gid)?;
     let command = fixture_command(world, &["http-server", "access"]);
     let config = format!(
         r#"schema = 2

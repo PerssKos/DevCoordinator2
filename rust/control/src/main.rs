@@ -295,12 +295,11 @@ async fn run_daemon(config: &Config) -> ExitCode {
     };
     if let Err(error) = plane.recover_tests() {
         eprintln!("governed-test recovery failed: {error}");
-        return ExitCode::from(1);
     }
-    let app = Arc::new(daemon::App::with_executor(
-        config.edge_uid,
-        Arc::new(plane.clone()),
-    ));
+    let app = Arc::new(
+        daemon::App::with_executor(config.edge_uid, Arc::new(plane.clone()))
+            .with_installation_fence(config.socket_path.with_file_name("daemon.pre-cutover.sock")),
+    );
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
     let metrics = plane.health().sampler().clone();
@@ -351,6 +350,14 @@ async fn run_daemon(config: &Config) -> ExitCode {
             serve_sandbox_bridge(bridge_app, bridge_directory, bridge_shutdown).await,
         )
     });
+    let test_reconciliation = plane.tests().clone();
+    let test_reconciliation_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        test_reconciliation
+            .serve_reconciliation(test_reconciliation_shutdown)
+            .await;
+        ("test lifecycle reconciliation", Ok(()))
+    });
     let capacity_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         (
@@ -383,7 +390,11 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 () = tokio::time::sleep(Duration::from_millis(100)) => {
                     if tokio::time::Instant::now() >= next_expiry {
                         let plane = expiry_plane.clone();
-                        match tokio::task::spawn_blocking(move || plane.expire_previews()).await {
+                        match tokio::task::spawn_blocking(move || {
+                            let expired = plane.expire_previews();
+                            if let Err(error) = plane.reconcile_routes() { tracing::error!(code=%error.code, "route reconciliation incomplete"); }
+                            expired
+                        }).await {
                             Ok(Ok(_)) => {}
                             Ok(Err(error)) => tracing::error!(%error, "preview expiry failed"),
                             Err(error) => tracing::error!(%error, "preview expiry worker failed"),

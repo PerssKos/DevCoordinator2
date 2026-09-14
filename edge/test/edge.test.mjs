@@ -17,9 +17,10 @@ const BASE = 'example.test';
 let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks;
 
 function document(routes, access, generation) {
+  routes = routes.map(route => ({...route, lease_id: route.lease_id || 'l' + route.deployment_id + route.component}));
   const payload = { generation, published_at: '2026-01-01T00:00:00Z', domain: BASE, routes, access };
   const sha = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
-  return JSON.stringify({ schema: 1, payload_sha256: sha, ...payload });
+  return JSON.stringify({ schema: 2, payload_sha256: sha, ...payload });
 }
 
 async function publish(routes, access, generation) {

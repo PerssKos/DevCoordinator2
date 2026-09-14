@@ -65,6 +65,9 @@ pub trait CutoverAdapter {
     fn database_matches_backup(&mut self, backup: &str) -> Result<bool, String>;
     fn restore_database(&mut self, backup: &str) -> Result<(), String>;
     fn restore_legacy_socket(&mut self) -> Result<(), String>;
+    fn finish_rollback(&mut self, _snapshot: &Self::InstallationSnapshot) -> Result<(), String> {
+        Ok(())
+    }
     fn start_legacy(&mut self) -> Result<(), String>;
     fn reopen_admission(&mut self, drain: Self::Drain) -> Result<(), String>;
 }
@@ -193,6 +196,11 @@ fn rollback<A: CutoverAdapter>(
     if let Err(error) = adapter.start_legacy() {
         failures.push(format!("restart prior service: {error}"));
     }
+    if failures.is_empty()
+        && let Err(error) = adapter.finish_rollback(snapshot)
+    {
+        failures.push(error);
+    }
     let suffix = if failures.is_empty() {
         format!(
             "rollback restored the prior service{}",
@@ -235,6 +243,7 @@ pub struct HostCutoverConfig {
     pub instance_env: PathBuf,
     pub daemon_unit: String,
     pub edge_unit: String,
+    pub edge_state_dir: PathBuf,
     pub canary: bool,
 }
 
@@ -247,18 +256,20 @@ pub struct RecoveryConfig {
     pub systemctl: PathBuf,
     pub daemon_unit: String,
     pub edge_unit: String,
+    pub edge_state_dir: PathBuf,
 }
 
 impl Default for RecoveryConfig {
     fn default() -> Self {
         Self {
-            transaction_dir: "/var/lib/devcoordinator2/cutover/rust-v2".into(),
+            transaction_dir: PathBuf::new(),
             runtime_dir: "/run/devcoordinator2".into(),
             socket_path: "/run/devcoordinator2/daemon.sock".into(),
             database_path: "/var/lib/devcoordinator2/authority.sqlite3".into(),
             systemctl: "/usr/bin/systemctl".into(),
             daemon_unit: "devcoordinator2.service".to_owned(),
             edge_unit: "devcoordinator2-edge.service".to_owned(),
+            edge_state_dir: "/var/lib/devcoordinator2-edge".into(),
         }
     }
 }
@@ -290,6 +301,7 @@ impl Default for HostCutoverConfig {
             instance_env: "/etc/devcoordinator2/instance.env".into(),
             daemon_unit: "devcoordinator2.service".to_owned(),
             edge_unit: "devcoordinator2-edge.service".to_owned(),
+            edge_state_dir: "/var/lib/devcoordinator2-edge".into(),
             canary: false,
         }
     }
@@ -302,6 +314,8 @@ pub struct InstallationSnapshot {
     pub status: String,
     pub transaction_dir: String,
     pub entries: Vec<SnapshotEntry>,
+    pub backup_sha256: String,
+    pub candidate_commit: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -446,7 +460,18 @@ impl CutoverAdapter for HostCutover {
             self.runner.as_ref(),
             &self.config.ss,
             &self.config.socket_path,
-        )
+        )?;
+        let directory = crate::instance::parse_env(&self.config.instance_env)
+            .get("DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                if self.config.socket_path == Path::new("/run/devcoordinator2/daemon.sock") {
+                    PathBuf::from("/tmp/devcoordinator2-bridge")
+                } else {
+                    self.config.socket_path.with_file_name("sandbox-bridge")
+                }
+            });
+        wait_for_bridge_connections(&directory)
     }
 
     fn deployment_is_applying(&mut self) -> Result<bool, String> {
@@ -489,10 +514,14 @@ impl CutoverAdapter for HostCutover {
             .map(capture_entry)
             .collect::<Result<Vec<_>, _>>()?;
         let snapshot = InstallationSnapshot {
-            schema: 1,
+            schema: 2,
             status: "prepared".to_owned(),
             transaction_dir: path_text(&self.config.transaction_dir)?,
             entries,
+            backup_sha256: install::hash_file(
+                &self.config.transaction_dir.join("authority-before.sqlite3"),
+            )?,
+            candidate_commit: self.manifest.source_commit.clone(),
         };
         write_snapshot(&snapshot, "prepared", self.expected_owner)?;
         Ok(snapshot)
@@ -609,7 +638,9 @@ impl CutoverAdapter for HostCutover {
         }
         self.systemctl(&["is-active", "--quiet", &self.config.daemon_unit])?;
         self.systemctl(&["is-active", "--quiet", &self.config.edge_unit])?;
+        verify_reconciled_routes(&self.config.database_path, &self.config.edge_state_dir)?;
         Ok(vec![
+            "route-lease-edge-reconciled".to_owned(),
             "v2-cli-ping".to_owned(),
             "rust-daemon-active".to_owned(),
             "node-edge-active".to_owned(),
@@ -641,6 +672,10 @@ impl CutoverAdapter for HostCutover {
             restore_entry(entry)?;
         }
         self.systemctl(&["daemon-reload"])?;
+        write_snapshot(snapshot, "rolling_back", self.expected_owner)
+    }
+
+    fn finish_rollback(&mut self, snapshot: &Self::InstallationSnapshot) -> Result<(), String> {
         write_snapshot(snapshot, "rolled_back", self.expected_owner)
     }
 
@@ -716,12 +751,54 @@ pub fn recover_host(
     runner: &dyn CommandRunner,
     expected_owner: (u32, u32),
 ) -> Result<RecoveryReceipt, String> {
-    let snapshot = read_snapshot(&config.transaction_dir, expected_owner.0)?;
-    run_systemctl_all(
-        runner,
-        &config.systemctl,
-        &[("stop", &config.edge_unit), ("stop", &config.daemon_unit)],
-    )?;
+    if config.transaction_dir.as_os_str().is_empty() {
+        return Err(
+            "recovery target is required; specify one in-progress transaction directory".to_owned(),
+        );
+    }
+    let invalid_target = |error| format!("recovery target invalid: {error}");
+    let snapshot =
+        read_snapshot(&config.transaction_dir, expected_owner.0).map_err(invalid_target)?;
+    if !matches!(
+        snapshot.status.as_str(),
+        "prepared" | "activating" | "rolling_back"
+    ) {
+        return Err(format!(
+            "recovery target is not an in-progress transaction (status {})",
+            snapshot.status
+        ));
+    }
+    // A prepared transaction from a different installation cannot be used as
+    // a convenient old restore point. It must still match either the captured
+    // prior installation or the candidate involved in this cutover.
+    if let Some(entry) = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.path.ends_with("/install-manifest.json"))
+    {
+        let current = read_json_file(Path::new(&entry.path)).ok().flatten();
+        let prior_matches = std::fs::read(&entry.path).ok().is_some_and(|bytes| {
+            entry
+                .content_base64
+                .as_ref()
+                .is_some_and(|prior| BASE64.decode(prior).ok().as_deref() == Some(bytes.as_slice()))
+        });
+        if !prior_matches
+            && !current.as_ref().is_some_and(|doc| {
+                doc["source_commit"].as_str() == Some(snapshot.candidate_commit.as_str())
+            })
+        {
+            return Err("recovery target belongs to a different installed candidate".into());
+        }
+    }
+    let backup_path = config.transaction_dir.join("authority-before.sqlite3");
+    if install::hash_file(&backup_path).map_err(invalid_target)? != snapshot.backup_sha256 {
+        return Err("recovery target backup does not match its transaction".into());
+    }
+    if !database_integrity(&backup_path).map_err(invalid_target)? {
+        return Err("recovery target backup failed integrity verification".into());
+    }
+    run_systemctl_all(runner, &config.systemctl, &[("stop", &config.daemon_unit)])?;
     for entry in snapshot.entries.iter().rev() {
         restore_entry(entry)?;
     }
@@ -758,12 +835,73 @@ pub fn recover_host(
             ("restart", &config.edge_unit),
         ],
     )?;
+    verify_reconciled_routes(&config.database_path, &config.edge_state_dir)?;
     write_snapshot(&snapshot, "recovered", expected_owner)?;
     Ok(RecoveryReceipt {
         status: "recovered".to_owned(),
         database_restored,
         snapshot: path_text(&config.transaction_dir.join("installation-snapshot.json"))?,
     })
+}
+
+/// Verify the same published snapshot the edge is actually serving. A service
+/// being active is insufficient after database recovery.
+pub fn verify_reconciled_routes(database_path: &Path, edge_state: &Path) -> Result<(), String> {
+    let route_path = database_path
+        .parent()
+        .ok_or("route state directory is missing")?
+        .join("public/routes.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut delay = std::time::Duration::from_millis(25);
+    loop {
+        let published = read_json_file(&route_path)?;
+        let accepted = read_json_file(&edge_state.join("routes.accepted.json"))?;
+        if let (Some(doc), Some(ack)) = (published, accepted)
+            && doc["schema"] == 2
+            && ack["schema"] == 2
+            && doc["generation"].as_u64().is_some()
+            && doc["payload_sha256"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+            && doc["generation"] == ack["generation"]
+            && doc["payload_sha256"] == ack["payload_sha256"]
+        {
+            let connection = open_database_read_only(database_path)?;
+            let rows = doc["routes"]
+                .as_array()
+                .ok_or("route document has no routes")?;
+            for route in rows {
+                let port = route["port"]
+                    .as_u64()
+                    .and_then(|p| u16::try_from(p).ok())
+                    .ok_or("route port is invalid")?;
+                if route["observed"] != true {
+                    let valid: bool = connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM domain_routes r JOIN port_assignments p ON p.lease_id=r.lease_id AND p.port=r.port AND p.deployment_id=r.deployment_id AND p.component=r.component JOIN deployments d ON d.deployment_id=r.deployment_id WHERE p.generation=0 AND r.deployment_id=?1 AND r.component=?2 AND r.port=?3 AND r.lease_id=?4 AND r.generation=d.current_generation)",
+                        rusqlite::params![route["deployment_id"].as_str(), route["component"].as_str(), port, route["lease_id"].as_str()],
+                        |row|row.get(0),
+                    ).map_err(|_| "cannot verify route leases")?;
+                    if !valid {
+                        return Err("recovery incomplete: route lease ownership mismatch".into());
+                    }
+                }
+                let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+                if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(1))
+                    .is_err()
+                {
+                    return Err("recovery incomplete: routed listener is unavailable".into());
+                }
+            }
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "recovery incomplete: edge has not accepted the reconciled route document".into(),
+            );
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+    }
 }
 
 fn read_snapshot(
@@ -786,7 +924,7 @@ fn read_snapshot(
         read_json_file(&path)?.ok_or_else(|| "installation snapshot is unavailable".to_owned())?;
     let snapshot: InstallationSnapshot = serde_json::from_value(value)
         .map_err(|error| format!("installation snapshot is invalid: {error}"))?;
-    if snapshot.schema != 1 || Path::new(&snapshot.transaction_dir) != transaction_dir {
+    if snapshot.schema != 2 || Path::new(&snapshot.transaction_dir) != transaction_dir {
         return Err("installation snapshot identity does not match its transaction".to_owned());
     }
     Ok(snapshot)
@@ -976,6 +1114,46 @@ fn read_activity_count(runtime_dir: &Path) -> Result<usize, String> {
         .and_then(Value::as_array)
         .map(Vec::len)
         .ok_or_else(|| "test activity receipt has no active list".to_owned())
+}
+
+fn wait_for_bridge_connections(directory: &Path) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut delay = std::time::Duration::from_millis(25);
+    loop {
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("cannot inspect accepted sandbox requests".into()),
+        };
+        let mut active = false;
+        for entry in entries {
+            let entry = entry.map_err(|_| "cannot inspect accepted sandbox request")?;
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "processing")
+            {
+                match read_json_file(&entry.path())? {
+                    Some(value) if value["operation"] == "event.wait" => {}
+                    None => {}
+                    _ => {
+                        active = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !active {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "accepted sandbox requests have not drained; no database backup was taken".into(),
+            );
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(std::time::Duration::from_millis(500));
+    }
 }
 
 fn wait_for_socket_connections(
@@ -1818,6 +1996,19 @@ mod tests {
         let listener = UnixListener::bind(&socket_path).unwrap();
         let state = root.join("state");
         std::fs::create_dir(&state).unwrap();
+        std::fs::create_dir_all(state.join("public")).unwrap();
+        std::fs::create_dir_all(root.join("edge-state")).unwrap();
+        let routes = serde_json::json!({"schema":2,"generation":100,"payload_sha256":"f".repeat(64),"routes":[]});
+        std::fs::write(
+            state.join("public/routes.json"),
+            serde_json::to_vec(&routes).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("edge-state/routes.accepted.json"),
+            serde_json::to_vec(&routes).unwrap(),
+        )
+        .unwrap();
         let database_path = state.join("authority.sqlite3");
         let connection = Connection::open(&database_path).unwrap();
         connection
@@ -1864,6 +2055,7 @@ mod tests {
                 instance_env: root.join("etc/instance.env"),
                 daemon_unit: "devcoordinator2.service".to_owned(),
                 edge_unit: "devcoordinator2-edge.service".to_owned(),
+                edge_state_dir: root.join("edge-state"),
                 canary: false,
             },
             expected_owner,
@@ -2067,6 +2259,70 @@ mod tests {
     }
 
     #[test]
+    fn recovery_refuses_missing_old_and_terminal_targets_before_system_changes() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let missing = RecoveryConfig::default();
+        assert!(
+            recover_host(&missing, runner.as_ref(), world.expected_owner)
+                .unwrap_err()
+                .contains("target")
+        );
+        assert!(runner.requests.lock().unwrap().is_empty());
+        let unavailable = RecoveryConfig {
+            transaction_dir: world.config.transaction_dir.join("missing"),
+            ..RecoveryConfig::default()
+        };
+        assert!(
+            recover_host(&unavailable, runner.as_ref(), world.expected_owner)
+                .unwrap_err()
+                .starts_with("recovery target invalid:")
+        );
+        assert!(runner.requests.lock().unwrap().is_empty());
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
+                .unwrap();
+        host.backup_database().unwrap();
+        let snapshot = host.capture_installation().unwrap();
+        write_snapshot(&snapshot, "committed", world.expected_owner).unwrap();
+        runner.requests.lock().unwrap().clear();
+        let config = RecoveryConfig {
+            transaction_dir: world.config.transaction_dir.clone(),
+            runtime_dir: world.config.runtime_dir.clone(),
+            socket_path: world.config.socket_path.clone(),
+            database_path: world.config.database_path.clone(),
+            systemctl: world.config.systemctl.clone(),
+            daemon_unit: world.config.daemon_unit.clone(),
+            edge_unit: world.config.edge_unit.clone(),
+            edge_state_dir: world.config.edge_state_dir.clone(),
+        };
+        assert!(
+            recover_host(&config, runner.as_ref(), world.expected_owner)
+                .unwrap_err()
+                .contains("in-progress")
+        );
+        assert!(runner.requests.lock().unwrap().is_empty());
+        write_snapshot(&snapshot, "prepared", world.expected_owner).unwrap();
+        std::fs::write(
+            world
+                .config
+                .transaction_dir
+                .join("authority-before.sqlite3"),
+            b"not the captured backup",
+        )
+        .unwrap();
+        assert!(
+            recover_host(&config, runner.as_ref(), world.expected_owner)
+                .unwrap_err()
+                .contains("backup")
+        );
+        assert!(runner.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn offline_recovery_replays_persisted_snapshot_after_interrupted_install() {
         let world = host_world();
         let runner = Arc::new(HostFake {
@@ -2100,6 +2356,7 @@ mod tests {
                 systemctl: world.config.systemctl.clone(),
                 daemon_unit: world.config.daemon_unit.clone(),
                 edge_unit: world.config.edge_unit.clone(),
+                edge_state_dir: world.config.edge_state_dir.clone(),
             },
             runner.as_ref(),
             world.expected_owner,

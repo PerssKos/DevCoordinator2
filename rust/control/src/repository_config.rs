@@ -12,7 +12,7 @@ use devcoordinator2_executor_protocol::{
 };
 use regex::Regex;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -70,21 +70,21 @@ pub struct TestConfigSummary {
     pub default: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthKind {
     Http,
     Tcp,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HealthSpec {
     pub kind: HealthKind,
     pub path: Option<String>,
     pub timeout_seconds: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComponentKind {
     Process,
@@ -106,7 +106,7 @@ impl ComponentKind {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ComponentSpec {
     pub name: String,
     #[serde(rename = "type")]
