@@ -159,6 +159,8 @@ impl TestRunStore {
         let logs = ensure_directory(&test, "logs", 0o711, None)?;
         let runs = ensure_directory(&logs, "runs", 0o711, None)?;
         let run = create_directory(&runs, run_id, 0o700, Some((uid, gid)))?;
+        create_file(&run, "active.lock", 0o600, uid, gid, true)?;
+        create_file(&run, "finalization.pending", 0o600, uid, gid, true)?;
         let executor = create_directory(&run, "executor", 0o700, Some((uid, gid)))?;
         let executor_stdout = create_file(&executor, "stdout.log", 0o600, uid, gid, true)?;
         let executor_stderr = create_file(&executor, "stderr.log", 0o600, uid, gid, true)?;
@@ -174,6 +176,59 @@ impl TestRunStore {
             executor_stdout,
             executor_stderr,
         })
+    }
+
+    pub fn prepare_log_metadata(
+        &self,
+        worktree: &Path,
+        summary: &TestSummary,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), TestStateError> {
+        use devcoordinator2_executor_core::RunLogMetadata;
+        let root = open_worktree(worktree)?;
+        let run = open_chain(
+            &root,
+            &[".devcoordinator", "test", "logs", "runs", &summary.run_id],
+        )?
+        .ok_or_else(|| TestStateError::Invalid("log run directory is missing".into()))?;
+        let started = time::PrimitiveDateTime::parse(
+            &summary.started_at,
+            &time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z"),
+        )
+        .map_err(|_| TestStateError::Invalid("run start timestamp is invalid".into()))?
+        .assume_utc();
+        let metadata = RunLogMetadata {
+            schema: 2,
+            run_id: summary.run_id.clone(),
+            test: summary.test.clone(),
+            started_at_epoch_ms: (started.unix_timestamp_nanos() / 1_000_000)
+                .try_into()
+                .map_err(|_| TestStateError::Invalid("negative run start".into()))?,
+            finished_at_epoch_ms: None,
+            status: RunStatus::Running,
+            complete: false,
+        };
+        atomic_json(&run, "run.json", &metadata, 0o600, uid, gid)
+    }
+
+    pub fn finish_log_finalization(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<(), TestStateError> {
+        validate_run_id(run_id)?;
+        let root = open_worktree(worktree)?;
+        if let Some(run) = open_chain(&root, &[".devcoordinator", "test", "logs", "runs", run_id])?
+        {
+            match unix_fs::unlinkat(&run, "finalization.pending", AtFlags::empty()) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(filesystem("remove finalization marker", error)),
+            }
+            run.sync_all()
+                .map_err(|error| filesystem("sync log finalization", error))?;
+        }
+        Ok(())
     }
 
     pub fn remove_current(&self, worktree: &Path) -> Result<(), TestStateError> {

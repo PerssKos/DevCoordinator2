@@ -1125,6 +1125,8 @@ pub struct Component {
     pub generation: Option<u32>,
     pub binding: ComponentBinding,
     pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
     pub restarts: Option<u32>,
     pub owned: bool,
     pub independent_control: bool,

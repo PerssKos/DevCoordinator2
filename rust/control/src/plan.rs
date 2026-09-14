@@ -2368,8 +2368,8 @@ mod tests {
                     [spec_json],
                 )?;
                 transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,'0123456789abcdef',0,'/fixture/generation','fingerprint','t','current')", [])?;
-                transaction.execute("INSERT INTO port_assignments VALUES(24001,'d1111111111111111','api',1,'t')", [])?;
-                transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,'t')", [])?;
+                transaction.execute("INSERT INTO port_assignments VALUES(24001,'d1111111111111111','api',1,'t','lapi')", [])?;
+                transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,'t','lweb')", [])?;
                 transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('v1111111111111111','r1111111111111111',1,'Fixture release','release','planned','t','uid:1000','t')", [])?;
                 Ok(())
             })

@@ -6,7 +6,7 @@ fn web_delivery_binds_current_generation_source_and_owned_route() {
     verification.access = "https://preview.example.test/airfoils/ag24".into();
     let world = World::new(Kind::WebDeployment, Some(verification.clone()));
     world.fixture.database.call(|connection| {
-        connection.execute("INSERT INTO domain_routes VALUES('preview','d1111111111111111','web',24002,1,'fixture')", [])?;
+        connection.execute("INSERT INTO domain_routes VALUES('preview','d1111111111111111','web',24002,1,'fixture','lfixture')", [])?;
         Ok(())
     }).unwrap();
     let receipt = world
@@ -104,7 +104,7 @@ fn non_web_kinds_cannot_borrow_web_deployment_metadata() {
 fn web_delivery_accepts_the_exact_local_route_without_changing_private_domain_access() {
     let world = World::new(Kind::WebDeployment, Some(proof(Kind::WebDeployment)));
     world.fixture.database.call(|connection| {
-        connection.execute("INSERT INTO domain_routes VALUES('preview','d1111111111111111','web',24002,1,'fixture')", [])?;
+        connection.execute("INSERT INTO domain_routes VALUES('preview','d1111111111111111','web',24002,1,'fixture','lfixture')", [])?;
         Ok(())
     }).unwrap();
     let receipt = world

@@ -266,3 +266,11 @@ log. Ordinary status and completion never include log content. The local
 same-owner and authenticated-administrator boundary from
 `security-assumptions.md` applies; the public edge receives only run-relative
 references and bounded requested content.
+
+The daemon publishes run metadata and a finalization marker before launching
+the executor. That marker protects streams until summary, history and retry
+evidence publication finish. A supervised live run is never killed because its
+observer leaves. Missing supervisor proof or a terminal unit is reconciled by
+the daemon using exact run identity; late reapers cannot replace its result.
+Catalogue history reads retain metadata without holding a descriptor for every
+old run. Exact tail, range and search requests open only the selected run.

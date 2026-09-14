@@ -2468,6 +2468,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     let old_port = component(&started, "api")?["port"]
         .as_u64()
         .ok_or_else(|| "old API port is missing".to_owned())?;
+    let old_lease = component(&started, "api")?["lease_id"].clone();
     let old_unit = component(&started, "api")?["binding"]["identity"]
         .as_str()
         .ok_or_else(|| "old API unit is missing".to_owned())?
@@ -2482,13 +2483,17 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         reapplied["current_generation"] == 2,
         "reapply did not create generation 2"
     );
+    ensure!(
+        component(&reapplied, "api")?["lease_id"] == old_lease && old_lease.is_string(),
+        "routed lease identity changed"
+    );
     let new_port = component(&reapplied, "api")?["port"]
         .as_u64()
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "new API port is missing".to_owned())?;
     ensure!(
-        u64::from(new_port) != old_port && http_get_json(new_port)?["version"] == "v2",
-        "new API generation was not independently reachable"
+        u64::from(new_port) == old_port && http_get_json(new_port)?["version"] == "v2",
+        "new API generation did not keep its stable reachable port"
     );
     ensure!(
         !world
@@ -2499,7 +2504,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     );
     ensure!(
         routes(world)?.pointer("/routes/0/port") == Some(&json!(new_port)),
-        "route did not move to the new generation"
+        "route lost the stable port on the new generation"
     );
     ensure!(
         component(&reapplied, "db")?["binding"]["identity"] == database_id,
@@ -3384,7 +3389,7 @@ fn case_unchanged_apply_rechecks_already_bad_published_compose_route(
             .map_err(|error| error.to_string())?;
         connection
             .execute(
-                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at) VALUES(?1,?2,'compose',?3,?4,'seeded')",
+                "INSERT OR REPLACE INTO domain_routes(domain, deployment_id, component, port, generation, published_at, lease_id) VALUES(?1,?2,'compose',?3,?4,'seeded',(SELECT lease_id FROM port_assignments WHERE deployment_id=?2 AND component='compose' AND port=?3))",
                 rusqlite::params![
                     "upgrade-stack",
                     deployment_id,

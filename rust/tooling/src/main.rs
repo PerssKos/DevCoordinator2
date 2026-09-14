@@ -391,16 +391,16 @@ enum InstallCommand {
             default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
         )]
         candidate_manifest: PathBuf,
-        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
-        transaction_dir: PathBuf,
+        #[arg(long)]
+        transaction_dir: Option<PathBuf>,
         #[arg(long)]
         canary: bool,
         #[arg(long)]
         yes: bool,
     },
     Recover {
-        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
-        transaction_dir: PathBuf,
+        #[arg(long)]
+        transaction_dir: Option<PathBuf>,
         #[arg(long)]
         yes: bool,
     },
@@ -2084,7 +2084,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
             }
             let config = devcoordinator2_tooling::cutover::HostCutoverConfig {
                 candidate_manifest,
-                transaction_dir,
+                transaction_dir: transaction_dir.unwrap_or_else(|| {
+                    PathBuf::from(format!(
+                        "/var/lib/devcoordinator2/cutover/activation-{}-{}",
+                        time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
+                        std::process::id()
+                    ))
+                }),
                 canary,
                 ..Default::default()
             };
@@ -2128,6 +2134,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
             transaction_dir,
             yes,
         } => {
+            if transaction_dir.is_none() {
+                println!(
+                    "{}",
+                    serde_json::json!({"ok":false,"error":{"code":"recovery_target_required","message":"Specify the in-progress installation transaction returned by activation."}})
+                );
+                return ExitCode::from(2);
+            }
             if !yes {
                 return tooling_error(
                     "install recover requires --yes to restore the captured prior installation",
@@ -2138,7 +2151,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
                 return tooling_error("install recover must run as root", 2);
             }
             let config = devcoordinator2_tooling::cutover::RecoveryConfig {
-                transaction_dir,
+                transaction_dir: transaction_dir.unwrap_or_default(),
                 ..Default::default()
             };
             devcoordinator2_tooling::cutover::recover_host(&config, &HostRunner, (0, 0)).and_then(
@@ -2151,6 +2164,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
     };
     match result {
         Ok(value) => emit_report(value, true, 1),
+        Err(error) if error.starts_with("recovery target") => {
+            println!(
+                "{}",
+                serde_json::json!({"ok":false,"error":{"code":"recovery_target_invalid","message":error}})
+            );
+            ExitCode::from(2)
+        }
         Err(error) => tooling_error(&error, 2),
     }
 }

@@ -12,6 +12,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
+use tokio::sync::{Notify, watch};
+use tokio::time::sleep;
 
 use devcoordinator2_api::params::{RetryTest, StartTest};
 use devcoordinator2_api::results::{
@@ -106,6 +108,7 @@ struct Inner {
     executor: PathBuf,
     events: Mutex<Option<Arc<dyn TestEventSink>>>,
     runs: Mutex<HashMap<String, Arc<RunHandle>>>,
+    reconcile_wake: Arc<Notify>,
 }
 
 struct RunHandle {
@@ -131,6 +134,8 @@ struct RunHandle {
     containers: Mutex<Vec<ExactContainerId>>,
     state: Mutex<RunState>,
     finalized: Condvar,
+    finalizing: AtomicBool,
+    supervisor_alive: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -139,6 +144,7 @@ struct RunState {
     final_status: Option<TestStatus>,
     cleanup_complete: bool,
     evidence_complete: bool,
+    terminal_summary: Option<TestSummary>,
 }
 
 struct RequestedStop {
@@ -277,6 +283,7 @@ impl TestLifecycle {
                 executor,
                 events: Mutex::new(None),
                 runs: Mutex::new(HashMap::new()),
+                reconcile_wake: Arc::new(Notify::new()),
             }),
         };
         let weak = Arc::downgrade(&lifecycle.inner);
@@ -297,6 +304,234 @@ impl TestLifecycle {
             .events
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    pub async fn serve_reconciliation(&self, mut shutdown: watch::Receiver<bool>) {
+        loop {
+            if *shutdown.borrow() {
+                return;
+            }
+            let lifecycle = self.clone();
+            if let Err(error) =
+                tokio::task::spawn_blocking(move || lifecycle.reconcile_orphans()).await
+            {
+                tracing::error!(%error, "test reconciliation worker failed");
+            }
+            tokio::select! {
+                _ = self.inner.reconcile_wake.notified() => {}
+                _ = sleep(Duration::from_secs(30)) => {}
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return; }
+                }
+            }
+        }
+    }
+
+    pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
+        let worktrees = self.inner.database.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
+            )?;
+            Ok(statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        PathBuf::from(row.get::<_, String>(1)?),
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        }).map_err(database_error)?;
+        let mut first_error = None;
+        for (worktree_id, worktree, repository_id) in worktrees {
+            let result = self.reconcile_worktree(&worktree_id, &worktree, &repository_id);
+            if let Err(error) = result {
+                tracing::warn!(code = %error.code, worktree_id, "test reconciliation failed");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reconcile_worktree(
+        &self,
+        worktree_id: &str,
+        worktree: &Path,
+        repository_id: &str,
+    ) -> Result<(), ProtocolError> {
+        let Some(_guard) = self
+            .inner
+            .admission
+            .try_worktree_guard(worktree_id)
+            .map_err(admission_error)?
+        else {
+            return Ok(());
+        };
+        if !worktree.exists() {
+            return Ok(());
+        }
+        let handle = self
+            .inner
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(worktree_id)
+            .cloned();
+        if let Some(handle) = handle {
+            if handle.finalizing.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let properties = self
+                .inner
+                .systemd
+                .show_unit(&handle.unit, &["ActiveState", "MainPID"]);
+            let valid = properties.as_ref().is_ok_and(|p| {
+                property(p, "ActiveState") == Some("active")
+                    && property(p, "MainPID")
+                        .and_then(|id| id.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0)
+            });
+            if valid && handle.supervisor_alive.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            // Never call this from a client read, or while another start owns
+            // this worktree. The exact run, not its age, determines cleanup.
+            {
+                let mut state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.stop.is_none() {
+                    state.stop = Some(RequestedStop {
+                        status: TestStatus::Interrupted,
+                        detail: None,
+                        termination: Some(
+                            devcoordinator2_api::results::RunTerminationReason::Interrupted,
+                        ),
+                    });
+                }
+            }
+            self.stop_unit(&handle.unit)?;
+            self.finalize(&handle, None, false);
+            return Ok(());
+        }
+        let Some(mut summary) = self
+            .inner
+            .store
+            .read_current_summary(worktree)
+            .map_err(state_error)?
+        else {
+            return Ok(());
+        };
+        if summary.status != TestStatus::Running {
+            return Ok(());
+        }
+        let unit = crate::ids::unit_name(
+            &self.inner.config.unit_prefix,
+            worktree_id,
+            summary.run_id.trim_start_matches('t'),
+        );
+        let units = self
+            .inner
+            .systemd
+            .list_matching_units(&unit)
+            .map_err(systemd_error)?;
+        if units.iter().any(|existing| existing == &unit) {
+            self.stop_unit(&unit)?;
+        }
+        let Some(current) = self
+            .inner
+            .store
+            .open_current(worktree)
+            .map_err(state_error)?
+        else {
+            return Ok(());
+        };
+        let (uid, gid) = self.inner.store.owner(&current).map_err(state_error)?;
+        if let Ok(Some(report)) = self.inner.store.read_report(&current)
+            && report.run_id == summary.run_id
+            && report.test == summary.test
+        {
+            apply_report(&mut summary, &report).map_err(state_error)?;
+            self.inner
+                .store
+                .record_evidence(
+                    worktree,
+                    &report,
+                    &TestStatus::Interrupted,
+                    summary.work.as_ref(),
+                    uid,
+                    gid,
+                )
+                .map_err(state_error)?;
+        }
+        let labels = BTreeMap::from([
+            (
+                "devcoordinator2.instance".into(),
+                self.inner.config.unit_prefix.clone(),
+            ),
+            ("devcoordinator2.purpose".into(), "test".into()),
+            ("devcoordinator2.run".into(), summary.run_id.clone()),
+        ]);
+        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            self.remove_containers(&containers);
+        }
+        let now = self.timestamp()?;
+        let elapsed = time::PrimitiveDateTime::parse(&summary.started_at, TIMESTAMP_FORMAT)
+            .ok()
+            .map(|at| {
+                (self.inner.clock.now_utc() - at.assume_utc())
+                    .as_seconds_f64()
+                    .max(0.0)
+            })
+            .unwrap_or(0.0);
+        terminal_status(
+            &mut summary,
+            TestStatus::Interrupted,
+            now,
+            elapsed,
+            None,
+            Some(devcoordinator2_api::results::RunTerminationReason::Interrupted),
+        );
+        reconcile_terminal_checks(&mut summary);
+        self.inner
+            .store
+            .write_summary(&current, &summary, uid, gid)
+            .map_err(state_error)?;
+        self.inner
+            .store
+            .record_history(worktree, &summary, uid, gid)
+            .map_err(state_error)?;
+        self.inner
+            .store
+            .finish_log_finalization(worktree, &summary.run_id)
+            .map_err(state_error)?;
+        self.inner.capacity.unregister_run(&summary.run_id)?;
+        self.inner
+            .admission
+            .finished(&summary.run_id)
+            .map_err(admission_error)?;
+        self.inner
+            .logs
+            .notify_run_finished(worktree, &summary.run_id);
+        self.publish_event(TestLifecycleEvent {
+            kind: "test.finished",
+            run_id: summary.run_id,
+            test: summary.test,
+            status: Some(TestStatus::Interrupted),
+            exit_code: None,
+            repository_id: repository_id.to_owned(),
+            worktree_id: worktree_id.to_owned(),
+            duration_seconds: summary.duration_seconds,
+            caller_uid: uid,
+            client: summary.client,
+        });
+        Ok(())
     }
 
     pub fn start(&self, params: StartTest, caller: &Caller) -> Result<TestStarted, ProtocolError> {
@@ -457,6 +692,10 @@ impl TestLifecycle {
             requested_tier,
         );
         summary.work = caller.work.clone();
+        self.inner
+            .store
+            .prepare_log_metadata(&worktree, &summary, caller.uid, caller.gid)
+            .map_err(state_start_error)?;
         if let Err(error) =
             self.inner
                 .store
@@ -474,7 +713,7 @@ impl TestLifecycle {
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(admission_error(error));
         }
-        drop(admission);
+        let _launch_guard = admission.release_global();
         if let Err(error) = self.inner.capacity.register_run(&run_id, caller.uid) {
             let _ = self.inner.admission.finished(&run_id);
             self.cleanup_unstarted(&worktree, &run_id);
@@ -622,6 +861,8 @@ impl TestLifecycle {
             containers: Mutex::new(containers),
             state: Mutex::new(RunState::default()),
             finalized: Condvar::new(),
+            finalizing: AtomicBool::new(false),
+            supervisor_alive: Arc::new(AtomicBool::new(true)),
         });
         let launch = self.verify_launch(
             &handle,
@@ -635,6 +876,7 @@ impl TestLifecycle {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(registered.worktree_id.clone(), Arc::clone(&handle));
+                self.inner.reconcile_wake.notify_one();
                 self.spawn_reaper(handle, process, stdout, stderr);
                 let started = TestStarted {
                     run_id,
@@ -683,13 +925,15 @@ impl TestLifecycle {
             .read_current_summary(&worktree)
             .map_err(state_error)?
             .ok_or_else(test_not_found)?;
-        if let Some(handle) = self
-            .inner
-            .runs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&worktree_id)
-            .cloned()
+        let handle = {
+            self.inner
+                .runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&worktree_id)
+                .cloned()
+        };
+        if let Some(handle) = handle
             && summary.status == TestStatus::Running
         {
             self.project_live(&mut summary, &handle)?;
@@ -943,6 +1187,7 @@ impl TestLifecycle {
                 .then_with(|| left.1.run_id.cmp(&right.1.run_id))
         });
         let mut stopped = Vec::new();
+        let mut containment_error = None;
         for (index, (_, handle)) in candidates.iter().enumerate() {
             let Some(host) = memory().filter(|host| host.emergency()) else {
                 break;
@@ -978,7 +1223,10 @@ impl TestLifecycle {
                     ),
                 });
             }
-            self.stop_unit(&handle.unit)?;
+            if let Err(error) = self.stop_unit(&handle.unit) {
+                containment_error = Some(error);
+                continue;
+            }
             let state = handle
                 .state
                 .lock()
@@ -994,12 +1242,15 @@ impl TestLifecycle {
                 ));
             }
             if !state.evidence_complete {
-                return Err(ProtocolError::new(
+                containment_error = Some(ProtocolError::new(
                     ErrorCode::UnitStopFailed,
                     "memory emergency test stopped but its evidence could not be retained",
                 ));
             }
             stopped.push(handle.run_id.clone());
+        }
+        if let Some(error) = containment_error {
+            return Err(error);
         }
         Ok(stopped)
     }
@@ -1142,44 +1393,7 @@ impl TestLifecycle {
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
             self.remove_containers(&containers);
         }
-        for worktree in self.inner.registry.registered_worktree_paths()? {
-            let Some(mut summary) = self
-                .inner
-                .store
-                .read_current_summary(&worktree)
-                .map_err(state_error)?
-            else {
-                continue;
-            };
-            if summary.status != TestStatus::Running {
-                continue;
-            }
-            let Some(current) = self
-                .inner
-                .store
-                .open_current(&worktree)
-                .map_err(state_error)?
-            else {
-                continue;
-            };
-            terminal_status(
-                &mut summary,
-                TestStatus::Interrupted,
-                self.timestamp()?,
-                0.0,
-                None,
-                Some(devcoordinator2_api::results::RunTerminationReason::Interrupted),
-            );
-            let (owner_uid, owner_gid) = self.inner.store.owner(&current).map_err(state_error)?;
-            let _ = self
-                .inner
-                .store
-                .write_summary(&current, &summary, owner_uid, owner_gid);
-            let _ = self
-                .inner
-                .store
-                .record_history(&worktree, &summary, owner_uid, owner_gid);
-        }
+        self.reconcile_orphans()?;
         self.inner.admission.reset().map_err(admission_error)
     }
 
@@ -1603,6 +1817,17 @@ impl TestLifecycle {
     ) {
         let lifecycle = self.clone();
         thread::spawn(move || {
+            struct SupervisorGuard(Arc<AtomicBool>, Arc<Notify>);
+            impl Drop for SupervisorGuard {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                    self.1.notify_one();
+                }
+            }
+            let _supervisor = SupervisorGuard(
+                Arc::clone(&handle.supervisor_alive),
+                Arc::clone(&lifecycle.inner.reconcile_wake),
+            );
             let stdout_failed = stdout.failure_flag();
             let stderr_failed = stderr.failure_flag();
             let (sender, receiver) = mpsc::sync_channel(1);
@@ -1644,6 +1869,13 @@ impl TestLifecycle {
     }
 
     fn finalize(&self, handle: &RunHandle, exit: Option<ExitStatus>, streams_complete: bool) {
+        if handle
+            .finalizing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         let (report, report_issue) = self.report_snapshot(handle, true);
         let properties = self
             .inner
@@ -1766,7 +1998,15 @@ impl TestLifecycle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.final_status = Some(status.clone());
+        state.terminal_summary = Some(summary.clone());
         state.evidence_complete = summary_written && history_written && retry_evidence_written;
+        if state.evidence_complete {
+            state.evidence_complete = self
+                .inner
+                .store
+                .finish_log_finalization(&handle.worktree, &handle.run_id)
+                .is_ok();
+        }
         handle.finalized.notify_all();
         drop(state);
         // Publish the terminal summary before releasing admission. A
@@ -1778,6 +2018,7 @@ impl TestLifecycle {
         self.inner
             .logs
             .notify_run_finished(&handle.worktree, &handle.run_id);
+        self.inner.reconcile_wake.notify_one();
         self.publish_event(TestLifecycleEvent {
             kind: "test.finished",
             run_id: handle.run_id.clone(),
@@ -1803,6 +2044,16 @@ impl TestLifecycle {
         summary: &mut TestSummary,
         handle: &RunHandle,
     ) -> Result<(), ProtocolError> {
+        if let Some(terminal) = handle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .terminal_summary
+            .clone()
+        {
+            *summary = terminal;
+            return Ok(());
+        }
         summary.stdout_bytes_observed = handle.stdout_bytes.load(Ordering::SeqCst);
         summary.stderr_bytes_observed = handle.stderr_bytes.load(Ordering::SeqCst);
         let (report, issue) = self.report_snapshot(handle, false);

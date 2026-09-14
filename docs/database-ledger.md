@@ -33,8 +33,8 @@ affecting the authoritative current test result.
 | `deployments` | deployment_id PK, repository_id FK, worktree_id FK, name, source, domain, spec_fingerprint, spec_json (secret-free), state, current_generation, previous_generation, created_at, created_by_uid, client, updated_at, ttl_expires_at; UNIQUE(worktree_id, name, source) | done |
 | `generations` | (deployment_id, number) PK, commit_hash, dirty, path, fingerprint, created_at, state (candidate/current/previous/failed) | done |
 | `components` | (deployment_id, name) PK, type, order_index, spec_fingerprint, desired_state, state, health, generation, binding_kind (unit/container/compose), binding_identity (exact unit name / full container ID / compose project), restarts, last_error, updated_at | done |
-| `port_assignments` | port PK, deployment_id, component, generation (0 = stable component), assigned_at | done |
-| `domain_routes` | domain PK, deployment_id, component, port (NULL = withdrawn), generation, published_at | done |
+| `port_assignments` | port PK, deployment_id, component, generation (0 = stable component), assigned_at, immutable lease_id | done |
+| `domain_routes` | domain PK, deployment_id, component, port (NULL = withdrawn), generation, published_at, lease_id | done |
 
 Secrets (generated PostgreSQL credentials) are **not** in the database: they
 live in root-only 0600 files under the instance secrets directory.
@@ -235,3 +235,9 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
   `decisions`, `decision_summaries`) are permanent history: schema changes
   must preserve every row, and no code path may delete from them.
 - Every schema version bump updates this ledger in the same change.
+
+Schema 21 adds immutable port lease identities and route references. Migration
+promotes the exact existing routed assignment to generation zero; a conflict
+withdraws the route, preserves reservations and marks the component for repair.
+The route-generation floor is durable publication metadata outside the SQLite
+backup; restoring a database does not restore that floor.

@@ -756,17 +756,41 @@ impl DeploymentStore {
         let domain = domain.map(str::to_owned);
         let deployment_id = deployment_id.to_owned();
         let component = component.map(str::to_owned);
-        self.database.transaction(move |transaction| {
-            transaction.execute("DELETE FROM domain_routes WHERE deployment_id=?1", [&deployment_id])?;
+        let conflict = self.database.transaction(move |transaction| {
             if let Some(domain) = domain {
                 let component = component.ok_or_else(|| domain_error(ErrorCode::ParamsInvalid, "route component is required"))?;
-                transaction.execute(
-                    "INSERT OR REPLACE INTO domain_routes(domain,deployment_id,component,port,generation,published_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                    rusqlite::params![domain,deployment_id,component,port,generation,now],
+                let other: bool = transaction.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM domain_routes WHERE domain=?1 AND deployment_id!=?2 UNION ALL SELECT 1 FROM observed_routes WHERE domain=?1)",
+                    rusqlite::params![domain,deployment_id], |row| row.get(0),
                 )?;
+                let lease_id = match port {
+                    Some(port) => crate::ports::route_lease(transaction, &deployment_id, &component, port, generation, None)?,
+                    None => None,
+                };
+                if other || (port.is_some() && lease_id.is_none()) {
+                    crate::ports::withdraw_conflict(transaction, &deployment_id, &component)?;
+                    return Ok(true);
+                }
+                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=?1", [&deployment_id])?;
+                transaction.execute(
+                    "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    rusqlite::params![domain,deployment_id,component,port,generation,now,lease_id],
+                )?;
+                if port.is_some() {
+                    transaction.execute("UPDATE deployments SET current_generation=?1 WHERE deployment_id=?2 AND state='applying'", rusqlite::params![generation,deployment_id])?;
+                }
+            } else {
+                transaction.execute("DELETE FROM domain_routes WHERE deployment_id=?1", [&deployment_id])?;
             }
-            Ok(())
-        }).map_err(database_error)
+            Ok(false)
+        }).map_err(database_error)?;
+        if conflict {
+            return Err(ProtocolError::new(
+                ErrorCode::RouteLeaseConflict,
+                "route was withdrawn because its lease, owner, port or healthy generation does not match",
+            ));
+        }
+        Ok(())
     }
 
     pub fn effective_domain(
@@ -892,9 +916,16 @@ impl DeploymentStore {
                 } else if let (Some(domain), Some((component, port, generation))) =
                     (stored_effective, target)
                 {
+                    let lease = match port {
+                        Some(port) => crate::ports::route_lease(transaction, &deployment_id, &component, port, generation, None)?,
+                        None => None,
+                    };
+                    if port.is_some() && lease.is_none() {
+                        return Err(domain_error(ErrorCode::RouteLeaseConflict, "the route target has no matching healthy lease"));
+                    }
                     transaction.execute(
-                        "INSERT OR REPLACE INTO domain_routes(domain,deployment_id,component,port,generation,published_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                        rusqlite::params![domain,deployment_id,component,port,generation,now],
+                        "INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                        rusqlite::params![domain,deployment_id,component,port,generation,now,lease],
                     )?;
                 }
                 Ok(())
@@ -1271,6 +1302,7 @@ impl DeploymentStore {
                         let component_health: String = row.get(5)?;
                         let status: String = row.get(4)?;
                         Ok(Component {
+                            lease_id: None,
                             name: component_name.clone(),
                             display_name: Some(display_name),
                             r#type: "container".into(),
@@ -1649,7 +1681,7 @@ independent_services=["worker"]
         let specification = load_deployment_spec(temporary.path(), "web").expect("deployment spec");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         database
-            .transaction(|transaction| {
+            .transaction(move |transaction| {
                 transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111','/repo','repo','t',1,'t')", [])?;
                 transaction.execute("INSERT INTO worktrees(worktree_id,repository_id,worktree_path,registered_at,last_seen_at) VALUES('w1111111111111111','r1111111111111111','/repo','t','t')", [])?;
                 Ok(())
@@ -1671,7 +1703,7 @@ independent_services=["worker"]
 
     #[test]
     fn managed_rows_generations_routes_completions_and_desires_are_lossless() {
-        let (temporary, _database, store, specification) = world();
+        let (temporary, database, store, specification) = world();
         let deployment_id = DeploymentStore::deployment_id("w1111111111111111", "web", "worktree");
         assert_eq!(deployment_id.len(), 17);
         store
@@ -1739,6 +1771,26 @@ independent_services=["worker"]
             .unwrap();
         store
             .set_generation_state(&deployment_id, 2, "current")
+            .unwrap();
+        store
+            .set_component_runtime(
+                &deployment_id,
+                "api",
+                ComponentRuntimePatch {
+                    generation: Some(Some(2)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let route_deployment_id = deployment_id.clone();
+        database
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,?2,?3,?4,?5)",
+                    rusqlite::params![route_deployment_id, "api", 0, "t", "lfixture"],
+                )?;
+                Ok(())
+            })
             .unwrap();
         store
             .record_compose_completions(
@@ -1864,6 +1916,31 @@ independent_services=["worker"]
                 1,
                 "other",
                 None,
+            )
+            .unwrap();
+        store
+            .set_deployment_runtime(&managed, "running", Some(1), None)
+            .unwrap();
+        let route_deployment_id = managed.clone();
+        database
+            .transaction(move |transaction| {
+                transaction.execute(
+                    "INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20000,?1,?2,?3,?4,?5)",
+                    rusqlite::params![route_deployment_id, "api", 0, "t", "lmanaged"],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .set_component_runtime(
+                &managed,
+                "api",
+                ComponentRuntimePatch {
+                    state: Some("running".into()),
+                    health: Some("healthy".into()),
+                    generation: Some(Some(1)),
+                    ..Default::default()
+                },
             )
             .unwrap();
         store

@@ -94,6 +94,7 @@ impl OperationExecutor for PingExecutor {
 pub struct App {
     edge_uid: Option<u32>,
     executor: Arc<dyn OperationExecutor>,
+    installation_fence: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -102,11 +103,21 @@ impl App {
         Self {
             edge_uid: None,
             executor: Arc::new(PingExecutor { socket_display }),
+            installation_fence: None,
         }
     }
 
     pub fn with_executor(edge_uid: Option<u32>, executor: Arc<dyn OperationExecutor>) -> Self {
-        Self { edge_uid, executor }
+        Self {
+            edge_uid,
+            executor,
+            installation_fence: None,
+        }
+    }
+
+    pub fn with_installation_fence(mut self, path: std::path::PathBuf) -> Self {
+        self.installation_fence = Some(path);
+        self
     }
 
     pub async fn dispatch(
@@ -115,6 +126,19 @@ impl App {
         peer: PeerCredentials,
     ) -> ResponseEnvelope {
         let id = request.id.clone();
+        if self
+            .installation_fence
+            .as_ref()
+            .is_some_and(|path| path.exists())
+        {
+            return ResponseEnvelope::failure(
+                id,
+                ProtocolError::new(
+                    ErrorCode::DaemonUnavailable,
+                    "installation in progress; re-query after recovery",
+                ),
+            );
+        }
         let caller = match Caller::from_client(
             peer.pid,
             peer.uid,
