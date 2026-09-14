@@ -2572,6 +2572,7 @@ impl Deployments {
             .filter_map(|component| component.generation)
             .collect::<BTreeSet<_>>();
         keep.insert(0);
+        keep.insert(generation);
         self.store.prune_generations(&target.deployment_id, &keep)?;
         if let Some(row) = &target.row {
             self.store.restore_apply_snapshot(
@@ -4736,6 +4737,7 @@ mod tests {
         states: Mutex<HashMap<String, String>>,
         build_exit: std::sync::atomic::AtomicI32,
         listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        reject_running_starts: std::sync::atomic::AtomicBool,
     }
 
     impl MutationSystemd {
@@ -4745,6 +4747,7 @@ mod tests {
                 states: Mutex::new(HashMap::new()),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
                 listener_hook: Mutex::new(None),
+                reject_running_starts: std::sync::atomic::AtomicBool::new(false),
             }
         }
     }
@@ -4775,6 +4778,19 @@ mod tests {
         }
 
         fn start_persistent(&self, specification: &PersistentUnitSpec) -> Result<(), SystemdError> {
+            if self.reject_running_starts.load(Ordering::SeqCst)
+                && self
+                    .states
+                    .lock()
+                    .unwrap()
+                    .get(&specification.unit)
+                    .is_some_and(|state| state == "running")
+            {
+                return Err(SystemdError::Operation(format!(
+                    "cannot recreate a non-terminal unit: {}",
+                    specification.unit
+                )));
+            }
             self.actions
                 .lock()
                 .unwrap()
@@ -5916,7 +5932,7 @@ image="cache:2"
         let reapplied = deployments
             .apply(None, None, Some(&deployment_id), &caller)
             .unwrap();
-        assert_eq!(reapplied.current_generation, Some(2));
+        assert_eq!(reapplied.current_generation, Some(3));
 
         let stopped = deployments
             .control("stop", None, None, Some(&deployment_id), None, &caller)

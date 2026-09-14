@@ -97,6 +97,70 @@ route=true
 }
 
 #[test]
+fn failed_worktree_candidate_is_not_reused_when_its_unit_is_still_running() {
+    let fixture = RouteWorld::new("worktree");
+    let first = fixture.apply().unwrap();
+    let initial_route = fixture.route();
+    let occupied = first.components[0]
+        .binding
+        .identity
+        .as_ref()
+        .unwrap()
+        .replace("-g1.service", "-g2.service");
+    assert!(occupied.ends_with("-g2.service"));
+    fixture
+        .systemd
+        .states
+        .lock()
+        .unwrap()
+        .insert(occupied.clone(), "running".into());
+    fixture
+        .systemd
+        .reject_running_starts
+        .store(true, Ordering::SeqCst);
+    fixture.change();
+    let failure = fixture.apply().unwrap_err();
+    assert!(
+        failure
+            .message
+            .contains("cannot recreate a non-terminal unit")
+    );
+    let failed = fixture.status(&first.deployment_id);
+    assert_eq!(failed.current_generation, Some(1));
+    assert_eq!(failed.components[0].state, "running");
+    assert!(!failed.readiness.unwrap().ready);
+    assert_eq!(fixture.route()["routes"], initial_route["routes"]);
+    let retained = fixture
+        .deployments
+        .store
+        .generations(&first.deployment_id)
+        .unwrap();
+    assert!(
+        retained
+            .iter()
+            .any(|row| row.number == 2 && row.state == "failed")
+    );
+    let recovered = fixture.apply().unwrap();
+    assert_eq!(recovered.current_generation, Some(3));
+    assert_eq!(recovered.route_port, first.route_port);
+    assert!(recovered.readiness.unwrap().ready);
+    assert_eq!(
+        fixture.route()["routes"][0]["lease_id"],
+        initial_route["routes"][0]["lease_id"]
+    );
+    assert_eq!(
+        fixture
+            .systemd
+            .states
+            .lock()
+            .unwrap()
+            .get(&occupied)
+            .map(String::as_str),
+        Some("running")
+    );
+}
+
+#[test]
 fn publication_during_process_transition_does_not_abort_candidate() {
     for source in ["worktree", "checkout"] {
         let fixture = RouteWorld::new(source);
