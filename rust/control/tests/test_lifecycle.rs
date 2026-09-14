@@ -45,19 +45,21 @@ impl Clock for FixtureClock {
 
 struct FixtureMonotonic {
     started: Instant,
+    advance: AtomicU64,
 }
 
 impl FixtureMonotonic {
     fn new() -> Self {
         Self {
             started: Instant::now(),
+            advance: AtomicU64::new(0),
         }
     }
 }
 
 impl MonotonicClock for FixtureMonotonic {
     fn seconds(&self) -> f64 {
-        self.started.elapsed().as_secs_f64() * 100.0
+        self.started.elapsed().as_secs_f64() * 100.0 + self.advance.load(Ordering::SeqCst) as f64
     }
 }
 
@@ -286,6 +288,7 @@ struct FixtureSystemd {
     memory: Mutex<HashMap<String, String>>,
     fail_stop: AtomicBool,
     timed_out: AtomicBool,
+    report_inactive: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -301,6 +304,7 @@ impl FixtureSystemd {
             memory: Mutex::new(HashMap::new()),
             fail_stop: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),
+            report_inactive: AtomicBool::new(false),
         }
     }
 
@@ -479,6 +483,7 @@ impl SystemdControl for FixtureSystemd {
             let state = state.0.lock().unwrap();
             (!state.done, state.exit)
         });
+        let running = running && !self.report_inactive.load(Ordering::SeqCst);
         Ok(properties
             .iter()
             .map(|name| {
@@ -580,6 +585,7 @@ struct LifecycleWorld {
     systemd: Arc<FixtureSystemd>,
     events: Arc<Mutex<Vec<TestLifecycleEvent>>>,
     caller: Caller,
+    monotonic: Arc<FixtureMonotonic>,
 }
 
 impl LifecycleWorld {
@@ -643,6 +649,7 @@ command=["true"]
             CapacityBroker::new(database.clone(), config.capacity_socket_path()).unwrap();
         let logs = TestLogService::new(database.clone(), registry.clone());
         let systemd = Arc::new(FixtureSystemd::new());
+        let monotonic = Arc::new(FixtureMonotonic::new());
         let lifecycle = TestLifecycle::with_adapters(
             config,
             database,
@@ -654,7 +661,7 @@ command=["true"]
             Arc::new(FixtureCommand),
             TestRunStore,
             Arc::new(FixtureClock),
-            Arc::new(FixtureMonotonic::new()),
+            monotonic.clone(),
             Arc::new(SequenceRandom(AtomicU64::new(0))),
             PathBuf::from("/fixture/devcoordinator2-executor"),
         )
@@ -679,6 +686,7 @@ command=["true"]
             systemd,
             events,
             caller,
+            monotonic,
         }
     }
 
@@ -2266,6 +2274,42 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
         expected_work
     );
     assert!(systemd.stops.load(Ordering::SeqCst) >= 1);
+}
+
+#[test]
+fn collected_unit_allows_its_live_reaper_to_finish_successfully() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    // Model systemd collecting the unit before systemd-run's wait completes.
+    world.systemd.report_inactive.store(true, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    world.systemd.finish(&run.unit);
+    let summary = world.wait_status(TestStatus::Passed);
+    assert_eq!(summary.exit_code, Some(0));
+    assert_eq!(summary.termination_reason, None);
+}
+
+#[test]
+fn stalled_reaper_is_interrupted_after_the_completion_window() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.systemd.report_inactive.store(true, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    world.monotonic.advance.fetch_add(11, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.wait_status(TestStatus::Interrupted);
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(TestRunStore.read_history(&world.worktree).unwrap().len(), 1);
+    world.systemd.report_inactive.store(false, Ordering::SeqCst);
+    let next = world.start();
+    assert!(next.superseded_run_id.is_none());
+    assert_ne!(next.run_id, run.run_id);
+    world.systemd.finish(&next.unit);
+    world.wait_status(TestStatus::Passed);
 }
 
 #[test]

@@ -145,6 +145,7 @@ struct RunState {
     cleanup_complete: bool,
     evidence_complete: bool,
     terminal_summary: Option<TestSummary>,
+    missing_unit_since: Option<f64>,
 }
 
 struct RequestedStop {
@@ -396,8 +397,24 @@ impl TestLifecycle {
                         .and_then(|id| id.parse::<u32>().ok())
                         .is_some_and(|id| id > 0)
             });
-            if valid && handle.supervisor_alive.load(Ordering::Acquire) {
-                return Ok(());
+            if handle.supervisor_alive.load(Ordering::Acquire) {
+                let mut state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if valid {
+                    state.missing_unit_since = None;
+                    return Ok(());
+                }
+                // systemd can collect a fast unit before its live reaper has
+                // joined output and published the terminal receipt. Allow the
+                // existing stop-completion window, then interrupt a stalled
+                // handoff. Emergency memory containment remains immediate.
+                let now = self.inner.monotonic.seconds();
+                let since = *state.missing_unit_since.get_or_insert(now);
+                if now - since < STOP_WAIT.as_secs_f64() {
+                    return Ok(());
+                }
             }
             // Never call this from a client read, or while another start owns
             // this worktree. The exact run, not its age, determines cleanup.
@@ -876,8 +893,15 @@ impl TestLifecycle {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(registered.worktree_id.clone(), Arc::clone(&handle));
+                if let Err(error) = self.spawn_reaper(Arc::clone(&handle), process, stdout, stderr)
+                {
+                    handle.supervisor_alive.store(false, Ordering::Release);
+                    self.inner.reconcile_wake.notify_one();
+                    self.stop_unit(&unit)?;
+                    self.finalize(&handle, None, false);
+                    return Err(error);
+                }
                 self.inner.reconcile_wake.notify_one();
-                self.spawn_reaper(handle, process, stdout, stderr);
                 let started = TestStarted {
                     run_id,
                     repository_id: registered.repository_id,
@@ -1814,58 +1838,64 @@ impl TestLifecycle {
         mut process: Box<dyn UnitProcess>,
         stdout: Drain,
         stderr: Drain,
-    ) {
+    ) -> Result<(), ProtocolError> {
         let lifecycle = self.clone();
-        thread::spawn(move || {
-            struct SupervisorGuard(Arc<AtomicBool>, Arc<Notify>);
-            impl Drop for SupervisorGuard {
-                fn drop(&mut self) {
-                    self.0.store(false, Ordering::Release);
-                    self.1.notify_one();
-                }
-            }
-            let _supervisor = SupervisorGuard(
-                Arc::clone(&handle.supervisor_alive),
-                Arc::clone(&lifecycle.inner.reconcile_wake),
-            );
-            let stdout_failed = stdout.failure_flag();
-            let stderr_failed = stderr.failure_flag();
-            let (sender, receiver) = mpsc::sync_channel(1);
-            let waiter = thread::spawn(move || {
-                let _ = sender.send(process.wait());
-            });
-            let mut stop_requested = false;
-            let exit = loop {
-                match receiver.recv_timeout(Duration::from_millis(100)) {
-                    Ok(exit) => break exit.ok(),
-                    Err(RecvTimeoutError::Disconnected) => break None,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if !stop_requested
-                            && (stdout_failed.load(Ordering::SeqCst)
-                                || stderr_failed.load(Ordering::SeqCst))
-                        {
-                            let _ = lifecycle.stop_unit(&handle.unit);
-                            stop_requested = true;
-                        }
+        thread::Builder::new()
+            .spawn(move || {
+                struct SupervisorGuard(Arc<AtomicBool>, Arc<Notify>);
+                impl Drop for SupervisorGuard {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Release);
+                        self.1.notify_one();
                     }
                 }
-            };
-            let _ = waiter.join();
-            let streams_complete = stdout.finish() && stderr.finish();
-            lifecycle.finalize(&handle, exit, streams_complete);
-            let _ = lifecycle.inner.systemd.reset_failed(&handle.unit);
-            let mut runs = lifecycle
-                .inner
-                .runs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if runs
-                .get(&handle.worktree_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &handle))
-            {
-                runs.remove(&handle.worktree_id);
-            }
-        });
+                let _supervisor = SupervisorGuard(
+                    Arc::clone(&handle.supervisor_alive),
+                    Arc::clone(&lifecycle.inner.reconcile_wake),
+                );
+                let stdout_failed = stdout.failure_flag();
+                let stderr_failed = stderr.failure_flag();
+                let (sender, receiver) = mpsc::sync_channel(1);
+                let waiter = thread::spawn(move || {
+                    let _ = sender.send(process.wait());
+                });
+                let mut stop_requested = false;
+                let exit = loop {
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(exit) => break exit.ok(),
+                        Err(RecvTimeoutError::Disconnected) => break None,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if !stop_requested
+                                && (stdout_failed.load(Ordering::SeqCst)
+                                    || stderr_failed.load(Ordering::SeqCst))
+                            {
+                                let _ = lifecycle.stop_unit(&handle.unit);
+                                stop_requested = true;
+                            }
+                        }
+                    }
+                };
+                let _ = waiter.join();
+                let streams_complete = stdout.finish() && stderr.finish();
+                lifecycle.finalize(&handle, exit, streams_complete);
+                let _ = lifecycle.inner.systemd.reset_failed(&handle.unit);
+                let mut runs = lifecycle
+                    .inner
+                    .runs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if runs
+                    .get(&handle.worktree_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                {
+                    runs.remove(&handle.worktree_id);
+                }
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                ProtocolError::new(ErrorCode::TestStartFailed, "cannot start test supervisor")
+                    .with_detail(error.to_string())
+            })
     }
 
     fn finalize(&self, handle: &RunHandle, exit: Option<ExitStatus>, streams_complete: bool) {
