@@ -4726,6 +4726,10 @@ health={{path="/healthz",timeout_seconds=30}}
 fn cases() -> Vec<Case> {
     vec![
         (
+            "bridge_observer_cutover_and_restart_receipt",
+            case_bridge_observer_cutover_and_restart_receipt,
+        ),
+        (
             "routed_checkout_publication_recovery",
             case_routed_checkout_publication_recovery,
         ),
@@ -4865,6 +4869,79 @@ fn cases() -> Vec<Case> {
             case_event_wait_replays_planning_and_groups_heartbeats,
         ),
     ]
+}
+
+fn case_bridge_observer_cutover_and_restart_receipt(world: &mut World) -> Result<(), String> {
+    let bridge = world.socket.with_file_name("sandbox-bridge");
+    let id = "eabbcdd0";
+    let pending = bridge.join(format!("{id}.processing"));
+    let output = bridge.join(format!("{id}.response"));
+    let request_path = bridge.join(format!("{id}.request"));
+    let mut request_value = request(
+        "event.wait",
+        json!({
+            "filters":[{"filter_id":"cutover","categories":["health"]}]
+        }),
+        "other",
+        None,
+    );
+    request_value["id"] = json!(id);
+    let staged_request = bridge.join(format!(".{id}.staged"));
+    fs::write(
+        &staged_request,
+        serde_json::to_vec(&request_value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    chown_path(
+        &staged_request,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    fs::rename(staged_request, request_path).map_err(|e| e.to_string())?;
+    world.wait_file(
+        pending.to_str().ok_or("invalid pending path")?,
+        Duration::from_secs(3),
+    )?;
+    let fence = world.socket.with_file_name("daemon.pre-cutover.sock");
+    fs::rename(&world.socket, &fence).map_err(|e| e.to_string())?;
+    let interrupted = world.wait_file(
+        output.to_str().ok_or("invalid response path")?,
+        Duration::from_secs(3),
+    );
+    fs::rename(&fence, &world.socket).map_err(|e| e.to_string())?;
+    interrupted?;
+    let response: Value = serde_json::from_slice(&fs::read(&output).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        error_code(&response) == Some("daemon_unavailable"),
+        "bridge observer did not receive reconnectable cutover response"
+    );
+    ensure!(
+        !pending.exists(),
+        "bridge observer did not leave processing state"
+    );
+    data(&world.call("ping", json!({}))?)?;
+    world.stop_daemon(false)?;
+    let stale = bridge.join("abbbcd.processing");
+    fs::write(&stale, serde_json::to_vec(&json!({"protocol":2,"id":"abbbcd","operation":"health.summary","params":{},"client":{}})).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+    chown_path(&stale, world.harness.caller_uid, world.harness.caller_gid)?;
+    world.start_daemon(None, None, None)?;
+    let recovered = bridge.join("abbbcd.response");
+    world.wait_file(
+        recovered.to_str().ok_or("invalid recovery path")?,
+        Duration::from_secs(3),
+    )?;
+    let response: Value = serde_json::from_slice(&fs::read(&recovered).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        error_code(&response) == Some("daemon_unavailable") && !stale.exists(),
+        "interrupted read receipt did not recover truthfully"
+    );
+    ensure!(
+        fs::metadata(recovered).map_err(|e| e.to_string())?.uid() == world.harness.caller_uid,
+        "response owner changed"
+    );
+    Ok(())
 }
 
 fn sha256_hex(payload: &[u8]) -> String {

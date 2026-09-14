@@ -1155,7 +1155,7 @@ fn wait_for_bridge_connections(directory: &Path) -> Result<(), String> {
                 .is_some_and(|ext| ext == "processing")
             {
                 match read_json_file(&entry.path())? {
-                    Some(value) if value["operation"] == "event.wait" => {}
+                    Some(value) if bridge_observation(&value) => {}
                     None => {}
                     _ => {
                         active = true;
@@ -1175,6 +1175,24 @@ fn wait_for_bridge_connections(directory: &Path) -> Result<(), String> {
         std::thread::sleep(delay);
         delay = (delay * 2).min(std::time::Duration::from_millis(500));
     }
+}
+
+fn bridge_observation(value: &Value) -> bool {
+    // Do not infer completion from age or from an arbitrary read-only label.
+    // These two operations only observe state. In particular a health snapshot
+    // stranded by ENOSPC cannot mutate authority during the cutover backup.
+    let Ok(request) = serde_json::from_value::<devcoordinator2_api::RequestEnvelope>(value.clone())
+    else {
+        return false;
+    };
+    request.protocol == 2
+        && !request.id.is_empty()
+        && request.id.len() <= 64
+        && request.id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && matches!(request.operation.as_str(), "event.wait" | "health.summary")
+        && devcoordinator2_api::operation(&request.operation).is_some_and(|operation| {
+            operation.policy.read_only() && (operation.validate_params)(&request.params).is_ok()
+        })
 }
 
 fn wait_for_socket_connections(
@@ -1598,6 +1616,76 @@ fn command_failure(label: &str, stderr: &str, stdout: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bridge_observation_drain_keeps_mutations_and_unknown_requests_blocking() {
+        let request = |operation: &str, params: Value| {
+            serde_json::json!({
+                "protocol":2,"id":"abcd","operation":operation,"params":params,"client":{}
+            })
+        };
+        let health = request("health.summary", serde_json::json!({}));
+        assert!(bridge_observation(&health));
+        assert!(bridge_observation(&request(
+            "event.wait",
+            serde_json::json!({
+                "filters":[{"filter_id":"upgrade","categories":["health"]}]
+            })
+        )));
+        for operation in [
+            "deployment.apply",
+            "task.create",
+            "test.start",
+            "health.container_remove",
+            "unknown",
+            "plan.overview",
+        ] {
+            assert!(
+                !bridge_observation(&request(operation, serde_json::json!({}))),
+                "{operation}"
+            );
+        }
+        assert!(!bridge_observation(&serde_json::json!({"request":health})));
+        assert!(!bridge_observation(&request(
+            "health.summary",
+            serde_json::json!({"bad":true})
+        )));
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temporary.path().join("abcd.processing"),
+            serde_json::to_vec(&health).unwrap(),
+        )
+        .unwrap();
+        wait_for_bridge_connections(temporary.path()).unwrap();
+        assert!(
+            temporary.path().join("abcd.processing").exists(),
+            "drain must preserve the client request"
+        );
+    }
+
+    #[test]
+    fn bridge_drain_waits_for_an_accepted_mutation_to_finish() {
+        let temporary = tempfile::tempdir().unwrap();
+        let pending = temporary.path().join("abcd.processing");
+        std::fs::write(
+            &pending,
+            serde_json::to_vec(&serde_json::json!({
+                "protocol":2,"id":"abcd","operation":"task.create",
+                "params":{"title":"fixture task","kind":"improvement"},"client":{}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let directory = temporary.path().to_owned();
+        let drain = std::thread::spawn(move || wait_for_bridge_connections(&directory));
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(
+            !drain.is_finished(),
+            "accepted mutation was incorrectly bypassed"
+        );
+        assert!(pending.exists());
+        std::fs::remove_file(pending).unwrap(); // Simulate only this fixture's completed response.
+        drain.join().unwrap().unwrap();
+    }
     use super::*;
     use sha2::{Digest, Sha256};
     use std::collections::VecDeque;

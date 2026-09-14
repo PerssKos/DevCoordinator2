@@ -55,9 +55,9 @@ async fn serve_with_owner(
     expected_owner: u32,
 ) -> io::Result<()> {
     prepare_directory(directory, expected_owner)?;
+    let lock = acquire_lock(directory, expected_owner)?;
     recover_processing(directory)?;
     info!(path = %directory.display(), "serving sandbox request bridge");
-    let lock = acquire_lock(directory, expected_owner)?;
     let mut work = JoinSet::new();
     let mut poll = MIN_POLL;
     loop {
@@ -195,14 +195,20 @@ async fn process_claimed(
             let event_wait = request.operation == "event.wait";
             if event_wait {
                 tokio::select! {
-                    response = app.dispatch(request, peer) => response,
-                    changed = shutdown.changed() => {
-                        let _ = changed;
+                    biased;
+                    _ = shutdown.wait_for(|stopped| *stopped) => {
                         ResponseEnvelope::failure(id, ProtocolError::new(
                             ErrorCode::DaemonUnavailable,
                             "coordinator is restarting; re-query the operation with its last cursor",
                         ))
                     }
+                    _ = app.wait_for_installation_fence() => {
+                        ResponseEnvelope::failure(id, ProtocolError::new(
+                            ErrorCode::DaemonUnavailable,
+                            "installation in progress; reconnect the event wait with its last cursor",
+                        ))
+                    }
+                    response = app.dispatch(request, peer) => response,
                 }
             } else {
                 app.dispatch(request, peer).await
@@ -217,7 +223,24 @@ async fn process_claimed(
         ),
         Err(error) => ResponseEnvelope::failure(id, error),
     };
-    write_response(directory, id, owner, &response)?;
+    // Retain the actual result and retry only persistence, never dispatch.
+    // A full filesystem used to leave a completed operation looking active
+    // forever, until restart. Keep the request if shutdown prevents delivery.
+    let mut delay = MIN_POLL;
+    loop {
+        match write_response(directory, id, owner, &response) {
+            Ok(()) => break,
+            Err(error) => {
+                if *shutdown.borrow() {
+                    return Err(error);
+                }
+                tokio::select! {
+                    _ = shutdown.wait_for(|stopped| *stopped) => return Err(error),
+                    () = sleep(delay) => { delay = (delay * 2).min(MAX_POLL); }
+                }
+            }
+        }
+    }
     fs::remove_file(processing)?;
     Ok(())
 }
@@ -248,12 +271,6 @@ fn write_response(
 ) -> io::Result<()> {
     let temporary = directory.join(format!(".{id}.response.{}.tmp", std::process::id()));
     let path = directory.join(format!("{id}.response"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(&temporary)?;
     let bytes = encode_response(response);
     if bytes.len() > MAX_RESPONSE_BYTES {
         return Err(io::Error::new(
@@ -261,22 +278,32 @@ fn write_response(
             "bridge response exceeds protocol cap",
         ));
     }
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    if unsafe {
-        libc::fchown(
-            std::os::unix::io::AsRawFd::as_raw_fd(&file),
-            owner.0,
-            owner.1,
-        )
-    } != 0
-    {
-        let error = io::Error::last_os_error();
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)?;
+    let published = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        if unsafe {
+            libc::fchown(
+                std::os::unix::io::AsRawFd::as_raw_fd(&file),
+                owner.0,
+                owner.1,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        fs::rename(&temporary, path)
+    })();
     drop(file);
-    fs::rename(temporary, path)
+    if published.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    published
 }
 
 fn recover_processing(directory: &Path) -> io::Result<()> {
@@ -318,7 +345,9 @@ fn recover_processing(directory: &Path) -> io::Result<()> {
                     "request was interrupted by daemon restart; re-query the operation status",
                 ),
             );
-            let _ = write_response(directory, id, owner, &response);
+            // Do not discard the only accepted-request receipt if recovery is
+            // still unable to persist its reconnectable failure response.
+            write_response(directory, id, owner, &response)?;
         }
         let _ = fs::remove_file(path);
     }
@@ -359,7 +388,259 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
+    struct PendingObserver(tokio::sync::Notify);
+    impl OperationExecutor for PendingObserver {
+        fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &crate::access::Caller,
+        ) -> Result<Value, ProtocolError> {
+            unreachable!("observer is deferred")
+        }
+        fn defer(
+            &self,
+            operation: &str,
+            _: Value,
+            _: &crate::access::Caller,
+        ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
+            assert_eq!(operation, "event.wait");
+            self.0.notify_one();
+            Some(Ok(Box::pin(std::future::pending())))
+        }
+    }
+
+    fn claimed_request(directory: &Path, id: &str, operation: &str) -> PathBuf {
+        let path = directory.join(format!("{id}.processing"));
+        let params = match operation {
+            "event.wait" => json!({"filters":[{"filter_id":"fixture","categories":["health"]}]}),
+            "task.create" => json!({"title":"fixture mutation","kind":"improvement"}),
+            _ => json!({}),
+        };
+        fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "protocol":2,"id":id,"operation":operation,"params":params,"client":{}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn bridge_observer_receives_cutover_and_can_reconnect_after_fence_removal() {
+        let temporary = tempdir().unwrap();
+        let directory = temporary.path();
+        let endpoint = directory.join("daemon.sock");
+        let executor = Arc::new(PendingObserver(tokio::sync::Notify::new()));
+        let app =
+            Arc::new(App::with_executor(None, executor.clone()).with_installation_fence(endpoint));
+        let (shutdown_tx, shutdown) = watch::channel(false);
+        let processing = claimed_request(directory, "abcdef", "event.wait");
+        let dir = directory.to_owned();
+        let observer_app = app.clone();
+        let observer = tokio::spawn(async move {
+            process_claimed(&dir, "abcdef", &processing, observer_app, shutdown).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
+            .await
+            .unwrap();
+        fs::write(directory.join("daemon.pre-cutover.sock"), "fixture fence").unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), observer).await;
+        // Ensure a failing baseline cannot leave an endless task behind.
+        let _ = shutdown_tx.send(true);
+        result
+            .expect("bridge observer was not interrupted by cutover")
+            .unwrap()
+            .unwrap();
+        let response: ResponseEnvelope =
+            serde_json::from_slice(&fs::read(directory.join("abcdef.response")).unwrap()).unwrap();
+        assert!(
+            matches!(response, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::DaemonUnavailable)
+        );
+        assert!(!directory.join("abcdef.processing").exists());
+        fs::remove_file(directory.join("daemon.pre-cutover.sock")).unwrap();
+        let (stop, shutdown) = watch::channel(false);
+        let processing = claimed_request(directory, "abcdee", "event.wait");
+        let dir = directory.to_owned();
+        let reconnected = tokio::spawn(async move {
+            process_claimed(&dir, "abcdee", &processing, app, shutdown).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
+            .await
+            .unwrap();
+        stop.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), reconnected)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    struct CountingExecutor(std::sync::atomic::AtomicUsize);
+    impl OperationExecutor for CountingExecutor {
+        fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &crate::access::Caller,
+        ) -> Result<Value, ProtocolError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(json!({"committed":true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn response_persistence_failure_retries_result_without_replaying_mutation() {
+        for shutdown_while_failed in [false, true] {
+            let temporary = tempdir().unwrap();
+            let directory = temporary.path();
+            let executor = Arc::new(CountingExecutor(std::sync::atomic::AtomicUsize::new(0)));
+            let app = Arc::new(App::with_executor(None, executor.clone()));
+            let processing = claimed_request(directory, "abcdef", "task.create");
+            // Atomic response publication fails, exactly as a filesystem write fault.
+            fs::create_dir(directory.join("abcdef.response")).unwrap();
+            let (stop, shutdown) = watch::channel(false);
+            let dir = directory.to_owned();
+            let worker = tokio::spawn(async move {
+                process_claimed(&dir, "abcdef", &processing, app, shutdown).await
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while executor.0.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            sleep(Duration::from_millis(80)).await;
+            assert!(
+                !worker.is_finished(),
+                "persistence failure abandoned the accepted result"
+            );
+            assert!(directory.join("abcdef.processing").exists());
+            assert!(
+                !directory
+                    .join(format!(".abcdef.response.{}.tmp", std::process::id()))
+                    .exists()
+            );
+            if shutdown_while_failed {
+                stop.send(true).unwrap();
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(2), worker)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_err()
+                );
+                assert!(directory.join("abcdef.processing").exists());
+            } else {
+                fs::remove_dir(directory.join("abcdef.response")).unwrap();
+                tokio::time::timeout(Duration::from_secs(2), worker)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let response: ResponseEnvelope =
+                    serde_json::from_slice(&fs::read(directory.join("abcdef.response")).unwrap())
+                        .unwrap();
+                assert!(response.is_ok());
+                assert!(!directory.join("abcdef.processing").exists());
+            }
+            assert_eq!(executor.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+    }
+
     struct RecordingExecutor(Arc<Mutex<Option<(u32, u32)>>>);
+
+    #[test]
+    fn restart_response_write_failure_preserves_the_accepted_request() {
+        let temporary = tempdir().unwrap();
+        let path = claimed_request(temporary.path(), "aabbcc", "task.create");
+        let blocked = temporary
+            .path()
+            .join(format!(".aabbcc.response.{}.tmp", std::process::id()));
+        fs::create_dir(&blocked).unwrap();
+        assert!(recover_processing(temporary.path()).is_err());
+        assert!(path.exists());
+        fs::remove_dir(&blocked).unwrap();
+        recover_processing(temporary.path()).unwrap();
+        assert!(!path.exists());
+        let response: ResponseEnvelope =
+            serde_json::from_slice(&fs::read(temporary.path().join("aabbcc.response")).unwrap())
+                .unwrap();
+        assert!(
+            matches!(response, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::DaemonUnavailable)
+        );
+    }
+
+    struct FiniteMutation {
+        started: tokio::sync::Notify,
+        release: Arc<tokio::sync::Notify>,
+    }
+    impl OperationExecutor for FiniteMutation {
+        fn execute(
+            &self,
+            _: &str,
+            _: Value,
+            _: &crate::access::Caller,
+        ) -> Result<Value, ProtocolError> {
+            unreachable!()
+        }
+        fn defer(
+            &self,
+            _: &str,
+            _: Value,
+            _: &crate::access::Caller,
+        ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
+            self.started.notify_one();
+            let release = self.release.clone();
+            Some(Ok(Box::pin(async move {
+                release.notified().await;
+                Ok(json!({"committed":true}))
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn fence_does_not_cancel_an_accepted_bridge_mutation() {
+        let temporary = tempdir().unwrap();
+        let executor = Arc::new(FiniteMutation {
+            started: tokio::sync::Notify::new(),
+            release: Arc::new(tokio::sync::Notify::new()),
+        });
+        let app = Arc::new(
+            App::with_executor(None, executor.clone())
+                .with_installation_fence(temporary.path().join("daemon.sock")),
+        );
+        let processing = claimed_request(temporary.path(), "aabbcc", "task.create");
+        let (_stop, shutdown) = watch::channel(false);
+        let directory = temporary.path().to_owned();
+        let worker = tokio::spawn(async move {
+            process_claimed(&directory, "aabbcc", &processing, app, shutdown).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), executor.started.notified())
+            .await
+            .unwrap();
+        fs::write(
+            temporary.path().join("daemon.pre-cutover.sock"),
+            "fixture fence",
+        )
+        .unwrap();
+        sleep(Duration::from_millis(50)).await;
+        assert!(!worker.is_finished());
+        assert!(temporary.path().join("aabbcc.processing").exists());
+        executor.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let response: ResponseEnvelope =
+            serde_json::from_slice(&fs::read(temporary.path().join("aabbcc.response")).unwrap())
+                .unwrap();
+        assert!(response.is_ok());
+    }
     impl OperationExecutor for RecordingExecutor {
         fn execute(
             &self,

@@ -120,6 +120,20 @@ impl App {
         self
     }
 
+    pub(crate) async fn wait_for_installation_fence(&self) -> std::io::Result<()> {
+        let Some(endpoint) = &self.installation_endpoint else {
+            return std::future::pending().await;
+        };
+        let parent = endpoint.parent().unwrap_or_else(|| Path::new("."));
+        let mut events = crate::socket_endpoint::SocketEvents::new(parent)?;
+        loop {
+            if endpoint.with_file_name("daemon.pre-cutover.sock").exists() {
+                return Ok(());
+            }
+            events.changed().await?;
+        }
+    }
+
     pub async fn dispatch(
         &self,
         request: RequestEnvelope,
