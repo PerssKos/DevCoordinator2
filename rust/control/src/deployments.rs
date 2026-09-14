@@ -576,18 +576,7 @@ impl Deployments {
             }
         }
 
-        let generation = target
-            .row
-            .as_ref()
-            .and_then(|row| row.current_generation)
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::DeploymentApplyFailed,
-                    "deployment generation counter is exhausted",
-                )
-            })?;
+        let generation = self.next_generation(&target)?;
         let ttl_expires_at = target
             .specification
             .ttl_seconds
@@ -715,12 +704,7 @@ impl Deployments {
                 "deployment has no current generation",
             )
         })?;
-        let generation = current.checked_add(1).ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::RollbackUnavailable,
-                "deployment generation counter is exhausted",
-            )
-        })?;
+        let generation = self.next_generation(&target)?;
         let old_components = self
             .store
             .components(&target.deployment_id)?
@@ -1699,6 +1683,48 @@ impl Deployments {
         self.restore_desired(target, desired)
     }
 
+    fn next_generation(&self, target: &DeploymentTarget) -> Result<u32, ProtocolError> {
+        // The selected generation is not a reservation counter: publication
+        // failure or interruption can leave a newer candidate on disk.
+        let mut last = self
+            .store
+            .generations(&target.deployment_id)?
+            .iter()
+            .map(|row| row.number)
+            .max()
+            .unwrap_or(0);
+        if let Some(row) = &target.row {
+            last = last
+                .max(row.current_generation.unwrap_or(0))
+                .max(row.previous_generation.unwrap_or(0));
+        }
+        loop {
+            last = last.checked_add(1).ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentApplyFailed,
+                    "deployment generation counter is exhausted",
+                )
+            })?;
+            if target.source != "checkout" {
+                return Ok(last);
+            }
+            let path = self
+                .files
+                .generation_path(&target.deployment_id, last)
+                .map_err(file_apply_error)?;
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => continue, // Preserve even unrecorded or foreign paths.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(last),
+                Err(_) => {
+                    return Err(ProtocolError::new(
+                        ErrorCode::DeploymentApplyFailed,
+                        "cannot inspect the next checkout generation; retained paths were preserved",
+                    ));
+                }
+            }
+        }
+    }
+
     fn prepare_generation(
         &self,
         target: &DeploymentTarget,
@@ -1931,6 +1957,17 @@ impl Deployments {
         rollback: Option<(u32, u32)>,
         desired: DesiredSnapshot,
     ) -> Result<DeploymentStatus, ProtocolError> {
+        let id = target.deployment_id.clone();
+        let previous_route = self
+            .database
+            .call(move |connection| {
+                connection.query_row(
+                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=?1",
+                [id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?,
+                    row.get::<_,Option<u16>>(2)?, row.get::<_,Option<u32>>(3)?)),
+            ).optional().map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?;
         let port_map = self.allocate_ports(target, generation)?;
         let mut started = Vec::new();
         let mut failed_component = None;
@@ -2127,6 +2164,37 @@ impl Deployments {
                     "finite workload cancelled before commit",
                 ));
             }
+            // Route validation and file publication can fail after every
+            // component is healthy. They must use the same rollback boundary.
+            if let (Some(domain), Some(component)) =
+                (domain, target.specification.route_component())
+            {
+                let port = port_map.get(&component.name).copied().ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::DeploymentApplyFailed,
+                        "routed component has no allocated port",
+                    )
+                })?;
+                self.store.set_route(
+                    Some(domain),
+                    &target.deployment_id,
+                    Some(&component.name),
+                    Some(port),
+                    Some(generation),
+                )?;
+                self.store.set_component_runtime(
+                    &target.deployment_id,
+                    &component.name,
+                    ComponentRuntimePatch {
+                        last_error: Some(None),
+                        ..Default::default()
+                    },
+                )?;
+            } else {
+                self.store
+                    .set_route(None, &target.deployment_id, None, None, None)?;
+            }
+            self.routes.publish_current()?;
             Ok(())
         })();
 
@@ -2183,7 +2251,35 @@ impl Deployments {
                     },
                 )?;
             }
-            let _ = self.validate_or_withdraw_route(&target.deployment_id);
+            // Re-establish the old route through the original lease checks,
+            // after restarting its process. A persistent publication fault is
+            // reported as incomplete recovery, not masked by healthy processes.
+            let route_recovery = (|| {
+                match &previous_route {
+                    Some((domain, component, port, selected)) => self.store.set_route(
+                        Some(domain),
+                        &target.deployment_id,
+                        Some(component),
+                        *port,
+                        *selected,
+                    )?,
+                    None => self
+                        .store
+                        .set_route(None, &target.deployment_id, None, None, None)?,
+                }
+                if previous_route
+                    .as_ref()
+                    .is_some_and(|route| route.2.is_some())
+                    && !self.validate_or_withdraw_route(&target.deployment_id)?
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RouteLeaseConflict,
+                        "previous route could not be restored",
+                    ));
+                }
+                self.routes.publish_current()?;
+                Ok::<_, ProtocolError>(())
+            })();
             let had_generation = target
                 .row
                 .as_ref()
@@ -2221,30 +2317,14 @@ impl Deployments {
             let message = error.message;
             return Err(
                 ProtocolError::new(ErrorCode::DeploymentApplyFailed, message.clone()).with_detail(
-                    serde_json::json!({"failed": message, "components": components}).to_string(),
+                    serde_json::json!({"failed": message, "components": components,
+                        "route_recovery_complete": route_recovery.is_ok(),
+                        "route_recovery_error": route_recovery.err().map(|error| error.code)})
+                    .to_string(),
                 ),
             );
         }
 
-        if let (Some(domain), Some(component)) = (domain, target.specification.route_component()) {
-            let port = port_map.get(&component.name).copied().ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::DeploymentApplyFailed,
-                    "routed component has no allocated port",
-                )
-            })?;
-            self.store.set_route(
-                Some(domain),
-                &target.deployment_id,
-                Some(&component.name),
-                Some(port),
-                Some(generation),
-            )?;
-        } else {
-            self.store
-                .set_route(None, &target.deployment_id, None, None, None)?;
-        }
-        self.routes.publish_current()?;
         let previous = target.row.as_ref().and_then(|row| row.current_generation);
         self.retire_previous(
             target,
@@ -2500,6 +2580,16 @@ impl Deployments {
                 &desired.1,
             )
         } else {
+            // set_route selects its candidate transactionally. A failed first
+            // publication has no previous snapshot to restore that selection.
+            self.store.patch_deployment_runtime(
+                &target.deployment_id,
+                DeploymentRuntimePatch {
+                    current_generation: Some(None),
+                    previous_generation: Some(None),
+                    ..Default::default()
+                },
+            )?;
             self.restore_desired(target, desired)
         }
     }
@@ -3840,20 +3930,68 @@ impl Deployments {
             state = "degraded".into();
         }
         let deployment_id = row.deployment_id.clone();
-        let (domain, route_port) = self
+        let (domain, route_port, route_valid) = self
             .database
             .call(move |connection| {
-                connection
+                let route = connection
                     .query_row(
-                        "SELECT domain,port FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
                         [&deployment_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u16>>(1)?)),
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                            row.get::<_, Option<u16>>(2)?, row.get::<_, Option<u32>>(3)?,
+                            row.get::<_, Option<String>>(4)?)),
                     )
-                    .optional()
-                    .map(|value| value.unwrap_or((String::new(), None)))
-                    .map_err(DatabaseError::from)
+                    .optional()?;
+                let Some((domain, component, port, generation, lease)) = route else {
+                    return Ok((String::new(), None, false));
+                };
+                let valid = match (port, lease.as_deref()) {
+                    (Some(port), Some(lease)) => crate::ports::route_lease(connection,
+                        &deployment_id, &component, port, generation, Some(lease))?.is_some(),
+                    _ => false,
+                };
+                Ok((domain, port, valid))
             })
             .map_err(database_error)?;
+        let mut blockers = Vec::new();
+        let expected_domain =
+            DeploymentStore::effective_domain(Some(row), &resolved.specification, &row.source);
+        if expected_domain.is_some()
+            && resolved.specification.route_component().is_some()
+            && (expected_domain.as_deref() != Some(domain.as_str()) || !route_valid)
+        {
+            blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                component: resolved
+                    .specification
+                    .route_component()
+                    .unwrap()
+                    .name
+                    .clone(),
+                code: ErrorCode::RouteLeaseConflict,
+                file: None,
+                message: "the declared hostname has no healthy route for the selected generation"
+                    .into(),
+            });
+            if state == "running" {
+                state = "degraded".into();
+            }
+        }
+        if matches!(row.state.as_str(), "failed" | "degraded")
+            || owned.iter().any(|component| {
+                component.generation.is_some_and(|generation| {
+                    generation != 0 && Some(generation) != row.current_generation
+                })
+            })
+        {
+            blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                component: String::new(),
+                code: ErrorCode::DeploymentApplyFailed,
+                file: None,
+                message:
+                    "the last update did not commit successfully; inspect or reapply the deployment"
+                        .into(),
+            });
+        }
         let repository_id = row.repository_id.clone();
         let repository_name = self
             .database
@@ -3901,7 +4039,7 @@ impl Deployments {
                 expected_components,
                 missing_components,
                 pending_apply: None,
-                blockers: Vec::new(),
+                blockers,
             }),
         })
     }
@@ -4371,6 +4509,7 @@ fn truncate_tail(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod route_recovery;
     use super::*;
     use crate::deployment_state::{
         ComponentRuntimePatch, ComposeCompletionInput, ObservedContainerInput,
@@ -4596,6 +4735,7 @@ mod tests {
         actions: Mutex<Vec<String>>,
         states: Mutex<HashMap<String, String>>,
         build_exit: std::sync::atomic::AtomicI32,
+        listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl MutationSystemd {
@@ -4604,12 +4744,17 @@ mod tests {
                 actions: Mutex::new(Vec::new()),
                 states: Mutex::new(HashMap::new()),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
+                listener_hook: Mutex::new(None),
             }
         }
     }
 
     impl SystemdControl for MutationSystemd {
         fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+            let hook = self.listener_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
             true
         }
         fn spawn_transient(
@@ -6058,7 +6203,8 @@ command=["serve"]
         let recovered = deployments
             .apply(None, None, Some(&first.deployment_id), &caller)
             .unwrap();
-        assert_eq!(recovered.current_generation, Some(2));
+        // The failed build's retained g2 receipt must not be overwritten.
+        assert_eq!(recovered.current_generation, Some(3));
     }
 
     fn finite_world() -> (

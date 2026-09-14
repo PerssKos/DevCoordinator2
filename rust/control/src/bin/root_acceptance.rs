@@ -4626,8 +4626,109 @@ fn case_live_configuration_in_service_sandbox(world: &mut World) -> Result<(), S
     Ok(())
 }
 
+fn case_routed_checkout_publication_recovery(world: &mut World) -> Result<(), String> {
+    world.write_owned("marker.txt", "v1\n")?;
+    world.write_config(&format!(
+        r#"schema=2
+[deployment.web]
+source="checkout"
+domain="app"
+components=["api"]
+[deployment.web.component.api]
+type="process"
+command={}
+port=true
+route=true
+health={{path="/healthz",timeout_seconds=30}}
+"#,
+        command_json(&fixture_command(world, &["http-server-file", "marker.txt"]))?
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "routed checkout v1"])?;
+    let first =
+        data(&world.call("deployment.apply", json!({"path":world.repo,"name":"web"}))?)?.clone();
+    let id = first["deployment_id"]
+        .as_str()
+        .ok_or("missing deployment")?
+        .to_owned();
+    let port = first["route_port"].as_u64().ok_or("missing route port")? as u16;
+    let original_routes = routes(world)?["routes"].clone();
+    ensure!(
+        http_get_json(port)?["version"] == "v1",
+        "v1 did not serve HTTP"
+    );
+    ensure!(first["readiness"]["ready"] == true, "v1 not ready");
+    world.write_owned("marker.txt", "v2\n")?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "routed checkout v2"])?;
+
+    // A private publication path fault must not strand the real process on g2.
+    let route_path = world.state.join("public/routes.json");
+    let retained = world.state.join("public/routes.retained");
+    fs::rename(&route_path, &retained).map_err(|e| e.to_string())?;
+    fs::create_dir(&route_path).map_err(|e| e.to_string())?;
+    let failed = world.call("deployment.apply", json!({"deployment_id":id}))?;
+    let status = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    let recovered_http = http_get_json(port);
+    // Restore the injected fault even when an assertion below will fail.
+    fs::remove_dir(&route_path).map_err(|e| e.to_string())?;
+    fs::rename(&retained, &route_path).map_err(|e| e.to_string())?;
+    ensure!(
+        error_code(&failed) == Some("deployment_apply_failed"),
+        "publication failure was not a failed apply"
+    );
+    ensure!(
+        status["current_generation"] == 1 && component(&status, "api")?["generation"] == 1,
+        "failed publication left mismatched selected/process generations"
+    );
+    ensure!(
+        status["readiness"]["ready"] == false,
+        "failed publication was reported ready"
+    );
+    ensure!(
+        recovered_http?["version"] == "v1",
+        "previous HTTP service was not restored"
+    );
+    ensure!(
+        routes(world)?["routes"] == original_routes,
+        "previous route changed during failed publication"
+    );
+
+    let second = data(&world.call("deployment.apply", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        second["readiness"]["ready"] == true && second["route_port"] == first["route_port"],
+        "retry did not recover on its original lease"
+    );
+    ensure!(
+        http_get_json(port)?["version"] == "v2",
+        "retry did not serve v2 HTTP"
+    );
+    let published = routes(world)?;
+    ensure!(
+        published["routes"][0]["lease_id"] == original_routes[0]["lease_id"]
+            && published["routes"][0]["generation"] == second["current_generation"]
+            && published["routes"][0]["label"] == "app",
+        "published hostname/lease/generation disagrees"
+    );
+    let unchanged = data(&world.call("deployment.apply", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        unchanged["unchanged"] == true,
+        "unchanged recovery reapplied the process"
+    );
+    let rolled = data(&world.call("deployment.rollback", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        rolled["route_port"] == first["route_port"] && http_get_json(port)?["version"] == "v1",
+        "rollback failed to restore original HTTP service"
+    );
+    Ok(())
+}
+
 fn cases() -> Vec<Case> {
     vec![
+        (
+            "routed_checkout_publication_recovery",
+            case_routed_checkout_publication_recovery,
+        ),
         (
             "replacement_daemon_accepts_requests_with_prior_socket_fenced",
             case_replacement_daemon_accepts_requests_with_prior_socket_fenced,

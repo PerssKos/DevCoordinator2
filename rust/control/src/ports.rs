@@ -255,7 +255,9 @@ pub fn withdraw_conflict(
         [deployment_id],
     )?;
     connection.execute(
-        "UPDATE deployments SET state='degraded' WHERE deployment_id=?1",
+        // Withdrawing an obsolete route during a cutover must not revoke the
+        // apply owner's candidate eligibility. The route still fails closed.
+        "UPDATE deployments SET state='degraded' WHERE deployment_id=?1 AND state!='applying'",
         [deployment_id],
     )?;
     connection.execute("UPDATE components SET last_error='route_lease_conflict' WHERE deployment_id=?1 AND name=?2", rusqlite::params![deployment_id,component])?;
