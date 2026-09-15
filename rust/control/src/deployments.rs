@@ -2255,29 +2255,33 @@ impl Deployments {
             // after restarting its process. A persistent publication fault is
             // reported as incomplete recovery, not masked by healthy processes.
             let route_recovery = (|| {
-                match &previous_route {
+                let restoration = match &previous_route {
                     Some((domain, component, port, selected)) => self.store.set_route(
                         Some(domain),
                         &target.deployment_id,
                         Some(component),
                         *port,
                         *selected,
-                    )?,
+                    ),
                     None => self
                         .store
-                        .set_route(None, &target.deployment_id, None, None, None)?,
-                }
+                        .set_route(None, &target.deployment_id, None, None, None),
+                };
+                // A rejected restoration must still reconcile the existing row
+                // and publish any withdrawal before returning its failure.
+                let route_healthy = self.validate_or_withdraw_route(&target.deployment_id)?;
+                self.routes.publish_current()?;
+                restoration?;
                 if previous_route
                     .as_ref()
                     .is_some_and(|route| route.2.is_some())
-                    && !self.validate_or_withdraw_route(&target.deployment_id)?
+                    && !route_healthy
                 {
                     return Err(ProtocolError::new(
                         ErrorCode::RouteLeaseConflict,
                         "previous route could not be restored",
                     ));
                 }
-                self.routes.publish_current()?;
                 Ok::<_, ProtocolError>(())
             })();
             let had_generation = target
