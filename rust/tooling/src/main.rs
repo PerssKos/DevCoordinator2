@@ -356,6 +356,11 @@ enum JourneyDocsCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    /// Configure direct loopback Console access for the next reviewed activation.
+    ConsoleAccess {
+        #[arg(long, value_parser = ["enabled", "disabled"])]
+        trusted_loopback: String,
+    },
     Configure {
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
@@ -1992,6 +1997,19 @@ fn audit_archive_stamp() -> Result<String, String> {
 fn run_install(command: InstallCommand) -> ExitCode {
     use devcoordinator2_tooling::install::{self, HostRunner};
     let result = match command {
+        InstallCommand::ConsoleAccess { trusted_loopback } => (|| {
+            if rustix::process::geteuid().as_raw() != 0 {
+                return Err("install console-access must run as root".into());
+            }
+            let changed = install::configure_loopback_console(
+                std::path::Path::new("/etc/devcoordinator2/edge.env"),
+                trusted_loopback == "enabled",
+                0,
+            )?;
+            Ok(
+                serde_json::json!({"trusted_loopback":trusted_loopback,"changed":changed,"activation_required":true}),
+            )
+        })(),
         InstallCommand::Configure {
             source_root,
             base_domain,

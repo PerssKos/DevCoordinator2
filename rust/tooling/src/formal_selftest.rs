@@ -647,8 +647,10 @@ fn run_verifier(
     let (status, stdout, stderr) = wait_child(child, timeout)?;
     let exit = status.code().unwrap_or(2);
     if !expected_exits.contains(&exit) {
+        let diagnostic = unexpected_exit_diagnostic(&json_out, output);
         return Err(format!(
-            "formal verifier exit mismatch: expected {expected_exits:?}, got {exit}; stderr={} stdout={}",
+            "formal verifier exit mismatch in {}: expected {expected_exits:?}, got {exit}; report={diagnostic}; stderr={} stdout={}",
+            output.file_name().unwrap_or_default().to_string_lossy(),
             String::from_utf8_lossy(&stderr)
                 .chars()
                 .take(500)
@@ -719,6 +721,22 @@ fn run_verifier(
         }
     }
     Ok(report)
+}
+
+fn unexpected_exit_diagnostic(json_out: &Path, output: &Path) -> String {
+    let report = read_bytes_nofollow(json_out, Some(output))
+        .ok()
+        .flatten()
+        .filter(|bytes| bytes.len() <= 16 * 1024 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Some(report) = report else {
+        return "unavailable".into();
+    };
+    let pages = report["pages"].as_array().into_iter().flatten().take(3).map(|page| json!({
+        "outcome":page["outcome"],
+        "reason":page["skipReason"].as_str().map(|reason| reason.chars().take(500).collect::<String>()),
+    })).collect::<Vec<_>>();
+    json!({"coverage_failed":report.pointer("/coverage/failed"),"pages":pages}).to_string()
 }
 
 fn page_rules(page: &Value) -> Vec<(&str, &str)> {
@@ -4264,6 +4282,21 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unexpected_exit_retains_the_exact_fixture_coverage_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let report = directory.path().join("report.json");
+        assert_eq!(
+            unexpected_exit_diagnostic(&report, directory.path()),
+            "unavailable"
+        );
+        std::fs::write(&report, serde_json::to_vec(&json!({"coverage":{"failed":true},"pages":[{"outcome":"navigation_failed","skipReason":"navigation-failed: connection reset","url":"private fixture URL omitted","html":"not copied"}]})).unwrap()).unwrap();
+        let diagnostic = unexpected_exit_diagnostic(&report, directory.path());
+        assert!(diagnostic.contains("connection reset"));
+        assert!(!diagnostic.contains("URL omitted"));
+        assert!(!diagnostic.contains("not copied"));
+    }
 
     #[test]
     fn static_fixture_matrix_is_complete_and_contract_bound() {

@@ -56,3 +56,10 @@ state, follow links, or overwrite an existing export. Known credential and priva
 identity lines are withheld using the public-artifact guard; the command is for
 isolated CI fixtures, not arbitrary live runtime logs. CI uploads only these JSON
 files and retains them for seven days. Complete local streams remain private.
+
+The Linux root-acceptance fixture supports `--port-range START-END` (default
+`31000-31999`) and `--compose-subnet PRIVATE-CIDR`. Choose fixture ranges that
+do not overlap existing services or networks. Before starting any fixture, the
+harness rejects privileged, malformed, reversed, or host-ephemeral-overlapping
+port ranges. It does not change the host's ephemeral-port policy or remove
+unrelated Docker networks when their default address pool is exhausted.

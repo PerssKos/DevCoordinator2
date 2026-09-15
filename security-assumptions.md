@@ -46,6 +46,15 @@ untracked `instance/` directory and in the installed instance configuration
   these boundaries change (DC2-2026-09-07-TRUSTED-AGENT-REPAIR-AUTHORITY).
 - Public Console users and Internet clients are untrusted until
   authenticated at the edge and granted access to specific deployments.
+- The owner confirmed direct host loopback access to the Console is trusted
+  for local development verification (DC2-20260915-LOCAL-IP-CONSOLE-ACCESS).
+  The instance may explicitly enable `EDGE_TRUST_LOCAL_CONSOLE=1`. Only the
+  kernel socket peer is used: IPv4 loopback, IPv6 loopback and mapped IPv4
+  loopback qualify. Forwarded and cross-origin browser requests do not inherit
+  this exception. The edge sends no public identity assertion for these
+  requests, so existing local authority and actor attribution apply. No public
+  user is impersonated and deployment-route grants remain unchanged. Review
+  this exception if a local reverse proxy is introduced or host ownership changes.
 - The owner explicitly confirms that an authenticated Console administrator
   has authority to execute every administrator command exposed by the
   Console. DevCoordinator does not add a second confirmation dialog or chat

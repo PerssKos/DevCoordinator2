@@ -9,12 +9,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import { createEdge } from '../devcoordinator2-edge.mjs';
+import { createEdge, trustedLoopbackConsole, loadConfig } from '../devcoordinator2-edge.mjs';
 import { canonicalJson } from '../lib/routes-store.mjs';
 import { startIssuer } from './fixture-issuer.mjs';
 
 const BASE = 'example.test';
-let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks;
+let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks; let edgeConfig;
 
 function document(routes, access, generation) {
   routes = routes.map(route => ({...route, lease_id: route.lease_id || 'l' + route.deployment_id + route.component}));
@@ -87,10 +87,11 @@ before(async () => {
     } });
   });
   await new Promise((r) => daemon.listen(daemonSock, r));
-  edge = await createEdge({ baseDomain: BASE, consoleHost: `console.${BASE}`, httpPort: 0, httpOnly: true,
+  edgeConfig = { baseDomain: BASE, consoleHost: `console.${BASE}`, httpPort: 0, httpOnly: true,
     sessionSecret: 'test-secret-at-least-16-bytes', oidcIssuer: issuer.url, oidcClientId: 'test-client',
     oidcClientSecret: 'test-secret', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'),
-    daemonSocket: daemonSock, consoleDir: '' }, { log: { info() {}, warn() {}, error: (...a) => console.error('EDGE', ...a), debug() {} } });
+    daemonSocket: daemonSock, consoleDir: '' };
+  edge = await createEdge(edgeConfig, { log: { info() {}, warn() {}, error: (...a) => console.error('EDGE', ...a), debug() {} } });
   [port] = await edge.listen();
 });
 
@@ -217,4 +218,50 @@ test('disconnecting a Console event wait closes the daemon subscription', async 
     new Promise((_, reject) => setTimeout(() => reject(new Error('daemon wait socket stayed open')), 1000)),
   ]);
   pendingWaitHooks = null;
+});
+
+test('trusted Console access uses a direct loopback peer and never a forwarded identity', async () => {
+  const origin = `http://console.${BASE}`;
+  const request = (remoteAddress, headers = {}) => ({ socket: { remoteAddress }, headers });
+  for (const address of ['127.0.0.1', '127.0.0.2', '::1', '::ffff:127.0.0.1']) {
+    assert.equal(trustedLoopbackConsole(request(address), origin, true), true);
+    assert.equal(trustedLoopbackConsole(request(address), origin, false), false);
+    assert.equal(trustedLoopbackConsole(request(address, { origin }), origin, true), true);
+    for (const headers of [{ 'x-forwarded-for': '127.0.0.1' }, { forwarded: 'for=127.0.0.1' },
+      { origin: 'http://untrusted.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+      assert.equal(trustedLoopbackConsole(request(address, headers), origin, true), false);
+    }
+  }
+  for (const peer of ['192.0.2.1', '10.0.0.2', '::ffff:192.0.2.1', '::ffff:127.not.an.ip', '']) {
+    assert.equal(trustedLoopbackConsole(request(peer, { 'x-forwarded-for': '127.0.0.1' }), origin, true), false);
+  }
+  assert.equal(loadConfig({ EDGE_BASE_DOMAIN: BASE }).trustLocalConsole, false);
+  assert.equal(loadConfig({ EDGE_BASE_DOMAIN: BASE, EDGE_TRUST_LOCAL_CONSOLE: '1' }).trustLocalConsole, true);
+  await publish([{ deployment_id: 'd0123456789abcd01', component: 'api', label: 'app', domain: `app.${BASE}`, port: upstreamPort, scheme: 'http', auth: 'authenticated', generation: 1 }], { owners: ['owner@example.test'], grants: [] }, 30);
+  const localEdge = await createEdge({ ...edgeConfig, trustLocalConsole: true, stateDir: path.join(tmp, 'local-edge') },
+    { log: { info() {}, warn() {}, error() {}, debug() {} } });
+  const [localPort] = await localEdge.listen();
+  const call = (pathname, { method = 'GET', headers = {}, body } = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port: localPort, path: pathname,
+      method, headers: { host: `console.${BASE}`, ...headers } }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+  try {
+    assert.equal((await call('/')).status, 200);
+    const before = daemonCalls.length;
+    const local = await call('/api/v2/user.whoami', { method: 'POST', body: '{}' });
+    assert.equal(local.status, 200);
+    assert.equal(daemonCalls.length, before + 1);
+    assert.equal(daemonCalls.at(-1).client.identity, undefined);
+    assert.equal((await call('/api/v2/user.whoami', { method: 'POST', body: '{}', headers: { origin: 'http://untrusted.example' } })).status, 401);
+    assert.equal((await call('/', { headers: { forwarded: 'for=127.0.0.1' } })).status, 302);
+    assert.equal((await call('/', { headers: { host: `app.${BASE}` } })).status, 302);
+  } finally {
+    await localEdge.close();
+  }
 });
