@@ -47,9 +47,17 @@ impl RepositoryConfigError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostgresSpec {
+    pub cases_only: bool,
     pub image: String,
     pub database: String,
     pub user: String,
+    pub templates: BTreeMap<String, PostgresTemplateSpec>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresTemplateSpec {
+    pub init_sql: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +69,10 @@ pub struct TestSpec {
     pub postgres: Option<PostgresSpec>,
     pub checks: Vec<CheckPlan>,
     pub config_digest: String,
+    pub targets: Vec<String>,
+    pub check_aliases: BTreeMap<String, String>,
+    pub postgres_instances: BTreeMap<String, PostgresSpec>,
+    pub check_postgres: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,6 +282,161 @@ pub fn load_test_spec(
             named.keys().collect::<Vec<_>>()
         ))
     })
+}
+
+fn decode_optional<T: serde::de::DeserializeOwned>(
+    table: &Table,
+    key: &str,
+    label: &str,
+) -> Result<Option<T>, RepositoryConfigError> {
+    table
+        .get(key)
+        .map(|value| {
+            value.clone().try_into().map_err(|error| {
+                RepositoryConfigError::new(format!("{label}.{key} is invalid: {error}"))
+            })
+        })
+        .transpose()
+}
+
+fn digest_config_value(value: &Value) -> String {
+    hash_bytes(value.to_string().as_bytes())
+}
+
+fn hash_bytes(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Stable keys stay within the executor's existing path-safe 64-byte contract.
+fn composed_check_key(target: &str, check: &str) -> String {
+    let hash = hash_bytes(format!("{target}/{check}").as_bytes());
+    format!(
+        "{}-{}-{}",
+        &target[..target.len().min(16)],
+        &check[..check.len().min(24)],
+        &hash[..12]
+    )
+}
+
+pub fn load_composed_test_spec(
+    root: &Path,
+    targets: &[String],
+) -> Result<TestSpec, RepositoryConfigError> {
+    if targets.is_empty() || targets.len() > 32 {
+        return Err(RepositoryConfigError::new(
+            "composition requires one to 32 named targets",
+        ));
+    }
+    let mut ordered = targets.to_vec();
+    ordered.sort();
+    ordered.dedup();
+    if ordered.len() != targets.len() {
+        return Err(RepositoryConfigError::new("composition repeats a target"));
+    }
+    let (_, mut available) = load_all_test_specs(root)?;
+    let mut definitions = Vec::new();
+    for target in &ordered {
+        definitions.push(available.remove(target).ok_or_else(|| {
+            RepositoryConfigError::new(format!("target {target:?} is not declared"))
+        })?);
+    }
+    let digest =
+        hash_bytes(format!("{}:{}", definitions[0].config_digest, ordered.join("/")).as_bytes());
+    let mut combined = TestSpec {
+        name: format!("composed-{}", &digest[..16]),
+        cwd: root.to_owned(),
+        timeout_seconds: definitions
+            .iter()
+            .map(|definition| definition.timeout_seconds)
+            .max()
+            .unwrap(),
+        env: BTreeMap::new(),
+        postgres: None,
+        checks: Vec::new(),
+        config_digest: definitions[0].config_digest.clone(),
+        targets: ordered,
+        check_aliases: BTreeMap::new(),
+        postgres_instances: BTreeMap::new(),
+        check_postgres: BTreeMap::new(),
+    };
+    for definition in definitions {
+        if let Some(postgres) = definition.postgres {
+            combined
+                .postgres_instances
+                .insert(definition.name.clone(), postgres);
+        }
+        let keys = definition
+            .checks
+            .iter()
+            .map(|check| {
+                (
+                    check.name.clone(),
+                    composed_check_key(&definition.name, &check.name),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for mut check in definition.checks {
+            let original = check.name.clone();
+            check.name = keys[&original].clone();
+            check.display_name = Some(format!("{} / {original}", definition.name));
+            check.source_name = Some(original.clone());
+            if combined.postgres_instances.contains_key(&definition.name) {
+                combined
+                    .check_postgres
+                    .insert(check.name.clone(), definition.name.clone());
+            }
+            combined.check_aliases.insert(
+                format!("{}/{original}", definition.name),
+                check.name.clone(),
+            );
+            for dependencies in [
+                &mut check.after,
+                &mut check.requires,
+                &mut check.invalidates,
+            ] {
+                for dependency in dependencies {
+                    *dependency = keys[dependency].clone();
+                }
+            }
+            for artifact in &mut check.consumes {
+                artifact.check = keys
+                    .get(&artifact.check)
+                    .ok_or_else(|| {
+                        RepositoryConfigError::new("consumed artifact names an unknown producer")
+                    })?
+                    .clone();
+            }
+            if let Some(target) = &mut check.qualification_of {
+                *target = keys
+                    .get(target)
+                    .ok_or_else(|| {
+                        RepositoryConfigError::new("qualification names an unknown target")
+                    })?
+                    .clone();
+            }
+            let mut environment = definition.env.clone();
+            environment.extend(check.env);
+            check.env = environment;
+            combined.checks.push(check);
+        }
+    }
+    if combined.checks.len() > 256
+        || combined
+            .checks
+            .iter()
+            .map(|check| &check.name)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != combined.checks.len()
+    {
+        return Err(RepositoryConfigError::new(
+            "composed graph exceeds its bound or contains an identity collision",
+        ));
+    }
+    Ok(combined)
 }
 
 pub fn list_deployment_names(worktree_root: &Path) -> Result<Vec<String>, RepositoryConfigError> {
@@ -494,6 +661,10 @@ fn validate_test(
         postgres,
         checks,
         config_digest: digest.to_owned(),
+        targets: Vec::new(),
+        check_aliases: BTreeMap::new(),
+        postgres_instances: BTreeMap::new(),
+        check_postgres: BTreeMap::new(),
     })
 }
 
@@ -532,6 +703,15 @@ fn validate_checks(
         "invalidates",
         "diagnostic_sources",
         "retained_artifacts",
+        "phase",
+        "resources",
+        "consumes",
+        "cacheable",
+        "cache_inputs",
+        "expect_failure",
+        "qualification_of",
+        "expected_failure",
+        "expected_exit_code",
     ];
     let mut checks = Vec::with_capacity(raw.len());
     let mut seen = BTreeSet::new();
@@ -732,17 +912,25 @@ fn validate_checks(
             )));
         }
         checks.push(CheckPlan {
+            display_name: None,
+            source_name: None,
+            expected_failure: optional_string(item, "expected_failure", &label)?,
+            expected_exit_code: decode_optional(item, "expected_exit_code", &label)?,
             name,
             tier,
             role,
-            phase: devcoordinator2_executor_protocol::CheckPhase::Check,
-            resources: Vec::new(),
-            consumes: Vec::new(),
-            cacheable: false,
-            cache_inputs: Vec::new(),
-            fingerprint: String::new(),
-            expect_failure: false,
-            qualification_of: None,
+            phase: decode_optional(item, "phase", &label)?.unwrap_or_default(),
+            resources: decode_optional(item, "resources", &label)?.unwrap_or_default(),
+            consumes: decode_optional(item, "consumes", &label)?.unwrap_or_default(),
+            cacheable: optional_bool(item, "cacheable", false, &label)?,
+            cache_inputs: string_list(
+                &format!("{label}.cache_inputs"),
+                item.get("cache_inputs"),
+                false,
+            )?,
+            fingerprint: digest_config_value(value),
+            expect_failure: optional_bool(item, "expect_failure", false, &label)?,
+            qualification_of: optional_string(item, "qualification_of", &label)?,
             after,
             requires,
             invalidates,
@@ -760,7 +948,91 @@ fn validate_checks(
             cases,
         });
     }
+    for check in &mut checks {
+        for consumed in &check.consumes {
+            check
+                .after
+                .retain(|dependency| dependency != &consumed.check);
+            if !check.requires.contains(&consumed.check) {
+                check.requires.push(consumed.check.clone());
+            }
+        }
+        for resource in &mut check.resources {
+            use devcoordinator2_executor_protocol::ResourceKind;
+            if resource.kind == ResourceKind::Directory {
+                resource.id = normalize_resource_directory(root, &resource.id)?;
+            } else if resource.kind == ResourceKind::Port
+                && resource.id.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                let port = resource
+                    .id
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port != 0)
+                    .ok_or_else(|| {
+                        RepositoryConfigError::new("resource port must be between one and 65535")
+                    })?;
+                resource.id = port.to_string();
+            }
+        }
+        let mut validation = check.clone();
+        let relative = Path::new(&validation.cwd)
+            .strip_prefix(root)
+            .map_err(|_| RepositoryConfigError::new("check directory escaped the worktree"))?;
+        validation.cwd = if relative.as_os_str().is_empty() {
+            ".".into()
+        } else {
+            relative.to_string_lossy().into_owned()
+        };
+        validation
+            .validate()
+            .map_err(|error| RepositoryConfigError::new(error.to_string()))?;
+    }
     validate_and_compile_dependencies(test_name, checks)
+}
+
+fn normalize_resource_directory(root: &Path, value: &str) -> Result<String, RepositoryConfigError> {
+    let mut relative = PathBuf::new();
+    for component in Path::new(value).components() {
+        match component {
+            Component::Normal(name) => relative.push(name),
+            Component::CurDir => {}
+            Component::ParentDir if relative.pop() => {}
+            _ => {
+                return Err(RepositoryConfigError::new(
+                    "resource directory escapes the worktree",
+                ));
+            }
+        }
+    }
+    if relative.as_os_str().is_empty() {
+        return Err(RepositoryConfigError::new(
+            "resource directory must identify a worktree child",
+        ));
+    }
+    let mut ancestor = root.join(&relative);
+    let mut suffix = Vec::new();
+    while !ancestor.exists() {
+        suffix.push(
+            ancestor
+                .file_name()
+                .ok_or_else(|| {
+                    RepositoryConfigError::new("resource directory has no existing ancestor")
+                })?
+                .to_owned(),
+        );
+        ancestor.pop();
+    }
+    let mut canonical = ancestor
+        .canonicalize()
+        .map_err(|error| RepositoryConfigError::new(error.to_string()))?;
+    for part in suffix.into_iter().rev() {
+        canonical.push(part);
+    }
+    let normalized = canonical
+        .strip_prefix(root)
+        .map_err(|_| RepositoryConfigError::new("resource directory alias escapes the worktree"))?;
+    Ok(normalized.to_string_lossy().into_owned())
 }
 
 fn validate_and_compile_dependencies(
@@ -776,6 +1048,16 @@ fn validate_and_compile_dependencies(
         .map(|check| (check.name.clone(), check.tier))
         .collect::<HashMap<_, _>>();
     for check in &checks {
+        for consumed in &check.consumes {
+            if !checks.iter().any(|producer| {
+                producer.name == consumed.check && producer.produces.contains(&consumed.path)
+            }) {
+                return Err(RepositoryConfigError::new(format!(
+                    "check {:?} consumes an undeclared producer output",
+                    check.name
+                )));
+            }
+        }
         let missing = check
             .after
             .iter()
@@ -803,7 +1085,9 @@ fn validate_and_compile_dependencies(
             )));
         }
         for dependency in check.after.iter().chain(&check.requires) {
-            if tier_rank(tiers[dependency]) > tier_rank(check.tier) {
+            if check.phase != devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                && tier_rank(tiers[dependency]) > tier_rank(check.tier)
+            {
                 return Err(RepositoryConfigError::new(format!(
                     "[test.{test_name}.check.{}] tier inversion: dependency {dependency:?} belongs to a higher tier",
                     check.name
@@ -881,7 +1165,11 @@ fn validate_test_postgres(
     let table = value
         .as_table()
         .ok_or_else(|| RepositoryConfigError::new(format!("{label} must be a table")))?;
-    reject_unknown(table, &["image", "database", "user"], &label)?;
+    reject_unknown(
+        table,
+        &["image", "database", "user", "templates", "cases_only"],
+        &label,
+    )?;
     let image = optional_string(table, "image", &format!("{label}.image"))?
         .unwrap_or_else(|| POSTGRES_IMAGE_DEFAULT.to_owned());
     if !postgres_image_regex().is_match(&image) && !postgres_digest_image_regex().is_match(&image) {
@@ -901,9 +1189,33 @@ fn validate_test_postgres(
         }
     }
     Ok(PostgresSpec {
+        cases_only: optional_bool(table, "cases_only", false, &label)?,
         image,
         database,
         user,
+        templates: {
+            let templates: BTreeMap<String, PostgresTemplateSpec> =
+                decode_optional(table, "templates", &label)?.unwrap_or_default();
+            if templates.len() > 32 {
+                return Err(RepositoryConfigError::new(
+                    "at most 32 database templates may be declared",
+                ));
+            }
+            for (name, template) in &templates {
+                if !name_regex().is_match(name)
+                    || template.init_sql.is_empty()
+                    || template.init_sql.len() > 32
+                {
+                    return Err(RepositoryConfigError::new(
+                        "database template requires a valid name and one to 32 SQL inputs",
+                    ));
+                }
+                for file in &template.init_sql {
+                    validate_artifact_path("database template SQL", file)?;
+                }
+            }
+            templates
+        },
     })
 }
 
@@ -950,7 +1262,7 @@ fn validate_cases(label: &str, value: &Value) -> Result<Vec<CaseSpec>, Repositor
         let table = value.as_table().ok_or_else(|| {
             RepositoryConfigError::new(format!("{item_label} must contain exactly id and args"))
         })?;
-        reject_exact(table, &["id", "args"], &item_label)?;
+        reject_unknown(table, &["id", "args", "postgres"], &item_label)?;
         let id = required_string(table, "id", &format!("{item_label}.id"))?;
         if !case_id_regex().is_match(&id) {
             return Err(RepositoryConfigError::new(format!(
@@ -994,7 +1306,7 @@ fn validate_cases(label: &str, value: &Value) -> Result<Vec<CaseSpec>, Repositor
         cases.push(CaseSpec {
             id,
             args,
-            postgres: None,
+            postgres: optional_string(table, "postgres", &item_label)?,
         });
     }
     Ok(cases)
@@ -2228,6 +2540,83 @@ fn shared_from_regex() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composition_keeps_target_names_dependencies_environment_and_resource_aliases() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join(CONFIG_NAME),
+            r#"
+schema=2
+[test.alpha]
+env={LANGUAGE='alpha'}
+[[test.alpha.check]]
+name='build'
+tier='development'
+phase='build'
+command=['builder']
+produces=['output.bin']
+resources=[{kind='directory',id='scratch/../shared',access='exclusive'}]
+[[test.alpha.check]]
+name='verify'
+tier='development'
+command=['checker']
+consumes=[{check='build',path='output.bin'}]
+[[test.beta.check]]
+name='build'
+tier='development'
+command=['other-builder']
+resources=[{kind='directory',id='./shared',access='exclusive'}]
+"#,
+        )
+        .unwrap();
+        let composed = load_composed_test_spec(&root, &["beta".into(), "alpha".into()]).unwrap();
+        let build = &composed.check_aliases["alpha/build"];
+        let verify = composed
+            .checks
+            .iter()
+            .find(|check| check.display_name.as_deref() == Some("alpha / verify"))
+            .unwrap();
+        assert_eq!(composed.targets, ["alpha", "beta"]);
+        assert_eq!(verify.requires.len(), 1);
+        assert_eq!(verify.requires[0], *build);
+        assert_eq!(verify.consumes[0].check, *build);
+        assert_eq!(verify.env["LANGUAGE"], "alpha");
+        let builds = composed
+            .checks
+            .iter()
+            .filter(|check| !check.resources.is_empty())
+            .collect::<Vec<_>>();
+        assert_ne!(builds[0].name, builds[1].name);
+        assert_eq!(builds[0].resources[0].id, builds[1].resources[0].id);
+        assert!(composed.checks.iter().all(|check| check.name.len() <= 64));
+        assert_eq!(
+            composed.name,
+            load_composed_test_spec(&root, &["alpha".into(), "beta".into()])
+                .unwrap()
+                .name
+        );
+        assert!(load_composed_test_spec(&root, &["alpha".into(), "alpha".into()]).is_err());
+    }
+
+    #[test]
+    fn declared_phases_reject_unqualified_failure_and_resource_escape() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        for extra in [
+            "phase='qualification'\nexpect_failure=true\nqualification_of='work'",
+            "resources=[{kind='directory',id='../outside',access='exclusive'}]",
+            "resources=[{kind='port',id='65536',access='exclusive'}]",
+            "consumes=[{check='work',path='missing.bin'}]",
+        ] {
+            std::fs::write(root.join(CONFIG_NAME), format!("schema=2\n[[test.unit.check]]\nname='work'\ntier='development'\ncommand=['runner']\n{extra}\n")).unwrap();
+            assert!(
+                load_test_spec(&root, None).is_err(),
+                "accepted invalid {extra}"
+            );
+        }
+    }
     use std::os::unix::fs::symlink;
     use tempfile::tempdir;
 

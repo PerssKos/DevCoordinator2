@@ -72,7 +72,8 @@ impl LeafSelector {
         match phase {
             LogPhase::Executor if check.is_none() && case_id.is_none() => {}
             LogPhase::Check | LogPhase::Discovery if check.is_some() && case_id.is_none() => {}
-            LogPhase::Case if check.is_some() && case_id.is_some() => {}
+            LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup
+                if check.is_some() && case_id.is_some() => {}
             _ => {
                 return Err(LogStoreError::InvalidSelector(
                     "phase, check, and case do not identify one log leaf",
@@ -560,13 +561,18 @@ impl RunLogLease {
                 )?;
                 ensure_directory(&check, phase_name(selector.phase))
             }
-            LogPhase::Case => {
+            LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup => {
                 let checks = ensure_directory(&self.run_dir, "checks")?;
                 let check = ensure_directory(
                     &checks,
                     selector.check.as_deref().expect("validated case selector"),
                 )?;
-                let cases = ensure_directory(&check, "cases")?;
+                let directory = match selector.phase {
+                    LogPhase::Fixture => "fixtures",
+                    LogPhase::Cleanup => "cleanup",
+                    _ => "cases",
+                };
+                let cases = ensure_directory(&check, directory)?;
                 ensure_directory(
                     &cases,
                     selector
@@ -753,6 +759,8 @@ const fn phase_name(phase: LogPhase) -> &'static str {
         LogPhase::Check => "check",
         LogPhase::Discovery => "discovery",
         LogPhase::Case => "case",
+        LogPhase::Fixture => "fixture",
+        LogPhase::Cleanup => "cleanup",
     }
 }
 

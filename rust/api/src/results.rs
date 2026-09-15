@@ -73,6 +73,29 @@ pub enum CheckRole {
     Preflight,
 }
 
+#[derive(Clone, Copy, Debug, Default, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckPhase {
+    Setup,
+    Build,
+    Fixture,
+    Case,
+    Cleanup,
+    Qualification,
+    #[default]
+    Check,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseDuration {
+    pub phase: CheckPhase,
+    pub duration_seconds: f64,
+    #[serde(default)]
+    pub elapsed_seconds: Option<f64>,
+    pub checks: u32,
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticValueType {
@@ -90,6 +113,8 @@ pub enum LogPhase {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -293,6 +318,8 @@ pub struct RepositoryStatus {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestStarted {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     pub run_id: String,
     pub repository_id: String,
     pub worktree_id: String,
@@ -373,6 +400,8 @@ pub struct ExecutionProgress {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseProjection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<CasePhaseReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub id: String,
@@ -385,6 +414,14 @@ pub struct CaseProjection {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckProjection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_durations: Vec<PhaseDuration>,
+    #[serde(default)]
+    pub resource_waiting: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub phase: CheckPhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub name: String,
@@ -403,6 +440,15 @@ pub struct CheckProjection {
     pub retained_artifacts_truncated: bool,
     pub cases: Vec<CaseProjection>,
     pub cases_truncated: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CasePhaseReport {
+    pub phase: CheckPhase,
+    pub status: LeafStatus,
+    pub duration_ms: u64,
+    pub streams: Vec<ExecutionLogStreamSummary>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -454,6 +500,12 @@ pub struct ExecutionCapacity {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub case_selection: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_durations: Vec<PhaseDuration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<crate::work_context::WorkAttribution>,
     pub schema_version: u8,
@@ -560,6 +612,8 @@ pub struct TestList {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryRun {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<crate::work_context::WorkAttribution>,
     pub run_id: String,

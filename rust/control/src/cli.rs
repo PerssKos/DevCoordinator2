@@ -1,6 +1,6 @@
 //! Command-line grammar, protocol-v2 invocation mapping, and response output.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -284,6 +284,8 @@ enum LogPhaseArg {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 impl LogPhaseArg {
@@ -293,6 +295,8 @@ impl LogPhaseArg {
             Self::Check => "check",
             Self::Discovery => "discovery",
             Self::Case => "case",
+            Self::Fixture => "fixture",
+            Self::Cleanup => "cleanup",
         }
     }
 }
@@ -399,6 +403,10 @@ struct TestStartArgs {
     test_name: Option<String>,
     #[arg(long = "check", action = clap::ArgAction::Append)]
     checks: Vec<String>,
+    #[arg(long = "target", action = clap::ArgAction::Append, conflicts_with = "test_name")]
+    targets: Vec<String>,
+    #[arg(long = "case", action = clap::ArgAction::Append, value_name = "CHECK=CASE")]
+    cases: Vec<String>,
     #[arg(long, value_enum, default_value_t = ValidationTierArg::Release)]
     tier: ValidationTierArg,
 }
@@ -1313,6 +1321,27 @@ impl TestCommand {
                 let mut params = Map::new();
                 params.insert("path".to_owned(), Value::String(args.path.absolute()?));
                 insert_option(&mut params, "test", args.test_name);
+                if !args.targets.is_empty() {
+                    params.insert(
+                        "targets".into(),
+                        serde_json::to_value(args.targets).unwrap(),
+                    );
+                }
+                if !args.cases.is_empty() {
+                    let mut cases: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                    for selection in args.cases {
+                        let (check, case) = selection
+                            .split_once('=')
+                            .filter(|(check, case)| !check.is_empty() && !case.is_empty())
+                            .ok_or_else(|| {
+                                CliValidationError::Invalid(
+                                    "case selection must be CHECK=CASE".into(),
+                                )
+                            })?;
+                        cases.entry(check.into()).or_default().push(case.into());
+                    }
+                    params.insert("cases".into(), serde_json::to_value(cases).unwrap());
+                }
                 if !args.checks.is_empty() {
                     params.insert(
                         "checks".to_owned(),
@@ -2229,6 +2258,14 @@ fn render_human_success(
     data: &Value,
     operation: Option<&str>,
 ) -> io::Result<()> {
+    if matches!(operation, Some("test.start" | "test.retry"))
+        && let Some(previous) = data.get("superseded_run_id").and_then(Value::as_str)
+    {
+        writeln!(
+            output,
+            "Previous run {previous} was cancelled by this start."
+        )?;
+    }
     if operation == Some("ping")
         && let Some(object) = data.as_object()
     {
@@ -2270,6 +2307,30 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use devcoordinator2_api::ErrorCode;
+
+    #[test]
+    fn human_start_names_the_exact_cancelled_predecessor() {
+        let mut output = Vec::new();
+        render_human_success(
+            &mut output,
+            &serde_json::json!({"run_id":"new-run","superseded_run_id":"exact-old-run"}),
+            Some("test.start"),
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .starts_with("Previous run exact-old-run was cancelled by this start.\n")
+        );
+        let mut ordinary = Vec::new();
+        render_human_success(
+            &mut ordinary,
+            &serde_json::json!({"run_id":"new-run","superseded_run_id":null}),
+            Some("test.start"),
+        )
+        .unwrap();
+        assert!(!String::from_utf8(ordinary).unwrap().contains("cancelled"));
+    }
 
     fn invocation(args: &[&str]) -> Result<Invocation, CliValidationError> {
         let argv = std::iter::once("devcoordinator2")

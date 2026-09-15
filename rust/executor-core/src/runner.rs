@@ -11,11 +11,11 @@ use devcoordinator2_executor_protocol::{
     CompletionMode, DiagnosticExit, DiagnosticOrigin, DiagnosticReportSource, ErrorCategory,
     ExecutionPlan, ExecutionReport, FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogRef,
     LogStream, LogStreamSummary, MAX_DIAGNOSTIC_EVENTS, MAX_MANIFEST_BYTES, MAX_REASON_BYTES,
-    PhaseDuration, ResourceAccess, ResourceClaim, RetainedArtifactReceipt, RunStatus, Schema2,
-    TerminationReason,
+    PhaseDuration, ResourceClaim, RetainedArtifactReceipt, RunStatus, Schema2, TerminationReason,
 };
 use rustix::process::Signal;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::ExecutorError;
@@ -42,6 +42,7 @@ pub struct Executor {
     plan: ExecutionPlan,
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
+    observations: watch::Sender<Option<ExecutionReport>>,
 }
 
 struct RunMetadataGuard {
@@ -127,11 +128,17 @@ impl Executor {
             plan,
             permits,
             cancellation,
+            observations: watch::channel(None).0,
         })
     }
 
+    /// Observe reports after their atomic publication without polling the filesystem.
+    pub fn subscribe_progress(&self) -> watch::Receiver<Option<ExecutionReport>> {
+        self.observations.subscribe()
+    }
+
     pub async fn run(self) -> Result<ExecutionReport, ExecutorError> {
-        let plan = Arc::new(self.plan);
+        let plan = self.plan;
         let root_requested = PathBuf::from(&plan.worktree_root);
         let current_requested = PathBuf::from(&plan.current_dir);
         let log_requested = PathBuf::from(&plan.log_dir);
@@ -177,6 +184,7 @@ impl Executor {
                 "executor current_dir resolves outside the worktree",
             ));
         }
+        let plan = Arc::new(plan);
         for directory in ["checks", "scratch", "artifacts"] {
             tokio::fs::create_dir_all(current.join(directory))
                 .await
@@ -200,6 +208,7 @@ impl Executor {
         let report_path = current.join("check-report.json");
         write_report(
             &report_path,
+            &self.observations,
             &plan,
             &checks,
             &capacity,
@@ -220,6 +229,22 @@ impl Executor {
         let (progress, mut progress_rx) = unbounded_channel();
 
         loop {
+            if !service_pgids.is_empty()
+                && checks.iter().all(|check| {
+                    check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                        || check.report.status.is_terminal()
+                })
+            {
+                stop_services(
+                    &mut services,
+                    &mut service_pgids,
+                    &mut checks,
+                    &plan,
+                    &log_lease,
+                    &log_dir,
+                )
+                .await?;
+            }
             while let Ok(update) = progress_rx.try_recv() {
                 apply_process_update(&mut checks, &capacity, update)?;
             }
@@ -250,10 +275,11 @@ impl Executor {
                     &plan.run_id,
                     &log_lease,
                     abort_reason(abort.as_ref()),
+                    !matches!(abort, Some(Abort::Unsafe(_))),
                 );
             }
 
-            if abort.is_none() {
+            if !matches!(abort, Some(Abort::Unsafe(_))) {
                 let ready = ready_checks_with_available_resources(
                     &checks,
                     &invalidators,
@@ -261,21 +287,56 @@ impl Executor {
                 );
                 for name in ready {
                     let index = check_index(&checks, &name)?;
+                    if abort.is_some()
+                        && checks[index].plan.phase
+                            != devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                    {
+                        continue;
+                    }
                     let runtime = &mut checks[index];
                     runtime.report.status = LeafStatus::Running;
                     runtime.report.started_at = None;
+                    runtime.report.resource_waiting = !runtime.plan.resources.is_empty();
                     runtime.started_epoch_ms = Some(epoch_ms());
                     let check = runtime.plan.clone();
+                    let consumed_expected = check
+                        .consumes
+                        .iter()
+                        .map(|consumed| {
+                            checks
+                                .iter()
+                                .find(|producer| producer.plan.name == consumed.check)
+                                .and_then(|producer| {
+                                    producer
+                                        .report
+                                        .artifacts
+                                        .iter()
+                                        .find(|receipt| receipt.path == consumed.path)
+                                })
+                                .cloned()
+                                .ok_or_else(|| {
+                                    ExecutorError::new(
+                                        "consumed artifact has no completed producer receipt",
+                                    )
+                                })
+                        })
+                        .collect::<Result<Vec<_>, _>>();
                     let plan = plan.clone();
                     let root = root.clone();
                     let current = current.clone();
                     let permits = self.permits.clone();
-                    let cancellation = self.cancellation.clone();
+                    let cancellation =
+                        if check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup {
+                            Cancellation::default()
+                        } else {
+                            self.cancellation.clone()
+                        };
                     let log_lease = log_lease.clone();
                     let log_dir = log_dir.clone();
                     let progress = progress.clone();
                     running.spawn(async move {
                         let outcome = execute_check(
+                            consumed_expected,
                             progress.clone(),
                             plan,
                             check,
@@ -294,6 +355,7 @@ impl Executor {
 
             write_report(
                 &report_path,
+                &self.observations,
                 &plan,
                 &checks,
                 &capacity,
@@ -401,6 +463,7 @@ impl Executor {
         let finished_at = iso_now();
         let mut report = write_report(
             &report_path,
+            &self.observations,
             &plan,
             &checks,
             &capacity,
@@ -411,7 +474,8 @@ impl Executor {
             source_changed,
             source_error,
         )?;
-        if run_metadata.finish(status, true).is_err() {
+        let sealed = run_metadata.finish(status, true).is_ok();
+        if !sealed {
             report.status = RunStatus::Failed;
             report.failure_index.push(failure_entry(
                 &plan.run_id,
@@ -428,6 +492,39 @@ impl Executor {
             report.failure_index = normalized.entries;
             report.failure_index_truncated |= normalized.truncated;
             write_json_atomic(&report_path, &report)?;
+            publish_observation(&self.observations, &report);
+        }
+        if sealed && !source_changed {
+            for check in &checks {
+                if check.report.status != LeafStatus::Passed {
+                    continue;
+                }
+                let Some(key) = check.cache_key.as_deref() else {
+                    continue;
+                };
+                let Ok(inputs) = artifact_receipts(&root, &check.plan.cache_inputs) else {
+                    continue;
+                };
+                let Ok(consumed) = artifact_receipts(
+                    &root,
+                    &check
+                        .plan
+                        .consumes
+                        .iter()
+                        .map(|artifact| artifact.path.clone())
+                        .collect::<Vec<_>>(),
+                ) else {
+                    continue;
+                };
+                if inputs == check.report.cache_inputs
+                    && consumed == check.report.consumed_artifacts
+                    && crate::reuse::key(&root, &plan, &check.plan, &inputs, &consumed).as_deref()
+                        == Some(key)
+                    && receipts_match(&root, &check.report.artifacts).unwrap_or(false)
+                {
+                    crate::reuse::record(&root, &plan, &check.plan, key, &check.report.artifacts);
+                }
+            }
         }
         Ok(report)
     }
@@ -463,6 +560,9 @@ fn apply_process_update(
 }
 
 fn refresh_execution(check: &mut CheckRuntime) {
+    if !check.processes.is_empty() {
+        check.report.resource_waiting = false;
+    }
     if check.processes.is_empty() {
         return;
     }
@@ -506,12 +606,17 @@ fn refresh_execution(check: &mut CheckRuntime) {
                 .find(|case| &case.id == case_id)
             {
                 case.execution = Some(p.clone());
-                if let Some(status) = update.status {
+                if let Some(status) = update.status
+                    && case.phases.is_empty()
+                {
                     case.status = status;
                 }
-                case.duration_ms = p.process_duration_ms;
+                if case.phases.is_empty() {
+                    case.duration_ms = p.process_duration_ms;
+                }
             } else if !check.report.status.is_terminal() && check.report.cases.len() < 64 {
                 check.report.cases.push(CaseReport {
+                    phases: Vec::new(),
                     execution: Some(p.clone()),
                     id: case_id.clone(),
                     status: update.status.unwrap_or(LeafStatus::Running),
@@ -521,6 +626,77 @@ fn refresh_execution(check: &mut CheckRuntime) {
                 });
             }
         }
+    }
+    for case in &mut check.report.cases {
+        let members = check
+            .processes
+            .values()
+            .filter(|update| update.selector.case_id.as_deref() == Some(case.id.as_str()))
+            .collect::<Vec<_>>();
+        let native = members
+            .iter()
+            .any(|update| matches!(update.selector.phase, LogPhase::Fixture | LogPhase::Cleanup));
+        if !native {
+            continue;
+        }
+        let mut combined = ExecutionProgress {
+            queued_at_epoch_ms: u64::MAX,
+            ..Default::default()
+        };
+        for update in &members {
+            let p = &update.progress;
+            combined.waiting += p.waiting;
+            combined.admitted += p.admitted;
+            combined.executing += p.executing;
+            combined.finished += p.finished;
+            combined.queued_at_epoch_ms = combined.queued_at_epoch_ms.min(p.queued_at_epoch_ms);
+            combined.admitted_at_epoch_ms = combined
+                .admitted_at_epoch_ms
+                .into_iter()
+                .chain(p.admitted_at_epoch_ms)
+                .min();
+            combined.started_at_epoch_ms = combined
+                .started_at_epoch_ms
+                .into_iter()
+                .chain(p.started_at_epoch_ms)
+                .min();
+            combined.finished_at_epoch_ms = combined
+                .finished_at_epoch_ms
+                .into_iter()
+                .chain(p.finished_at_epoch_ms)
+                .max();
+            combined.capacity_wait_ms =
+                combined.capacity_wait_ms.saturating_add(p.capacity_wait_ms);
+            combined.process_duration_ms = combined
+                .process_duration_ms
+                .saturating_add(p.process_duration_ms);
+            let phase = match update.selector.phase {
+                LogPhase::Fixture => devcoordinator2_executor_protocol::CheckPhase::Fixture,
+                LogPhase::Cleanup => devcoordinator2_executor_protocol::CheckPhase::Cleanup,
+                _ => devcoordinator2_executor_protocol::CheckPhase::Case,
+            };
+            if let Some(observed) = case.phases.iter_mut().find(|entry| entry.phase == phase) {
+                observed.duration_ms = p.process_duration_ms;
+            }
+        }
+        if combined.waiting + combined.admitted + combined.executing > 0 {
+            combined.finished_at_epoch_ms = None;
+        }
+        if case.phases.is_empty() {
+            case.status = if members.iter().any(|update| {
+                update.selector.phase == LogPhase::Cleanup && update.progress.finished == 1
+            }) {
+                members
+                    .iter()
+                    .filter_map(|update| update.status)
+                    .find(|status| !status.is_success())
+                    .unwrap_or(LeafStatus::Passed)
+            } else {
+                LeafStatus::Running
+            };
+        }
+        case.duration_ms = combined.process_duration_ms;
+        case.execution = Some(combined);
     }
     if execution.waiting + execution.admitted + execution.executing > 0 {
         execution.finished_at_epoch_ms = None;
@@ -532,8 +708,9 @@ fn refresh_execution(check: &mut CheckRuntime) {
         check.report.case_count = check
             .processes
             .values()
-            .filter(|update| update.selector.case_id.is_some())
-            .count()
+            .filter_map(|update| update.selector.case_id.as_ref())
+            .collect::<BTreeSet<_>>()
+            .len()
             .try_into()
             .unwrap_or(u32::MAX);
         check.report.cases_truncated = check.report.case_count as usize > check.report.cases.len();
@@ -561,6 +738,7 @@ fn refresh_execution(check: &mut CheckRuntime) {
 }
 
 struct CheckRuntime {
+    cache_key: Option<String>,
     completed_mono: Option<Instant>,
     processes: BTreeMap<String, ProcessUpdate>,
     plan: CheckPlan,
@@ -570,6 +748,7 @@ struct CheckRuntime {
 }
 
 struct CheckOutcome {
+    cache_key: Option<String>,
     status: LeafStatus,
     exit_code: Option<i32>,
     reason: Option<String>,
@@ -757,10 +936,14 @@ fn initialize_checks(
             LeafStatus::Pending
         };
         result.push(CheckRuntime {
+            cache_key: None,
             plan: check.clone(),
             completed_mono: None,
             processes: BTreeMap::new(),
             report: CheckReport {
+                phase_durations: Vec::new(),
+                resource_waiting: false,
+                display_name: check.display_name.clone(),
                 execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
@@ -887,7 +1070,9 @@ fn mark_blocked_once(
         .map(|check| (check.plan.name.clone(), check.report.status))
         .collect();
     for check in checks {
-        if check.report.status != LeafStatus::Pending {
+        if check.report.status != LeafStatus::Pending
+            || check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+        {
             continue;
         }
         if let Some(preflights) = invalidators.get(&check.plan.name) {
@@ -1015,18 +1200,20 @@ fn ready_checks(
                 .all(|name| statuses[name.as_str()].is_terminal())
         })
         .filter(|check| {
-            check
-                .plan
-                .requires
-                .iter()
-                .all(|name| statuses[name.as_str()].is_success())
+            check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                || check
+                    .plan
+                    .requires
+                    .iter()
+                    .all(|name| statuses[name.as_str()].is_success())
         })
         .filter(|check| {
-            invalidators
-                .get(&check.plan.name)
-                .into_iter()
-                .flatten()
-                .all(|name| statuses[name.as_str()].is_success())
+            check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                || invalidators
+                    .get(&check.plan.name)
+                    .into_iter()
+                    .flatten()
+                    .all(|name| statuses[name.as_str()].is_success())
         })
         .map(|check| check.plan.name.clone())
         .collect()
@@ -1065,16 +1252,82 @@ fn ready_checks_with_available_resources<'a>(
 }
 
 fn resources_conflict(left: &ResourceClaim, right: &ResourceClaim) -> bool {
-    left.kind == right.kind
-        && left.id == right.id
-        && !(left.access == ResourceAccess::Shared && right.access == ResourceAccess::Shared)
+    left.conflicts(right)
+}
+
+fn read_database_environment(
+    current: &Path,
+    path: &str,
+) -> Result<BTreeMap<String, String>, ExecutorError> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+    use std::io::Read;
+    if !path.starts_with("database-")
+        || !path.ends_with(".json")
+        || Path::new(path).components().count() != 1
+    {
+        return Err(ExecutorError::new(
+            "invalid private database environment identity",
+        ));
+    }
+    let directory = open(
+        current,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| ExecutorError::new("private environment directory is unavailable"))?;
+    let descriptor = openat(
+        &directory,
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| ExecutorError::new("private database environment is unavailable"))?;
+    let stat = fstat(&descriptor)
+        .map_err(|_| ExecutorError::new("private database environment cannot be inspected"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+        || stat.st_mode & 0o077 != 0
+        || stat.st_size > 65536
+    {
+        return Err(ExecutorError::new(
+            "private database environment has invalid type, permissions or size",
+        ));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::from(descriptor)
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ExecutorError::new("private database environment cannot be read"))?;
+    if bytes.len() > 65536 {
+        return Err(ExecutorError::new(
+            "private database environment exceeds its bound",
+        ));
+    }
+    let environment: BTreeMap<String, String> = serde_json::from_slice(&bytes)
+        .map_err(|_| ExecutorError::new("private database environment is invalid"))?;
+    if environment.keys().any(|key| {
+        ![
+            "PGHOST",
+            "PGPORT",
+            "PGUSER",
+            "PGPASSWORD",
+            "PGDATABASE",
+            "DATABASE_URL",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(ExecutorError::new(
+            "private database environment contains an unsupported field",
+        ));
+    }
+    Ok(environment)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn execute_check(
+    consumed_expected: Result<Vec<ArtifactReceipt>, ExecutorError>,
     progress: UnboundedSender<ProcessUpdate>,
     plan: Arc<ExecutionPlan>,
-    check: CheckPlan,
+    mut check: CheckPlan,
     root: PathBuf,
     current: PathBuf,
     permits: Arc<dyn PermitProvider>,
@@ -1084,6 +1337,34 @@ async fn execute_check(
 ) -> CheckOutcome {
     let started = Instant::now();
     let started_epoch_ms = epoch_ms();
+    let permits = crate::capacity::for_check(permits, &plan.run_id, &check);
+    let _resources = if !check.resources.is_empty() {
+        let reservation = tokio::select! {
+            reservation = permits.reserve(&plan.run_id, &check.name) => reservation,
+            () = cancellation.cancelled() => {
+                let mut outcome = artifact_input_failure(&plan, &check, "cancelled while waiting for a resource".into(), started.elapsed());
+                outcome.status = LeafStatus::Cancelled;
+                outcome.failures = vec![failure_entry(&plan.run_id, Some(&check.name), None, LeafStatus::Cancelled, None, Some(TerminationReason::RunCancelled), ErrorCategory::Cancellation, None)];
+                return outcome;
+            }
+        };
+        match reservation {
+            Ok(reservation) => Some(reservation),
+            Err(error) => {
+                return artifact_input_failure(&plan, &check, error.to_string(), started.elapsed());
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(path) = plan.environment_files.get(&check.name) {
+        match read_database_environment(&current, path) {
+            Ok(environment) => check.env.extend(environment),
+            Err(error) => {
+                return artifact_input_failure(&plan, &check, error.to_string(), started.elapsed());
+            }
+        }
+    }
     let cache_inputs = artifact_receipts(&root, &check.cache_inputs);
     let consumed_artifacts = artifact_receipts(
         &root,
@@ -1099,6 +1380,54 @@ async fn execute_check(
             return artifact_input_failure(&plan, &check, error.to_string(), started.elapsed());
         }
     };
+    let cache_key = crate::reuse::key(&root, &plan, &check, &cache_inputs, &consumed_artifacts);
+    if !matches!(consumed_expected, Ok(ref expected) if expected == &consumed_artifacts) {
+        return artifact_input_failure(
+            &plan,
+            &check,
+            "consumed artifact changed after its producer completed".into(),
+            started.elapsed(),
+        );
+    }
+    if let Some(artifacts) = cache_key
+        .as_deref()
+        .and_then(|key| crate::reuse::lookup(&root, &check, key))
+    {
+        let selector = LeafSelector::check(check.name.clone()).expect("validated check");
+        if log_lease
+            .publish_leaf_metadata(&LeafLogMetadata {
+                schema: 2,
+                selector,
+                status: LeafStatus::Reused,
+                exit: DiagnosticExit::default(),
+                started_at_epoch_ms: started_epoch_ms,
+                finished_at_epoch_ms: Some(epoch_ms()),
+                process_started: false,
+                complete: true,
+                structured_evidence_formats: Vec::new(),
+                structured_evidence_count: 0,
+            })
+            .is_ok()
+        {
+            return CheckOutcome {
+                cache_key: None,
+                status: LeafStatus::Reused,
+                exit_code: None,
+                reason: None,
+                artifacts,
+                cache_inputs,
+                consumed_artifacts,
+                retained_artifacts: Vec::new(),
+                streams: Vec::new(),
+                case_count: 0,
+                cases: Vec::new(),
+                cases_truncated: false,
+                failures: Vec::new(),
+                service: None,
+                duration_seconds: seconds(started.elapsed()),
+            };
+        }
+    }
     if let Some(command) = &check.command {
         let selector = LeafSelector::check(check.name.clone()).expect("validated check selector");
         let request = process_request(
@@ -1191,14 +1520,16 @@ async fn execute_check(
         } else {
             Vec::new()
         };
-        direct_outcome(
+        let mut outcome = direct_outcome(
             process,
             artifacts,
             retained_artifacts,
             cache_inputs,
             consumed_artifacts,
             started.elapsed(),
-        )
+        );
+        outcome.cache_key = cache_key;
+        outcome
     } else {
         let mut outcome = execute_fanout(
             progress.clone(),
@@ -1227,6 +1558,7 @@ fn artifact_input_failure(
     duration: Duration,
 ) -> CheckOutcome {
     CheckOutcome {
+        cache_key: None,
         status: LeafStatus::Failed,
         exit_code: None,
         reason: Some(bounded_reason(&reason)),
@@ -1264,6 +1596,7 @@ fn direct_outcome(
     let status: LeafStatus = process.status.into();
     let failures = std::mem::take(&mut process.diagnostics);
     CheckOutcome {
+        cache_key: None,
         status,
         exit_code: process.exit_code,
         reason: process.reason.take().map(|value| bounded_reason(&value)),
@@ -1446,11 +1779,13 @@ async fn execute_fanout(
         let selected = selected.iter().map(String::as_str).collect::<BTreeSet<_>>();
         cases.retain(|case| selected.contains(case.id.as_str()));
     }
-    if cases.iter().any(|case| {
-        case.postgres
-            .as_ref()
-            .is_some_and(|branch| !plan.postgres_databases.contains_key(branch))
-    }) {
+    if plan.fixture_program.is_none()
+        && cases.iter().any(|case| {
+            case.postgres
+                .as_ref()
+                .is_some_and(|branch| !plan.postgres_databases.contains_key(branch))
+        })
+    {
         return case_selection_failure(
             plan,
             check,
@@ -1606,6 +1941,7 @@ async fn execute_fanout(
         Vec::new()
     };
     CheckOutcome {
+        cache_key: None,
         status: final_status,
         exit_code: None,
         reason: final_reason.map(|value| bounded_reason(&value)),
@@ -1641,6 +1977,52 @@ async fn run_case(
     log_lease: Arc<RunLogLease>,
     log_dir: Arc<PathBuf>,
 ) -> CaseOutcome {
+    if plan.fixture_program.is_some() && case.postgres.is_some() {
+        return run_case_with_fixture(
+            progress,
+            plan,
+            check,
+            case,
+            base_command,
+            root,
+            current,
+            permits,
+            cancellation,
+            log_lease,
+            log_dir,
+        )
+        .await;
+    }
+    run_plain_case(
+        progress,
+        plan,
+        check,
+        case,
+        base_command,
+        root,
+        current,
+        permits,
+        cancellation,
+        log_lease,
+        log_dir,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_plain_case(
+    progress: UnboundedSender<ProcessUpdate>,
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    case: &CaseSpec,
+    base_command: &[String],
+    root: &Path,
+    current: &Path,
+    permits: Arc<dyn PermitProvider>,
+    cancellation: Cancellation,
+    log_lease: Arc<RunLogLease>,
+    log_dir: Arc<PathBuf>,
+) -> CaseOutcome {
     let started = Instant::now();
     let started_epoch_ms = epoch_ms();
     let mut command = base_command.to_vec();
@@ -1663,11 +2045,72 @@ async fn run_case(
         false,
     );
     if let Some(branch) = &case.postgres {
-        let database = &plan.postgres_databases[branch];
+        let key = format!("{}-{}", check.name, case.id);
+        let database = plan
+            .postgres_databases
+            .get(&key)
+            .or_else(|| plan.postgres_databases.get(branch))
+            .ok_or_else(|| ExecutorError::new("case references an unavailable PostgreSQL branch"));
+        let database = match database {
+            Ok(value) => value,
+            Err(_error) => {
+                return CaseOutcome {
+                    report: CaseReport {
+                        phases: Vec::new(),
+                        execution: None,
+                        id: case.id.clone(),
+                        status: LeafStatus::Unsafe,
+                        exit: diagnostic_exit(None),
+                        duration_ms: millis(started.elapsed()),
+                        streams: Vec::new(),
+                    },
+                    failures: vec![failure_entry(
+                        &plan.run_id,
+                        Some(&check.name),
+                        Some(&case.id),
+                        LeafStatus::Unsafe,
+                        None,
+                        Some(TerminationReason::UnsafeStop),
+                        ErrorCategory::Dependency,
+                        None,
+                    )],
+                };
+            }
+        };
         request.env.insert("PGDATABASE".into(), database.clone());
         if let Some(url) = request.env.get_mut("DATABASE_URL") {
             *url = database_url_with_database(url, database);
         }
+    }
+    if let Some(file) = plan
+        .environment_files
+        .get(&format!("{}/{}", check.name, case.id))
+    {
+        let bytes = match std::fs::read(current.join(file)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return database_case_failure(
+                    plan,
+                    check,
+                    case,
+                    format!("private case database environment unavailable: {error}"),
+                    started.elapsed(),
+                );
+            }
+        };
+        let environment = match serde_json::from_slice::<BTreeMap<String, String>>(&bytes) {
+            Ok(environment) => environment,
+            Err(error) => {
+                return database_case_failure(
+                    plan,
+                    check,
+                    case,
+                    format!("private case database environment invalid: {error}"),
+                    started.elapsed(),
+                );
+            }
+        };
+        request.env.extend(environment);
     }
     let mut process = run_process(request, permits, cancellation).await;
     finalize_leaf_evidence(
@@ -1681,6 +2124,7 @@ async fn run_case(
     );
     CaseOutcome {
         report: CaseReport {
+            phases: Vec::new(),
             execution: None,
             id: case.id.clone(),
             status: process.status.into(),
@@ -1689,6 +2133,229 @@ async fn run_case(
             streams: process.streams,
         },
         failures: process.diagnostics,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn native_case_phase(
+    progress: UnboundedSender<ProcessUpdate>,
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    case: &CaseSpec,
+    phase: LogPhase,
+    root: &Path,
+    current: &Path,
+    permits: Arc<dyn PermitProvider>,
+    cancellation: Cancellation,
+    log_lease: Arc<RunLogLease>,
+    log_dir: &Path,
+) -> (
+    ProcessResult,
+    devcoordinator2_executor_protocol::CasePhaseReport,
+) {
+    let stage = if phase == LogPhase::Fixture {
+        "fixture"
+    } else {
+        "cleanup"
+    };
+    let node = format!(
+        "{}/{stage}/{}/{}",
+        check.name,
+        case.id,
+        case.postgres.as_deref().unwrap()
+    );
+    let selector = LeafSelector::new(Some(check.name.clone()), phase, Some(case.id.clone()))
+        .expect("validated fixture case");
+    let command = vec![
+        plan.fixture_program.clone().unwrap(),
+        "fixture".into(),
+        node.clone(),
+    ];
+    let request = process_request(
+        progress,
+        plan,
+        check,
+        root,
+        current,
+        log_lease.clone(),
+        log_dir,
+        selector.clone(),
+        &node,
+        command,
+        CompletionMode::Process,
+        false,
+    );
+    let started = Instant::now();
+    let at = epoch_ms();
+    let mut process = run_process(request, permits, cancellation).await;
+    let mut native = check.clone();
+    native.diagnostic_sources.clear();
+    native.expect_failure = false;
+    native.expected_failure = None;
+    native.expected_exit_code = None;
+    finalize_leaf_evidence(
+        plan,
+        &native,
+        &selector,
+        &log_lease,
+        log_dir,
+        &mut process,
+        at,
+    );
+    let report = devcoordinator2_executor_protocol::CasePhaseReport {
+        phase: if phase == LogPhase::Fixture {
+            devcoordinator2_executor_protocol::CheckPhase::Fixture
+        } else {
+            devcoordinator2_executor_protocol::CheckPhase::Cleanup
+        },
+        status: process.status.into(),
+        duration_ms: millis(started.elapsed()),
+        streams: process.streams.clone(),
+    };
+    (process, report)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_case_with_fixture(
+    progress: UnboundedSender<ProcessUpdate>,
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    case: &CaseSpec,
+    base_command: &[String],
+    root: &Path,
+    current: &Path,
+    permits: Arc<dyn PermitProvider>,
+    cancellation: Cancellation,
+    log_lease: Arc<RunLogLease>,
+    log_dir: Arc<PathBuf>,
+) -> CaseOutcome {
+    use devcoordinator2_executor_protocol::{CasePhaseReport, CheckPhase};
+    let started = Instant::now();
+    let (setup, setup_phase) = native_case_phase(
+        progress.clone(),
+        plan,
+        check,
+        case,
+        LogPhase::Fixture,
+        root,
+        current,
+        permits.clone(),
+        cancellation.clone(),
+        log_lease.clone(),
+        &log_dir,
+    )
+    .await;
+    let mut ran_body = false;
+    let mut outcome = if setup.status == ProcessStatus::Passed {
+        let environment_file = format!(
+            "database-{}.json",
+            crate::case_environment_key(&check.name, &case.id)
+        );
+        match read_database_environment(current, &environment_file) {
+            Ok(environment) => {
+                let mut isolated_check = check.clone();
+                isolated_check.env.extend(environment);
+                let mut plain_case = case.clone();
+                plain_case.postgres = None;
+                ran_body = true;
+                run_plain_case(
+                    progress.clone(),
+                    plan,
+                    &isolated_check,
+                    &plain_case,
+                    base_command,
+                    root,
+                    current,
+                    permits.clone(),
+                    cancellation.clone(),
+                    log_lease.clone(),
+                    log_dir.clone(),
+                )
+                .await
+            }
+            Err(error) => {
+                database_case_failure(plan, check, case, error.to_string(), started.elapsed())
+            }
+        }
+    } else {
+        CaseOutcome {
+            report: CaseReport {
+                phases: Vec::new(),
+                execution: None,
+                id: case.id.clone(),
+                status: setup.status.into(),
+                exit: DiagnosticExit::default(),
+                duration_ms: 0,
+                streams: Vec::new(),
+            },
+            failures: Vec::new(),
+        }
+    };
+    let body_phase = CasePhaseReport {
+        phase: CheckPhase::Case,
+        status: if ran_body {
+            outcome.report.status
+        } else {
+            LeafStatus::Invalidated
+        },
+        duration_ms: if ran_body {
+            outcome.report.duration_ms
+        } else {
+            0
+        },
+        streams: outcome.report.streams.clone(),
+    };
+    let (cleanup, cleanup_phase) = native_case_phase(
+        progress,
+        plan,
+        check,
+        case,
+        LogPhase::Cleanup,
+        root,
+        current,
+        permits,
+        Cancellation::default(),
+        log_lease,
+        &log_dir,
+    )
+    .await;
+    outcome.failures.extend(setup.diagnostics);
+    outcome.failures.extend(cleanup.diagnostics);
+    if !cleanup_phase.status.is_success() && outcome.report.status.is_success() {
+        outcome.report.status = cleanup_phase.status;
+    }
+    outcome.report.phases = vec![setup_phase, body_phase, cleanup_phase];
+    outcome.report.duration_ms = millis(started.elapsed());
+    outcome
+}
+
+fn database_case_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    case: &CaseSpec,
+    _reason: String,
+    duration: Duration,
+) -> CaseOutcome {
+    CaseOutcome {
+        report: CaseReport {
+            phases: Vec::new(),
+            execution: None,
+            id: case.id.clone(),
+            status: LeafStatus::Unsafe,
+            exit: diagnostic_exit(None),
+            duration_ms: millis(duration),
+            streams: Vec::new(),
+        },
+        failures: vec![failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            Some(&case.id),
+            LeafStatus::Unsafe,
+            None,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::Artifact,
+            None,
+        )],
     }
 }
 
@@ -1722,12 +2389,17 @@ fn process_request(
     completion: CompletionMode,
     capture_manifest: bool,
 ) -> ProcessRequest {
-    let scratch = if let Some(case_id) = leaf.strip_prefix(&format!("{}/case/", check.name)) {
-        current
+    let scratch = if let Some(case_id) = &log_selector.case_id {
+        let directory = current
             .join("scratch")
             .join(&check.name)
             .join("cases")
-            .join(case_id)
+            .join(case_id);
+        match log_selector.phase {
+            LogPhase::Fixture => directory.join("fixture"),
+            LogPhase::Cleanup => directory.join("cleanup"),
+            _ => directory,
+        }
     } else {
         current.join("scratch").join(&check.name)
     };
@@ -1810,7 +2482,28 @@ fn finalize_leaf_evidence(
     }
     if check.expect_failure && !invalid && !process.log_storage_failed {
         match process.status {
-            ProcessStatus::Failed => {
+            ProcessStatus::Failed
+                if process.process_started
+                    && process.exit_code == Some(check.expected_exit_code.unwrap_or(1))
+                    && process
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.origin != DiagnosticOrigin::Executor)
+                    && process.diagnostics.iter().all(|diagnostic| {
+                        if diagnostic.origin == DiagnosticOrigin::Executor {
+                            return diagnostic.error_category == ErrorCategory::ProcessExit
+                                && diagnostic.exit.code == process.exit_code
+                                && diagnostic.exit.signal.is_none()
+                                && diagnostic.termination_reason.is_none();
+                        }
+                        let mut canonical = diagnostic.clone();
+                        if let Some(source_name) = &check.source_name {
+                            canonical.check = Some(source_name.clone());
+                        }
+                        check.expected_failure.as_deref()
+                            == Some(crate::diagnostics::diagnostic_fingerprint(&canonical).as_str())
+                    }) =>
+            {
                 process.status = ProcessStatus::Passed;
                 process.reason = None;
                 process.diagnostics.clear();
@@ -1818,6 +2511,9 @@ fn finalize_leaf_evidence(
             ProcessStatus::Passed => {
                 process.status = ProcessStatus::Failed;
                 process.reason = Some("known failing fixture was not detected".into());
+            }
+            ProcessStatus::Failed => {
+                process.reason = Some("qualification failed for an unexpected diagnostic".into());
             }
             ProcessStatus::TimedOut | ProcessStatus::Cancelled | ProcessStatus::Unsafe => {}
         }
@@ -2067,10 +2763,14 @@ fn leaf_log_directory(run_dir: &Path, selector: &LeafSelector) -> PathBuf {
                 LogPhase::Discovery => "discovery",
                 _ => unreachable!(),
             }),
-        LogPhase::Case => run_dir
+        LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup => run_dir
             .join("checks")
             .join(selector.check.as_deref().expect("validated case selector"))
-            .join("cases")
+            .join(match selector.phase {
+                LogPhase::Fixture => "fixtures",
+                LogPhase::Cleanup => "cleanup",
+                _ => "cases",
+            })
             .join(
                 selector
                     .case_id
@@ -2093,6 +2793,7 @@ fn fanout_setup_failure(
         .reason
         .unwrap_or_else(|| "case discovery failed".into());
     CheckOutcome {
+        cache_key: None,
         status,
         exit_code,
         reason: Some(bounded_reason(&reason)),
@@ -2118,6 +2819,7 @@ fn case_selection_failure(
     reason: &str,
 ) -> CheckOutcome {
     CheckOutcome {
+        cache_key: None,
         status: LeafStatus::Failed,
         exit_code: None,
         reason: Some(reason.into()),
@@ -2171,6 +2873,7 @@ fn discovery_postprocess_failure(
         termination_reason,
     );
     CheckOutcome {
+        cache_key: None,
         status: process.status.into(),
         exit_code: process.exit_code,
         reason: Some(bounded_reason(&reason)),
@@ -2195,6 +2898,8 @@ fn apply_outcome(
     service_pgids: &mut BTreeMap<String, i32>,
 ) {
     runtime.completed_mono = Some(Instant::now());
+    runtime.cache_key = outcome.cache_key.take();
+    runtime.report.resource_waiting = false;
     runtime.report.status = outcome.status;
     runtime.report.finished_at = Some(iso_now());
     runtime.report.duration_seconds = if runtime.plan.completion == CompletionMode::Event {
@@ -2325,9 +3030,13 @@ fn mark_pending_cancelled(
     run_id: &str,
     log_lease: &RunLogLease,
     reason: &str,
+    retain_cleanup: bool,
 ) {
     for check in checks {
-        if check.report.status == LeafStatus::Pending {
+        if check.report.status == LeafStatus::Pending
+            && !(retain_cleanup
+                && check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+        {
             finish_blocked(
                 check,
                 run_id,
@@ -2349,6 +3058,7 @@ fn abort_reason(abort: Option<&Abort>) -> &str {
 #[allow(clippy::too_many_arguments)]
 fn write_report(
     path: &Path,
+    observations: &watch::Sender<Option<ExecutionReport>>,
     plan: &ExecutionPlan,
     checks: &[CheckRuntime],
     capacity: &Mutex<CapacityReport>,
@@ -2405,20 +3115,7 @@ fn write_report(
         let key = status_key(check.report.status).to_owned();
         *counts.entry(key).or_insert(0) += 1;
     }
-    let mut phases = BTreeMap::<_, (f64, u32)>::new();
-    for check in checks {
-        let entry = phases.entry(check.report.phase).or_default();
-        entry.0 += check.report.duration_seconds.unwrap_or(0.0);
-        entry.1 = entry.1.saturating_add(1);
-    }
-    let phase_durations = phases
-        .into_iter()
-        .map(|(phase, (duration_seconds, checks))| PhaseDuration {
-            phase,
-            duration_seconds,
-            checks,
-        })
-        .collect();
+    let phase_durations = aggregate_phase_times(checks.iter().flat_map(timing_nodes));
     let mut observed_capacity = capacity
         .lock()
         .map_err(|_| ExecutorError::new("capacity report lock poisoned"))?
@@ -2448,13 +3145,99 @@ fn write_report(
         source_changed,
         capacity: observed_capacity,
         counts,
-        checks: checks.iter().map(|check| check.report.clone()).collect(),
+        checks: checks
+            .iter()
+            .map(|check| {
+                let mut report = check.report.clone();
+                report.phase_durations = aggregate_phase_times(timing_nodes(check).into_iter());
+                report
+            })
+            .collect(),
         phase_durations,
         failure_index: failures,
         failure_index_truncated,
     };
     write_json_atomic(path, &report)?;
+    publish_observation(observations, &report);
     Ok(report)
+}
+
+fn timing_nodes(
+    check: &CheckRuntime,
+) -> Vec<(
+    devcoordinator2_executor_protocol::CheckPhase,
+    f64,
+    Option<Instant>,
+    Option<Instant>,
+)> {
+    use devcoordinator2_executor_protocol::CheckPhase;
+    if check.processes.is_empty() {
+        return vec![(
+            check.plan.phase,
+            // Receipt verification and queue time are not process execution.
+            0.0,
+            None,
+            None,
+        )];
+    }
+    check
+        .processes
+        .values()
+        .map(|update| {
+            let phase = match update.selector.phase {
+                LogPhase::Fixture => CheckPhase::Fixture,
+                LogPhase::Cleanup => CheckPhase::Cleanup,
+                LogPhase::Case => CheckPhase::Case,
+                LogPhase::Discovery => CheckPhase::Setup,
+                _ => check.plan.phase,
+            };
+            (
+                phase,
+                update.progress.process_duration_ms as f64 / 1000.0,
+                update.started_mono,
+                update.finished_mono,
+            )
+        })
+        .collect()
+}
+
+fn aggregate_phase_times(
+    observations: impl Iterator<
+        Item = (
+            devcoordinator2_executor_protocol::CheckPhase,
+            f64,
+            Option<Instant>,
+            Option<Instant>,
+        ),
+    >,
+) -> Vec<PhaseDuration> {
+    let mut phases = BTreeMap::<_, (f64, u32, Option<Instant>, Option<Instant>)>::new();
+    for (phase, duration, start, end) in observations {
+        let entry = phases.entry(phase).or_default();
+        entry.0 += duration;
+        entry.1 += 1;
+        entry.2 = entry.2.into_iter().chain(start).min();
+        entry.3 = entry.3.into_iter().chain(end).max();
+    }
+    phases
+        .into_iter()
+        .map(
+            |(phase, (duration_seconds, checks, start, end))| PhaseDuration {
+                phase,
+                duration_seconds,
+                checks,
+                elapsed_seconds: start
+                    .zip(end)
+                    .map(|(start, end)| seconds(end.saturating_duration_since(start))),
+            },
+        )
+        .collect()
+}
+
+fn publish_observation(sender: &watch::Sender<Option<ExecutionReport>>, report: &ExecutionReport) {
+    if sender.receiver_count() > 0 {
+        sender.send_replace(Some(report.clone()));
+    }
 }
 
 fn observe_capacity(capacity: &Mutex<CapacityReport>, observation: CapacityObservation) {
@@ -2572,6 +3355,40 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::civil_from_days;
+
+    #[test]
+    fn phase_times_separate_overlapping_execution_from_elapsed_time() {
+        use super::*;
+        use devcoordinator2_executor_protocol::CheckPhase;
+        let start = Instant::now();
+        let times = aggregate_phase_times(
+            [
+                (
+                    CheckPhase::Build,
+                    3.0,
+                    Some(start),
+                    Some(start + Duration::from_secs(3)),
+                ),
+                (
+                    CheckPhase::Build,
+                    3.0,
+                    Some(start + Duration::from_secs(1)),
+                    Some(start + Duration::from_secs(4)),
+                ),
+                (CheckPhase::Cleanup, 0.0, None, None),
+            ]
+            .into_iter(),
+        );
+        let build = times.iter().find(|p| p.phase == CheckPhase::Build).unwrap();
+        assert_eq!(build.duration_seconds, 6.0);
+        assert_eq!(build.elapsed_seconds, Some(4.0));
+        assert_eq!(build.checks, 2);
+        let cleanup = times
+            .iter()
+            .find(|p| p.phase == CheckPhase::Cleanup)
+            .unwrap();
+        assert_eq!(cleanup.elapsed_seconds, None);
+    }
 
     #[test]
     fn civil_date_conversion_matches_epoch_and_leap_day() {

@@ -11,10 +11,12 @@ pub mod log_query;
 mod log_store;
 mod process;
 mod retention;
+mod reuse;
 mod runner;
 
 pub use capacity::{
-    CapacityObservation, LocalPermitProvider, PermitProvider, PermitRequest, UnixPermitProvider,
+    CapacityObservation, LocalPermitProvider, PermitFuture, PermitProvider, PermitRequest,
+    ReservationFuture, ResourceReservation, UnixPermitProvider,
 };
 pub use devcoordinator2_executor_protocol as protocol;
 pub use error::ExecutorError;
@@ -29,5 +31,21 @@ pub use retention::{
     RetentionPolicy, select_expired,
 };
 pub use runner::Executor;
+
+/// Stable private environment filename shared by the daemon and case executor.
+pub fn case_environment_key(check: &str, case: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update((check.len() as u64).to_be_bytes());
+    hash.update(check.as_bytes());
+    hash.update(case.as_bytes());
+    let digest = hash
+        .finalize()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("case-{digest}")
+}
 
 mod progress;

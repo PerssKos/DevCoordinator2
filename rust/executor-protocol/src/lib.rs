@@ -118,6 +118,17 @@ pub struct ResourceClaim {
     pub access: ResourceAccess,
 }
 
+impl ResourceClaim {
+    pub fn conflicts(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && !(self.access == ResourceAccess::Shared && other.access == ResourceAccess::Shared)
+            && (self.id == other.id
+                || self.kind == ResourceKind::Directory
+                    && (Path::new(&self.id).starts_with(&other.id)
+                        || Path::new(&other.id).starts_with(&self.id)))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumedArtifact {
@@ -161,6 +172,8 @@ pub enum LogPhase {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -204,7 +217,7 @@ impl LogRef {
                     ));
                 }
             }
-            LogPhase::Case => {
+            LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup => {
                 let Some(check) = &self.check else {
                     return Err(ContractError::new("case log references require a check"));
                 };
@@ -388,6 +401,10 @@ pub struct CaseSpec {
 #[serde(deny_unknown_fields)]
 pub struct CheckPlan {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     pub tier: ValidationTier,
     pub role: CheckRole,
     #[serde(default)]
@@ -415,6 +432,10 @@ pub struct CheckPlan {
     pub expect_failure: bool,
     #[serde(default)]
     pub qualification_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_exit_code: Option<i32>,
     #[serde(default)]
     pub retained_artifacts: Vec<RetainedArtifactSpec>,
     #[serde(default)]
@@ -426,14 +447,42 @@ pub struct CheckPlan {
 }
 
 impl CheckPlan {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_check(self)
+    }
     pub fn is_fanout(&self) -> bool {
         self.case_command.is_some()
+    }
+
+    pub fn validate_case_selection(&self, selected: &[String]) -> Result<(), ContractError> {
+        if !self.is_fanout() {
+            return Err(ContractError::new(
+                "case selection must name a fan-out check",
+            ));
+        }
+        validate_case_selection(selected)?;
+        if self.cases.as_ref().is_some_and(|cases| {
+            selected
+                .iter()
+                .any(|selected| !cases.iter().any(|case| &case.id == selected))
+        }) {
+            return Err(ContractError::new(
+                "case selection names an undeclared static case",
+            ));
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPlan {
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub database_checks: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixture_program: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment_files: BTreeMap<String, String>,
     pub schema: Schema2,
     pub run_id: String,
     pub test: String,
@@ -481,11 +530,18 @@ impl ExecutionPlan {
     pub fn active_checks(&self) -> impl Iterator<Item = &CheckPlan> {
         self.checks
             .iter()
-            .filter(|check| check.tier <= self.requested_tier)
+            .filter(|check| check.tier <= self.requested_tier || check.phase == CheckPhase::Cleanup)
     }
 
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_identity("run_id", &self.run_id, 128)?;
+        if let Some(program) = &self.fixture_program
+            && (!Path::new(program).is_absolute() || program.len() > 4096 || program.contains('\0'))
+        {
+            return Err(ContractError::new(
+                "fixture program must be an absolute bounded executable path",
+            ));
+        }
         validate_name("test", &self.test, 32)?;
         validate_digest("source_digest", &self.source_digest)?;
         validate_digest("config_digest", &self.config_digest)?;
@@ -494,6 +550,28 @@ impl ExecutionPlan {
         }
         if self.checks.len() > 256 {
             return Err(ContractError::new("executor plan exceeds 256 checks"));
+        }
+        if self
+            .database_checks
+            .iter()
+            .any(|name| !self.checks.iter().any(|check| &check.name == name))
+        {
+            return Err(ContractError::new(
+                "database ownership names an unknown check",
+            ));
+        }
+        for (check, file) in &self.environment_files {
+            let owner = check.split('/').next().unwrap_or(check);
+            if !self.checks.iter().any(|candidate| candidate.name == owner)
+                || !file.starts_with("database-")
+                || !file.ends_with(".json")
+                || Path::new(file).components().count() != 1
+            {
+                return Err(ContractError::new(
+                    "private database environment must name an exact check or check/case and run-local file",
+                ));
+            }
+            validate_relative_path("database environment", file)?;
         }
         if self.origin_run_id.is_some() != (self.proof == ProofKind::Retry) {
             return Err(ContractError::new(
@@ -590,15 +668,16 @@ impl ExecutionPlan {
         }
         for (branch, database) in &self.postgres_databases {
             validate_name("PostgreSQL branch", branch, 32)?;
-            validate_name("PostgreSQL database", database, 63)?;
+            validate_database_name(database)?;
         }
         for check in &self.checks {
             if let Some(cases) = &check.cases {
                 for case in cases {
-                    if case
-                        .postgres
-                        .as_ref()
-                        .is_some_and(|branch| !self.postgres_databases.contains_key(branch))
+                    if self.fixture_program.is_none()
+                        && case
+                            .postgres
+                            .as_ref()
+                            .is_some_and(|branch| !self.postgres_databases.contains_key(branch))
                     {
                         return Err(ContractError::new(format!(
                             "case {:?} references an unknown PostgreSQL branch",
@@ -614,7 +693,9 @@ impl ExecutionPlan {
                     "reused evidence references unknown check {name:?}"
                 )));
             };
-            if self.checks[*index].tier > self.requested_tier {
+            if self.checks[*index].tier > self.requested_tier
+                && self.checks[*index].phase != CheckPhase::Cleanup
+            {
                 return Err(ContractError::new(format!(
                     "reused evidence references inactive check {name:?}"
                 )));
@@ -667,7 +748,7 @@ impl ExecutionPlan {
                         check.name
                     )));
                 }
-                if self.checks[*dep_index].tier > check.tier {
+                if check.phase != CheckPhase::Cleanup && self.checks[*dep_index].tier > check.tier {
                     return Err(ContractError::new(format!(
                         "check {:?} depends on higher-tier check {dependency:?}",
                         check.name
@@ -741,11 +822,107 @@ impl ExecutionPlan {
             }
         }
         ensure_acyclic(&graph, &self.checks)?;
+        validate_output_ownership(&graph, &self.checks)?;
         Ok(())
     }
 }
 
+fn validate_output_ownership(
+    graph: &[Vec<usize>],
+    checks: &[CheckPlan],
+) -> Result<(), ContractError> {
+    fn reaches(graph: &[Vec<usize>], from: usize, target: usize) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![from];
+        while let Some(index) = pending.pop() {
+            if index == target {
+                return true;
+            }
+            if seen.insert(index) {
+                pending.extend(&graph[index]);
+            }
+        }
+        false
+    }
+    let outputs = checks
+        .iter()
+        .map(|check| {
+            check
+                .produces
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    check
+                        .retained_artifacts
+                        .iter()
+                        .map(|artifact| artifact.path.as_str()),
+                )
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (left_index, left) in checks.iter().enumerate() {
+        for (right_index, right) in checks.iter().enumerate().skip(left_index + 1) {
+            let collision = outputs[left_index].iter().any(|left| {
+                outputs[right_index].iter().any(|right| {
+                    Path::new(left).starts_with(right) || Path::new(right).starts_with(left)
+                })
+            });
+            if !collision {
+                continue;
+            }
+            let serialized = left
+                .resources
+                .iter()
+                .any(|claim| right.resources.iter().any(|other| claim.conflicts(other)))
+                || left.completion == CompletionMode::Process
+                    && reaches(graph, left_index, right_index)
+                || right.completion == CompletionMode::Process
+                    && reaches(graph, right_index, left_index);
+            if !serialized {
+                return Err(ContractError::new(format!(
+                    "checks {:?} and {:?} have overlapping output paths without ordering or conflicting resource claims",
+                    left.name, right.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
+    if check.phase == CheckPhase::Cleanup
+        && (check.role != CheckRole::Work
+            || check.completion != CompletionMode::Process
+            || check.command.is_none()
+            || check.cacheable)
+    {
+        return Err(ContractError::new(
+            "cleanup must be an uncached direct process check",
+        ));
+    }
+    if let Some(name) = &check.source_name {
+        validate_name("source check", name, 64)?;
+    }
+    if let Some(label) = &check.display_name {
+        validate_diagnostic_name("check display name", label)?;
+    }
+    if let Some(fingerprint) = &check.expected_failure {
+        validate_fingerprint(fingerprint)?;
+    }
+    if check.expect_failure != check.expected_failure.is_some() {
+        return Err(ContractError::new(
+            "qualification must identify its expected structured failure",
+        ));
+    }
+    if check
+        .expected_exit_code
+        .is_some_and(|code| !(0..=125).contains(&code))
+        || (!check.expect_failure && check.expected_exit_code.is_some())
+    {
+        return Err(ContractError::new(
+            "expected exit code requires failure qualification and must be in 0..125",
+        ));
+    }
     validate_name("check", &check.name, 64)?;
     if check.resources.len() > 32 {
         return Err(ContractError::new(format!(
@@ -755,7 +932,11 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     }
     let mut resources = BTreeSet::new();
     for resource in &check.resources {
-        validate_identity("resource id", &resource.id, 128)?;
+        if resource.kind == ResourceKind::Directory {
+            validate_relative_path("resource directory", &resource.id)?;
+        } else {
+            validate_identity("resource id", &resource.id, 128)?;
+        }
         if !resources.insert((resource.kind, resource.id.as_str())) {
             return Err(ContractError::new(format!(
                 "check {:?} repeats a resource claim",
@@ -1109,6 +1290,20 @@ fn validate_name(kind: &str, value: &str, maximum: usize) -> Result<(), Contract
     Ok(())
 }
 
+fn validate_database_name(value: &str) -> Result<(), ContractError> {
+    let valid = !value.is_empty()
+        && value.len() <= 63
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'_')
+        });
+    if !valid {
+        return Err(ContractError::new(format!(
+            "PostgreSQL database {value:?} is not a normalized lower-case name"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_identity(kind: &str, value: &str, maximum: usize) -> Result<(), ContractError> {
     let valid = !value.is_empty()
         && value.len() <= maximum
@@ -1362,6 +1557,8 @@ pub struct ExecutionProgress {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<CasePhaseReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub id: String,
@@ -1373,7 +1570,22 @@ pub struct CaseReport {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct CasePhaseReport {
+    pub phase: CheckPhase,
+    pub status: LeafStatus,
+    pub duration_ms: u64,
+    pub streams: Vec<LogStreamSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CheckReport {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_durations: Vec<PhaseDuration>,
+    #[serde(default)]
+    pub resource_waiting: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub name: String,
@@ -1405,6 +1617,8 @@ pub struct CheckReport {
 pub struct PhaseDuration {
     pub phase: CheckPhase,
     pub duration_seconds: f64,
+    #[serde(default)]
+    pub elapsed_seconds: Option<f64>,
     pub checks: u32,
 }
 
@@ -1612,6 +1826,9 @@ impl ExecutionReport {
         for phase in &self.phase_durations {
             if !phase.duration_seconds.is_finite()
                 || phase.duration_seconds < 0.0
+                || phase
+                    .elapsed_seconds
+                    .is_some_and(|elapsed| !elapsed.is_finite() || elapsed < 0.0)
                 || phase.checks == 0
                 || !phase_names.insert(phase.phase)
             {
@@ -1619,18 +1836,26 @@ impl ExecutionReport {
                     "report phase durations are invalid or duplicated",
                 ));
             }
-            let matching = self
-                .checks
-                .iter()
-                .filter(|check| check.phase == phase.phase)
-                .collect::<Vec<_>>();
-            let total = matching
-                .iter()
-                .filter_map(|check| check.duration_seconds)
-                .sum::<f64>();
-            if usize::try_from(phase.checks).ok() != Some(matching.len())
-                || (total - phase.duration_seconds).abs() > 0.001
-            {
+            let mut count = 0u32;
+            let mut total = 0.0;
+            for check in &self.checks {
+                if let Some(observed) = check
+                    .phase_durations
+                    .iter()
+                    .find(|observed| observed.phase == phase.phase)
+                {
+                    count += observed.checks;
+                    total += observed.duration_seconds;
+                } else if check.phase_durations.is_empty() && check.phase == phase.phase {
+                    count += 1;
+                    total += check
+                        .execution
+                        .as_ref()
+                        .map(|progress| progress.process_duration_ms as f64 / 1000.0)
+                        .unwrap_or_else(|| check.duration_seconds.unwrap_or(0.0));
+                }
+            }
+            if phase.checks != count || (total - phase.duration_seconds).abs() > 0.001 {
                 return Err(ContractError::new(
                     "report phase duration does not match its independent checks",
                 ));
@@ -1689,6 +1914,25 @@ fn validate_execution_progress(progress: &ExecutionProgress) -> Result<(), Contr
 }
 
 fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), ContractError> {
+    if check.phase_durations.len() > 8 {
+        return Err(ContractError::new(
+            "check phase durations exceed their bound",
+        ));
+    }
+    let mut phases = BTreeSet::new();
+    for phase in &check.phase_durations {
+        if !phases.insert(phase.phase)
+            || phase.checks == 0
+            || phase.checks > 3 * MAX_CASES as u32 + 1
+            || !phase.duration_seconds.is_finite()
+            || phase.duration_seconds < 0.0
+            || phase
+                .elapsed_seconds
+                .is_some_and(|elapsed| !elapsed.is_finite() || elapsed < 0.0)
+        {
+            return Err(ContractError::new("check phase duration is invalid"));
+        }
+    }
     validate_name("report check", &check.name, 64)?;
     if !check.fingerprint.is_empty() {
         validate_digest("report check fingerprint", &check.fingerprint)?;
@@ -1775,6 +2019,33 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
             validate_execution_progress(execution)?;
         }
         case.exit.validate()?;
+        if case.phases.len() > 8 {
+            return Err(ContractError::new("case phase report exceeds its bound"));
+        }
+        let mut phases = BTreeSet::new();
+        for phase in &case.phases {
+            if !phases.insert(phase.phase) {
+                return Err(ContractError::new("case report repeats a phase"));
+            }
+            let expected = match phase.phase {
+                CheckPhase::Fixture => LogPhase::Fixture,
+                CheckPhase::Cleanup => LogPhase::Cleanup,
+                CheckPhase::Case => LogPhase::Case,
+                _ => return Err(ContractError::new("unsupported case phase")),
+            };
+            for stream in &phase.streams {
+                stream.validate()?;
+                if stream.log_ref.run_id != run_id
+                    || stream.log_ref.check.as_deref() != Some(check.name.as_str())
+                    || stream.log_ref.case.as_deref() != Some(case.id.as_str())
+                    || stream.log_ref.phase != expected
+                {
+                    return Err(ContractError::new(
+                        "case phase stream belongs to another leaf",
+                    ));
+                }
+            }
+        }
         for stream in &case.streams {
             stream.validate()?;
             if stream.log_ref.run_id != run_id
@@ -1986,6 +2257,10 @@ mod tests {
 
     fn check(name: &str, tier: ValidationTier) -> CheckPlan {
         CheckPlan {
+            display_name: None,
+            source_name: None,
+            expected_failure: None,
+            expected_exit_code: None,
             name: name.into(),
             tier,
             role: CheckRole::Work,
@@ -2017,6 +2292,9 @@ mod tests {
 
     fn plan(checks: Vec<CheckPlan>) -> ExecutionPlan {
         ExecutionPlan {
+            database_checks: Default::default(),
+            fixture_program: None,
+            environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: "run-1".into(),
             test: "complete".into(),
@@ -2040,6 +2318,9 @@ mod tests {
 
     fn report() -> ExecutionReport {
         let check = CheckReport {
+            phase_durations: Vec::new(),
+            resource_waiting: false,
+            display_name: None,
             execution: None,
             name: "unit".into(),
             tier: ValidationTier::Release,
@@ -2087,6 +2368,7 @@ mod tests {
             phase_durations: vec![PhaseDuration {
                 phase: CheckPhase::Check,
                 duration_seconds: 1.0,
+                elapsed_seconds: Some(1.0),
                 checks: 1,
             }],
             failure_index: Vec::new(),
@@ -2121,6 +2403,68 @@ mod tests {
                 .replacen("\"schema\":2", "\"schema\":1", 1);
         let error = ExecutionPlan::from_json(old.as_bytes()).expect_err("schema one rejected");
         assert!(error.to_string().contains("schema must be 2"));
+    }
+
+    #[test]
+    fn overlapping_outputs_require_real_ordering_or_exclusive_ownership() {
+        let mut first = check("first", ValidationTier::Development);
+        let mut second = check("second", ValidationTier::Development);
+        first.produces = vec!["build/result".into()];
+        second.produces = first.produces.clone();
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("overlapping output")
+        );
+        second.produces = vec!["other/result".into()];
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        second.produces = first.produces.clone();
+        second.after = vec![first.name.clone()];
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        first.completion = CompletionMode::Event;
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .is_err()
+        );
+        first.completion = CompletionMode::Process;
+        second.after.clear();
+        first.resources = vec![ResourceClaim {
+            kind: ResourceKind::Directory,
+            id: "build".into(),
+            access: ResourceAccess::Shared,
+        }];
+        second.resources = first.resources.clone();
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .is_err()
+        );
+        first.resources[0].access = ResourceAccess::Exclusive;
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        first.resources.clear();
+        second.resources.clear();
+        second.produces.clear();
+        second.retained_artifacts = vec![RetainedArtifactSpec {
+            name: "tree".into(),
+            path: "build".into(),
+            max_bytes: 1024,
+        }];
+        assert!(
+            plan(vec![first, second])
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("overlapping output")
+        );
     }
 
     #[test]

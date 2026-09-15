@@ -87,6 +87,8 @@ enum FormalUiCommand {
         phase: String,
         #[arg(long)]
         coordinator_fixture: Option<PathBuf>,
+        #[arg(long)]
+        qualification_cache: Option<PathBuf>,
     },
     /// Run the retained Node browser verifier through the Rust tooling surface.
     Verify {
@@ -665,6 +667,12 @@ enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 enum CheckCommand {
+    PreCommit {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        tree: Option<String>,
+    },
     PublicArtifacts {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -732,6 +740,19 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     match cli.command {
+        Command::Check {
+            command: CheckCommand::PreCommit { root, tree },
+        } => match devcoordinator2_tooling::pre_commit::check(&root, tree.as_deref()) {
+            Ok(report) => {
+                println!("{report}");
+                if report["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
         Command::Audit { command } => run_audit(command),
         Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
@@ -1105,6 +1126,7 @@ fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
             timeout_seconds,
             phase,
             coordinator_fixture,
+            qualification_cache,
         } => match devcoordinator2_tooling::formal_selftest::run(
             &devcoordinator2_tooling::formal_selftest::SelfTestOptions {
                 workspace_parent,
@@ -1112,6 +1134,7 @@ fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
                 timeout_seconds,
                 phase,
                 coordinator_fixture,
+                qualification_cache,
             },
         ) {
             Ok(result) => {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use crate::ExecutorError;
 
@@ -38,6 +38,99 @@ pub type PermitFuture<'a> =
 
 pub trait PermitProvider: Send + Sync {
     fn acquire<'a>(&'a self, request: PermitRequest) -> PermitFuture<'a>;
+    fn reserve<'a>(&'a self, _run: &'a str, _check: &'a str) -> ReservationFuture<'a> {
+        Box::pin(async {
+            Ok(ResourceReservation {
+                _guard: Box::new(NoReservation),
+            })
+        })
+    }
+}
+
+pub struct ResourceReservation {
+    _guard: Box<dyn CapacityPermit + Sync>,
+}
+struct NoReservation;
+impl CapacityPermit for NoReservation {}
+pub type ReservationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<ResourceReservation, ExecutorError>> + Send + 'a>>;
+
+struct CheckPermitProvider {
+    inner: Arc<dyn PermitProvider>,
+    run: String,
+    check: String,
+    reservation: OnceCell<Arc<ResourceReservation>>,
+}
+
+struct ProcessReservation {
+    _process: AcquiredPermit,
+    _reservation: Arc<ResourceReservation>,
+}
+impl CapacityPermit for ProcessReservation {}
+
+struct SharedReservation {
+    _reservation: Arc<ResourceReservation>,
+}
+impl CapacityPermit for SharedReservation {}
+
+impl PermitProvider for CheckPermitProvider {
+    fn reserve<'a>(&'a self, _: &'a str, _: &'a str) -> ReservationFuture<'a> {
+        Box::pin(async move {
+            let reservation = self
+                .reservation
+                .get_or_try_init(|| async {
+                    self.inner
+                        .reserve(&self.run, &self.check)
+                        .await
+                        .map(Arc::new)
+                })
+                .await?
+                .clone();
+            Ok(ResourceReservation {
+                _guard: Box::new(SharedReservation {
+                    _reservation: reservation,
+                }),
+            })
+        })
+    }
+    fn acquire<'a>(&'a self, request: PermitRequest) -> PermitFuture<'a> {
+        Box::pin(async move {
+            let reservation = self
+                .reservation
+                .get_or_try_init(|| async {
+                    self.inner
+                        .reserve(&self.run, &self.check)
+                        .await
+                        .map(Arc::new)
+                })
+                .await?
+                .clone();
+            let process = self.inner.acquire(request).await?;
+            Ok(AcquiredPermit {
+                observation: process.observation,
+                _guard: Box::new(ProcessReservation {
+                    _process: process,
+                    _reservation: reservation,
+                }),
+            })
+        })
+    }
+}
+
+pub(crate) fn for_check(
+    inner: Arc<dyn PermitProvider>,
+    run: &str,
+    check: &devcoordinator2_executor_protocol::CheckPlan,
+) -> Arc<dyn PermitProvider> {
+    if check.resources.is_empty() {
+        return inner;
+    }
+    Arc::new(CheckPermitProvider {
+        inner,
+        run: run.into(),
+        check: check.name.clone(),
+        reservation: OnceCell::new(),
+    })
 }
 
 #[derive(Clone)]
@@ -183,6 +276,39 @@ impl Drop for UnixPermit {
 }
 
 impl PermitProvider for UnixPermitProvider {
+    fn reserve<'a>(&'a self, run: &'a str, check: &'a str) -> ReservationFuture<'a> {
+        Box::pin(async move {
+            let mut stream = UnixStream::connect(&self.socket)
+                .await
+                .map_err(|_| ExecutorError::new("resource broker is unavailable"))?;
+            let request = AcquireRequest {
+                schema: BROKER_SCHEMA,
+                action: "reserve",
+                run_id: run,
+                leaf_id: check,
+            };
+            let mut payload =
+                serde_json::to_vec(&request).map_err(|e| ExecutorError::new(e.to_string()))?;
+            payload.push(b'\n');
+            stream
+                .write_all(&payload)
+                .await
+                .map_err(|_| ExecutorError::new("cannot submit resource reservation"))?;
+            let response: BrokerResponse =
+                serde_json::from_slice(&read_line_bounded(&mut stream).await?)
+                    .map_err(|_| ExecutorError::new("invalid resource reservation response"))?;
+            if response.schema != BROKER_SCHEMA || response.status != "reserved" {
+                return Err(ExecutorError::new("resource reservation was denied"));
+            }
+            struct SocketReservation {
+                _stream: UnixStream,
+            }
+            impl CapacityPermit for SocketReservation {}
+            Ok(ResourceReservation {
+                _guard: Box::new(SocketReservation { _stream: stream }),
+            })
+        })
+    }
     fn acquire<'a>(&'a self, request: PermitRequest) -> PermitFuture<'a> {
         Box::pin(async move {
             let mut stream = UnixStream::connect(&self.socket).await.map_err(|error| {

@@ -2096,7 +2096,11 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
                 response
             }
             "/slow-lcp" => HttpResponse::html(html_page(
-                "<p>Initial content</p><img id='late-lcp' width='1000' height='420' alt='Late largest image'><script>setTimeout(()=>{const image=document.querySelector('#late-lcp');image.addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{image.dataset.lcpReady='true';})),{once:true});image.src='/lcp.png';},1200)</script>",
+                "<p>Initial content</p><img id='late-lcp' width='1000' height='420' alt='Late largest image'><script>setTimeout(()=>{const image=document.querySelector('#late-lcp');image.addEventListener('load',async()=>{try{await image.decode();image.dataset.lcpReady='true';}catch{image.dataset.lcpError='true';}},{once:true});image.addEventListener('error',()=>{image.dataset.lcpError='true';},{once:true});image.src='/lcp.png';},1200)</script>",
+                "",
+            )),
+            "/suspended-frames" => HttpResponse::html(html_page(
+                "<h1>Static page with suspended painting callbacks</h1><script>window.requestAnimationFrame=()=>0</script>",
                 "",
             )),
             "/no-lcp" => HttpResponse::html(html_page(
@@ -2185,7 +2189,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
     }
 
     let mut slow_lcp_target = performance_target(root, format!("{base}/slow-lcp"));
-    slow_lcp_target.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
+    slow_lcp_target.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","errorSelector":"#late-lcp[data-lcp-error='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
     slow_lcp_target.insert(
         "performance".to_owned(),
         json!({"ttfbMs":10000,"lcpMs":800}),
@@ -2225,7 +2229,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         json!({"ttfbMs":10000,"lcpMs":10000}),
     );
     let mut prescribed_lcp = performance_target(root, format!("{base}/slow-lcp"));
-    prescribed_lcp.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
+    prescribed_lcp.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","errorSelector":"#late-lcp[data-lcp-error='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
     prescribed_lcp.insert(
         "performance".to_owned(),
         json!({"ttfbMs":10000,"lcpMs":10000}),
@@ -2262,6 +2266,26 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         return Err("per-target performance thresholds did not override defaults".to_owned());
     }
 
+    let mut suspended_target = performance_target(root, format!("{base}/suspended-frames"));
+    suspended_target.insert("waitFor".into(), json!({"selector":"h1"}));
+    suspended_target.insert("performance".into(), json!({"ttfbMs":10000,"lcpMs":800}));
+    let suspended = run_verifier(
+        root,
+        &performance_config(root, vec![Value::Object(suspended_target)]),
+        &work.join("suspended-frames"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    if suspended.pointer("/pages/0/metrics/performance/lcp/status") != Some(&json!("unavailable"))
+        || suspended.pointer("/pages/0/metrics/performance/lcp/valueMs") != Some(&Value::Null)
+        || suspended.pointer("/pages/0/metrics/performance/lcp/reason")
+            != Some(&json!("observer delivery did not complete"))
+    {
+        return Err(
+            "suspended painting callbacks did not produce an unavailable LCP measurement".into(),
+        );
+    }
     let mut unavailable_target = performance_target(root, format!("{base}/no-lcp"));
     unavailable_target.insert(
         "performance".to_owned(),
@@ -2294,7 +2318,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         serde_json::to_string(&module_url).map_err(|error| error.to_string())?
     );
     run_node_probe(root, &probe, timeout)?;
-    Ok(6)
+    Ok(7)
 }
 
 fn recursive_named_files(root: &Path, name: &str) -> Vec<PathBuf> {
@@ -4014,6 +4038,7 @@ pub struct SelfTestOptions {
     pub timeout_seconds: u64,
     pub phase: String,
     pub coordinator_fixture: Option<PathBuf>,
+    pub qualification_cache: Option<PathBuf>,
 }
 
 fn settle_phase(
@@ -4056,6 +4081,25 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     }
     let root = source_root();
     validate_skill_contract(&root)?;
+    let qualification_inputs =
+        if options.phase == "all" && !options.keep && options.qualification_cache.is_some() {
+            playwright_module_dir(&root).ok().and_then(|modules| {
+                crate::qualification_cache::inputs(
+                    &root,
+                    &modules,
+                    options.coordinator_fixture.as_deref(),
+                    options.timeout_seconds,
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
+    if let (Some(directory), Some(inputs)) = (&options.qualification_cache, &qualification_inputs)
+        && let Some(receipt) = crate::qualification_cache::lookup(directory, inputs)
+    {
+        return Ok(receipt);
+    }
     let pages = load_pages(&root)?;
     let mut matrix = load_matrix(&root)?;
     if options.phase == "rendering" {
@@ -4262,6 +4306,11 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     })();
     match result {
         Ok(mut summary) => {
+            if qualification_inputs.is_some()
+                && crate::qualification_cache::managed_browser_evidence(&work)
+            {
+                summary["qualification_browser"] = json!("playwright-managed-browser");
+            }
             if options.keep {
                 summary["workspace"] = json!(work);
             } else {
@@ -4269,6 +4318,26 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
                 std::fs::remove_dir_all(&work)
                     .map_err(|error| format!("cannot clean self-test workspace: {error}"))?;
                 summary["workspace"] = Value::Null;
+            }
+            summary["qualification"] = json!("executed");
+            if let (Some(directory), Some(inputs)) =
+                (&options.qualification_cache, &qualification_inputs)
+                && playwright_module_dir(&root)
+                    .ok()
+                    .and_then(|modules| {
+                        crate::qualification_cache::inputs(
+                            &root,
+                            &modules,
+                            options.coordinator_fixture.as_deref(),
+                            options.timeout_seconds,
+                        )
+                        .ok()
+                    })
+                    .as_ref()
+                    == Some(inputs)
+            {
+                summary["qualification_cache_saved"] =
+                    json!(crate::qualification_cache::record(directory, inputs, &summary).is_ok());
             }
             Ok(summary)
         }
@@ -4282,6 +4351,55 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suspended_paint_delivery_finishes_with_unavailable_without_a_real_sleep() {
+        let root = source_root();
+        let verifier =
+            root.join("skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs");
+        let source = format!(
+            r#"
+import fs from 'node:fs';
+const source = fs.readFileSync({}, 'utf8');
+const start = source.indexOf('async function waitForLcpObserverDelivery(');
+const end = source.indexOf('\nasync function assessRenderedPerformance(', start);
+const wait = new Function(source.slice(start,end) + '; return waitForLcpObserverDelivery;')();
+const timers = [];
+globalThis.document = {{images:[]}};
+globalThis.requestAnimationFrame = () => 1;
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.setTimeout = (callback) => {{timers.push(callback);return timers.length;}};
+globalThis.clearTimeout = () => {{}};
+let settled=false, result=null;
+wait({{evaluate:fn=>fn()}}).then(value=>{{settled=true;result=value;}});
+await new Promise(setImmediate);
+for(const callback of timers) callback();
+await new Promise(setImmediate);
+if(!settled || result!==false) throw new Error('suspended painting was not bounded and unavailable');
+const frames=[];
+globalThis.requestAnimationFrame=callback=>{{frames.push(callback);return frames.length;}};
+let delivered=false;
+wait({{evaluate:fn=>fn()}}).then(value=>{{delivered=value;}});
+await new Promise(setImmediate);
+for(let tick=0;tick<32 && frames.length;tick++) frames.shift()();
+await new Promise(setImmediate);
+if(!delivered) throw new Error('delivered painting callbacks were incorrectly unavailable');
+const readyStart=source.indexOf('async function waitForRenderFrames(');
+const readyEnd=source.indexOf('\nasync function applyWaitFor(',readyStart);
+const readiness=new Function(source.slice(readyStart,readyEnd)+';return waitForRenderFrames;')();
+globalThis.requestAnimationFrame=()=>1;
+timers.length=0;
+let readinessFailure='';
+readiness({{evaluate:(fn,args)=>fn(args)}},2,10).catch(error=>{{readinessFailure=error.message;}});
+await new Promise(setImmediate);
+for(const callback of timers) callback();
+await new Promise(setImmediate);
+if(readinessFailure!=='render-frame readiness deadline reached') throw new Error('painting readiness ignored its deadline');
+"#,
+            serde_json::to_string(&verifier).unwrap()
+        );
+        run_node_probe(&root, &source, Duration::from_secs(10)).unwrap();
+    }
 
     #[test]
     fn unexpected_exit_retains_the_exact_fixture_coverage_failure() {

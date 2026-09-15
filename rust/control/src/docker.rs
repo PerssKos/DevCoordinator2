@@ -230,6 +230,7 @@ pub struct DockerInvocation {
     timeout: Duration,
     output_log: Option<Arc<Mutex<File>>>,
     cancellation: Option<Arc<AtomicBool>>,
+    input: Option<File>,
 }
 
 impl DockerInvocation {
@@ -246,11 +247,17 @@ impl DockerInvocation {
             timeout,
             output_log: None,
             cancellation: None,
+            input: None,
         })
     }
 
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
+        self
+    }
+
+    pub fn with_input(mut self, input: File) -> Self {
+        self.input = Some(input);
         self
     }
 
@@ -367,7 +374,7 @@ fn execute_process(
         .args(&invocation.args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::null())
+        .stdin(invocation.input.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
@@ -803,6 +810,67 @@ pub trait DockerControl: Send + Sync {
         .is_ok_and(|output| output.success())
     }
 
+    fn postgres_sql(
+        &self,
+        container: &ExactContainerId,
+        user: &str,
+        database: &str,
+        input: File,
+        log: Option<Arc<Mutex<File>>>,
+    ) -> Result<(), DockerError> {
+        let output = self.invoke(
+            DockerInvocation::new(
+                vec![
+                    "exec".into(),
+                    "-i".into(),
+                    container.as_str().into(),
+                    "psql".into(),
+                    "--no-psqlrc".into(),
+                    "--set=ON_ERROR_STOP=1".into(),
+                    "--username".into(),
+                    user.into(),
+                    "--dbname".into(),
+                    database.into(),
+                ],
+                Duration::from_secs(600),
+            )?
+            .with_input(input)
+            .with_output_log(log),
+        )?;
+        if output.success() {
+            Ok(())
+        } else {
+            Err(DockerError::InvalidOutput(
+                "database fixture initialization failed; inspect its retained diagnostics".into(),
+            ))
+        }
+    }
+
+    fn image_identity(&self, image: &str) -> Result<String, DockerError> {
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}}".into(),
+                image.into(),
+            ],
+            Duration::from_secs(15),
+        )?)?;
+        let identity = output.stdout.trim();
+        if !output.success()
+            || output.stdout_truncated
+            || !identity.strip_prefix("sha256:").is_some_and(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err(DockerError::InvalidOutput(
+                "database fixture image has no exact identity".into(),
+            ));
+        }
+        Ok(identity.into())
+    }
+
     fn ensure_digest_image(&self, image: &str) -> Result<(), DockerError> {
         let Some(requested) = digest_suffix(image)? else {
             return Ok(());
@@ -1073,6 +1141,17 @@ pub trait DockerControl: Send + Sync {
         database: &str,
         timeout: Duration,
     ) -> Result<(), DockerError> {
+        self.wait_postgres_ready_cancellable(container_id, user, database, timeout, None)
+    }
+
+    fn wait_postgres_ready_cancellable(
+        &self,
+        container_id: &ExactContainerId,
+        user: &str,
+        database: &str,
+        timeout: Duration,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<(), DockerError> {
         if user.is_empty() || database.is_empty() || timeout.is_zero() {
             return Err(DockerError::InvalidRequest(
                 "PostgreSQL readiness identity and timeout are required".into(),
@@ -1098,8 +1177,18 @@ pub trait DockerControl: Send + Sync {
         let mut ready_events = 0_u8;
         let mut open = readers.len();
         let result = loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                break Err(DockerError::Cancelled {
+                    operation: "ephemeral PostgreSQL readiness".into(),
+                });
+            }
             if ready_events >= 2 {
                 let arguments = vec![
+                    "exec".into(),
+                    container_id.as_str().into(),
                     "pg_isready".into(),
                     "-h".into(),
                     "127.0.0.1".into(),
@@ -1108,7 +1197,9 @@ pub trait DockerControl: Send + Sync {
                     "-d".into(),
                     database.into(),
                 ];
-                break if self.exec_ok(container_id, &arguments, Duration::from_secs(30)) {
+                let invocation = DockerInvocation::new(arguments, Duration::from_secs(30))?
+                    .with_cancellation(cancellation.clone());
+                break if self.invoke(invocation).is_ok_and(|result| result.success()) {
                     Ok(())
                 } else {
                     Err(DockerError::Command(

@@ -40,10 +40,11 @@ use crate::docker::{
 use crate::metrics_source::{HostMetricSource, MetricSource};
 use crate::platform::{Clock, HostMonotonicClock, HostRandom, MonotonicClock, RandomSource};
 use crate::repository::{Registry, resolve_worktree};
-use crate::repository_config::{TestSpec, load_test_spec};
+use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec};
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
+use crate::test_databases::{DatabasePool, FixtureRun};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
     ENV_FILE, PLAN_FILE, PreparedRun, RetryEvidence, TestRunStore, api_tier, executor_tier,
@@ -92,6 +93,7 @@ where
 }
 
 struct Inner {
+    databases: Arc<DatabasePool>,
     config: Arc<Config>,
     database: Database,
     registry: Registry,
@@ -112,9 +114,12 @@ struct Inner {
 }
 
 struct RunHandle {
+    fixtures: Arc<FixtureRun>,
     work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
     test: String,
+    targets: Vec<String>,
+    case_selection: BTreeMap<String, Vec<String>>,
     unit: String,
     worktree_id: String,
     worktree: PathBuf,
@@ -217,6 +222,19 @@ struct EphemeralPostgres {
     environment: BTreeMap<String, String>,
 }
 
+struct ContainerCleanup {
+    docker: Arc<dyn DockerControl>,
+    container: Option<ExactContainerId>,
+}
+
+impl Drop for ContainerCleanup {
+    fn drop(&mut self) {
+        if let Some(container) = self.container.take() {
+            let _ = self.docker.remove_container(&container, true);
+        }
+    }
+}
+
 impl TestLifecycle {
     pub fn new(
         config: Config,
@@ -268,6 +286,7 @@ impl TestLifecycle {
         let admission = TestAdmission::new(runtime).map_err(admission_error)?;
         let lifecycle = Self {
             inner: Arc::new(Inner {
+                databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
                 config: Arc::new(config),
                 database,
                 registry,
@@ -329,6 +348,7 @@ impl TestLifecycle {
     }
 
     pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
+        self.inner.databases.prune_idle(false);
         let worktrees = self.inner.database.call(|connection| {
             let mut statement = connection.prepare(
                 "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
@@ -552,12 +572,20 @@ impl TestLifecycle {
     }
 
     pub fn start(&self, params: StartTest, caller: &Caller) -> Result<TestStarted, ProtocolError> {
+        if params.test.is_some() && !params.targets.is_empty() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "test and target composition are separate modes",
+            ));
+        }
         self.start_inner(
             &params.path,
             params.test.as_deref(),
             &params.checks,
             executor_tier(params.tier),
             None,
+            &params.targets,
+            &params.cases,
             caller,
         )
     }
@@ -569,11 +597,13 @@ impl TestLifecycle {
             std::slice::from_ref(&params.check),
             ValidationTier::Release,
             Some((&params.run_id, &params.check)),
+            &[],
+            &BTreeMap::new(),
             caller,
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn start_inner(
         &self,
         path: &str,
@@ -581,6 +611,8 @@ impl TestLifecycle {
         requested: &[String],
         mut requested_tier: ValidationTier,
         retry: Option<(&str, &str)>,
+        requested_targets: &[String],
+        requested_cases: &BTreeMap<String, Vec<String>>,
         caller: &Caller,
     ) -> Result<TestStarted, ProtocolError> {
         if caller.uid == 0 {
@@ -600,7 +632,85 @@ impl TestLifecycle {
             .registry
             .register(Path::new(path), caller.uid, caller.gid)?;
         let worktree = PathBuf::from(&registered.worktree_path);
-        let specification = load_test_spec(&worktree, test_name).map_err(config_error)?;
+        let restored = retry
+            .map(|(run_id, _)| self.inner.store.find_evidence(&worktree, run_id))
+            .transpose()
+            .map_err(state_start_error)?
+            .flatten();
+        let pending_origin = if let Some((run_id, _)) = retry {
+            self.inner
+                .store
+                .read_current_summary(&worktree)
+                .map_err(state_start_error)?
+                .filter(|summary| summary.run_id == run_id)
+        } else {
+            None
+        };
+        let targets = restored
+            .as_ref()
+            .map(|evidence| evidence.targets.as_slice())
+            .or_else(|| {
+                pending_origin
+                    .as_ref()
+                    .map(|summary| summary.targets.as_slice())
+            })
+            .unwrap_or(requested_targets);
+        let specification = if targets.is_empty() {
+            load_test_spec(&worktree, test_name)
+        } else {
+            load_composed_test_spec(&worktree, targets)
+        }
+        .map_err(config_error)?;
+        let resolve = |name: &String| {
+            specification
+                .check_aliases
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.clone())
+        };
+        let cases = restored
+            .as_ref()
+            .map(|evidence| &evidence.case_selection)
+            .or_else(|| {
+                pending_origin
+                    .as_ref()
+                    .map(|summary| &summary.case_selection)
+            })
+            .unwrap_or(requested_cases);
+        let case_selection = cases
+            .iter()
+            .map(|(check, cases)| (resolve(check), cases.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if case_selection.len() != cases.len() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "case selections repeat a check through aliases",
+            ));
+        }
+        for (name, cases) in &case_selection {
+            let check = specification
+                .checks
+                .iter()
+                .find(|check| &check.name == name)
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "case selection names an unknown check",
+                    )
+                })?;
+            check
+                .validate_case_selection(cases)
+                .map_err(|error| ProtocolError::new(ErrorCode::ParamsInvalid, error.to_string()))?;
+        }
+        let retry_check = retry.map(|(_, check)| resolve(&check.to_owned()));
+        let retry = retry.map(|(run, _)| (run, retry_check.as_deref().expect("retry selection")));
+        let mut selections = requested.iter().map(resolve).collect::<Vec<_>>();
+        for check in case_selection.keys() {
+            if !selections.contains(check) {
+                selections.push(check.clone());
+            }
+        }
+        let requested = selections.as_slice();
         if !self.inner.command.executor_available(&self.inner.executor) {
             return Err(ProtocolError::new(
                 ErrorCode::TestStartFailed,
@@ -674,6 +784,25 @@ impl TestLifecycle {
             None
         };
         let selected = selected_closure(&specification.checks, requested, requested_tier)?;
+        for check in &selected {
+            for case in check.cases.iter().flatten() {
+                if let Some(branch) = &case.postgres {
+                    let postgres =
+                        postgres_for_check(&specification, &check.name).ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::RepositoryConfigInvalid,
+                                "PostgreSQL case has no declared fixture",
+                            )
+                        })?;
+                    if branch != "default" && !postgres.templates.contains_key(branch) {
+                        return Err(ProtocolError::new(
+                            ErrorCode::RepositoryConfigInvalid,
+                            "PostgreSQL case names an undeclared template",
+                        ));
+                    }
+                }
+            }
+        }
         self.validate_executables(&worktree, &specification, &selected, caller.uid, caller.gid)?;
 
         let mut admission = self
@@ -709,6 +838,8 @@ impl TestLifecycle {
             requested_tier,
         );
         summary.work = caller.work.clone();
+        summary.targets = specification.targets.clone();
+        summary.case_selection = case_selection.clone();
         self.inner
             .store
             .prepare_log_metadata(&worktree, &summary, caller.uid, caller.gid)
@@ -750,9 +881,17 @@ impl TestLifecycle {
                 .into_owned(),
         );
         let mut containers = Vec::new();
-        if let Some(postgres) = &specification.postgres {
+        let mut environment_files = BTreeMap::new();
+        let mut postgres_databases = BTreeMap::new();
+        if let Some(postgres) = specification
+            .postgres
+            .as_ref()
+            .filter(|postgres| !postgres.cases_only)
+        {
             match self.provision_postgres(
                 postgres,
+                &worktree,
+                None,
                 &run_id,
                 &registered.repository_id,
                 &registered.worktree_id,
@@ -760,6 +899,10 @@ impl TestLifecycle {
                 caller,
             ) {
                 Ok(postgres) => {
+                    postgres_databases.insert(
+                        "default".into(),
+                        specification.postgres.as_ref().unwrap().database.clone(),
+                    );
                     environment.extend(postgres.environment);
                     containers.push(postgres.container);
                     let identities = containers
@@ -782,6 +925,68 @@ impl TestLifecycle {
                 }
             }
         }
+        for (scope, postgres) in &specification.postgres_instances {
+            let owners = selected
+                .iter()
+                .filter(|check| specification.check_postgres.get(&check.name) == Some(scope))
+                .map(|check| check.name.clone())
+                .collect::<Vec<_>>();
+            if owners.is_empty() || postgres.cases_only {
+                continue;
+            }
+            let prepared_database = self.provision_postgres(
+                postgres,
+                &worktree,
+                Some(scope),
+                &run_id,
+                &registered.repository_id,
+                &registered.worktree_id,
+                &started_at,
+                caller,
+            );
+            match prepared_database {
+                Ok(database) => {
+                    postgres_databases.insert(scope.clone(), postgres.database.clone());
+                    containers.push(database.container.clone());
+                    let persisted = self
+                        .inner
+                        .store
+                        .write_containers(
+                            &prepared.current,
+                            &containers
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>(),
+                            caller.uid,
+                            caller.gid,
+                        )
+                        .and_then(|()| {
+                            self.inner.store.write_database_environment(
+                                &prepared.current,
+                                scope,
+                                &database.environment,
+                                caller.uid,
+                                caller.gid,
+                            )
+                        });
+                    match persisted {
+                        Ok(file) => {
+                            for owner in owners {
+                                environment_files.insert(owner, file.clone());
+                            }
+                        }
+                        Err(error) => {
+                            self.rollback_accepted_start(&worktree, &run_id, &containers);
+                            return Err(state_start_error(error));
+                        }
+                    }
+                }
+                Err(error) => {
+                    self.rollback_accepted_start(&worktree, &run_id, &containers);
+                    return Err(error);
+                }
+            }
+        }
         if let Err(error) = self.inner.store.write_environment(
             &prepared.current,
             &environment,
@@ -791,7 +996,7 @@ impl TestLifecycle {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
         }
-        let plan = match self.build_plan(
+        let mut plan = match self.build_plan(
             &specification,
             &selected,
             &run_id,
@@ -810,6 +1015,34 @@ impl TestLifecycle {
                 return Err(error);
             }
         };
+        plan.case_selection = case_selection;
+        plan.environment_files = environment_files;
+        plan.postgres_databases = postgres_databases;
+        if let Err(error) = plan.validate() {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                error.to_string(),
+            ));
+        }
+        let resources = plan
+            .checks
+            .iter()
+            .filter(|check| !check.resources.is_empty())
+            .map(|check| {
+                let mut claims = check.resources.clone();
+                for claim in &mut claims {
+                    if claim.kind == devcoordinator2_executor_protocol::ResourceKind::Directory {
+                        claim.id = worktree.join(&claim.id).to_string_lossy().into_owned();
+                    }
+                }
+                (check.name.clone(), claims)
+            })
+            .collect();
+        if let Err(error) = self.inner.capacity.register_resources(&run_id, resources) {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
+        }
         if let Err(error) =
             self.inner
                 .store
@@ -817,6 +1050,54 @@ impl TestLifecycle {
         {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
+        }
+        let fixture_current = match prepared.current.try_clone() {
+            Ok(current) => current,
+            Err(_) => {
+                self.rollback_accepted_start(&worktree, &run_id, &containers);
+                return Err(ProtocolError::new(
+                    ErrorCode::TestStartFailed,
+                    "fixture state is unavailable",
+                ));
+            }
+        };
+        let fixture_specs = selected
+            .iter()
+            .filter_map(|check| {
+                postgres_for_check(&specification, &check.name)
+                    .map(|spec| (check.name.clone(), spec.clone()))
+            })
+            .collect();
+        let fixtures = Arc::new(FixtureRun::new(
+            self.inner.databases.clone(),
+            fixture_specs,
+            worktree.clone(),
+            fixture_current,
+            ManagedLabelContext {
+                instance: self.inner.config.unit_prefix.clone(),
+                repository_id: registered.repository_id.clone(),
+                worktree_id: registered.worktree_id.clone(),
+                run_id: Some(run_id.clone()),
+                deployment_id: None,
+                component: None,
+                generation: None,
+                ttl_seconds: None,
+                purpose: "test".into(),
+                caller_uid: caller.uid,
+                client: client.clone(),
+                session: caller.client_session.clone(),
+                created_at: started_at.clone(),
+                data_class: "disposable".into(),
+            },
+            caller.gid,
+        ));
+        if let Err(error) = self
+            .inner
+            .capacity
+            .register_fixture_handler(&run_id, fixtures.clone())
+        {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
         }
         let unit_specification = TransientUnitSpec {
             unit: unit.clone(),
@@ -856,6 +1137,9 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            fixtures,
+            targets: specification.targets.clone(),
+            case_selection: plan.case_selection.clone(),
             work: caller.work.clone(),
             run_id: run_id.clone(),
             test: specification.name.clone(),
@@ -903,6 +1187,7 @@ impl TestLifecycle {
                 }
                 self.inner.reconcile_wake.notify_one();
                 let started = TestStarted {
+                    targets: specification.targets.clone(),
                     run_id,
                     repository_id: registered.repository_id,
                     worktree_id: registered.worktree_id,
@@ -993,6 +1278,7 @@ impl TestLifecycle {
         {
             records.retain(|record| record.run_id != current.run_id);
             records.push(crate::test_state::TestHistoryEntry {
+                targets: current.targets.clone(),
                 work: current.work,
                 run_id: current.run_id,
                 test: current.test,
@@ -1028,6 +1314,7 @@ impl TestLifecycle {
         let mut bytes = 0;
         for record in &records[start..end] {
             let row = devcoordinator2_api::results::TestHistoryRun {
+                targets: record.targets.clone(),
                 work: record.work.clone(),
                 run_id: record.run_id.clone(),
                 test: record.test.clone(),
@@ -1149,6 +1436,9 @@ impl TestLifecycle {
         if !memory().is_some_and(HostMemory::emergency) {
             return Ok(Vec::new());
         }
+        if self.inner.databases.prune_idle(true) && !memory().is_some_and(HostMemory::emergency) {
+            return Ok(Vec::new());
+        }
         let handles = self
             .inner
             .runs
@@ -1187,12 +1477,18 @@ impl TestLifecycle {
                 let mut bytes = property(&properties, "MemoryCurrent")
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
-                for container in handle
-                    .containers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .iter()
-                {
+                let mut database_containers = handle.fixtures.containers();
+                database_containers.extend(
+                    handle
+                        .containers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .iter()
+                        .cloned(),
+                );
+                database_containers.sort();
+                database_containers.dedup();
+                for container in database_containers {
                     let cgroup = source.container_cgroup(container.as_str());
                     bytes = bytes.saturating_add(
                         self.inner
@@ -1425,6 +1721,8 @@ impl TestLifecycle {
     fn provision_postgres(
         &self,
         specification: &crate::repository_config::PostgresSpec,
+        _worktree: &Path,
+        scope: Option<&str>,
         run_id: &str,
         repository_id: &str,
         worktree_id: &str,
@@ -1463,8 +1761,9 @@ impl TestLifecycle {
             .docker
             .run_detached(&RunDetachedRequest {
                 name: format!(
-                    "devcoordinator2-test-{}-postgres",
-                    run_id.trim_start_matches('t')
+                    "devcoordinator2-test-{}-postgres{}",
+                    run_id.trim_start_matches('t'),
+                    scope.map(|scope| format!("-{scope}")).unwrap_or_default()
                 ),
                 image: specification.image.clone(),
                 label_context: ManagedLabelContext {
@@ -1473,7 +1772,7 @@ impl TestLifecycle {
                     worktree_id: worktree_id.into(),
                     run_id: Some(run_id.into()),
                     deployment_id: None,
-                    component: None,
+                    component: scope.map(str::to_owned),
                     generation: None,
                     ttl_seconds: None,
                     purpose: "test".into(),
@@ -1496,6 +1795,10 @@ impl TestLifecycle {
                 command: Vec::new(),
             })
             .map_err(postgres_error)?;
+        let mut cleanup = ContainerCleanup {
+            docker: self.inner.docker.clone(),
+            container: Some(container.clone()),
+        };
         let prepared = (|| {
             let port = self
                 .inner
@@ -1520,6 +1823,10 @@ impl TestLifecycle {
             "postgresql://{}:{}@127.0.0.1:{}/{}",
             specification.user, password, port, specification.database
         );
+        let container = cleanup
+            .container
+            .take()
+            .expect("container cleanup identity");
         Ok(EphemeralPostgres {
             container,
             environment: BTreeMap::from([
@@ -1728,6 +2035,17 @@ impl TestLifecycle {
             ProofKind::Selected
         };
         let plan = ExecutionPlan {
+            database_checks: selected
+                .iter()
+                .filter(|check| {
+                    postgres_for_check(specification, &check.name).is_some_and(|pg| !pg.cases_only)
+                })
+                .map(|check| check.name.clone())
+                .collect(),
+            fixture_program: (specification.postgres.is_some()
+                || !specification.postgres_instances.is_empty())
+            .then(|| self.inner.executor.to_string_lossy().into_owned()),
+            environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: run_id.into(),
             test: specification.name.clone(),
@@ -1922,7 +2240,7 @@ impl TestLifecycle {
             }
             state.stop.take()
         };
-        let (status, exit_code, termination) = if let Some(stop) = requested_stop {
+        let (mut status, exit_code, termination) = if let Some(stop) = requested_stop {
             let termination = if stop.termination.is_some() {
                 stop.termination
             } else if stop.status == TestStatus::Superseded {
@@ -1953,6 +2271,10 @@ impl TestLifecycle {
                 None,
             )
         };
+        let fixtures_cleaned = handle.fixtures.finish();
+        if !fixtures_cleaned && status == TestStatus::Passed {
+            status = TestStatus::Failed;
+        }
         self.remove_containers(
             &handle
                 .containers
@@ -1971,6 +2293,8 @@ impl TestLifecycle {
             handle.requested_tier,
         );
         summary.work = handle.work.clone();
+        summary.targets = handle.targets.clone();
+        summary.case_selection = handle.case_selection.clone();
         summary.report_issue = report_issue;
         terminal_status(
             &mut summary,
@@ -2065,7 +2389,7 @@ impl TestLifecycle {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cleanup_complete = true;
+        state.cleanup_complete = fixtures_cleaned;
         handle.finalized.notify_all();
     }
 
@@ -2180,7 +2504,8 @@ impl TestLifecycle {
             ("devcoordinator2.purpose".into(), "test".into()),
             ("devcoordinator2.worktree".into(), worktree_id.into()),
         ]);
-        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+        if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            containers.retain(|container| !self.inner.databases.owns(container));
             self.remove_containers(&containers);
         }
         Ok(superseded_run_id)
@@ -2299,7 +2624,11 @@ fn selected_closure(
     }
     let excluded = requested
         .iter()
-        .filter(|name| by_name[name.as_str()].tier > tier)
+        .filter(|name| {
+            by_name[name.as_str()].tier > tier
+                && by_name[name.as_str()].phase
+                    != devcoordinator2_executor_protocol::CheckPhase::Cleanup
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !excluded.is_empty() {
@@ -2324,7 +2653,7 @@ fn selected_closure(
                 format!("no checks are configured for the {} tier", tier_name(tier)),
             ));
         }
-        return Ok(selected);
+        return Ok(include_cleanup(configured, selected));
     }
     let mut included = requested.iter().cloned().collect::<HashSet<_>>();
     let mut pending = requested.to_vec();
@@ -2336,11 +2665,66 @@ fn selected_closure(
             }
         }
     }
-    Ok(configured
+    Ok(include_cleanup(
+        configured,
+        configured
+            .iter()
+            .filter(|check| {
+                included.contains(&check.name)
+                    && (check.tier <= tier
+                        || check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+            })
+            .cloned()
+            .collect(),
+    ))
+}
+
+fn include_cleanup(configured: &[CheckPlan], mut selected: Vec<CheckPlan>) -> Vec<CheckPlan> {
+    use devcoordinator2_executor_protocol::CheckPhase;
+    let mut included = selected
         .iter()
-        .filter(|check| included.contains(&check.name) && check.tier <= tier)
-        .cloned()
-        .collect())
+        .map(|check| check.name.clone())
+        .collect::<HashSet<_>>();
+    loop {
+        let mut changed = false;
+        for check in configured
+            .iter()
+            .filter(|check| check.phase == CheckPhase::Cleanup)
+        {
+            if !included.contains(&check.name)
+                && (check.after.is_empty() && check.requires.is_empty()
+                    || check
+                        .after
+                        .iter()
+                        .chain(&check.requires)
+                        .any(|name| included.contains(name)))
+            {
+                included.insert(check.name.clone());
+                selected.push(check.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let ordinary = selected
+        .iter()
+        .filter(|check| check.phase != CheckPhase::Cleanup)
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>();
+    for check in selected
+        .iter_mut()
+        .filter(|check| check.phase == CheckPhase::Cleanup)
+    {
+        let whole_run = check.after.is_empty() && check.requires.is_empty();
+        check.after.retain(|name| included.contains(name));
+        check.requires.retain(|name| included.contains(name));
+        if whole_run {
+            check.after.extend(ordinary.iter().cloned());
+        }
+    }
+    selected
 }
 
 fn validate_retry(
@@ -2493,6 +2877,7 @@ fn reconcile_terminal_checks(summary: &mut TestSummary) {
         *counts.entry(key.into()).or_default() += running;
     }
     for check in summary.checks.iter_mut().flatten() {
+        check.resource_waiting = false;
         close_execution_observation(check.execution.as_mut());
         if matches!(check.status, LeafStatus::Pending | LeafStatus::Running) {
             check.status = if check.status == LeafStatus::Pending {
@@ -2533,6 +2918,11 @@ fn apply_report(
             .collect::<Result<Vec<_>, _>>()?,
     );
     summary.checks_truncated = Some(all_checks.len() > 64);
+    summary.phase_durations = report
+        .phase_durations
+        .iter()
+        .map(convert)
+        .collect::<Result<Vec<_>, _>>()?;
     summary.failure_index = Some(
         report
             .failure_index
@@ -2558,6 +2948,14 @@ fn apply_report(
 
 fn api_check(check: &CheckReport) -> Result<CheckProjection, crate::test_state::TestStateError> {
     Ok(CheckProjection {
+        phase_durations: check
+            .phase_durations
+            .iter()
+            .map(convert)
+            .collect::<Result<Vec<_>, _>>()?,
+        resource_waiting: check.resource_waiting,
+        display_name: check.display_name.clone(),
+        phase: convert(&check.phase)?,
         execution: check.execution.as_ref().map(convert).transpose()?,
         name: check.name.clone(),
         tier: api_tier(check.tier),
@@ -2651,6 +3049,28 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 pub(crate) fn default_executor_path() -> PathBuf {
+    #[cfg(feature = "root-acceptance")]
+    if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
+        return PathBuf::from(path);
+    }
+    // Unit tests may use an isolated Cargo target directory. Resolve candidates
+    // from that test executable, never from another checkout or installed daemon.
+    #[cfg(test)]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(profile) = executable.parent().and_then(Path::parent)
+    {
+        let release = profile
+            .parent()
+            .map(|target| target.join("release/devcoordinator2-executor"));
+        for candidate in release
+            .into_iter()
+            .chain(std::iter::once(profile.join("devcoordinator2-executor")))
+        {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/release/devcoordinator2-executor")
@@ -2723,6 +3143,17 @@ fn admission_error(error: AdmissionError) -> ProtocolError {
     ProtocolError::new(code, error.to_string())
 }
 
+fn postgres_for_check<'a>(
+    spec: &'a TestSpec,
+    check: &str,
+) -> Option<&'a crate::repository_config::PostgresSpec> {
+    spec.postgres.as_ref().or_else(|| {
+        spec.check_postgres
+            .get(check)
+            .and_then(|scope| spec.postgres_instances.get(scope))
+    })
+}
+
 fn config_error(error: crate::repository_config::RepositoryConfigError) -> ProtocolError {
     ProtocolError::new(ErrorCode::RepositoryConfigInvalid, error.to_string())
 }
@@ -2771,6 +3202,10 @@ mod tests {
 
     fn check(name: &str, tier: ValidationTier, dependencies: &[&str]) -> CheckPlan {
         CheckPlan {
+            display_name: None,
+            source_name: None,
+            expected_failure: None,
+            expected_exit_code: None,
             name: name.into(),
             tier,
             role: devcoordinator2_executor_protocol::CheckRole::Work,

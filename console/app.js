@@ -881,6 +881,7 @@ function logEntryLabel(entry) {
   if (ref.phase === 'executor') return `Test runner · ${stream}`;
   if (ref.phase === 'discovery') return `${ref.check} · Discovery · ${stream}`;
   if (ref.phase === 'case') return `${ref.check} · ${ref.case || 'Cases'} · ${stream}`;
+  if (ref.phase === 'fixture' || ref.phase === 'cleanup') return `${ref.check} · ${ref.case} · ${ref.phase === 'fixture' ? 'Database setup' : 'Cleanup'} · ${stream}`;
   return `${ref.check || 'Check'} · ${stream}`;
 }
 function logResultRows(result) {

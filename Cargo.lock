@@ -414,6 +414,7 @@ version = "0.2.0"
 dependencies = [
  "devcoordinator2-executor-core",
  "devcoordinator2-executor-protocol",
+ "libc",
  "serde_json",
  "tokio",
 ]
@@ -429,6 +430,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
 ]
 

@@ -73,6 +73,9 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
         }
         "run" if args.len() == 2 => run(Path::new(&args[1]), false).await,
         "run-local" if args.len() == 2 => run(Path::new(&args[1]), true).await,
+        "fixture" if args.len() == 2 => {
+            fixture_command(args[1].to_str().ok_or("invalid fixture node")?).await
+        }
         "source-digest" => source_digest_command(&args[1..]),
         "receipts-match" => receipts_match_command(&args[1..]),
         "emit-event" => emit_event_command(&args[1..]),
@@ -80,6 +83,63 @@ async fn dispatch(args: Vec<std::ffi::OsString>) -> Result<i32, String> {
         "log-prune" => log_prune_command(&args[1..]),
         _ => Err(usage()),
     }
+}
+
+async fn fixture_command(node: &str) -> Result<i32, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let socket = env::var_os("DEVCOORDINATOR_CAPACITY_SOCKET")
+        .ok_or("fixture requires its accepted run's broker")?;
+    let run_id = env::var("DEVCOORDINATOR_RUN_ID")
+        .map_err(|_| "fixture requires its accepted run identity")?;
+    let check =
+        env::var("DEVCOORDINATOR_CHECK_NAME").map_err(|_| "fixture requires its check identity")?;
+    if check != node && !node.starts_with(&format!("{check}/")) {
+        return Err("fixture node does not match its admitted check".into());
+    }
+    let mut stream = tokio::net::UnixStream::connect(socket)
+        .await
+        .map_err(|_| "fixture broker is unavailable")?;
+    let mut payload =
+        serde_json::to_vec(&json!({"schema":1,"action":"fixture","run_id":run_id,"leaf_id":node}))
+            .map_err(|e| e.to_string())?;
+    payload.push(b'\n');
+    stream
+        .write_all(&payload)
+        .await
+        .map_err(|_| "cannot submit fixture operation")?;
+    let mut response = Vec::new();
+    use tokio::io::AsyncReadExt;
+    BufReader::new(stream)
+        .take(4097)
+        .read_until(b'\n', &mut response)
+        .await
+        .map_err(|_| "fixture response unavailable")?;
+    if response.len() > 4096 {
+        return Err("fixture response exceeds its bound".into());
+    }
+    let response: serde_json::Value =
+        serde_json::from_slice(&response).map_err(|_| "fixture response is invalid")?;
+    if response["schema"] != 1 || response["status"] != "completed" {
+        return Err("fixture operation was not authorized".into());
+    }
+    if let Some(scratch) = env::var_os("DEVCOORDINATOR_CHECK_SCRATCH") {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = PathBuf::from(scratch).join("native.log");
+        if let Ok(mut log) = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            && log.metadata().is_ok_and(|metadata| metadata.is_file())
+        {
+            std::io::copy(&mut log, &mut std::io::stderr())
+                .map_err(|_| "cannot retain fixture diagnostics")?;
+        }
+    }
+    println!(
+        "{}",
+        json!({"fixture":node,"status":if response["ok"]==true {"passed"}else{"failed"}})
+    );
+    Ok(if response["ok"] == true { 0 } else { 1 })
 }
 
 async fn run(path: &Path, local: bool) -> Result<i32, String> {
@@ -101,10 +161,15 @@ async fn run(path: &Path, local: bool) -> Result<i32, String> {
     };
     let cancellation = Cancellation::default();
     let signal_cancellation = cancellation.clone();
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|error| format!("cannot register executor termination handler: {error}"))?;
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal_cancellation.cancel();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
         }
+        signal_cancellation.cancel();
     });
     let report = Executor::new(plan, permits, cancellation)
         .map_err(|error| error.to_string())?

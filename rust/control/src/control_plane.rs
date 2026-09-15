@@ -1828,6 +1828,139 @@ mod tests {
     }
 
     #[test]
+    fn native_mutation_events_follow_commits_and_reject_rolled_back_changes() {
+        let temporary = tempdir().unwrap();
+        let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        database.transaction(|transaction| {
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1111111111111111','/repo','repo','t',1000,'t')", [])?;
+            transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111','r1111111111111111','/repo','t','t')", [])?;
+            Ok(())
+        }).unwrap();
+        let plane = ControlPlane::with_adapters(
+            config(temporary.path()),
+            database.clone(),
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+        )
+        .unwrap();
+        let count = |kind: &str| {
+            let kind = kind.to_owned();
+            database
+                .call(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM owned_events WHERE kind=?1",
+                            [kind],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .map_err(DatabaseError::from)
+                })
+                .unwrap()
+        };
+        for (operation, parameters, table, kind) in [
+            (
+                "task.create",
+                serde_json::json!({"repository_id":"r1111111111111111","title":"One committed task","kind":"improvement"}),
+                "plan_events",
+                "task.created",
+            ),
+            (
+                "release.create",
+                serde_json::json!({"repository_id":"r1111111111111111","name":"A verified preview","kind":"preview"}),
+                "releases",
+                "release.created",
+            ),
+            (
+                "decision.record",
+                serde_json::json!({"repository_id":"r1111111111111111","aspect":"testing","title":"Commit before notifying","body":"A failed database transaction must never announce a successful change."}),
+                "decisions",
+                "decision.recorded",
+            ),
+            (
+                "user.invite",
+                serde_json::json!({"email":"events@example.invalid","administrator":false}),
+                "invitations",
+                "user.invited",
+            ),
+        ] {
+            let trigger = format!(
+                "CREATE TRIGGER reject_event_fixture BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT,'isolated transaction failure'); END;"
+            );
+            database
+                .call(move |connection| {
+                    connection.execute_batch(&trigger)?;
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                plane
+                    .execute(operation, parameters.clone(), &local())
+                    .is_err(),
+                "{operation} accepted the failed transaction"
+            );
+            assert_eq!(
+                count(kind),
+                0,
+                "{operation} published before its transaction committed"
+            );
+            database
+                .call(|connection| {
+                    connection.execute_batch("DROP TRIGGER reject_event_fixture")?;
+                    Ok(())
+                })
+                .unwrap();
+            plane.execute(operation, parameters, &local()).unwrap();
+            assert_eq!(
+                count(kind),
+                1,
+                "{operation} did not publish exactly one committed event"
+            );
+        }
+        let alerts = plane.health.sampler().alerts();
+        let mut condition = crate::alerts::Condition {
+            key: "host/event-test".into(),
+            kind: "host_disk".into(),
+            subject_kind: "host".into(),
+            subject_id: "host".into(),
+            severity: "critical".into(),
+            message: "private fixture details".into(),
+            active: true,
+            sustain_seconds: 0.0,
+        };
+        database.call(|connection| {connection.execute_batch("CREATE TRIGGER reject_alert_fixture BEFORE INSERT ON alerts BEGIN SELECT RAISE(ABORT,'isolated alert failure'); END;")?; Ok(())}).unwrap();
+        assert!(alerts.evaluate(&[condition.clone()]).is_err());
+        assert_eq!(count("alert.opened"), 0);
+        database
+            .call(|connection| {
+                connection.execute_batch("DROP TRIGGER reject_alert_fixture")?;
+                Ok(())
+            })
+            .unwrap();
+        alerts.evaluate(&[condition.clone()]).unwrap();
+        alerts.evaluate(&[condition.clone()]).unwrap();
+        assert_eq!(
+            count("alert.opened"),
+            1,
+            "unchanged sampler observations duplicated the event"
+        );
+        condition.active = false;
+        alerts.evaluate(&[condition]).unwrap();
+        assert_eq!(count("alert.recovered"), 1);
+        let payloads = database
+            .call(|connection| {
+                Ok(connection
+                    .prepare("SELECT payload_json FROM owned_events")?
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .unwrap()
+            .join("\n");
+        assert!(!payloads.contains("events@example.invalid"));
+        assert!(!payloads.contains("private fixture details"));
+        assert!(!payloads.contains("One committed task"));
+    }
+
+    #[test]
     fn notification_projection_keeps_only_typed_redacted_event_fields() {
         let access = TelegramEvent::new("user.invited").with("email", "private@example.test");
         let owned = owned_notification(&access).expect("access event");

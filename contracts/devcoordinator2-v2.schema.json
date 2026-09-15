@@ -1439,6 +1439,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "cases": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "default": {},
+            "type": "object"
+          },
           "checks": {
             "default": [],
             "items": {
@@ -1449,6 +1459,14 @@
           "path": {
             "minLength": 1,
             "type": "string"
+          },
+          "targets": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
           },
           "test": {
             "default": null,
@@ -1485,6 +1503,16 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "cases": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "default": {},
+                "type": "object"
+              },
               "checks": {
                 "default": [],
                 "items": {
@@ -1495,6 +1523,14 @@
               "path": {
                 "minLength": 1,
                 "type": "string"
+              },
+              "targets": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
               },
               "test": {
                 "default": null,
@@ -1591,6 +1627,12 @@
               "string",
               "null"
             ]
+          },
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "test": {
             "type": "string"
@@ -1780,6 +1822,12 @@
               "string",
               "null"
             ]
+          },
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "test": {
             "type": "string"
@@ -2015,6 +2063,35 @@
             ],
             "type": "object"
           },
+          "CasePhaseReport": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/$defs/ExecutionLogStreamSummary"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "phase",
+              "status",
+              "duration_ms",
+              "streams"
+            ],
+            "type": "object"
+          },
           "CaseProjection": {
             "additionalProperties": false,
             "properties": {
@@ -2023,11 +2100,27 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "exit": {
                 "$ref": "#/$defs/DiagnosticExit"
               },
               "id": {
                 "type": "string"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/CasePhaseReport"
+                },
+                "type": "array"
               },
               "status": {
                 "$ref": "#/$defs/LeafStatus"
@@ -2047,6 +2140,18 @@
               "streams"
             ],
             "type": "object"
+          },
+          "CheckPhase": {
+            "enum": [
+              "setup",
+              "build",
+              "fixture",
+              "case",
+              "cleanup",
+              "qualification",
+              "check"
+            ],
+            "type": "string"
           },
           "CheckProjection": {
             "additionalProperties": false,
@@ -2074,11 +2179,27 @@
               "cases_truncated": {
                 "type": "boolean"
               },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "duration_seconds": {
                 "format": "double",
                 "type": [
                   "number",
                   "null"
+                ]
+              },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "exit": {
@@ -2092,6 +2213,20 @@
               },
               "name": {
                 "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase",
+                "default": "check"
+              },
+              "phase_durations": {
+                "items": {
+                  "$ref": "#/$defs/PhaseDuration"
+                },
+                "type": "array"
+              },
+              "resource_waiting": {
+                "default": false,
+                "type": "boolean"
               },
               "retained_artifacts": {
                 "items": {
@@ -2292,6 +2427,80 @@
             ],
             "type": "object"
           },
+          "ExecutionProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "admitted": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "admitted_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "capacity_wait_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "executing": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "process_duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queued_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "waiting",
+              "admitted",
+              "executing",
+              "finished",
+              "queued_at_epoch_ms",
+              "capacity_wait_ms",
+              "process_duration_ms"
+            ],
+            "type": "object"
+          },
           "FailureIndexEntry": {
             "additionalProperties": false,
             "properties": {
@@ -2417,7 +2626,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -2459,6 +2670,37 @@
               "stderr"
             ],
             "type": "string"
+          },
+          "PhaseDuration": {
+            "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "duration_seconds": {
+                "format": "double",
+                "type": "number"
+              },
+              "elapsed_seconds": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              }
+            },
+            "required": [
+              "phase",
+              "duration_seconds",
+              "checks"
+            ],
+            "type": "object"
           },
           "ProofKind": {
             "enum": [
@@ -2540,6 +2782,16 @@
               "run_cancelled",
               "daemon_interrupted",
               "unsafe_stop"
+            ],
+            "type": "string"
+          },
+          "TestReportIssue": {
+            "enum": [
+              "missing",
+              "invalid",
+              "unreadable",
+              "identity_mismatch",
+              "incomplete"
             ],
             "type": "string"
           },
@@ -2699,6 +2951,15 @@
               "null"
             ]
           },
+          "case_selection": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object"
+          },
           "check_report_ref": {
             "type": "string"
           },
@@ -2785,11 +3046,27 @@
               "null"
             ]
           },
+          "phase_durations": {
+            "items": {
+              "$ref": "#/$defs/PhaseDuration"
+            },
+            "type": "array"
+          },
           "proof": {
             "$ref": "#/$defs/ProofKind"
           },
           "readiness_eligible": {
             "type": "boolean"
+          },
+          "report_issue": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TestReportIssue"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "requested_tier": {
             "$ref": "#/$defs/ValidationTier"
@@ -2830,6 +3107,12 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "targets": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "termination_reason": {
             "anyOf": [
@@ -2900,7 +3183,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -2995,7 +3280,9 @@
                   "executor",
                   "check",
                   "discovery",
-                  "case"
+                  "case",
+                  "fixture",
+                  "cleanup"
                 ],
                 "type": "string"
               },
@@ -3162,7 +3449,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -3278,7 +3567,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -3364,7 +3655,9 @@
                   "executor",
                   "check",
                   "discovery",
-                  "case"
+                  "case",
+                  "fixture",
+                  "cleanup"
                 ],
                 "type": "string"
               },
@@ -3577,7 +3870,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -3676,7 +3971,9 @@
                   "executor",
                   "check",
                   "discovery",
-                  "case"
+                  "case",
+                  "fixture",
+                  "cleanup"
                 ],
                 "type": "string"
               },
@@ -3902,7 +4199,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -4017,7 +4316,9 @@
                   "executor",
                   "check",
                   "discovery",
-                  "case"
+                  "case",
+                  "fixture",
+                  "cleanup"
                 ],
                 "type": "string"
               },
@@ -4259,7 +4560,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -4352,7 +4655,9 @@
                   "executor",
                   "check",
                   "discovery",
-                  "case"
+                  "case",
+                  "fixture",
+                  "cleanup"
                 ],
                 "type": "string"
               },
@@ -4621,7 +4926,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -10949,6 +11256,12 @@
               "status": {
                 "$ref": "#/$defs/TestStatus"
               },
+              "targets": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "termination_reason": {
                 "anyOf": [
                   {
@@ -11146,7 +11459,26 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "title": "Empty",
+        "properties": {
+          "after_worktree_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": null,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "TestList",
         "type": "object"
       },
       "mcpExcludedReason": null,
@@ -11155,7 +11487,26 @@
           "inputSchema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
-            "title": "Empty",
+            "properties": {
+              "after_worktree_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": null,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "title": "TestList",
             "type": "object"
           },
           "name": "test_list",
@@ -11315,6 +11666,35 @@
             ],
             "type": "object"
           },
+          "CasePhaseReport": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/$defs/ExecutionLogStreamSummary"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "phase",
+              "status",
+              "duration_ms",
+              "streams"
+            ],
+            "type": "object"
+          },
           "CaseProjection": {
             "additionalProperties": false,
             "properties": {
@@ -11323,11 +11703,27 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "exit": {
                 "$ref": "#/$defs/DiagnosticExit"
               },
               "id": {
                 "type": "string"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/CasePhaseReport"
+                },
+                "type": "array"
               },
               "status": {
                 "$ref": "#/$defs/LeafStatus"
@@ -11347,6 +11743,18 @@
               "streams"
             ],
             "type": "object"
+          },
+          "CheckPhase": {
+            "enum": [
+              "setup",
+              "build",
+              "fixture",
+              "case",
+              "cleanup",
+              "qualification",
+              "check"
+            ],
+            "type": "string"
           },
           "CheckProjection": {
             "additionalProperties": false,
@@ -11374,11 +11782,27 @@
               "cases_truncated": {
                 "type": "boolean"
               },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "duration_seconds": {
                 "format": "double",
                 "type": [
                   "number",
                   "null"
+                ]
+              },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "exit": {
@@ -11392,6 +11816,20 @@
               },
               "name": {
                 "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase",
+                "default": "check"
+              },
+              "phase_durations": {
+                "items": {
+                  "$ref": "#/$defs/PhaseDuration"
+                },
+                "type": "array"
+              },
+              "resource_waiting": {
+                "default": false,
+                "type": "boolean"
               },
               "retained_artifacts": {
                 "items": {
@@ -11616,6 +12054,80 @@
             ],
             "type": "object"
           },
+          "ExecutionProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "admitted": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "admitted_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "capacity_wait_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "executing": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "process_duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queued_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "waiting",
+              "admitted",
+              "executing",
+              "finished",
+              "queued_at_epoch_ms",
+              "capacity_wait_ms",
+              "process_duration_ms"
+            ],
+            "type": "object"
+          },
           "FailureIndexEntry": {
             "additionalProperties": false,
             "properties": {
@@ -11741,7 +12253,9 @@
               "executor",
               "check",
               "discovery",
-              "case"
+              "case",
+              "fixture",
+              "cleanup"
             ],
             "type": "string"
           },
@@ -11783,6 +12297,37 @@
               "stderr"
             ],
             "type": "string"
+          },
+          "PhaseDuration": {
+            "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "duration_seconds": {
+                "format": "double",
+                "type": "number"
+              },
+              "elapsed_seconds": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              }
+            },
+            "required": [
+              "phase",
+              "duration_seconds",
+              "checks"
+            ],
+            "type": "object"
           },
           "ProofKind": {
             "enum": [
@@ -11893,6 +12438,15 @@
                   "null"
                 ]
               },
+              "case_selection": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
               "check_report_ref": {
                 "type": "string"
               },
@@ -11992,11 +12546,27 @@
                   "null"
                 ]
               },
+              "phase_durations": {
+                "items": {
+                  "$ref": "#/$defs/PhaseDuration"
+                },
+                "type": "array"
+              },
               "proof": {
                 "$ref": "#/$defs/ProofKind"
               },
               "readiness_eligible": {
                 "type": "boolean"
+              },
+              "report_issue": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestReportIssue"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "repository_id": {
                 "type": "string"
@@ -12050,6 +12620,12 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "targets": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               "termination_reason": {
                 "anyOf": [
@@ -12107,6 +12683,16 @@
               "log_catalog_ref"
             ],
             "type": "object"
+          },
+          "TestReportIssue": {
+            "enum": [
+              "missing",
+              "invalid",
+              "unreadable",
+              "identity_mismatch",
+              "incomplete"
+            ],
+            "type": "string"
           },
           "TestRepositorySource": {
             "additionalProperties": false,
@@ -12297,6 +12883,13 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "next_worktree_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "runs": {
             "items": {
               "$ref": "#/$defs/TestListRow"
@@ -13356,6 +13949,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -13766,6 +14360,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -13976,6 +14576,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -14480,6 +15081,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -14690,6 +15297,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -15036,6 +15644,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -15246,6 +15860,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -15606,6 +16221,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -15816,6 +16437,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -16176,6 +16798,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -16386,6 +17014,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -16746,6 +17375,12 @@
                   "null"
                 ]
               },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -16956,6 +17591,7 @@
               "busy",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
               "permission_denied",
@@ -21863,6 +22499,176 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "plan recovery"
+          }
+        ]
+      },
+      "description": "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "backup_sha256": {
+            "type": "string"
+          },
+          "expected_live_sha256": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "transaction_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "transaction_dir",
+          "backup_sha256"
+        ],
+        "title": "Request",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "apply": {
+                "default": false,
+                "type": "boolean"
+              },
+              "backup_sha256": {
+                "type": "string"
+              },
+              "expected_live_sha256": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "transaction_dir": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "transaction_dir",
+              "backup_sha256"
+            ],
+            "title": "Request",
+            "type": "object"
+          },
+          "name": "plan_recovery",
+          "transform": "identity"
+        }
+      ],
+      "name": "plan.recovery",
+      "outputSchema": {
+        "$defs": {
+          "Mapping": {
+            "additionalProperties": false,
+            "properties": {
+              "assigned_sequence": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "original_sequence": {
+                "format": "int64",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "original_sequence",
+              "assigned_sequence"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "backup_sha256": {
+            "type": "string"
+          },
+          "counts": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "live_sha256": {
+            "type": "string"
+          },
+          "mappings": {
+            "items": {
+              "$ref": "#/$defs/Mapping"
+            },
+            "type": "array"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "recovery_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "recovery_id",
+          "repository_id",
+          "backup_sha256",
+          "live_sha256",
+          "provenance",
+          "status",
+          "counts",
+          "mappings"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "plan overview"
           }
         ]
@@ -22413,6 +23219,218 @@
           }
         ],
         "title": "PlanOverview"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "task search"
+          }
+        ]
+      },
+      "description": "Search all task states, including dropped history, without changing the active plan.",
+      "inputSchema": {
+        "$defs": {
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after_sequence": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "query": {
+            "default": "",
+            "maxLength": 256,
+            "type": "string"
+          },
+          "repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "TaskSearch",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "TaskStatus": {
+                "enum": [
+                  "planned",
+                  "in_progress",
+                  "done",
+                  "dropped"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after_sequence": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 50,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "query": {
+                "default": "",
+                "maxLength": 256,
+                "type": "string"
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TaskStatus"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "title": "TaskSearch",
+            "type": "object"
+          },
+          "name": "task_search",
+          "transform": "identity"
+        }
+      ],
+      "name": "task.search",
+      "outputSchema": {
+        "$defs": {
+          "TaskSearchHit": {
+            "additionalProperties": false,
+            "properties": {
+              "sequence": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/$defs/TaskStatus"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "sequence",
+              "title",
+              "status"
+            ],
+            "type": "object"
+          },
+          "TaskStatus": {
+            "enum": [
+              "planned",
+              "in_progress",
+              "done",
+              "dropped"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "next_sequence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/$defs/TaskSearchHit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "tasks"
+        ],
+        "title": "TaskSearch",
+        "type": "object"
       },
       "policy": {
         "effect": "read",

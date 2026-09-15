@@ -9,4 +9,5 @@ publish.workspace = true
 devcoordinator2-executor-core = { path = "../executor-core" }
 devcoordinator2-executor-protocol = { path = "../executor-protocol" }
 serde_json.workspace = true
+libc.workspace = true
 tokio.workspace = true

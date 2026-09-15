@@ -76,9 +76,18 @@ requires = ["build"]
 
 Every dependency-ready check or expanded case enters the host-wide adaptive
 admission queue immediately. Repository configuration has no `max_parallel`,
-worker-budget, resource-lock, CPU, memory, or client-override field. If two
-checks cannot safely overlap for correctness, declare their real completion or
-success dependency. Every leaf receives an isolated
+worker-budget, CPU, memory, or client-override field. Checks may declare
+`resources = [{kind="directory", id="build", access="exclusive"}]` (also
+`database`, `port` and `source_snapshot`; access is `shared` or `exclusive`).
+Directory aliases are normalized against the checkout, and overlapping parent
+and child paths conflict. The existing broker reserves all of a check's claims
+together, keeps them through discovery/cases or a live service, and releases them
+on completion or cancellation. An earlier conflicting writer is not starved by
+later readers; unrelated claims proceed. Real ordering and success requirements
+still use `after` and `requires`. Checks whose declared output files or retained
+trees overlap must have a dependency that waits for the earlier process to exit,
+or conflicting resource claims. An undeclared output collision is rejected
+before execution. Every leaf receives an isolated
 `DEVCOORDINATOR_CHECK_SCRATCH`, the shared
 `DEVCOORDINATOR_SHARED_ARTIFACTS`, a private
 `DEVCOORDINATOR_DIAGNOSTICS_DIR`, a dedicated inherited structured-diagnostic
@@ -131,6 +140,39 @@ size cap and no interleaved aggregate copy. Repository configuration does not
 control retention: administrators own the host-wide age and history-depth
 boundaries, which default to 24 hours and three runs for each logical case.
 
+`test start PATH --target api --target ui` composes those declarations into one
+namespaced graph. Existing `--test` requests retain their behavior; `--test`
+and `--target` cannot be combined. Use `--check api/build` for a qualified check
+or `--case api/database=example` for an exact case, repeating flags as needed.
+Selections include prerequisite and applicable cleanup closure. A separate start
+still supersedes the previous invocation for the same checkout.
+
+A check's optional `phase` is `setup`, `build`, `fixture`, `case`, `cleanup`,
+`qualification`, or the default `check`. Cleanup is an uncached direct command:
+it runs after its prerequisites settle, including failure and ordinary
+cancellation, subject to its deadline and the final cgroup containment limit.
+Reports distinguish summed execution time from elapsed time; missing elapsed
+measurements stay unavailable.
+
+An opt-in `cacheable=true` producer also declares `cache_inputs` and `produces`.
+Inherited build environment is fingerprinted along with declared overrides;
+Coordinator run identifiers and transport metadata are excluded. A cacheable
+producer must not derive its output from those per-run identifiers. Expired
+receipts and excess entries are pruned from the private cache.
+`consumes=[{check="build",path="build/output.bin"}]` adds a success dependency
+and requires the file still to match that producer's receipt. Reuse binds source,
+configuration, executable bytes, declared inputs, consumed receipts and outputs.
+Declare secondary toolchain/dependency identities as input files or produced
+manifests. Missing, corrupt or changed evidence causes execution. Checks that
+use injected database state and checks retaining rendered evidence execute afresh.
+
+A failure-qualification preflight declares `phase="qualification"`,
+`expect_failure=true`, `qualification_of="corrected"`, and the exact
+`expected_failure` structured diagnostic fingerprint. `expected_exit_code`
+defaults to 1 and may explicitly be 0 for a structured reporter. Other exits,
+extra unrelated diagnostics and infrastructure failures do not qualify it.
+The corrected target must also run and pass.
+
 An ephemeral PostgreSQL is one throwaway instance per run: a Docker
 container carrying the exact run identity in daemon-owned labels, data on
 tmpfs, published on loopback only, credentials generated per run. The test
@@ -142,6 +184,38 @@ next start. The Coordinator never copies declared or injected environment
 values into summaries, metadata, metrics, or agent results. Commands must not
 print those values because their stdout and stderr are retained byte-completely
 as private cold evidence.
+
+For independently selected database cases, set `cases_only=true` and declare
+template inputs. Shared test-scoped PostgreSQL remains the default.
+
+```toml
+[test.database.postgres]
+image = "postgres:16-alpine"
+cases_only = true
+[test.database.postgres.templates.seeded]
+init_sql = ["tests/seed.sql"]
+
+[[test.database.check]]
+name = "cases"
+tier = "development"
+case_command = ["./scripts/database-case"]
+cases = [
+  {id="write-a", args=["a"], postgres="seeded"},
+  {id="write-b", args=["b"], postgres="seeded"},
+]
+```
+
+Only selected cases request their fixture. Each gets its own writable database
+and private connection environment. The Coordinator owns the template instance,
+initializes it from the declared SQL, analyzes it and disables connections before
+cloning. Case credentials cannot unlock the template. The cache binds repository,
+image identity, configured user and exact initialization bytes; invalid template
+state forces creation. Idle templates expire after an hour, excess idle entries
+are evicted, and active leases prevent automatic eviction. Restart recovery
+removes only the instance's disposable fixtures. Each case retains separate
+fixture, case and cleanup statuses and logs, including skipped work after a
+failed fixture. Dynamic discovery can return the same optional `postgres`
+template reference; `postgres="default"` selects an empty template.
 
 Official PostgreSQL tags use the established preloaded-image path. A compatible
 image outside that namespace must be immutable: the daemon pulls the exact

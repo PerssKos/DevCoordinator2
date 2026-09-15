@@ -2919,9 +2919,44 @@ mod tests {
                 .execute("test.evidence.feedback.create", create.clone(), &outsider)
                 .is_err()
         );
+        world.database.call(|connection| {
+            connection.execute_batch("CREATE TRIGGER reject_feedback_commit BEFORE INSERT ON plan_events BEGIN SELECT RAISE(ABORT,'isolated feedback transaction failure'); END;")?;
+            Ok(())
+        }).unwrap();
+        assert!(
+            plane
+                .execute("test.evidence.feedback.create", create.clone(), &owner)
+                .is_err()
+        );
+        let event_count = |kind: &str| {
+            let kind = kind.to_owned();
+            world
+                .database
+                .call(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM owned_events WHERE kind=?1",
+                            [kind],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .map_err(DatabaseError::from)
+                })
+                .unwrap()
+        };
+        assert_eq!(event_count("feedback.created"), 0);
+        assert_eq!(event_count("task.created"), 0);
+        world
+            .database
+            .call(|connection| {
+                connection.execute_batch("DROP TRIGGER reject_feedback_commit")?;
+                Ok(())
+            })
+            .unwrap();
         let created = plane
             .execute("test.evidence.feedback.create", create, &owner)
             .unwrap();
+        assert_eq!(event_count("feedback.created"), 1);
+        assert_eq!(event_count("task.created"), 1);
         let task_id = created["task_id"].as_str().unwrap();
         let overview = plane
             .execute(
@@ -2975,6 +3010,18 @@ mod tests {
             .execute("test.evidence.feedback.delete", target, &owner)
             .unwrap();
         assert_eq!(deleted["feedback"]["state"], "deleted");
+        for (kind, expected) in [
+            ("feedback.replied", 1),
+            ("feedback.edited", 1),
+            ("feedback.state_changed", 2),
+            ("feedback.deleted", 1),
+        ] {
+            assert_eq!(
+                event_count(kind),
+                expected,
+                "feedback publication count drifted for {kind}"
+            );
+        }
         world
             .database
             .call(move |connection| {
