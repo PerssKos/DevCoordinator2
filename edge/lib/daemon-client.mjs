@@ -47,7 +47,7 @@ export function createDaemonClient({ socketPath, connectTimeoutMs = 5000, timeou
       socket.setTimeout(connectTimeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon connect timeout')); });
       socket.on('error', (error) => finish(reject, error));
       socket.on('connect', () => {
-        const longOperation = operation === 'event.wait' || /^deployment\.(apply|rollback|start|stop|restart|remove)$/.test(operation);
+        const longOperation = operation === 'event.wait' || operation === 'plan.recovery' || /^deployment\.(apply|rollback|start|stop|restart|remove)$/.test(operation);
         socket.setTimeout(longOperation ? 0 : timeoutMs, () => { socket.destroy(); finish(reject, new Error('daemon response timeout')); });
         const requestId = crypto.randomBytes(6).toString('hex');
         const request = {

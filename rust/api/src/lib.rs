@@ -11,12 +11,13 @@ pub mod configuration;
 pub mod delivery;
 pub mod glossary;
 pub mod params;
+pub mod recovery;
 pub mod results;
 pub mod review;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 21;
+pub const DATABASE_SCHEMA_VERSION: u32 = 22;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1217,6 +1218,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         glossary::Impact
     ),
     operation!(
+        "plan.recovery",
+        "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
+        IDEMPOTENT_APPEND_SERVER_ADMIN,
+        Protocol["plan recovery"],
+        ["plan_recovery"],
+        recovery::Request,
+        recovery::Receipt
+    ),
+    operation!(
         "plan.overview",
         "Show releases and the active completion plan.",
         READ_REPOSITORY_VIEWER,
@@ -1798,9 +1808,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 100);
-        assert_eq!(tools.len(), 77);
-        assert_eq!(cli_routes.len(), 89);
+        assert_eq!(OPERATIONS.len(), 101);
+        assert_eq!(tools.len(), 78);
+        assert_eq!(cli_routes.len(), 90);
     }
 
     #[test]

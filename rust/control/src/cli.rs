@@ -968,6 +968,18 @@ enum RepositoryCommand {
 
 #[derive(Debug, Subcommand)]
 enum PlanCommand {
+    Recovery {
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        backup_sha256: String,
+        #[arg(long)]
+        expected_live_sha256: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
     Overview {
         #[command(flatten)]
         path: PathArg,
@@ -1872,6 +1884,16 @@ impl RepositoryCommand {
 impl PlanCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::Recovery {
+                repository_id,
+                transaction_dir,
+                backup_sha256,
+                expected_live_sha256,
+                apply,
+            } => remote(
+                "plan.recovery",
+                json!({"repository_id":repository_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply}),
+            ),
             Self::Overview {
                 path,
                 all_repositories,
@@ -2807,6 +2829,19 @@ mod tests {
                 "repository.unarchive",
             ),
             (&["plan", "overview", "/tmp/repo"], "plan.overview"),
+            (
+                &[
+                    "plan",
+                    "recovery",
+                    "--repository-id",
+                    "r1111111111111111",
+                    "--transaction-dir",
+                    "/private/snapshot",
+                    "--backup-sha256",
+                    "abc",
+                ],
+                "plan.recovery",
+            ),
             (
                 &[
                     "task",

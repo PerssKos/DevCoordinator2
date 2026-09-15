@@ -30,6 +30,8 @@ pub mod metrics;
 pub mod metrics_sampler;
 pub mod metrics_source;
 pub mod plan;
+pub mod planning_backup;
+pub mod planning_recovery;
 pub mod platform;
 pub mod ports;
 pub mod progress;
