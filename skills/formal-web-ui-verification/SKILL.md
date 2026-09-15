@@ -238,6 +238,9 @@ skill; callers can always provide explicit `--url` targets instead.
      or a target/state override when the product prescribes different limits;
      set `ttfbLocalOnly: false` to apply its TTFB threshold to non-local targets.
      LCP here is document navigation LCP, not post-interaction latency.
+     Waiting for painting callbacks has a one-second ceiling. Suspended
+     callbacks produce an unavailable LCP value;
+     a partial earlier value must not be reported as a completed measurement.
    - A target may declare `breakpointProfile` with `breakpoints`, `height`, and
      optional `name`/`baseViewport`. Each breakpoint adds exactly width−1,
      width, and width+1 for that target. Equivalent configured/profile cells

@@ -2451,6 +2451,49 @@ mod tests {
     }
 
     #[test]
+    fn domain_delivery_preserves_the_published_route_and_url() {
+        let (_temporary, database, service) = world();
+        seed(
+            &database,
+            serde_json::json!({"components":[
+                {"name":"api","type":"process","wants_port":true,"route":false},
+                {"name":"web","type":"process","wants_port":true,"route":true}
+            ]})
+            .to_string(),
+        );
+        database.transaction(|transaction| {
+            transaction.execute("INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES('preview','d1111111111111111','web',24002,1,'t','lweb')", [])?;
+            Ok(())
+        }).unwrap();
+        let delivered = service
+            .deliver_release(
+                ReleaseDeliver {
+                    release_id: "v1111111111111111".into(),
+                    deployment_id: "d1111111111111111".into(),
+                    note: None,
+                },
+                "uid:1000",
+                "2026-09-15T12:00:00Z",
+            )
+            .unwrap();
+        assert_eq!(delivered.port, Some(24002));
+        assert_eq!(
+            delivered.url.as_deref(),
+            Some("https://preview.example.test")
+        );
+        let retained = database
+            .call(|connection| {
+                Ok(connection.query_row(
+                    "SELECT port,url FROM releases WHERE release_id='v1111111111111111'",
+                    [],
+                    |row| Ok((row.get::<_, u16>(0)?, row.get::<_, String>(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(retained, (24002, "https://preview.example.test".into()));
+    }
+
+    #[test]
     fn no_domain_delivery_accepts_one_implicit_route_without_using_unrelated_ports() {
         let (_temporary, database, service) = world();
         seed(

@@ -2610,6 +2610,30 @@ health={{path="/healthz",timeout_seconds=10}}
         data(&delivered)?["port"] == web && data(&delivered)?["url"].is_null(),
         "no-domain delivery selected an unrelated port or invented a URL"
     );
+    data(&world.call(
+        "deployment.set_domain",
+        json!({"deployment_id":id,"domain":"published-route"}),
+    )?)?;
+    let published = world.call(
+        "release.create",
+        json!({"path":world.repo,"name":"Published route preview","kind":"preview"}),
+    )?;
+    let published_id = data(&published)?["release_id"]
+        .as_str()
+        .ok_or("missing published release")?;
+    let public_delivery = world.call(
+        "release.deliver",
+        json!({"release_id":published_id,"deployment_id":id}),
+    )?;
+    ensure!(
+        data(&public_delivery)?["port"] == web
+            && data(&public_delivery)?["url"] == "https://published-route.example.test",
+        "domain-backed delivery changed the declared port or URL"
+    );
+    data(&world.call(
+        "deployment.set_domain",
+        json!({"deployment_id":id,"domain":null}),
+    )?)?;
     let pending = world.call(
         "release.create",
         json!({"path":world.repo,"name":"Missing route preview","kind":"preview"}),
