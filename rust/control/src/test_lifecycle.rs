@@ -3053,6 +3053,24 @@ pub(crate) fn default_executor_path() -> PathBuf {
     if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
         return PathBuf::from(path);
     }
+    // Unit tests may use an isolated Cargo target directory. Resolve candidates
+    // from that test executable, never from another checkout or installed daemon.
+    #[cfg(test)]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(profile) = executable.parent().and_then(Path::parent)
+    {
+        let release = profile
+            .parent()
+            .map(|target| target.join("release/devcoordinator2-executor"));
+        for candidate in release
+            .into_iter()
+            .chain(std::iter::once(profile.join("devcoordinator2-executor")))
+        {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/release/devcoordinator2-executor")
