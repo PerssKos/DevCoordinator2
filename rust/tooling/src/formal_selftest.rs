@@ -2267,6 +2267,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
     }
 
     let mut suspended_target = performance_target(root, format!("{base}/suspended-frames"));
+    suspended_target.insert("waitFor".into(), json!({"selector":"h1"}));
     suspended_target.insert("performance".into(), json!({"ttfbMs":10000,"lcpMs":800}));
     let suspended = run_verifier(
         root,
@@ -4383,6 +4384,17 @@ await new Promise(setImmediate);
 for(let tick=0;tick<32 && frames.length;tick++) frames.shift()();
 await new Promise(setImmediate);
 if(!delivered) throw new Error('delivered painting callbacks were incorrectly unavailable');
+const readyStart=source.indexOf('async function waitForRenderFrames(');
+const readyEnd=source.indexOf('\nasync function applyWaitFor(',readyStart);
+const readiness=new Function(source.slice(readyStart,readyEnd)+';return waitForRenderFrames;')();
+globalThis.requestAnimationFrame=()=>1;
+timers.length=0;
+let readinessFailure='';
+readiness({{evaluate:(fn,args)=>fn(args)}},2,10).catch(error=>{{readinessFailure=error.message;}});
+await new Promise(setImmediate);
+for(const callback of timers) callback();
+await new Promise(setImmediate);
+if(readinessFailure!=='render-frame readiness deadline reached') throw new Error('painting readiness ignored its deadline');
 "#,
             serde_json::to_string(&verifier).unwrap()
         );

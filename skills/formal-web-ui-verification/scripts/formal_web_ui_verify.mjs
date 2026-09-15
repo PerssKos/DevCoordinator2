@@ -887,14 +887,22 @@ async function waitForReadback(page, readback, timeoutMs) {
   throw new Error(`server readback did not reach the declared state (last status ${lastStatus ?? "unavailable"})`);
 }
 
-async function waitForRenderFrames(page, count) {
-  await page.evaluate((frames) => new Promise((resolve) => {
+async function waitForRenderFrames(page, count, timeoutMs = 10000) {
+  await page.evaluate(({ frames, timeout }) => new Promise((resolve, reject) => {
+    let frame = 0;
+    let finished = false;
+    const deadline = setTimeout(() => {
+      finished = true;
+      cancelAnimationFrame(frame);
+      reject(new Error("render-frame readiness deadline reached"));
+    }, timeout);
     const advance = (remaining) => {
-      if (remaining <= 0) resolve();
-      else requestAnimationFrame(() => advance(remaining - 1));
+      if (finished) return;
+      if (remaining <= 0) { finished = true; clearTimeout(deadline); resolve(); }
+      else frame = requestAnimationFrame(() => advance(remaining - 1));
     };
     advance(frames);
-  }), count);
+  }), { frames: count, timeout: timeoutMs });
 }
 
 async function applyWaitFor(page, waitFor, armed = null) {
@@ -965,11 +973,11 @@ async function applyWaitFor(page, waitFor, armed = null) {
     evidence[evidence.length - 1].attempts = readback.attempts;
   }
   if (waitFor.renderFrames) {
-    await record("render-frames", () => waitForRenderFrames(page, waitFor.renderFrames), {
+    await record("render-frames", () => waitForRenderFrames(page, waitFor.renderFrames, timeout), {
       frames: waitFor.renderFrames,
     });
   } else if (!Object.keys(waitFor).length) {
-    await record("render-frames", () => waitForRenderFrames(page, 2), { frames: 2 });
+    await record("render-frames", () => waitForRenderFrames(page, 2, timeout), { frames: 2 });
   }
   if (waitFor.settleMs) {
     await record("bounded-delay", () => page.waitForTimeout(waitFor.settleMs), { delayMs: waitFor.settleMs });
