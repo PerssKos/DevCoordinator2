@@ -62,15 +62,10 @@ pub fn recover(
     let now = now.to_owned();
     database
         .transaction(move |transaction| {
-            if request.apply {
-                let checked = crate::planning_backup::inspect(&inspection)
-                    .map_err(|message| invalid(&message))?;
-                if checked.backup_sha256 != snapshot.backup_sha256
-                    || checked.provenance != snapshot.provenance
-                {
-                    return Err(invalid("the selected backup changed before application"));
-                }
-            }
+            // inspect_with verifies the source hash and file identity both before
+            // and after capturing these owned rows. Import only that verified
+            // in-memory snapshot; do not re-read gigabytes while holding the
+            // shared database actor. The live fingerprint is checked atomically.
             apply(transaction, &request, &snapshot, &source, &actor, &now)
         })
         .map_err(|error| match error {
