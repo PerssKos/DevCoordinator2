@@ -151,24 +151,26 @@ impl StaticServer {
     fn start_handler(handler: HttpHandler) -> Result<Self, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|error| format!("cannot bind self-test server: {error}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("cannot configure self-test server: {error}"))?;
         let address = listener.local_addr().map_err(|error| error.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_worker = Arc::clone(&stop);
         let thread = thread::spawn(move || {
+            let mut connections = Vec::new();
             while !stop_worker.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if stop_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let handler = Arc::clone(&handler);
-                        thread::spawn(move || serve_connection(stream, &handler));
+                        connections.push(thread::spawn(move || serve_connection(stream, &handler)));
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
+            }
+            for connection in connections {
+                let _ = connection.join();
             }
         });
         Ok(Self {
@@ -194,26 +196,17 @@ impl Drop for StaticServer {
 }
 
 fn serve_connection(mut stream: TcpStream, handler: &HttpHandler) {
+    // Accepted sockets may inherit nonblocking mode on BSD-family platforms.
+    // This fixture uses blocking read/write_all, so set the mode explicitly.
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut request = [0u8; 16 * 1024];
-    let Ok(count) = stream.read(&mut request) else {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let Some(request) = read_fixture_request(&mut stream) else {
         return;
     };
-    let raw = String::from_utf8_lossy(&request[..count]);
-    let path = raw
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/")
-        .to_owned();
-    let headers = raw
-        .lines()
-        .skip(1)
-        .take_while(|line| !line.trim().is_empty())
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        .collect::<BTreeMap<_, _>>();
-    let response = handler(HttpRequest { path, headers });
+    let response = handler(request);
     if !response.delay.is_zero() {
         thread::sleep(response.delay);
     }
@@ -230,6 +223,57 @@ fn serve_connection(mut stream: TcpStream, handler: &HttpHandler) {
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(&response.body);
     let _ = stream.flush();
+}
+
+fn read_fixture_request(reader: &mut impl Read) -> Option<HttpRequest> {
+    const LIMIT: usize = 16 * 1024;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let end = loop {
+        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            break end + 4;
+        }
+        if bytes.len() == LIMIT {
+            return None;
+        }
+        let room = chunk.len().min(LIMIT - bytes.len());
+        let count = reader.read(&mut chunk[..room]).ok()?;
+        if count == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    };
+    let raw = std::str::from_utf8(&bytes[..end]).ok()?;
+    let path = raw.lines().next()?.split_whitespace().nth(1)?.to_owned();
+    let headers = raw
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    if headers.contains_key("transfer-encoding") {
+        return None;
+    }
+    let body = headers
+        .get("content-length")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .ok()?
+        .unwrap_or(0);
+    let required = end.checked_add(body)?;
+    if required > LIMIT {
+        return None;
+    }
+    while bytes.len() < required {
+        let room = chunk.len().min(required - bytes.len());
+        let count = reader.read(&mut chunk[..room]).ok()?;
+        if count == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    Some(HttpRequest { path, headers })
 }
 
 fn source_root() -> PathBuf {
@@ -4409,15 +4453,41 @@ mod tests {
             .position(|bytes| bytes == b"\r\n\r\n")
             .unwrap()
             + 4;
-        assert_eq!(
-            &response[body_at..],
-            expected,
-            "binary fixture response was truncated"
+        assert!(
+            response[body_at..] == expected,
+            "binary fixture response was truncated: expected {} bytes, received {}",
+            expected.len(),
+            response.len() - body_at
         );
         assert!(
             blocking.load(Ordering::Acquire),
             "blocking fixture I/O inherited nonblocking mode"
         );
+    }
+
+    #[test]
+    fn fixture_http_reads_fragmented_headers_and_body_before_replying() {
+        struct Fragments(std::io::Cursor<Vec<u8>>);
+        impl Read for Fragments {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let take = output.len().min(3);
+                self.0.read(&mut output[..take])
+            }
+        }
+        let input=b"POST /saved HTTP/1.1\r\nHost: fixture\r\nX-Test: complete\r\nContent-Length: 5\r\n\r\nhello".to_vec();
+        let mut fragmented = Fragments(std::io::Cursor::new(input.clone()));
+        let request = read_fixture_request(&mut fragmented).unwrap();
+        assert_eq!(request.path, "/saved");
+        assert_eq!(request.headers["x-test"], "complete");
+        assert_eq!(fragmented.0.position(), input.len() as u64);
+        let mut incomplete = std::io::Cursor::new(b"GET /cut HTTP/1.1\r\nHost: fixture".to_vec());
+        assert!(read_fixture_request(&mut incomplete).is_none());
+        let mut missing_body =
+            std::io::Cursor::new(b"POST /cut HTTP/1.1\r\nContent-Length: 9\r\n\r\nshort".to_vec());
+        assert!(read_fixture_request(&mut missing_body).is_none());
+        let mut oversized = std::io::Cursor::new(vec![b'a'; 16 * 1024 + 1]);
+        assert!(read_fixture_request(&mut oversized).is_none());
+        assert_eq!(oversized.position(), 16 * 1024);
     }
 
     #[test]
