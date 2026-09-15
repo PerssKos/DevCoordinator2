@@ -16,6 +16,7 @@ use devcoordinator2_executor_protocol::{
 };
 use rustix::process::Signal;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::ExecutorError;
@@ -42,6 +43,7 @@ pub struct Executor {
     plan: ExecutionPlan,
     permits: Arc<dyn PermitProvider>,
     cancellation: Cancellation,
+    observations: watch::Sender<Option<ExecutionReport>>,
 }
 
 struct RunMetadataGuard {
@@ -127,7 +129,13 @@ impl Executor {
             plan,
             permits,
             cancellation,
+            observations: watch::channel(None).0,
         })
+    }
+
+    /// Observe reports after their atomic publication without polling the filesystem.
+    pub fn subscribe_progress(&self) -> watch::Receiver<Option<ExecutionReport>> {
+        self.observations.subscribe()
     }
 
     pub async fn run(self) -> Result<ExecutionReport, ExecutorError> {
@@ -202,6 +210,7 @@ impl Executor {
         let report_path = current.join("check-report.json");
         write_report(
             &report_path,
+            &self.observations,
             &plan,
             &checks,
             &capacity,
@@ -222,6 +231,22 @@ impl Executor {
         let (progress, mut progress_rx) = unbounded_channel();
 
         loop {
+            if !service_pgids.is_empty()
+                && checks.iter().all(|check| {
+                    check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                        || check.report.status.is_terminal()
+                })
+            {
+                stop_services(
+                    &mut services,
+                    &mut service_pgids,
+                    &mut checks,
+                    &plan,
+                    &log_lease,
+                    &log_dir,
+                )
+                .await?;
+            }
             while let Ok(update) = progress_rx.try_recv() {
                 apply_process_update(&mut checks, &capacity, update)?;
             }
@@ -308,6 +333,7 @@ impl Executor {
 
             write_report(
                 &report_path,
+                &self.observations,
                 &plan,
                 &checks,
                 &capacity,
@@ -415,6 +441,7 @@ impl Executor {
         let finished_at = iso_now();
         let mut report = write_report(
             &report_path,
+            &self.observations,
             &plan,
             &checks,
             &capacity,
@@ -443,6 +470,7 @@ impl Executor {
             report.failure_index = normalized.entries;
             report.failure_index_truncated |= normalized.truncated;
             write_json_atomic(&report_path, &report)?;
+            publish_observation(&self.observations, &report);
         }
         if sealed && !source_changed {
             for check in &checks {
@@ -826,6 +854,8 @@ fn initialize_checks(
                 finished_at: (reused.is_some() || reused_qualification)
                     .then(|| started_at.to_owned()),
                 duration_seconds: (reused.is_some() || reused_qualification).then_some(0.0),
+                started_epoch_ms: (reused.is_some() || reused_qualification).then_some(epoch_ms()),
+                finished_epoch_ms: (reused.is_some() || reused_qualification).then_some(epoch_ms()),
                 exit: DiagnosticExit::default(),
                 artifacts: reused.cloned().unwrap_or_default(),
                 retained_artifacts: Vec::new(),
@@ -1188,12 +1218,9 @@ fn load_database_environments(
                 "private database environment contains an unsupported field",
             ));
         }
-        plan.checks
-            .iter_mut()
-            .find(|check| &check.name == name)
-            .expect("validated check")
-            .env
-            .extend(environment);
+        if let Some(check) = plan.checks.iter_mut().find(|check| &check.name == name) {
+            check.env.extend(environment);
+        }
     }
     Ok(())
 }
@@ -1836,11 +1863,71 @@ async fn run_case(
         false,
     );
     if let Some(branch) = &case.postgres {
-        let database = &plan.postgres_databases[branch];
+        let key = format!("{}-{}", check.name, case.id);
+        let database = plan
+            .postgres_databases
+            .get(&key)
+            .or_else(|| plan.postgres_databases.get(branch))
+            .ok_or_else(|| ExecutorError::new("case references an unavailable PostgreSQL branch"));
+        let database = match database {
+            Ok(value) => value,
+            Err(_error) => {
+                return CaseOutcome {
+                    report: CaseReport {
+                        execution: None,
+                        id: case.id.clone(),
+                        status: LeafStatus::Unsafe,
+                        exit: diagnostic_exit(None),
+                        duration_ms: millis(started.elapsed()),
+                        streams: Vec::new(),
+                    },
+                    failures: vec![failure_entry(
+                        &plan.run_id,
+                        Some(&check.name),
+                        Some(&case.id),
+                        LeafStatus::Unsafe,
+                        None,
+                        Some(TerminationReason::UnsafeStop),
+                        ErrorCategory::Dependency,
+                        None,
+                    )],
+                };
+            }
+        };
         request.env.insert("PGDATABASE".into(), database.clone());
         if let Some(url) = request.env.get_mut("DATABASE_URL") {
             *url = database_url_with_database(url, database);
         }
+    }
+    if let Some(file) = plan
+        .environment_files
+        .get(&format!("{}/{}", check.name, case.id))
+    {
+        let bytes = match std::fs::read(current.join(file)) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return database_case_failure(
+                    plan,
+                    check,
+                    case,
+                    format!("private case database environment unavailable: {error}"),
+                    started.elapsed(),
+                );
+            }
+        };
+        let environment = match serde_json::from_slice::<BTreeMap<String, String>>(&bytes) {
+            Ok(environment) => environment,
+            Err(error) => {
+                return database_case_failure(
+                    plan,
+                    check,
+                    case,
+                    format!("private case database environment invalid: {error}"),
+                    started.elapsed(),
+                );
+            }
+        };
+        request.env.extend(environment);
     }
     let mut process = run_process(request, permits, cancellation).await;
     finalize_leaf_evidence(
@@ -1862,6 +1949,35 @@ async fn run_case(
             streams: process.streams,
         },
         failures: process.diagnostics,
+    }
+}
+
+fn database_case_failure(
+    plan: &ExecutionPlan,
+    check: &CheckPlan,
+    case: &CaseSpec,
+    _reason: String,
+    duration: Duration,
+) -> CaseOutcome {
+    CaseOutcome {
+        report: CaseReport {
+            execution: None,
+            id: case.id.clone(),
+            status: LeafStatus::Unsafe,
+            exit: diagnostic_exit(None),
+            duration_ms: millis(duration),
+            streams: Vec::new(),
+        },
+        failures: vec![failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            Some(&case.id),
+            LeafStatus::Unsafe,
+            None,
+            Some(TerminationReason::UnsafeStop),
+            ErrorCategory::Artifact,
+            None,
+        )],
     }
 }
 
@@ -2543,6 +2659,7 @@ fn abort_reason(abort: Option<&Abort>) -> &str {
 #[allow(clippy::too_many_arguments)]
 fn write_report(
     path: &Path,
+    observations: &watch::Sender<Option<ExecutionReport>>,
     plan: &ExecutionPlan,
     checks: &[CheckRuntime],
     capacity: &Mutex<CapacityReport>,
@@ -2599,19 +2716,35 @@ fn write_report(
         let key = status_key(check.report.status).to_owned();
         *counts.entry(key).or_insert(0) += 1;
     }
-    let mut phases = BTreeMap::<_, (f64, u32)>::new();
+    let mut phases = BTreeMap::<_, (f64, u32, Option<u64>, Option<u64>)>::new();
     for check in checks {
         let entry = phases.entry(check.report.phase).or_default();
         entry.0 += check.report.duration_seconds.unwrap_or(0.0);
         entry.1 = entry.1.saturating_add(1);
+        entry.2 = match (entry.2, check.report.started_epoch_ms) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (None, value) => value,
+            (value, None) => value,
+        };
+        entry.3 = match (entry.3, check.report.finished_epoch_ms) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (None, value) => value,
+            (value, None) => value,
+        };
     }
     let phase_durations = phases
         .into_iter()
-        .map(|(phase, (duration_seconds, checks))| PhaseDuration {
-            phase,
-            duration_seconds,
-            checks,
-        })
+        .map(
+            |(phase, (duration_seconds, checks, start, end))| PhaseDuration {
+                phase,
+                duration_seconds,
+                elapsed_seconds: end
+                    .zip(start)
+                    .map(|(end, start)| end.saturating_sub(start) as f64 / 1000.0)
+                    .unwrap_or(duration_seconds),
+                checks,
+            },
+        )
         .collect();
     let mut observed_capacity = capacity
         .lock()
@@ -2648,7 +2781,14 @@ fn write_report(
         failure_index_truncated,
     };
     write_json_atomic(path, &report)?;
+    publish_observation(observations, &report);
     Ok(report)
+}
+
+fn publish_observation(sender: &watch::Sender<Option<ExecutionReport>>, report: &ExecutionReport) {
+    if sender.receiver_count() > 0 {
+        sender.send_replace(Some(report.clone()));
+    }
 }
 
 fn observe_capacity(capacity: &Mutex<CapacityReport>, observation: CapacityObservation) {

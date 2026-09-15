@@ -47,7 +47,19 @@ fn git(root: &Path, arguments: &[&str]) -> Result<Vec<u8>, String> {
 
 fn inventory(root: &Path, tree: Option<&str>) -> Result<BTreeMap<String, Entry>, String> {
     let output = if let Some(tree) = tree {
-        git(root, &["ls-tree", "-r", "-z", tree])?
+        let resolved = git(
+            root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                &format!("{tree}^{{tree}}"),
+            ],
+        )?;
+        let resolved = std::str::from_utf8(&resolved)
+            .map_err(|_| "invalid Git tree identity")?
+            .trim();
+        git(root, &["ls-tree", "-r", "-z", resolved])?
     } else {
         git(root, &["ls-files", "--stage", "-z"])?
     };

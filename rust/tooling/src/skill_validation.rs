@@ -618,6 +618,11 @@ pub fn validation_checks(options: &ValidationOptions) -> Vec<CheckPlan> {
                     "all",
                     "--coordinator-fixture",
                     &coordinator_fixture,
+                    "--qualification-cache",
+                    &options
+                        .root
+                        .join(".devcoordinator/test/qualification-cache")
+                        .to_string_lossy(),
                 ],
             ),
             false,

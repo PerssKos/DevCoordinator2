@@ -526,13 +526,14 @@ impl ExecutionPlan {
             return Err(ContractError::new("executor plan exceeds 256 checks"));
         }
         for (check, file) in &self.environment_files {
-            if !self.checks.iter().any(|candidate| &candidate.name == check)
+            let owner = check.split('/').next().unwrap_or(check);
+            if !self.checks.iter().any(|candidate| candidate.name == owner)
                 || !file.starts_with("database-")
                 || !file.ends_with(".json")
                 || Path::new(file).components().count() != 1
             {
                 return Err(ContractError::new(
-                    "private database environment must name an exact check and run-local file",
+                    "private database environment must name an exact check or check/case and run-local file",
                 ));
             }
             validate_relative_path("database environment", file)?;
@@ -632,7 +633,7 @@ impl ExecutionPlan {
         }
         for (branch, database) in &self.postgres_databases {
             validate_name("PostgreSQL branch", branch, 32)?;
-            validate_name("PostgreSQL database", database, 63)?;
+            validate_database_name(database)?;
         }
         for check in &self.checks {
             if let Some(cases) = &check.cases {
@@ -1181,6 +1182,20 @@ fn validate_name(kind: &str, value: &str, maximum: usize) -> Result<(), Contract
     Ok(())
 }
 
+fn validate_database_name(value: &str) -> Result<(), ContractError> {
+    let valid = !value.is_empty()
+        && value.len() <= 63
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'_')
+        });
+    if !valid {
+        return Err(ContractError::new(format!(
+            "PostgreSQL database {value:?} is not a normalized lower-case name"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_identity(kind: &str, value: &str, maximum: usize) -> Result<(), ContractError> {
     let valid = !value.is_empty()
         && value.len() <= maximum
@@ -1465,6 +1480,10 @@ pub struct CheckReport {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_epoch_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_epoch_ms: Option<u64>,
     pub exit: DiagnosticExit,
     pub artifacts: Vec<ArtifactReceipt>,
     pub retained_artifacts: Vec<RetainedArtifactReceipt>,
@@ -1479,6 +1498,8 @@ pub struct CheckReport {
 pub struct PhaseDuration {
     pub phase: CheckPhase,
     pub duration_seconds: f64,
+    #[serde(default)]
+    pub elapsed_seconds: f64,
     pub checks: u32,
 }
 
@@ -2131,6 +2152,8 @@ mod tests {
             started_at: Some("2026-09-04T00:00:00Z".into()),
             finished_at: Some("2026-09-04T00:00:01Z".into()),
             duration_seconds: Some(1.0),
+            started_epoch_ms: Some(0),
+            finished_epoch_ms: Some(1000),
             exit: DiagnosticExit {
                 code: Some(0),
                 signal: None,
@@ -2166,6 +2189,7 @@ mod tests {
             phase_durations: vec![PhaseDuration {
                 phase: CheckPhase::Check,
                 duration_seconds: 1.0,
+                elapsed_seconds: 1.0,
                 checks: 1,
             }],
             failure_index: Vec::new(),

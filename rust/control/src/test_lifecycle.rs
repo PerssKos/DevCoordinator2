@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -115,6 +115,8 @@ struct RunHandle {
     work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
     test: String,
+    targets: Vec<String>,
+    case_selection: BTreeMap<String, Vec<String>>,
     unit: String,
     worktree_id: String,
     worktree: PathBuf,
@@ -215,6 +217,20 @@ enum LaunchState {
 struct EphemeralPostgres {
     container: ExactContainerId,
     environment: BTreeMap<String, String>,
+    templates: BTreeMap<String, String>,
+}
+
+struct ContainerCleanup {
+    docker: Arc<dyn DockerControl>,
+    container: Option<ExactContainerId>,
+}
+
+impl Drop for ContainerCleanup {
+    fn drop(&mut self) {
+        if let Some(container) = self.container.take() {
+            let _ = self.docker.remove_container(&container, true);
+        }
+    }
 }
 
 impl TestLifecycle {
@@ -583,7 +599,7 @@ impl TestLifecycle {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn start_inner(
         &self,
         path: &str,
@@ -843,9 +859,11 @@ impl TestLifecycle {
         );
         let mut containers = Vec::new();
         let mut environment_files = BTreeMap::new();
+        let mut postgres_databases = BTreeMap::new();
         if let Some(postgres) = &specification.postgres {
             match self.provision_postgres(
                 postgres,
+                &worktree,
                 None,
                 &run_id,
                 &registered.repository_id,
@@ -854,6 +872,10 @@ impl TestLifecycle {
                 caller,
             ) {
                 Ok(postgres) => {
+                    postgres_databases.insert(
+                        "default".into(),
+                        specification.postgres.as_ref().unwrap().database.clone(),
+                    );
                     environment.extend(postgres.environment);
                     containers.push(postgres.container);
                     let identities = containers
@@ -887,6 +909,7 @@ impl TestLifecycle {
             }
             let prepared_database = self.provision_postgres(
                 postgres,
+                &worktree,
                 Some(scope),
                 &run_id,
                 &registered.repository_id,
@@ -896,7 +919,78 @@ impl TestLifecycle {
             );
             match prepared_database {
                 Ok(database) => {
-                    containers.push(database.container);
+                    postgres_databases.insert(scope.clone(), postgres.database.clone());
+                    containers.push(database.container.clone());
+                    let mut case_files = Vec::new();
+                    for owner in &owners {
+                        let Some(check) = specification
+                            .checks
+                            .iter()
+                            .find(|check| &check.name == owner)
+                        else {
+                            continue;
+                        };
+                        let selected_cases = case_selection
+                            .get(owner)
+                            .cloned()
+                            .or_else(|| {
+                                check
+                                    .cases
+                                    .as_ref()
+                                    .map(|cases| cases.iter().map(|case| case.id.clone()).collect())
+                            })
+                            .unwrap_or_default();
+                        for case_id in selected_cases {
+                            let Some(case) = check
+                                .cases
+                                .as_ref()
+                                .and_then(|cases| cases.iter().find(|case| case.id == case_id))
+                            else {
+                                continue;
+                            };
+                            let Some(branch) = case.postgres.as_deref() else {
+                                continue;
+                            };
+                            postgres_databases.insert(branch.to_owned(), postgres.database.clone());
+                            let Some(template) = database.templates.get(branch) else {
+                                postgres_databases.insert(
+                                    branch.to_owned(),
+                                    database.environment["PGDATABASE"].clone(),
+                                );
+                                continue;
+                            };
+                            let clone_name = format!(
+                                "dc2_case_{}_{}",
+                                run_id.trim_start_matches('t'),
+                                sql_identifier(&case_id)
+                            );
+                            self.clone_postgres_database(
+                                &database.container,
+                                &postgres.user,
+                                template,
+                                &clone_name,
+                            )?;
+                            postgres_databases
+                                .insert(format!("{owner}-{case_id}"), clone_name.clone());
+                            let mut environment = database.environment.clone();
+                            environment.insert("PGDATABASE".into(), clone_name.clone());
+                            if let Some(url) = environment.get_mut("DATABASE_URL") {
+                                *url = database_url_with_database(url, &clone_name);
+                            }
+                            let file = self
+                                .inner
+                                .store
+                                .write_database_environment(
+                                    &prepared.current,
+                                    &format!("{scope}-{}", case_id),
+                                    &environment,
+                                    caller.uid,
+                                    caller.gid,
+                                )
+                                .map_err(state_start_error)?;
+                            case_files.push((format!("{owner}/{case_id}"), file));
+                        }
+                    }
                     let persisted = self
                         .inner
                         .store
@@ -923,6 +1017,7 @@ impl TestLifecycle {
                             for owner in owners {
                                 environment_files.insert(owner, file.clone());
                             }
+                            environment_files.extend(case_files);
                         }
                         Err(error) => {
                             self.rollback_accepted_start(&worktree, &run_id, &containers);
@@ -966,6 +1061,7 @@ impl TestLifecycle {
         };
         plan.case_selection = case_selection;
         plan.environment_files = environment_files;
+        plan.postgres_databases = postgres_databases;
         if let Err(error) = plan.validate() {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(ProtocolError::new(
@@ -1019,6 +1115,8 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            targets: specification.targets.clone(),
+            case_selection: plan.case_selection.clone(),
             work: caller.work.clone(),
             run_id: run_id.clone(),
             test: specification.name.clone(),
@@ -1157,6 +1255,7 @@ impl TestLifecycle {
         {
             records.retain(|record| record.run_id != current.run_id);
             records.push(crate::test_state::TestHistoryEntry {
+                targets: current.targets.clone(),
                 work: current.work,
                 run_id: current.run_id,
                 test: current.test,
@@ -1192,6 +1291,7 @@ impl TestLifecycle {
         let mut bytes = 0;
         for record in &records[start..end] {
             let row = devcoordinator2_api::results::TestHistoryRun {
+                targets: record.targets.clone(),
                 work: record.work.clone(),
                 run_id: record.run_id.clone(),
                 test: record.test.clone(),
@@ -1589,6 +1689,7 @@ impl TestLifecycle {
     fn provision_postgres(
         &self,
         specification: &crate::repository_config::PostgresSpec,
+        worktree: &Path,
         scope: Option<&str>,
         run_id: &str,
         repository_id: &str,
@@ -1662,6 +1763,10 @@ impl TestLifecycle {
                 command: Vec::new(),
             })
             .map_err(postgres_error)?;
+        let mut cleanup = ContainerCleanup {
+            docker: self.inner.docker.clone(),
+            container: Some(container.clone()),
+        };
         let prepared = (|| {
             let port = self
                 .inner
@@ -1682,10 +1787,73 @@ impl TestLifecycle {
                 return Err(postgres_error(error));
             }
         };
+        let mut templates = BTreeMap::new();
+        for (name, template) in &specification.templates {
+            let template_db = format!(
+                "dc2_template_{}_{}",
+                run_id.trim_start_matches('t'),
+                sql_identifier(name)
+            );
+            self.inner
+                .docker
+                .postgres_sql(
+                    &container,
+                    &specification.user,
+                    "postgres",
+                    sql_file(format!("CREATE DATABASE {template_db}"), &[])?,
+                    None,
+                )
+                .map_err(postgres_error)?;
+            for input in &template.init_sql {
+                let path = worktree.join(input).canonicalize().map_err(|error| {
+                    postgres_error(crate::docker::DockerError::InvalidRequest(format!(
+                        "template SQL unavailable: {error}"
+                    )))
+                })?;
+                if !path.starts_with(worktree) {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RepositoryConfigInvalid,
+                        "database template SQL escapes the repository",
+                    ));
+                }
+                let metadata = std::fs::metadata(&path).map_err(|error| {
+                    postgres_error(crate::docker::DockerError::InvalidRequest(format!(
+                        "template SQL unavailable: {error}"
+                    )))
+                })?;
+                if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RepositoryConfigInvalid,
+                        "database template SQL exceeds its bound",
+                    ));
+                }
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    postgres_error(crate::docker::DockerError::InvalidRequest(
+                        error.to_string(),
+                    ))
+                })?;
+                self.inner
+                    .docker
+                    .postgres_sql(
+                        &container,
+                        &specification.user,
+                        &template_db,
+                        sql_file_bytes(&bytes)?,
+                        None,
+                    )
+                    .map_err(postgres_error)?;
+            }
+            self.inner.docker.postgres_sql(&container, &specification.user, "postgres", sql_file(format!("ALTER DATABASE {template_db} IS_TEMPLATE true; ALTER DATABASE {template_db} ALLOW_CONNECTIONS false;"), &[])?, None).map_err(postgres_error)?;
+            templates.insert(name.clone(), template_db);
+        }
         let url = format!(
             "postgresql://{}:{}@127.0.0.1:{}/{}",
             specification.user, password, port, specification.database
         );
+        let container = cleanup
+            .container
+            .take()
+            .expect("container cleanup identity");
         Ok(EphemeralPostgres {
             container,
             environment: BTreeMap::from([
@@ -1696,7 +1864,22 @@ impl TestLifecycle {
                 ("PGDATABASE".into(), specification.database.clone()),
                 ("DATABASE_URL".into(), url),
             ]),
+            templates,
         })
+    }
+
+    fn clone_postgres_database(
+        &self,
+        container: &ExactContainerId,
+        user: &str,
+        template: &str,
+        database: &str,
+    ) -> Result<(), ProtocolError> {
+        let statement = format!("CREATE DATABASE {database} TEMPLATE {template}");
+        self.inner
+            .docker
+            .postgres_sql(container, user, "postgres", sql_file(statement, &[])?, None)
+            .map_err(postgres_error)
     }
 
     fn resolve_history_worktree(
@@ -2138,6 +2321,8 @@ impl TestLifecycle {
             handle.requested_tier,
         );
         summary.work = handle.work.clone();
+        summary.targets = handle.targets.clone();
+        summary.case_selection = handle.case_selection.clone();
         summary.report_issue = report_issue;
         terminal_status(
             &mut summary,
@@ -2947,6 +3132,38 @@ fn base64_url_no_pad(bytes: &[u8]) -> String {
     output
 }
 
+fn sql_identifier(value: &str) -> String {
+    let mut output = value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || byte == b'_' {
+                byte as char
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if output.is_empty() || output.as_bytes()[0].is_ascii_digit() {
+        output.insert(0, '_');
+    }
+    output.chars().take(48).collect()
+}
+
+fn database_url_with_database(url: &str, database: &str) -> String {
+    let (base, suffix) = url
+        .split_once('?')
+        .map_or((url, ""), |(base, query)| (base, query));
+    let Some(slash) = base.rfind('/') else {
+        return url.to_owned();
+    };
+    let mut result = format!("{}{database}", &base[..=slash]);
+    if !suffix.is_empty() {
+        result.push('?');
+        result.push_str(suffix);
+    }
+    result
+}
+
 fn admission_error(error: AdmissionError) -> ProtocolError {
     let code = if matches!(error, AdmissionError::TestsDraining { .. }) {
         ErrorCode::TestsDraining
@@ -2969,6 +3186,35 @@ fn postgres_error(error: crate::docker::DockerError) -> ProtocolError {
         ErrorCode::TestStartFailed,
         format!("ephemeral PostgreSQL failed: {error}"),
     )
+}
+
+fn sql_file(statement: String, _unused: &[u8]) -> Result<File, ProtocolError> {
+    sql_file_bytes(statement.as_bytes())
+}
+
+fn sql_file_bytes(bytes: &[u8]) -> Result<File, ProtocolError> {
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(ProtocolError::new(
+            ErrorCode::RepositoryConfigInvalid,
+            "database template SQL exceeds its bound",
+        ));
+    }
+    let mut file = tempfile::tempfile().map_err(|error| {
+        postgres_error(crate::docker::DockerError::InvalidRequest(
+            error.to_string(),
+        ))
+    })?;
+    file.write_all(bytes).map_err(|error| {
+        postgres_error(crate::docker::DockerError::InvalidRequest(
+            error.to_string(),
+        ))
+    })?;
+    file.seek(SeekFrom::Start(0)).map_err(|error| {
+        postgres_error(crate::docker::DockerError::InvalidRequest(
+            error.to_string(),
+        ))
+    })?;
+    Ok(file)
 }
 
 fn state_start_error(error: crate::test_state::TestStateError) -> ProtocolError {

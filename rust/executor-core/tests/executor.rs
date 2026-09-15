@@ -173,21 +173,19 @@ async fn admission_wait_is_visible_before_grant_and_excluded_from_process_durati
         Cancellation::default(),
     )
     .unwrap();
+    let mut observations = execution.subscribe_progress();
     let running = tokio::spawn(execution.run());
-    let report_path = repository.current(run_id).join("check-report.json");
     let queued = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Ok(bytes) = fs::read(&report_path)
-                && let Ok(report) =
-                    devcoordinator2_executor_core::protocol::ExecutionReport::from_json(&bytes)
+            observations.changed().await.expect("executor progress");
+            if let Some(report) = observations.borrow_and_update().as_ref()
                 && report.checks[0]
                     .execution
                     .as_ref()
                     .is_some_and(|progress| progress.waiting == 1)
             {
-                break report;
+                break report.clone();
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -201,7 +199,6 @@ async fn admission_wait_is_visible_before_grant_and_excluded_from_process_durati
             .join("checks/quick/check/stdout.log")
             .exists()
     );
-    tokio::time::sleep(Duration::from_millis(50)).await;
     drop(held);
     let report = running.await.unwrap().unwrap();
     assert_eq!(report.status, RunStatus::Passed);
@@ -215,7 +212,7 @@ async fn admission_wait_is_visible_before_grant_and_excluded_from_process_durati
         ),
         (0, 0, 0, 1)
     );
-    assert!(execution.capacity_wait_ms >= 50);
+    assert!(execution.capacity_wait_ms <= (report.duration_seconds * 1000.0).ceil() as u64);
     assert!(execution.admitted_at_epoch_ms.unwrap() >= execution.queued_at_epoch_ms);
     assert!(execution.started_at_epoch_ms.unwrap() >= execution.admitted_at_epoch_ms.unwrap());
     assert_eq!(report.capacity.capacity_wait_count, 1);
@@ -663,7 +660,15 @@ async fn event_ready_service_remains_executing_while_its_dependent_uses_it() {
     let repository = Repository::new("event-live-progress");
     let mut service = direct("service", fixture(&["event", "valid"]));
     service.completion = CompletionMode::Event;
-    let mut dependent = direct("dependent", fixture(&["sleep", "1"]));
+    let release = repository.root.join(".devcoordinator/release.fifo");
+    fs::create_dir_all(release.parent().unwrap()).unwrap();
+    let encoded = std::ffi::CString::new(release.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: the CString is live and this new path belongs to the disposable fixture.
+    assert_eq!(unsafe { libc::mkfifo(encoded.as_ptr(), 0o600) }, 0);
+    let mut dependent = direct(
+        "dependent",
+        fixture(&["wait-fifo", release.to_str().unwrap()]),
+    );
     dependent.requires = vec!["service".into()];
     let run_id = "run-event-live-progress";
     let execution = Executor::new(
@@ -672,28 +677,37 @@ async fn event_ready_service_remains_executing_while_its_dependent_uses_it() {
         Cancellation::default(),
     )
     .unwrap();
+    let mut observations = execution.subscribe_progress();
     let running = tokio::spawn(execution.run());
-    let path = repository.current(run_id).join("check-report.json");
     let observed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Ok(bytes) = fs::read(&path)
-                && let Ok(report) =
-                    devcoordinator2_executor_core::protocol::ExecutionReport::from_json(&bytes)
+            observations.changed().await.expect("executor progress");
+            if let Some(report) = observations.borrow_and_update().as_ref()
                 && report.checks[0].status == LeafStatus::Passed
                 && report.checks[1]
                     .execution
                     .as_ref()
                     .is_some_and(|p| p.executing == 1)
             {
-                break report;
+                break report.clone();
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .expect("live service observation");
     assert_eq!(observed.checks[0].execution.as_ref().unwrap().executing, 1);
     assert_eq!(observed.checks[0].execution.as_ref().unwrap().finished, 0);
+    tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(release)
+            .unwrap()
+            .write_all(b"1")
+            .unwrap();
+    })
+    .await
+    .unwrap();
     let complete = running.await.unwrap().unwrap();
     assert_eq!(complete.status, RunStatus::Passed);
     assert_eq!(complete.checks[0].execution.as_ref().unwrap().executing, 0);
@@ -781,17 +795,27 @@ async fn external_cancellation_stops_running_leaf_and_finishes_report() {
         cancellation.clone(),
     )
     .expect("executor");
+    let mut observations = executor.subscribe_progress();
     let task = tokio::spawn(executor.run());
-    for _ in 0..100 {
-        if repository
-            .current("run-cancel")
-            .join("check-report.json")
-            .exists()
-        {
-            break;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            observations.changed().await.expect("executor progress");
+            if observations
+                .borrow_and_update()
+                .as_ref()
+                .is_some_and(|report| {
+                    report.checks[0]
+                        .execution
+                        .as_ref()
+                        .is_some_and(|progress| progress.executing == 1)
+                })
+            {
+                break;
+            }
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    })
+    .await
+    .expect("running leaf observation");
     cancellation.cancel();
     let report = task.await.expect("join").expect("report");
     assert_eq!(report.status, RunStatus::Failed);
@@ -867,6 +891,39 @@ async fn cleanup_runs_when_cancellation_prevents_the_work_from_starting() {
         fs::read(repository.root.join(".devcoordinator/cleaned")).unwrap(),
         b"yes"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_reclaims_resources_after_event_service_consumers_finish() {
+    use devcoordinator2_executor_core::protocol::{ResourceAccess, ResourceClaim, ResourceKind};
+    let repository = Repository::new("cleanup-service-resource");
+    let claim = ResourceClaim {
+        kind: ResourceKind::Directory,
+        id: ".devcoordinator/service".into(),
+        access: ResourceAccess::Exclusive,
+    };
+    let mut service = direct("service", fixture(&["event", "valid"]));
+    service.completion = CompletionMode::Event;
+    service.resources = vec![claim.clone()];
+    let mut work = direct("work", fixture_exit(0));
+    work.requires = vec!["service".into()];
+    let mut cleanup = direct("cleanup", fixture_exit(0));
+    cleanup.phase = CheckPhase::Cleanup;
+    cleanup.requires = vec!["work".into()];
+    cleanup.resources = vec![claim];
+    let report = tokio::time::timeout(
+        Duration::from_secs(5),
+        execute(plan(
+            &repository,
+            "run-cleanup-service",
+            vec![service, work, cleanup],
+        )),
+    )
+    .await
+    .expect("service resource released before cleanup");
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(report.checks[2].status, LeafStatus::Passed);
+    assert_eq!(report.checks[0].execution.as_ref().unwrap().executing, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

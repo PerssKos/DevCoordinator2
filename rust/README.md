@@ -56,3 +56,30 @@ state, follow links, or overwrite an existing export. Known credential and priva
 identity lines are withheld using the public-artifact guard; the command is for
 isolated CI fixtures, not arbitrary live runtime logs. CI uploads only these JSON
 files and retains them for seven days. Complete local streams remain private.
+
+The repository-local commit hook uses the same Rust guard as CI:
+
+```text
+git config --local core.hooksPath .githooks
+devcoordinator2-tooling check pre-commit --root /absolute/worktree
+devcoordinator2-tooling check pre-commit --root /absolute/worktree --tree HEAD
+```
+
+Install the hook after building or installing the matching tooling binary. Preserve
+any existing hook arrangement when configuring a checkout. The default command
+reads staged blobs and their staged provenance sidecars, so an unstaged edit cannot
+hide a staged secret or replace its evidence. CI checks the entire committed tree.
+Both forms apply the existing privacy and public-artifact rules, reject generated
+runtime evidence and invalid executable modes, and limit each new staged file to
+10 MiB. The command reports paths and rule identities without printing file content.
+
+An explicitly reviewed large file can be bound to its exact Git blob in the staged
+`.devcoordinator-commit-allowlist.json`:
+
+```json
+{"version":1,"large_files":[{"path":"fixtures/reference.bin","blob":"<git hash-object identity>","reason":"Reviewed deterministic acceptance fixture"}]}
+```
+
+The exception applies only to that path and blob, never to privacy, provenance, or
+executable checks. Replacing the file requires a new reviewed exception. The
+allowlist itself must be a regular non-executable file no larger than 64 KiB.

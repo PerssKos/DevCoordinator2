@@ -353,7 +353,14 @@ impl FixtureSystemd {
             "cancelled",
             "unsafe",
         ] {
-            counts.insert(name.into(), u32::from(name == selected_status));
+            counts.insert(
+                name.into(),
+                if name == selected_status {
+                    plan.checks.len() as u32
+                } else {
+                    0
+                },
+            );
         }
         let checks = plan
             .checks
@@ -372,6 +379,8 @@ impl FixtureSystemd {
                 started_at: Some("2026-09-04T00:00:00Z".into()),
                 finished_at: Some("2026-09-04T00:00:01Z".into()),
                 duration_seconds: Some(1.0),
+                started_epoch_ms: Some(0),
+                finished_epoch_ms: Some(1000),
                 exit: DiagnosticExit {
                     code: Some(exit),
                     signal: None,
@@ -585,6 +594,7 @@ struct LifecycleWorld {
     lifecycle: TestLifecycle,
     systemd: Arc<FixtureSystemd>,
     events: Arc<Mutex<Vec<TestLifecycleEvent>>>,
+    events_changed: Arc<Condvar>,
     caller: Caller,
     monotonic: Arc<FixtureMonotonic>,
 }
@@ -669,7 +679,12 @@ command=["true"]
         .unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&events);
-        lifecycle.set_event_sink(Arc::new(move |event| captured.lock().unwrap().push(event)));
+        let events_changed = Arc::new(Condvar::new());
+        let changed = Arc::clone(&events_changed);
+        lifecycle.set_event_sink(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+            changed.notify_all();
+        }));
         let caller = Caller {
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
@@ -686,6 +701,7 @@ command=["true"]
             lifecycle,
             systemd,
             events,
+            events_changed,
             caller,
             monotonic,
         }
@@ -747,6 +763,7 @@ command=["true"]
     fn wait_status(&self, expected: TestStatus) -> devcoordinator2_api::results::TestSummary {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
+            let observed = self.events.lock().unwrap().len();
             let status = self
                 .lifecycle
                 .status(self.worktree.to_str().unwrap(), &self.caller)
@@ -758,9 +775,147 @@ command=["true"]
                 Instant::now() < deadline,
                 "status did not become {expected:?}"
             );
-            thread::sleep(Duration::from_millis(20));
+            let events = self.events.lock().unwrap();
+            if events.len() == observed {
+                let _ = self
+                    .events_changed
+                    .wait_timeout(events, deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+            }
         }
     }
+}
+
+#[test]
+fn composed_targets_preserve_names_case_closure_and_latest_start_ownership() {
+    use devcoordinator2_executor_protocol::CheckPhase;
+    let world = LifecycleWorld::new();
+    let mut config = String::from("schema=2\n");
+    for target in ["alpha", "beta"] {
+        config.push_str(&format!(
+            r#"
+[test.{target}]
+[[test.{target}.check]]
+name="setup"
+tier="development"
+phase="setup"
+command=["true"]
+[[test.{target}.check]]
+name="cases"
+tier="development"
+phase="case"
+requires=["setup"]
+case_command=["true"]
+cases=[{{id="first",args=[]}},{{id="second",args=[]}}]
+[[test.{target}.check]]
+name="cleanup"
+tier="release"
+phase="cleanup"
+after=["cases"]
+command=["true"]
+"#
+        ));
+    }
+    std::fs::write(world.worktree.join(".devcoordinator.toml"), config).unwrap();
+    let request = StartTest {
+        path: world.worktree.to_string_lossy().into_owned(),
+        test: None,
+        targets: vec!["beta".into(), "alpha".into()],
+        checks: Vec::new(),
+        cases: BTreeMap::new(),
+        tier: ApiValidationTier::Development,
+    };
+    let first = world
+        .lifecycle
+        .start(request.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(first.targets, vec!["alpha", "beta"]);
+    let read_plan = || {
+        ExecutionPlan::from_json(
+            &std::fs::read(
+                world
+                    .worktree
+                    .join(".devcoordinator/test/current/check-plan.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let composed = read_plan();
+    assert_eq!(composed.checks.len(), 6);
+    assert_eq!(
+        composed
+            .checks
+            .iter()
+            .map(|check| &check.name)
+            .collect::<HashSet<_>>()
+            .len(),
+        6
+    );
+    assert!(
+        composed
+            .checks
+            .iter()
+            .any(|check| check.display_name.as_deref() == Some("alpha / cases"))
+    );
+
+    let mut focused = request.clone();
+    focused
+        .cases
+        .insert("alpha/cases".into(), vec!["second".into()]);
+    let second = world.lifecycle.start(focused, &world.caller).unwrap();
+    assert_eq!(
+        second.superseded_run_id.as_deref(),
+        Some(first.run_id.as_str())
+    );
+    let selected = read_plan();
+    assert_eq!(selected.checks.len(), 3);
+    assert!(selected.checks.iter().all(|check| {
+        check
+            .display_name
+            .as_deref()
+            .unwrap()
+            .starts_with("alpha / ")
+    }));
+    assert_eq!(
+        selected
+            .checks
+            .iter()
+            .filter(|check| check.phase == CheckPhase::Cleanup)
+            .count(),
+        1
+    );
+    assert_eq!(
+        selected.case_selection.values().next().unwrap(),
+        &vec!["second".to_owned()]
+    );
+
+    let mut invalid = request;
+    invalid
+        .cases
+        .insert("alpha/cases".into(), vec!["missing".into()]);
+    assert_eq!(
+        world
+            .lifecycle
+            .start(invalid, &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .run_id,
+        second.run_id
+    );
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), 2);
+    world.systemd.finish(&second.unit);
+    let summary = world.wait_status(TestStatus::Passed);
+    assert_eq!(summary.targets, vec!["alpha", "beta"]);
+    assert_eq!(summary.case_selection, selected.case_selection);
 }
 
 #[test]

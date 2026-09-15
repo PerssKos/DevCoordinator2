@@ -3996,6 +3996,7 @@ pub struct SelfTestOptions {
     pub timeout_seconds: u64,
     pub phase: String,
     pub coordinator_fixture: Option<PathBuf>,
+    pub qualification_cache: Option<PathBuf>,
 }
 
 fn settle_phase(
@@ -4038,6 +4039,25 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     }
     let root = source_root();
     validate_skill_contract(&root)?;
+    let qualification_inputs =
+        if options.phase == "all" && !options.keep && options.qualification_cache.is_some() {
+            playwright_module_dir(&root).ok().and_then(|modules| {
+                crate::qualification_cache::inputs(
+                    &root,
+                    &modules,
+                    options.coordinator_fixture.as_deref(),
+                    options.timeout_seconds,
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
+    if let (Some(directory), Some(inputs)) = (&options.qualification_cache, &qualification_inputs)
+        && let Some(receipt) = crate::qualification_cache::lookup(directory, inputs)
+    {
+        return Ok(receipt);
+    }
     let pages = load_pages(&root)?;
     let mut matrix = load_matrix(&root)?;
     if options.phase == "rendering" {
@@ -4244,6 +4264,11 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     })();
     match result {
         Ok(mut summary) => {
+            if qualification_inputs.is_some()
+                && crate::qualification_cache::managed_browser_evidence(&work)
+            {
+                summary["qualification_browser"] = json!("playwright-managed-browser");
+            }
             if options.keep {
                 summary["workspace"] = json!(work);
             } else {
@@ -4251,6 +4276,26 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
                 std::fs::remove_dir_all(&work)
                     .map_err(|error| format!("cannot clean self-test workspace: {error}"))?;
                 summary["workspace"] = Value::Null;
+            }
+            summary["qualification"] = json!("executed");
+            if let (Some(directory), Some(inputs)) =
+                (&options.qualification_cache, &qualification_inputs)
+                && playwright_module_dir(&root)
+                    .ok()
+                    .and_then(|modules| {
+                        crate::qualification_cache::inputs(
+                            &root,
+                            &modules,
+                            options.coordinator_fixture.as_deref(),
+                            options.timeout_seconds,
+                        )
+                        .ok()
+                    })
+                    .as_ref()
+                    == Some(inputs)
+            {
+                summary["qualification_cache_saved"] =
+                    json!(crate::qualification_cache::record(directory, inputs, &summary).is_ok());
             }
             Ok(summary)
         }

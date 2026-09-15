@@ -91,6 +91,8 @@ pub enum CheckPhase {
 pub struct PhaseDuration {
     pub phase: CheckPhase,
     pub duration_seconds: f64,
+    #[serde(default)]
+    pub elapsed_seconds: f64,
     pub checks: u32,
 }
 
@@ -593,6 +595,8 @@ pub struct TestList {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryRun {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<crate::work_context::WorkAttribution>,
     pub run_id: String,

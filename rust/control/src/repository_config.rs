@@ -2571,7 +2571,8 @@ resources=[{kind='directory',id='./shared',access='exclusive'}]
             .find(|check| check.display_name.as_deref() == Some("alpha / verify"))
             .unwrap();
         assert_eq!(composed.targets, ["alpha", "beta"]);
-        assert_eq!(verify.requires, [build.clone()]);
+        assert_eq!(verify.requires.len(), 1);
+        assert_eq!(verify.requires[0], *build);
         assert_eq!(verify.consumes[0].check, *build);
         assert_eq!(verify.env["LANGUAGE"], "alpha");
         let builds = composed

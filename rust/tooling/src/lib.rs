@@ -22,6 +22,7 @@ pub mod planning_backup;
 pub mod pre_commit;
 pub mod public_artifacts;
 pub mod python_guard;
+pub mod qualification_cache;
 pub mod repository_checks;
 pub mod skill_links;
 pub mod skill_selftest;

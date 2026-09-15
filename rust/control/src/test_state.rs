@@ -50,6 +50,8 @@ pub struct PreparedRun {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryEntry {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
@@ -405,6 +407,7 @@ impl TestRunStore {
         let mut runs = self.read_history(worktree)?;
         runs.retain(|run| run.run_id != summary.run_id);
         runs.push(TestHistoryEntry {
+            targets: summary.targets.clone(),
             work: summary.work.clone(),
             run_id: summary.run_id.clone(),
             test: summary.test.clone(),

@@ -21,6 +21,7 @@ fn work_context_receipt_retention_preserves_whole_newest_bindings_within_existin
     });
     let mut rows = (0..1000)
         .map(|index| TestHistoryEntry {
+            targets: Vec::new(),
             work: work.clone(),
             run_id: format!("t20260904T000000Z-{index:06x}"),
             test: "focused".into(),
