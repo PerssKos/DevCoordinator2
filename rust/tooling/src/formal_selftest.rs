@@ -4353,6 +4353,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fixture_http_handles_inherited_nonblocking_sockets_without_truncating_media() {
+        use std::os::fd::AsRawFd;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .write_all(b"GET /lcp.png HTTP/1.1\r\nHost: fixture\r\n\r\n")
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let buffer_bytes: libc::c_int = 4096;
+        // SAFETY: the descriptor and option buffer are live for this exact fixture socket.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    server.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&buffer_bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&buffer_bytes) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let expected = lcp_png();
+        let body = expected.clone();
+        let blocking = Arc::new(AtomicBool::new(false));
+        let observed = blocking.clone();
+        let descriptor = server.as_raw_fd();
+        let handler: HttpHandler = Arc::new(move |request| {
+            assert_eq!(request.path, "/lcp.png");
+            // SAFETY: serve_connection still owns this descriptor while invoking the handler.
+            observed.store(
+                unsafe { libc::fcntl(descriptor, libc::F_GETFL) } & libc::O_NONBLOCK == 0,
+                Ordering::Release,
+            );
+            HttpResponse {
+                status: "200 OK",
+                content_type: "image/png",
+                headers: Vec::new(),
+                body: body.clone(),
+                delay: Duration::ZERO,
+            }
+        });
+        let worker = thread::spawn(move || serve_connection(server, &handler));
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut response = Vec::new();
+        let received = client.read_to_end(&mut response);
+        worker.join().unwrap();
+        received.unwrap();
+        let body_at = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(
+            &response[body_at..],
+            expected,
+            "binary fixture response was truncated"
+        );
+        assert!(
+            blocking.load(Ordering::Acquire),
+            "blocking fixture I/O inherited nonblocking mode"
+        );
+    }
+
+    #[test]
     fn suspended_paint_delivery_finishes_with_unavailable_without_a_real_sleep() {
         let root = source_root();
         let verifier =
