@@ -73,6 +73,27 @@ pub enum CheckRole {
     Preflight,
 }
 
+#[derive(Clone, Copy, Debug, Default, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckPhase {
+    Setup,
+    Build,
+    Fixture,
+    Case,
+    Cleanup,
+    Qualification,
+    #[default]
+    Check,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseDuration {
+    pub phase: CheckPhase,
+    pub duration_seconds: f64,
+    pub checks: u32,
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DiagnosticValueType {
@@ -293,6 +314,8 @@ pub struct RepositoryStatus {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestStarted {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     pub run_id: String,
     pub repository_id: String,
     pub worktree_id: String,
@@ -386,6 +409,10 @@ pub struct CaseProjection {
 #[serde(deny_unknown_fields)]
 pub struct CheckProjection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub phase: CheckPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub name: String,
     pub tier: crate::params::ValidationTier,
@@ -454,6 +481,12 @@ pub struct ExecutionCapacity {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestSummary {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub case_selection: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_durations: Vec<PhaseDuration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<crate::work_context::WorkAttribution>,
     pub schema_version: u8,

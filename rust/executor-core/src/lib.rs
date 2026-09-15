@@ -11,6 +11,7 @@ pub mod log_query;
 mod log_store;
 mod process;
 mod retention;
+mod reuse;
 mod runner;
 
 pub use capacity::{

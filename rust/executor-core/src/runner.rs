@@ -131,7 +131,7 @@ impl Executor {
     }
 
     pub async fn run(self) -> Result<ExecutionReport, ExecutorError> {
-        let plan = Arc::new(self.plan);
+        let mut plan = self.plan;
         let root_requested = PathBuf::from(&plan.worktree_root);
         let current_requested = PathBuf::from(&plan.current_dir);
         let log_requested = PathBuf::from(&plan.log_dir);
@@ -177,6 +177,8 @@ impl Executor {
                 "executor current_dir resolves outside the worktree",
             ));
         }
+        load_database_environments(&current, &mut plan)?;
+        let plan = Arc::new(plan);
         for directory in ["checks", "scratch", "artifacts"] {
             tokio::fs::create_dir_all(current.join(directory))
                 .await
@@ -250,10 +252,11 @@ impl Executor {
                     &plan.run_id,
                     &log_lease,
                     abort_reason(abort.as_ref()),
+                    !matches!(abort, Some(Abort::Unsafe(_))),
                 );
             }
 
-            if abort.is_none() {
+            if !matches!(abort, Some(Abort::Unsafe(_))) {
                 let ready = ready_checks_with_available_resources(
                     &checks,
                     &invalidators,
@@ -261,6 +264,12 @@ impl Executor {
                 );
                 for name in ready {
                     let index = check_index(&checks, &name)?;
+                    if abort.is_some()
+                        && checks[index].plan.phase
+                            != devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                    {
+                        continue;
+                    }
                     let runtime = &mut checks[index];
                     runtime.report.status = LeafStatus::Running;
                     runtime.report.started_at = None;
@@ -270,7 +279,12 @@ impl Executor {
                     let root = root.clone();
                     let current = current.clone();
                     let permits = self.permits.clone();
-                    let cancellation = self.cancellation.clone();
+                    let cancellation =
+                        if check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup {
+                            Cancellation::default()
+                        } else {
+                            self.cancellation.clone()
+                        };
                     let log_lease = log_lease.clone();
                     let log_dir = log_dir.clone();
                     let progress = progress.clone();
@@ -411,7 +425,8 @@ impl Executor {
             source_changed,
             source_error,
         )?;
-        if run_metadata.finish(status, true).is_err() {
+        let sealed = run_metadata.finish(status, true).is_ok();
+        if !sealed {
             report.status = RunStatus::Failed;
             report.failure_index.push(failure_entry(
                 &plan.run_id,
@@ -428,6 +443,38 @@ impl Executor {
             report.failure_index = normalized.entries;
             report.failure_index_truncated |= normalized.truncated;
             write_json_atomic(&report_path, &report)?;
+        }
+        if sealed && !source_changed {
+            for check in &checks {
+                if check.report.status != LeafStatus::Passed {
+                    continue;
+                }
+                let Some(key) = check.cache_key.as_deref() else {
+                    continue;
+                };
+                let Ok(inputs) = artifact_receipts(&root, &check.plan.cache_inputs) else {
+                    continue;
+                };
+                let Ok(consumed) = artifact_receipts(
+                    &root,
+                    &check
+                        .plan
+                        .consumes
+                        .iter()
+                        .map(|artifact| artifact.path.clone())
+                        .collect::<Vec<_>>(),
+                ) else {
+                    continue;
+                };
+                if inputs == check.report.cache_inputs
+                    && consumed == check.report.consumed_artifacts
+                    && crate::reuse::key(&root, &plan, &check.plan, &inputs, &consumed).as_deref()
+                        == Some(key)
+                    && receipts_match(&root, &check.report.artifacts).unwrap_or(false)
+                {
+                    crate::reuse::record(&root, &plan, &check.plan, key, &check.report.artifacts);
+                }
+            }
         }
         Ok(report)
     }
@@ -561,6 +608,7 @@ fn refresh_execution(check: &mut CheckRuntime) {
 }
 
 struct CheckRuntime {
+    cache_key: Option<String>,
     completed_mono: Option<Instant>,
     processes: BTreeMap<String, ProcessUpdate>,
     plan: CheckPlan,
@@ -570,6 +618,7 @@ struct CheckRuntime {
 }
 
 struct CheckOutcome {
+    cache_key: Option<String>,
     status: LeafStatus,
     exit_code: Option<i32>,
     reason: Option<String>,
@@ -757,10 +806,12 @@ fn initialize_checks(
             LeafStatus::Pending
         };
         result.push(CheckRuntime {
+            cache_key: None,
             plan: check.clone(),
             completed_mono: None,
             processes: BTreeMap::new(),
             report: CheckReport {
+                display_name: check.display_name.clone(),
                 execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
@@ -887,7 +938,9 @@ fn mark_blocked_once(
         .map(|check| (check.plan.name.clone(), check.report.status))
         .collect();
     for check in checks {
-        if check.report.status != LeafStatus::Pending {
+        if check.report.status != LeafStatus::Pending
+            || check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+        {
             continue;
         }
         if let Some(preflights) = invalidators.get(&check.plan.name) {
@@ -1015,18 +1068,20 @@ fn ready_checks(
                 .all(|name| statuses[name.as_str()].is_terminal())
         })
         .filter(|check| {
-            check
-                .plan
-                .requires
-                .iter()
-                .all(|name| statuses[name.as_str()].is_success())
+            check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                || check
+                    .plan
+                    .requires
+                    .iter()
+                    .all(|name| statuses[name.as_str()].is_success())
         })
         .filter(|check| {
-            invalidators
-                .get(&check.plan.name)
-                .into_iter()
-                .flatten()
-                .all(|name| statuses[name.as_str()].is_success())
+            check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup
+                || invalidators
+                    .get(&check.plan.name)
+                    .into_iter()
+                    .flatten()
+                    .all(|name| statuses[name.as_str()].is_success())
         })
         .map(|check| check.plan.name.clone())
         .collect()
@@ -1066,8 +1121,81 @@ fn ready_checks_with_available_resources<'a>(
 
 fn resources_conflict(left: &ResourceClaim, right: &ResourceClaim) -> bool {
     left.kind == right.kind
-        && left.id == right.id
+        && (left.id == right.id
+            || left.kind == devcoordinator2_executor_protocol::ResourceKind::Directory
+                && (Path::new(&left.id).starts_with(&right.id)
+                    || Path::new(&right.id).starts_with(&left.id)))
         && !(left.access == ResourceAccess::Shared && right.access == ResourceAccess::Shared)
+}
+
+fn load_database_environments(
+    current: &Path,
+    plan: &mut ExecutionPlan,
+) -> Result<(), ExecutorError> {
+    use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
+    use std::io::Read;
+    if plan.environment_files.is_empty() {
+        return Ok(());
+    }
+    let directory = open(
+        current,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| ExecutorError::new("private environment directory is unavailable"))?;
+    for (name, path) in &plan.environment_files {
+        let descriptor = openat(
+            &directory,
+            path.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|_| ExecutorError::new("private database environment is unavailable"))?;
+        let stat = fstat(&descriptor)
+            .map_err(|_| ExecutorError::new("private database environment cannot be inspected"))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+            || stat.st_mode & 0o077 != 0
+            || stat.st_size > 65536
+        {
+            return Err(ExecutorError::new(
+                "private database environment has invalid type, permissions or size",
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::from(descriptor)
+            .take(65537)
+            .read_to_end(&mut bytes)
+            .map_err(|_| ExecutorError::new("private database environment cannot be read"))?;
+        if bytes.len() > 65536 {
+            return Err(ExecutorError::new(
+                "private database environment exceeds its bound",
+            ));
+        }
+        let environment: BTreeMap<String, String> = serde_json::from_slice(&bytes)
+            .map_err(|_| ExecutorError::new("private database environment is invalid"))?;
+        if environment.keys().any(|key| {
+            ![
+                "PGHOST",
+                "PGPORT",
+                "PGUSER",
+                "PGPASSWORD",
+                "PGDATABASE",
+                "DATABASE_URL",
+            ]
+            .contains(&key.as_str())
+        }) {
+            return Err(ExecutorError::new(
+                "private database environment contains an unsupported field",
+            ));
+        }
+        plan.checks
+            .iter_mut()
+            .find(|check| &check.name == name)
+            .expect("validated check")
+            .env
+            .extend(environment);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1099,6 +1227,46 @@ async fn execute_check(
             return artifact_input_failure(&plan, &check, error.to_string(), started.elapsed());
         }
     };
+    let cache_key = crate::reuse::key(&root, &plan, &check, &cache_inputs, &consumed_artifacts);
+    if let Some(artifacts) = cache_key
+        .as_deref()
+        .and_then(|key| crate::reuse::lookup(&root, &check, key))
+    {
+        let selector = LeafSelector::check(check.name.clone()).expect("validated check");
+        if log_lease
+            .publish_leaf_metadata(&LeafLogMetadata {
+                schema: 2,
+                selector,
+                status: LeafStatus::Reused,
+                exit: DiagnosticExit::default(),
+                started_at_epoch_ms: started_epoch_ms,
+                finished_at_epoch_ms: Some(epoch_ms()),
+                process_started: false,
+                complete: true,
+                structured_evidence_formats: Vec::new(),
+                structured_evidence_count: 0,
+            })
+            .is_ok()
+        {
+            return CheckOutcome {
+                cache_key: None,
+                status: LeafStatus::Reused,
+                exit_code: None,
+                reason: None,
+                artifacts,
+                cache_inputs,
+                consumed_artifacts,
+                retained_artifacts: Vec::new(),
+                streams: Vec::new(),
+                case_count: 0,
+                cases: Vec::new(),
+                cases_truncated: false,
+                failures: Vec::new(),
+                service: None,
+                duration_seconds: seconds(started.elapsed()),
+            };
+        }
+    }
     if let Some(command) = &check.command {
         let selector = LeafSelector::check(check.name.clone()).expect("validated check selector");
         let request = process_request(
@@ -1191,14 +1359,16 @@ async fn execute_check(
         } else {
             Vec::new()
         };
-        direct_outcome(
+        let mut outcome = direct_outcome(
             process,
             artifacts,
             retained_artifacts,
             cache_inputs,
             consumed_artifacts,
             started.elapsed(),
-        )
+        );
+        outcome.cache_key = cache_key;
+        outcome
     } else {
         let mut outcome = execute_fanout(
             progress.clone(),
@@ -1227,6 +1397,7 @@ fn artifact_input_failure(
     duration: Duration,
 ) -> CheckOutcome {
     CheckOutcome {
+        cache_key: None,
         status: LeafStatus::Failed,
         exit_code: None,
         reason: Some(bounded_reason(&reason)),
@@ -1264,6 +1435,7 @@ fn direct_outcome(
     let status: LeafStatus = process.status.into();
     let failures = std::mem::take(&mut process.diagnostics);
     CheckOutcome {
+        cache_key: None,
         status,
         exit_code: process.exit_code,
         reason: process.reason.take().map(|value| bounded_reason(&value)),
@@ -1606,6 +1778,7 @@ async fn execute_fanout(
         Vec::new()
     };
     CheckOutcome {
+        cache_key: None,
         status: final_status,
         exit_code: None,
         reason: final_reason.map(|value| bounded_reason(&value)),
@@ -1810,7 +1983,17 @@ fn finalize_leaf_evidence(
     }
     if check.expect_failure && !invalid && !process.log_storage_failed {
         match process.status {
-            ProcessStatus::Failed => {
+            ProcessStatus::Failed
+                if process.diagnostics.iter().any(|diagnostic| {
+                    let mut canonical = diagnostic.clone();
+                    if let Some(source_name) = &check.source_name {
+                        canonical.check = Some(source_name.clone());
+                    }
+                    diagnostic.origin != DiagnosticOrigin::Executor
+                        && check.expected_failure.as_deref()
+                            == Some(crate::diagnostics::diagnostic_fingerprint(&canonical).as_str())
+                }) =>
+            {
                 process.status = ProcessStatus::Passed;
                 process.reason = None;
                 process.diagnostics.clear();
@@ -1818,6 +2001,9 @@ fn finalize_leaf_evidence(
             ProcessStatus::Passed => {
                 process.status = ProcessStatus::Failed;
                 process.reason = Some("known failing fixture was not detected".into());
+            }
+            ProcessStatus::Failed => {
+                process.reason = Some("qualification failed for an unexpected diagnostic".into());
             }
             ProcessStatus::TimedOut | ProcessStatus::Cancelled | ProcessStatus::Unsafe => {}
         }
@@ -2093,6 +2279,7 @@ fn fanout_setup_failure(
         .reason
         .unwrap_or_else(|| "case discovery failed".into());
     CheckOutcome {
+        cache_key: None,
         status,
         exit_code,
         reason: Some(bounded_reason(&reason)),
@@ -2118,6 +2305,7 @@ fn case_selection_failure(
     reason: &str,
 ) -> CheckOutcome {
     CheckOutcome {
+        cache_key: None,
         status: LeafStatus::Failed,
         exit_code: None,
         reason: Some(reason.into()),
@@ -2171,6 +2359,7 @@ fn discovery_postprocess_failure(
         termination_reason,
     );
     CheckOutcome {
+        cache_key: None,
         status: process.status.into(),
         exit_code: process.exit_code,
         reason: Some(bounded_reason(&reason)),
@@ -2195,6 +2384,7 @@ fn apply_outcome(
     service_pgids: &mut BTreeMap<String, i32>,
 ) {
     runtime.completed_mono = Some(Instant::now());
+    runtime.cache_key = outcome.cache_key.take();
     runtime.report.status = outcome.status;
     runtime.report.finished_at = Some(iso_now());
     runtime.report.duration_seconds = if runtime.plan.completion == CompletionMode::Event {
@@ -2325,9 +2515,13 @@ fn mark_pending_cancelled(
     run_id: &str,
     log_lease: &RunLogLease,
     reason: &str,
+    retain_cleanup: bool,
 ) {
     for check in checks {
-        if check.report.status == LeafStatus::Pending {
+        if check.report.status == LeafStatus::Pending
+            && !(retain_cleanup
+                && check.plan.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+        {
             finish_blocked(
                 check,
                 run_id,

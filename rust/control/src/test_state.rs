@@ -77,6 +77,10 @@ pub struct RetryCheckEvidence {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetryEvidence {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub case_selection: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
@@ -333,6 +337,28 @@ impl TestRunStore {
         atomic_bytes(current, ENV_FILE, &payload, 0o600, uid, gid)
     }
 
+    pub fn write_database_environment(
+        &self,
+        current: &File,
+        name: &str,
+        environment: &BTreeMap<String, String>,
+        uid: u32,
+        gid: u32,
+    ) -> Result<String, TestStateError> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(TestStateError::Invalid(
+                "invalid database environment identity".into(),
+            ));
+        }
+        let file = format!("database-{name}.json");
+        atomic_json(current, &file, environment, 0o600, uid, gid)?;
+        Ok(file)
+    }
+
     pub fn write_containers(
         &self,
         current: &File,
@@ -465,6 +491,16 @@ impl TestRunStore {
         let mut runs = self.read_evidence(worktree)?;
         runs.retain(|run| run.run_id != report.run_id);
         runs.push(RetryEvidence {
+            targets: self
+                .read_current_summary(worktree)?
+                .filter(|summary| summary.run_id == report.run_id)
+                .map(|summary| summary.targets)
+                .unwrap_or_default(),
+            case_selection: self
+                .read_current_summary(worktree)?
+                .filter(|summary| summary.run_id == report.run_id)
+                .map(|summary| summary.case_selection)
+                .unwrap_or_default(),
             work: work.cloned(),
             run_id: report.run_id.clone(),
             test: report.test.clone(),
@@ -541,6 +577,9 @@ pub fn initial_summary(
     requested_tier: ValidationTier,
 ) -> TestSummary {
     TestSummary {
+        targets: Vec::new(),
+        case_selection: BTreeMap::new(),
+        phase_durations: Vec::new(),
         work: None,
         schema_version: 2,
         run_id: run_id.into(),

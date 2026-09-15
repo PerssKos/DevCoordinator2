@@ -319,6 +319,18 @@ fn run() -> Result<i32, String> {
                 .map_err(|error| error.to_string())?;
             Ok(0)
         }
+        "counted-build" => {
+            let input = fs::read(argument(2, "input")?).map_err(|error| error.to_string())?;
+            let counter = PathBuf::from(argument(4, "counter")?);
+            let count = fs::read_to_string(&counter)
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0)
+                + 1;
+            fs::write(&counter, count.to_string()).map_err(|error| error.to_string())?;
+            fs::write(argument(3, "output")?, input).map_err(|error| error.to_string())?;
+            Ok(0)
+        }
         "write-scratch" => {
             let path = PathBuf::from(environment("DEVCOORDINATOR_CHECK_SCRATCH")?)
                 .join(argument(2, "scratch filename")?);

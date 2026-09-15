@@ -69,6 +69,9 @@ fn run_git(root: &Path, args: &[&str]) {
 
 fn direct(name: &str, command: Vec<String>) -> CheckPlan {
     CheckPlan {
+        display_name: None,
+        source_name: None,
+        expected_failure: None,
         name: name.into(),
         tier: ValidationTier::Development,
         role: CheckRole::Work,
@@ -129,6 +132,7 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
     fs::create_dir_all(repository.current(run_id)).expect("create run directory");
     fs::create_dir_all(repository.logs(run_id)).expect("create log directory");
     ExecutionPlan {
+        environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: run_id.into(),
         test: "complete".into(),
@@ -798,6 +802,256 @@ async fn external_cancellation_stops_running_leaf_and_finishes_report() {
     assert_eq!(
         diagnostic.termination_reason,
         Some(TerminationReason::RunCancelled)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_runs_after_failed_prerequisites_without_turning_the_run_green() {
+    let repository = Repository::new("cleanup-failure");
+    let mut failed = direct("work", fixture_exit(7));
+    failed.on_failure = FailureMode::Stop;
+    let mut cleanup = direct(
+        "cleanup",
+        fixture(&["write-relative", ".devcoordinator/cleaned", "yes"]),
+    );
+    cleanup.phase = CheckPhase::Cleanup;
+    cleanup.requires = vec!["work".into()];
+    let report = execute(plan(
+        &repository,
+        "run-cleanup-failure",
+        vec![failed, cleanup],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[1].status, LeafStatus::Passed);
+    assert!(!report.source_changed);
+    assert_eq!(
+        fs::read(repository.root.join(".devcoordinator/cleaned")).unwrap(),
+        b"yes"
+    );
+    assert!(
+        report
+            .phase_durations
+            .iter()
+            .any(|phase| phase.phase == CheckPhase::Cleanup && phase.checks == 1)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_runs_when_cancellation_prevents_the_work_from_starting() {
+    let repository = Repository::new("cleanup-cancelled");
+    let work = direct("work", fixture(&["sleep", "30"]));
+    let mut cleanup = direct(
+        "cleanup",
+        fixture(&["write-relative", ".devcoordinator/cleaned", "yes"]),
+    );
+    cleanup.phase = CheckPhase::Cleanup;
+    cleanup.after = vec!["work".into()];
+    let cancellation = Cancellation::default();
+    cancellation.cancel();
+    let report = Executor::new(
+        plan(&repository, "run-cleanup-cancel", vec![work, cleanup]),
+        Arc::new(LocalPermitProvider::unbounded()),
+        cancellation,
+    )
+    .unwrap()
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Cancelled);
+    assert_eq!(report.checks[1].status, LeafStatus::Passed);
+    assert!(!report.source_changed);
+    assert_eq!(
+        fs::read(repository.root.join(".devcoordinator/cleaned")).unwrap(),
+        b"yes"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_rejects_an_unrelated_nonzero_exit() {
+    let repository = Repository::new("qualification-wrong-failure");
+    let mut qualification = direct("qualification", fixture_exit(7));
+    qualification.phase = CheckPhase::Qualification;
+    qualification.role = CheckRole::Preflight;
+    qualification.expect_failure = true;
+    qualification.expected_failure = Some(format!("sha256:{}", "a".repeat(64)));
+    qualification.qualification_of = Some("target".into());
+    qualification.invalidates = vec!["target".into()];
+    let target = direct("target", fixture_exit(0));
+    let report = execute(plan(
+        &repository,
+        "run-qualification-wrong",
+        vec![qualification, target],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[1].status, LeafStatus::Invalidated);
+}
+
+fn cache_repository(name: &str) -> Repository {
+    let repository = Repository::new(name);
+    fs::write(
+        repository.root.join(".gitignore"),
+        "artifact.bin\ndependency.txt\n",
+    )
+    .unwrap();
+    run_git(&repository.root, &["add", ".gitignore"]);
+    repository
+}
+
+fn cached_build() -> CheckPlan {
+    let mut build = direct(
+        "build",
+        fixture(&[
+            "counted-build",
+            "README.md",
+            "artifact.bin",
+            ".devcoordinator/build-count",
+        ]),
+    );
+    build.phase = CheckPhase::Build;
+    build.cacheable = true;
+    build.cache_inputs = vec!["README.md".into()];
+    build.produces = vec!["artifact.bin".into()];
+    build.fingerprint = "c".repeat(64);
+    build
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cache_reuses_a_completed_build_and_invalidates_artifact_source_and_consumed_inputs() {
+    let repository = cache_repository("cache-inputs");
+    let build = cached_build();
+    let failed = execute(plan(
+        &repository,
+        "run-cache-first",
+        vec![build.clone(), direct("unrelated", fixture_exit(7))],
+    ))
+    .await;
+    assert_eq!(failed.status, RunStatus::Failed);
+    assert!(!failed.source_changed);
+    let reused = execute(plan(&repository, "run-cache-second", vec![build.clone()])).await;
+    assert_eq!(reused.checks[0].status, LeafStatus::Reused);
+    assert_eq!(
+        fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap(),
+        "1"
+    );
+    fs::write(repository.root.join("artifact.bin"), b"corrupt output").unwrap();
+    let repaired = execute(plan(&repository, "run-cache-output", vec![build.clone()])).await;
+    assert_eq!(repaired.checks[0].status, LeafStatus::Passed);
+    fs::write(repository.root.join("README.md"), b"changed input").unwrap();
+    let changed = execute(plan(&repository, "run-cache-source", vec![build.clone()])).await;
+    assert_eq!(changed.checks[0].status, LeafStatus::Passed);
+    assert_eq!(
+        fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap(),
+        "3"
+    );
+    let mut dependent = build;
+    dependent.requires = vec!["dependency".into()];
+    dependent.consumes = vec![devcoordinator2_executor_core::protocol::ConsumedArtifact {
+        check: "dependency".into(),
+        path: "dependency.txt".into(),
+    }];
+    for (index, version, expected) in [
+        (0, "one", LeafStatus::Passed),
+        (1, "two", LeafStatus::Passed),
+        (2, "two", LeafStatus::Reused),
+    ] {
+        let mut producer = direct(
+            "dependency",
+            fixture(&["write-relative", "dependency.txt", version]),
+        );
+        producer.produces = vec!["dependency.txt".into()];
+        let report = execute(plan(
+            &repository,
+            &format!("run-cache-consumed-{index}"),
+            vec![producer, dependent.clone()],
+        ))
+        .await;
+        assert_eq!(report.status, RunStatus::Passed);
+        assert_eq!(report.checks[1].status, expected);
+    }
+    assert_eq!(
+        fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap(),
+        "5"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cache_never_publishes_evidence_from_a_run_whose_source_changed() {
+    let repository = cache_repository("cache-seal");
+    let build = cached_build();
+    let mut mutation = direct(
+        "mutation",
+        fixture(&["write-relative", "README.md", "changed while running"]),
+    );
+    mutation.requires = vec!["build".into()];
+    let invalid = execute(plan(
+        &repository,
+        "run-cache-invalid",
+        vec![build.clone(), mutation],
+    ))
+    .await;
+    assert!(invalid.source_changed);
+    fs::write(repository.root.join("README.md"), b"executor fixture\n").unwrap();
+    let next = execute(plan(&repository, "run-cache-after-invalid", vec![build])).await;
+    assert_eq!(next.checks[0].status, LeafStatus::Passed);
+    assert_eq!(
+        fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap(),
+        "2"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn qualification_accepts_only_its_measured_failure_and_then_runs_the_corrected_case() {
+    let repository = Repository::new("qualified-failure");
+    let mut negative = direct("qualification", fixture(&["junit", "valid"]));
+    negative.diagnostic_sources = vec![DiagnosticReportSource {
+        format: DiagnosticReportFormat::Junit,
+        path: "junit.xml".into(),
+    }];
+    let baseline = execute(plan(
+        &repository,
+        "run-negative-baseline",
+        vec![negative.clone()],
+    ))
+    .await;
+    let expected = baseline
+        .failure_index
+        .iter()
+        .find(|failure| failure.origin == DiagnosticOrigin::Junit)
+        .unwrap()
+        .fingerprint
+        .clone();
+    assert_eq!(baseline.status, RunStatus::Failed);
+    negative.name = "composed-qualification".into();
+    negative.source_name = Some("qualification".into());
+    negative.display_name = Some("parser / qualification".into());
+    negative.phase = CheckPhase::Qualification;
+    negative.role = CheckRole::Preflight;
+    negative.expect_failure = true;
+    negative.expected_failure = Some(expected);
+    negative.qualification_of = Some("corrected".into());
+    negative.invalidates = vec!["corrected".into()];
+    let corrected = direct("corrected", fixture_exit(0));
+    let report = execute(plan(
+        &repository,
+        "run-qualified",
+        vec![negative, corrected],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert!(
+        report
+            .checks
+            .iter()
+            .all(|check| check.status == LeafStatus::Passed)
+    );
+    assert_eq!(
+        report.checks[0].display_name.as_deref(),
+        Some("parser / qualification")
     );
 }
 

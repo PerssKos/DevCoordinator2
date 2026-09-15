@@ -82,6 +82,9 @@ fn fixture(arguments: &[&str]) -> Vec<String> {
 
 fn direct(name: &str, command: Vec<String>) -> CheckPlan {
     CheckPlan {
+        display_name: None,
+        source_name: None,
+        expected_failure: None,
         name: name.into(),
         tier: ValidationTier::Development,
         role: CheckRole::Work,
@@ -166,6 +169,7 @@ async fn hundreds_of_discovered_cases_finish_with_complete_queryable_logs() {
     check.discover = Some(fixture(&["manifest", "431-cases"]));
     check.case_command = Some(fixture(&["case-status"]));
     let plan = ExecutionPlan {
+        environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: RUN_ID.into(),
         test: "fanout-reproduction".into(),
@@ -297,6 +301,7 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
     }];
 
     let plan = ExecutionPlan {
+        environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: RUN_ID.into(),
         test: "progressive-logs".into(),

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec devcoordinator2-tooling check pre-commit --root "$(git rev-parse --show-toplevel)"

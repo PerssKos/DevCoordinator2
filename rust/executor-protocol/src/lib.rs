@@ -388,6 +388,10 @@ pub struct CaseSpec {
 #[serde(deny_unknown_fields)]
 pub struct CheckPlan {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     pub tier: ValidationTier,
     pub role: CheckRole,
     #[serde(default)]
@@ -415,6 +419,8 @@ pub struct CheckPlan {
     pub expect_failure: bool,
     #[serde(default)]
     pub qualification_of: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_failure: Option<String>,
     #[serde(default)]
     pub retained_artifacts: Vec<RetainedArtifactSpec>,
     #[serde(default)]
@@ -426,14 +432,38 @@ pub struct CheckPlan {
 }
 
 impl CheckPlan {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_check(self)
+    }
     pub fn is_fanout(&self) -> bool {
         self.case_command.is_some()
+    }
+
+    pub fn validate_case_selection(&self, selected: &[String]) -> Result<(), ContractError> {
+        if !self.is_fanout() {
+            return Err(ContractError::new(
+                "case selection must name a fan-out check",
+            ));
+        }
+        validate_case_selection(selected)?;
+        if self.cases.as_ref().is_some_and(|cases| {
+            selected
+                .iter()
+                .any(|selected| !cases.iter().any(|case| &case.id == selected))
+        }) {
+            return Err(ContractError::new(
+                "case selection names an undeclared static case",
+            ));
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPlan {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment_files: BTreeMap<String, String>,
     pub schema: Schema2,
     pub run_id: String,
     pub test: String,
@@ -481,7 +511,7 @@ impl ExecutionPlan {
     pub fn active_checks(&self) -> impl Iterator<Item = &CheckPlan> {
         self.checks
             .iter()
-            .filter(|check| check.tier <= self.requested_tier)
+            .filter(|check| check.tier <= self.requested_tier || check.phase == CheckPhase::Cleanup)
     }
 
     pub fn validate(&self) -> Result<(), ContractError> {
@@ -494,6 +524,18 @@ impl ExecutionPlan {
         }
         if self.checks.len() > 256 {
             return Err(ContractError::new("executor plan exceeds 256 checks"));
+        }
+        for (check, file) in &self.environment_files {
+            if !self.checks.iter().any(|candidate| &candidate.name == check)
+                || !file.starts_with("database-")
+                || !file.ends_with(".json")
+                || Path::new(file).components().count() != 1
+            {
+                return Err(ContractError::new(
+                    "private database environment must name an exact check and run-local file",
+                ));
+            }
+            validate_relative_path("database environment", file)?;
         }
         if self.origin_run_id.is_some() != (self.proof == ProofKind::Retry) {
             return Err(ContractError::new(
@@ -614,7 +656,9 @@ impl ExecutionPlan {
                     "reused evidence references unknown check {name:?}"
                 )));
             };
-            if self.checks[*index].tier > self.requested_tier {
+            if self.checks[*index].tier > self.requested_tier
+                && self.checks[*index].phase != CheckPhase::Cleanup
+            {
                 return Err(ContractError::new(format!(
                     "reused evidence references inactive check {name:?}"
                 )));
@@ -667,7 +711,7 @@ impl ExecutionPlan {
                         check.name
                     )));
                 }
-                if self.checks[*dep_index].tier > check.tier {
+                if check.phase != CheckPhase::Cleanup && self.checks[*dep_index].tier > check.tier {
                     return Err(ContractError::new(format!(
                         "check {:?} depends on higher-tier check {dependency:?}",
                         check.name
@@ -746,6 +790,30 @@ impl ExecutionPlan {
 }
 
 fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
+    if check.phase == CheckPhase::Cleanup
+        && (check.role != CheckRole::Work
+            || check.completion != CompletionMode::Process
+            || check.command.is_none()
+            || check.cacheable)
+    {
+        return Err(ContractError::new(
+            "cleanup must be an uncached direct process check",
+        ));
+    }
+    if let Some(name) = &check.source_name {
+        validate_name("source check", name, 64)?;
+    }
+    if let Some(label) = &check.display_name {
+        validate_diagnostic_name("check display name", label)?;
+    }
+    if let Some(fingerprint) = &check.expected_failure {
+        validate_fingerprint(fingerprint)?;
+    }
+    if check.expect_failure != check.expected_failure.is_some() {
+        return Err(ContractError::new(
+            "qualification must identify its expected structured failure",
+        ));
+    }
     validate_name("check", &check.name, 64)?;
     if check.resources.len() > 32 {
         return Err(ContractError::new(format!(
@@ -755,7 +823,11 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     }
     let mut resources = BTreeSet::new();
     for resource in &check.resources {
-        validate_identity("resource id", &resource.id, 128)?;
+        if resource.kind == ResourceKind::Directory {
+            validate_relative_path("resource directory", &resource.id)?;
+        } else {
+            validate_identity("resource id", &resource.id, 128)?;
+        }
         if !resources.insert((resource.kind, resource.id.as_str())) {
             return Err(ContractError::new(format!(
                 "check {:?} repeats a resource claim",
@@ -1375,6 +1447,8 @@ pub struct CaseReport {
 #[serde(deny_unknown_fields)]
 pub struct CheckReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub name: String,
     pub tier: ValidationTier,
@@ -1986,6 +2060,9 @@ mod tests {
 
     fn check(name: &str, tier: ValidationTier) -> CheckPlan {
         CheckPlan {
+            display_name: None,
+            source_name: None,
+            expected_failure: None,
             name: name.into(),
             tier,
             role: CheckRole::Work,
@@ -2017,6 +2094,7 @@ mod tests {
 
     fn plan(checks: Vec<CheckPlan>) -> ExecutionPlan {
         ExecutionPlan {
+            environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: "run-1".into(),
             test: "complete".into(),
@@ -2040,6 +2118,7 @@ mod tests {
 
     fn report() -> ExecutionReport {
         let check = CheckReport {
+            display_name: None,
             execution: None,
             name: "unit".into(),
             tier: ValidationTier::Release,

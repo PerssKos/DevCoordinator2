@@ -230,6 +230,7 @@ pub struct DockerInvocation {
     timeout: Duration,
     output_log: Option<Arc<Mutex<File>>>,
     cancellation: Option<Arc<AtomicBool>>,
+    input: Option<File>,
 }
 
 impl DockerInvocation {
@@ -246,11 +247,17 @@ impl DockerInvocation {
             timeout,
             output_log: None,
             cancellation: None,
+            input: None,
         })
     }
 
     pub fn with_cwd(mut self, cwd: PathBuf) -> Self {
         self.cwd = Some(cwd);
+        self
+    }
+
+    pub fn with_input(mut self, input: File) -> Self {
+        self.input = Some(input);
         self
     }
 
@@ -367,7 +374,7 @@ fn execute_process(
         .args(&invocation.args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .stdin(Stdio::null())
+        .stdin(invocation.input.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
@@ -801,6 +808,67 @@ pub trait DockerControl: Send + Sync {
             .expect("static Docker invocation is valid"),
         )
         .is_ok_and(|output| output.success())
+    }
+
+    fn postgres_sql(
+        &self,
+        container: &ExactContainerId,
+        user: &str,
+        database: &str,
+        input: File,
+        log: Option<Arc<Mutex<File>>>,
+    ) -> Result<(), DockerError> {
+        let output = self.invoke(
+            DockerInvocation::new(
+                vec![
+                    "exec".into(),
+                    "-i".into(),
+                    container.as_str().into(),
+                    "psql".into(),
+                    "--no-psqlrc".into(),
+                    "--set=ON_ERROR_STOP=1".into(),
+                    "--username".into(),
+                    user.into(),
+                    "--dbname".into(),
+                    database.into(),
+                ],
+                Duration::from_secs(600),
+            )?
+            .with_input(input)
+            .with_output_log(log),
+        )?;
+        if output.success() {
+            Ok(())
+        } else {
+            Err(DockerError::InvalidOutput(
+                "database fixture initialization failed; inspect its retained diagnostics".into(),
+            ))
+        }
+    }
+
+    fn image_identity(&self, image: &str) -> Result<String, DockerError> {
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "image".into(),
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}}".into(),
+                image.into(),
+            ],
+            Duration::from_secs(15),
+        )?)?;
+        let identity = output.stdout.trim();
+        if !output.success()
+            || output.stdout_truncated
+            || !identity.strip_prefix("sha256:").is_some_and(|value| {
+                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err(DockerError::InvalidOutput(
+                "database fixture image has no exact identity".into(),
+            ));
+        }
+        Ok(identity.into())
     }
 
     fn ensure_digest_image(&self, image: &str) -> Result<(), DockerError> {

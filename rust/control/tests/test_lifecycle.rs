@@ -359,6 +359,7 @@ impl FixtureSystemd {
             .checks
             .iter()
             .map(|check| CheckReport {
+                display_name: check.display_name.clone(),
                 execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
@@ -694,6 +695,8 @@ command=["true"]
         self.lifecycle
             .start(
                 StartTest {
+                    targets: Vec::new(),
+                    cases: Default::default(),
                     path: self.worktree.to_string_lossy().into_owned(),
                     test: Some("all".into()),
                     checks: Vec::new(),
@@ -728,6 +731,8 @@ command=["true"]
             .lifecycle
             .start(
                 StartTest {
+                    targets: Vec::new(),
+                    cases: Default::default(),
                     path: path.to_string_lossy().into_owned(),
                     test: Some("all".into()),
                     checks: Vec::new(),
@@ -1935,6 +1940,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     world.systemd.fail_spawn.store(true, Ordering::SeqCst);
     let failed_launch = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -1960,6 +1967,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     let stops_before = world.systemd.stops.load(Ordering::SeqCst);
     let capture_start = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -1983,6 +1992,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     world.systemd.mismatch_uid.store(true, Ordering::SeqCst);
     let mismatch = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -2092,6 +2103,8 @@ database="app_test"
     let started = lifecycle
         .start(
             StartTest {
+                targets: Vec::new(),
+                cases: Default::default(),
                 path: worktree.to_string_lossy().into_owned(),
                 test: Some("database".into()),
                 checks: Vec::new(),

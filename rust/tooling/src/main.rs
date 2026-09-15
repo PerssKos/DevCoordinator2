@@ -640,6 +640,12 @@ enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 enum CheckCommand {
+    PreCommit {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        tree: Option<String>,
+    },
     PublicArtifacts {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -707,6 +713,19 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     match cli.command {
+        Command::Check {
+            command: CheckCommand::PreCommit { root, tree },
+        } => match devcoordinator2_tooling::pre_commit::check(&root, tree.as_deref()) {
+            Ok(report) => {
+                println!("{report}");
+                if report["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
         Command::Audit { command } => run_audit(command),
         Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
