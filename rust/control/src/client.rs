@@ -22,7 +22,7 @@ pub async fn call(
     let operation = operation.into();
     let review_action = matches!(operation.as_str(), "review.prepare" | "review.record");
     let blocking_wait = operation == "event.wait";
-    let deployment_action = matches!(
+    let long_running_action = matches!(
         operation.as_str(),
         "deployment.apply"
             | "deployment.rollback"
@@ -30,6 +30,7 @@ pub async fn call(
             | "deployment.stop"
             | "deployment.restart"
             | "deployment.remove"
+            | "plan.recovery"
     );
     let request = RequestEnvelope {
         protocol: PROTOCOL_VERSION,
@@ -46,7 +47,7 @@ pub async fn call(
                 &request,
                 &bridge_directory,
                 blocking_wait,
-                deployment_action,
+                long_running_action,
                 review_action,
             )
             .await;
@@ -94,7 +95,7 @@ pub async fn call(
     let mut response = Vec::new();
     let mut limited = (&mut stream).take((MAX_RESPONSE_BYTES + 1) as u64);
     let read = limited.read_to_end(&mut response);
-    if blocking_wait || deployment_action {
+    if blocking_wait || long_running_action {
         read.await.map_err(transport_error)?;
     } else {
         let reply_seconds = if review_action { 20 } else { 10 };
@@ -121,7 +122,7 @@ async fn call_via_sandbox_bridge(
     request: &RequestEnvelope,
     directory: &Path,
     blocking_wait: bool,
-    deployment_action: bool,
+    long_running_action: bool,
     review_action: bool,
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let id = &request.id;
@@ -139,7 +140,7 @@ async fn call_via_sandbox_bridge(
         ));
     }
     write_bridge_request(directory, &request_path, &encoded)?;
-    let deadline = if blocking_wait || deployment_action {
+    let deadline = if blocking_wait || long_running_action {
         None
     } else {
         Some(Instant::now() + Duration::from_secs(if review_action { 20 } else { 10 }))
@@ -340,6 +341,80 @@ mod tests {
         .await;
         server.await.unwrap();
         assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recovery_waits_for_verified_large_snapshot_results() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut encoded = String::new();
+            stream.read_line(&mut encoded).await.unwrap();
+            let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
+            let mut finished = Vec::new();
+            stream.read_to_end(&mut finished).await.unwrap();
+            tokio::time::advance(Duration::from_secs(11)).await;
+            let response =
+                ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
+                    .unwrap();
+            stream
+                .get_mut()
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .await
+                .unwrap();
+        });
+        let result = call(
+            &socket,
+            "plan.recovery",
+            serde_json::json!({}),
+            ClientContext::default(),
+        )
+        .await;
+        server.await.unwrap();
+        assert!(result.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn recovery_bridge_keeps_waiting_for_the_same_accepted_request() {
+        let temporary = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(temporary.path(), std::fs::Permissions::from_mode(0o1777))
+            .unwrap();
+        let directory = temporary.path().to_owned();
+        let pending_directory = directory.clone();
+        let request = RequestEnvelope {
+            protocol: PROTOCOL_VERSION,
+            id: "recovery1234".into(),
+            operation: "plan.recovery".into(),
+            params: serde_json::json!({}),
+            client: ClientContext::default(),
+        };
+        let pending = tokio::spawn(async move {
+            call_via_sandbox_bridge(&request, &pending_directory, false, true, false).await
+        });
+        for _ in 0..1024 {
+            if directory.join("recovery1234.request").exists() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(directory.join("recovery1234.request").exists());
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(11)).await;
+        tokio::task::yield_now().await;
+        assert!(!pending.is_finished());
+        let response =
+            ResponseEnvelope::success("recovery1234", serde_json::json!({"status":"prepared"}))
+                .unwrap();
+        std::fs::write(
+            directory.join("recovery1234.response"),
+            serde_json::to_vec(&response).unwrap(),
+        )
+        .unwrap();
+        tokio::time::resume();
+        assert!(pending.await.unwrap().unwrap().is_ok());
     }
 
     #[tokio::test]
