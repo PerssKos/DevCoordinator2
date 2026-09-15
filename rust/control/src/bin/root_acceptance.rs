@@ -48,6 +48,8 @@ enum RootCommand {
         case: Vec<String>,
         #[arg(long, value_parser = parse_compose_subnet)]
         compose_subnet: Option<Ipv4Addr>,
+        #[arg(long, default_value = "31000-31999", value_parser = parse_fixture_port_range)]
+        port_range: String,
     },
     Request {
         #[arg(long)]
@@ -65,6 +67,7 @@ struct Harness {
     caller_uid: u32,
     caller_gid: u32,
     compose_subnet: Option<Ipv4Addr>,
+    port_range: String,
 }
 
 struct World {
@@ -220,7 +223,7 @@ impl World {
             .env("DEVCOORDINATOR2_SLICE", "devcoordinator2-tests.slice")
             .env("DEVCOORDINATOR2_CLIENT_GROUP", "")
             .env("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
-            .env("DEVCOORDINATOR2_PORT_RANGE", "46000-49999")
+            .env("DEVCOORDINATOR2_PORT_RANGE", &self.harness.port_range)
             .env("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", &self.policy);
         if let Some(uid) = edge_uid {
             command.env("DEVCOORDINATOR2_EDGE_UID", uid.to_string());
@@ -5815,6 +5818,41 @@ fn validate_run_inputs(
     Ok(())
 }
 
+fn parse_fixture_port_range(value: &str) -> Result<String, String> {
+    let (start, end) = value
+        .split_once('-')
+        .ok_or("port range must be START-END")?;
+    let start: u16 = start.parse().map_err(|_| "invalid first fixture port")?;
+    let end: u16 = end.parse().map_err(|_| "invalid last fixture port")?;
+    ensure!(
+        start >= 1024 && start <= end,
+        "fixture ports must be non-privileged and ordered"
+    );
+    Ok(format!("{start}-{end}"))
+}
+
+fn reject_ephemeral_overlap(range: &str, ephemeral: &str) -> Result<(), String> {
+    let normalized = parse_fixture_port_range(range)?;
+    let (start, end) = normalized.split_once('-').unwrap();
+    let start: u16 = start.parse().unwrap();
+    let end: u16 = end.parse().unwrap();
+    let ports = ephemeral
+        .split_whitespace()
+        .map(str::parse::<u16>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "invalid host ephemeral range")?;
+    ensure!(
+        ports.len() == 2 && ports[0] <= ports[1],
+        "invalid host ephemeral range"
+    );
+    ensure!(
+        end < ports[0] || start > ports[1],
+        "fixture ports overlap the host ephemeral range; select another --port-range"
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_suite(
     daemon: PathBuf,
     executor: PathBuf,
@@ -5823,7 +5861,11 @@ fn run_suite(
     report: PathBuf,
     selected: Vec<String>,
     compose_subnet: Option<Ipv4Addr>,
+    port_range: String,
 ) -> Result<AcceptanceReport, String> {
+    let ephemeral = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .map_err(|error| format!("cannot inspect host ephemeral ports: {error}"))?;
+    reject_ephemeral_overlap(&port_range, &ephemeral)?;
     validate_run_inputs(&daemon, &executor, &fixture, &work_root, &report)?;
     let (caller_uid, caller_gid) = caller_identity()?;
     let harness = Harness {
@@ -5835,6 +5877,7 @@ fn run_suite(
         caller_uid,
         caller_gid,
         compose_subnet,
+        port_range,
     };
     let selected = selected
         .into_iter()
@@ -5942,6 +5985,7 @@ fn main() -> ExitCode {
             report,
             case,
             compose_subnet,
+            port_range,
         } => run_suite(
             daemon,
             executor,
@@ -5950,6 +5994,7 @@ fn main() -> ExitCode {
             report.clone(),
             case,
             compose_subnet,
+            port_range,
         )
         .map(|result| {
             println!(
@@ -5979,6 +6024,24 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_ports_are_validated_before_runtime_work() {
+        for invalid in [
+            "1-90",
+            "4000-2000",
+            "70000-80000",
+            "31000",
+            "31000-31999\ncommand",
+            "-1-2",
+        ] {
+            assert!(parse_fixture_port_range(invalid).is_err(), "{invalid}");
+        }
+        assert!(reject_ephemeral_overlap("46000-49999", "32768 60999").is_err());
+        assert!(reject_ephemeral_overlap("31000-32768", "32768 60999").is_err());
+        assert!(reject_ephemeral_overlap("31000-31999", "32768 60999").is_ok());
+        assert!(reject_ephemeral_overlap("61000-61999", "32768 60999").is_ok());
+    }
 
     #[test]
     fn a_bound_socket_alone_does_not_prove_daemon_readiness() {

@@ -83,3 +83,17 @@ An explicitly reviewed large file can be bound to its exact Git blob in the stag
 The exception applies only to that path and blob, never to privacy, provenance, or
 executable checks. Replacing the file requires a new reviewed exception. The
 allowlist itself must be a regular non-executable file no larger than 64 KiB.
+
+The Linux root-acceptance fixture supports `--port-range START-END` (default
+`31000-31999`) and `--compose-subnet PRIVATE-CIDR`. Choose fixture ranges that
+do not overlap existing services or networks. Before starting any fixture, the
+harness rejects privileged, malformed, reversed, or host-ephemeral-overlapping
+port ranges. It does not change the host's ephemeral-port policy or remove
+unrelated Docker networks when their default address pool is exhausted.
+
+Pass the candidate paths explicitly with `--daemon`, `--executor`, and `--fixture`.
+Build the daemon and harness together with the `root-acceptance` feature, then
+copy all three executables into a new candidate directory before running the
+harness. Later Cargo builds can otherwise replace a binary with another feature
+configuration. Run only with `DEVCOORDINATOR2_ROOT_ACCEPTANCE=1` and a new empty
+external `--work-root`; the harness never targets the installed service.
