@@ -44,6 +44,9 @@ snapshot, using read-only immutable SQLite without migrations or WAL/SHM creatio
 The result contains repository-scoped planning counts and the repository identity
 of each explicitly requested task, not private record text or installation
 contents. It checks file identity and hashes before and after inspection.
+Optional `--identities` adds up to 4,096 IDs and ordering numbers per planning
+family, plus hashes of decision references, for collision analysis. It does not
+export titles, outcomes, reference text or private installation values.
 Schema-2 snapshots must match their recorded backup hash; schema-1 snapshots
 without that historical binding are labelled `legacy_without_recorded_hash`.
 The newly calculated hash identifies the inspected bytes but does not establish

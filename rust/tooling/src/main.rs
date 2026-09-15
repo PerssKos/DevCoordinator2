@@ -67,6 +67,9 @@ enum PlanningCommand {
         repository_id: String,
         #[arg(long)]
         task_id: Vec<String>,
+        /// Include bounded record IDs, ordering numbers and hashed decision references.
+        #[arg(long)]
+        identities: bool,
     },
 }
 
@@ -2325,11 +2328,13 @@ fn run_planning(command: PlanningCommand) -> ExitCode {
         transaction_dir,
         repository_id,
         task_id,
+        identities,
     } = command;
     let request = devcoordinator2_tooling::planning_backup::InspectRequest {
         transaction_dir,
         repository_id,
         task_ids: task_id,
+        include_identities: identities,
     };
     match devcoordinator2_tooling::planning_backup::inspect(&request) {
         Ok(result) => emit_report(json!(result), true, 0),

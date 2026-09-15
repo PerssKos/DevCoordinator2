@@ -18,6 +18,7 @@ pub struct InspectRequest {
     pub transaction_dir: PathBuf,
     pub repository_id: String,
     pub task_ids: Vec<String>,
+    pub include_identities: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,7 +37,24 @@ pub struct Inspection {
     pub releases: i64,
     pub plan_events: i64,
     pub requested_tasks: Vec<TaskPresence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identities: Option<PlanningIdentities>,
     pub recovery_performed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlanningIdentities {
+    pub tasks: Vec<RecordIdentity>,
+    pub decisions: Vec<RecordIdentity>,
+    pub releases: Vec<RecordIdentity>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecordIdentity {
+    pub id: String,
+    pub sequence: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +230,30 @@ fn inspect_inner(
         releases: count("SELECT COUNT(*) FROM releases WHERE repository_id=?1")?,
         plan_events: count("SELECT COUNT(*) FROM plan_events WHERE repository_id=?1")?,
         requested_tasks,
+        identities: if request.include_identities {
+            Some(PlanningIdentities {
+                tasks: read_identities(
+                    &connection,
+                    &request.repository_id,
+                    "SELECT task_id,seq,NULL FROM tasks WHERE repository_id=?1 ORDER BY seq LIMIT 4097",
+                    b'p',
+                )?,
+                decisions: read_identities(
+                    &connection,
+                    &request.repository_id,
+                    "SELECT decision_id,seq,ref FROM decisions WHERE repository_id=?1 ORDER BY seq LIMIT 4097",
+                    b'n',
+                )?,
+                releases: read_identities(
+                    &connection,
+                    &request.repository_id,
+                    "SELECT release_id,seq,NULL FROM releases WHERE repository_id=?1 ORDER BY seq LIMIT 4097",
+                    b'v',
+                )?,
+            })
+        } else {
+            None
+        },
         recovery_performed: false,
     };
     drop(connection);
@@ -230,6 +272,42 @@ fn valid_id(value: &str, prefix: u8) -> bool {
     value.len() == 17
         && value.as_bytes()[0] == prefix
         && value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+fn read_identities(
+    connection: &Connection,
+    repository_id: &str,
+    sql: &str,
+    prefix: u8,
+) -> Result<Vec<RecordIdentity>, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|_| "backup identity columns are unavailable")?;
+    let rows = statement
+        .query_map([repository_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|_| "cannot query scoped planning identities")?;
+    let mut identities = Vec::new();
+    for row in rows {
+        let (id, sequence, reference) = row.map_err(|_| "invalid saved planning identity")?;
+        if !valid_id(&id, prefix) || sequence < 1 {
+            return Err("invalid saved planning identity".into());
+        }
+        identities.push(RecordIdentity {
+            id,
+            sequence,
+            reference_sha256: reference.map(|value| hex(&Sha256::digest(value.as_bytes()))),
+        });
+    }
+    if identities.len() > 4096 {
+        return Err("planning identity catalogue exceeds the bounded inspection limit".into());
+    }
+    Ok(identities)
 }
 
 fn valid_hash(value: &str) -> bool {
@@ -318,11 +396,13 @@ mod tests {
         let db = Connection::open(&backup).unwrap();
         db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('schema_version','20');
             CREATE TABLE repositories(repository_id TEXT PRIMARY KEY); INSERT INTO repositories VALUES('r946ed77e45b31d74');
-            CREATE TABLE tasks(task_id TEXT PRIMARY KEY,repository_id TEXT,title TEXT);
-            INSERT INTO tasks VALUES('p9966151ec04cd9cf','r946ed77e45b31d74','PRIVATE_TASK_SENTINEL');
-            INSERT INTO tasks VALUES('p463bdb46af5571c0','r0000000000000001','UNRELATED_SENTINEL');
-            CREATE TABLE decisions(repository_id TEXT); INSERT INTO decisions VALUES('r946ed77e45b31d74');
-            CREATE TABLE releases(repository_id TEXT); INSERT INTO releases VALUES('r946ed77e45b31d74');
+            CREATE TABLE tasks(task_id TEXT PRIMARY KEY,repository_id TEXT,title TEXT,seq INTEGER);
+            INSERT INTO tasks VALUES('p9966151ec04cd9cf','r946ed77e45b31d74','PRIVATE_TASK_SENTINEL',1);
+            INSERT INTO tasks VALUES('p463bdb46af5571c0','r0000000000000001','UNRELATED_SENTINEL',1);
+            CREATE TABLE decisions(repository_id TEXT,decision_id TEXT,seq INTEGER,ref TEXT);
+            INSERT INTO decisions VALUES('r946ed77e45b31d74','n0000000000000001',1,'PRIVATE_REF_SENTINEL');
+            CREATE TABLE releases(repository_id TEXT,release_id TEXT,seq INTEGER);
+            INSERT INTO releases VALUES('r946ed77e45b31d74','v0000000000000001',1);
             CREATE TABLE plan_events(repository_id TEXT); INSERT INTO plan_events VALUES('r946ed77e45b31d74');
             CREATE TABLE private_authority(value TEXT); INSERT INTO private_authority VALUES('CREDENTIAL_SENTINEL');").unwrap();
         drop(db);
@@ -337,6 +417,7 @@ mod tests {
             transaction_dir: directory.path().to_owned(),
             repository_id: REPO.into(),
             task_ids: vec![TASK.into(), OTHER.into()],
+            include_identities: false,
         };
         (directory, request)
     }
@@ -398,6 +479,41 @@ mod tests {
         let result = inspect(&request).unwrap();
         assert_eq!(result.provenance, "legacy_without_recorded_hash");
         assert!(valid_hash(&result.backup_sha256));
+    }
+
+    #[test]
+    fn opt_in_identities_expose_ids_and_reference_hashes_not_record_text() {
+        let (_root, mut request) = fixture(2);
+        assert!(inspect(&request).unwrap().identities.is_none());
+        request.include_identities = true;
+        let result = inspect(&request).unwrap();
+        let ids = result.identities.as_ref().unwrap();
+        assert_eq!(ids.tasks.len(), 1);
+        assert_eq!(ids.tasks[0].id, TASK);
+        assert_eq!(
+            ids.decisions[0].reference_sha256.as_deref(),
+            Some(hex(&Sha256::digest(b"PRIVATE_REF_SENTINEL")).as_str())
+        );
+        let output = serde_json::to_string(&result).unwrap();
+        assert!(!output.contains("PRIVATE_REF_SENTINEL"));
+        assert!(!output.contains("PRIVATE_TASK_SENTINEL"));
+        assert!(!output.contains("UNRELATED_SENTINEL"));
+    }
+
+    #[test]
+    fn malformed_saved_ids_are_rejected_before_they_can_expose_private_text() {
+        let (root, mut request) = fixture(1);
+        let db = Connection::open(root.path().join("authority-before.sqlite3")).unwrap();
+        db.execute(
+            "UPDATE decisions SET decision_id='PRIVATE_BAD_ID_SENTINEL'",
+            [],
+        )
+        .unwrap();
+        drop(db);
+        request.include_identities = true;
+        let error = inspect(&request).unwrap_err();
+        assert!(error.contains("invalid saved planning identity"));
+        assert!(!error.contains("PRIVATE_BAD_ID_SENTINEL"));
     }
 
     #[test]
