@@ -6,10 +6,14 @@
 //! same-schema startup or acceptance failure keeps intact data and restores
 //! only units, links, and the socket.
 
-use std::ffi::{CString, OsString};
+#[cfg(target_os = "linux")]
+use std::ffi::CString;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
+#[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+#[cfg(target_os = "linux")]
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};

@@ -502,3 +502,36 @@ CREATE TABLE IF NOT EXISTS glossary_revisions (
 );
 CREATE INDEX IF NOT EXISTS glossary_subject_history
     ON glossary_revisions(scope, kind, subject_id, revision);
+
+CREATE TABLE IF NOT EXISTS planning_recoveries (
+  recovery_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  backup_sha256 TEXT NOT NULL,
+  before_sha256 TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  UNIQUE(repository_id, backup_sha256)
+);
+CREATE TABLE IF NOT EXISTS planning_recovery_records (
+  recovery_id TEXT NOT NULL REFERENCES planning_recoveries(recovery_id),
+  record_kind TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  original_sequence INTEGER,
+  assigned_sequence INTEGER,
+  original_json TEXT NOT NULL,
+  PRIMARY KEY(recovery_id, record_kind, record_id)
+);
+CREATE INDEX IF NOT EXISTS planning_recovery_record_identity ON planning_recovery_records(record_kind,record_id);
+CREATE TRIGGER IF NOT EXISTS planning_recoveries_no_update BEFORE UPDATE ON planning_recoveries BEGIN
+  SELECT RAISE(ABORT, 'recovery receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS planning_recoveries_no_delete BEFORE DELETE ON planning_recoveries BEGIN
+  SELECT RAISE(ABORT, 'recovery receipts are permanent');
+END;
+CREATE TRIGGER IF NOT EXISTS planning_recovery_records_no_update BEFORE UPDATE ON planning_recovery_records BEGIN
+  SELECT RAISE(ABORT, 'recovery provenance is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS planning_recovery_records_no_delete BEFORE DELETE ON planning_recovery_records BEGIN
+  SELECT RAISE(ABORT, 'recovery provenance is permanent');
+END;
