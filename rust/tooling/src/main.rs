@@ -47,9 +47,26 @@ enum Command {
         #[command(subcommand)]
         command: DecisionCommand,
     },
+    Planning {
+        #[command(subcommand)]
+        command: PlanningCommand,
+    },
     Install {
         #[command(subcommand)]
         command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanningCommand {
+    /// Inspect counts and requested IDs in a saved activation backup. Never restore data.
+    InspectBackup {
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        task_id: Vec<String>,
     },
 }
 
@@ -868,6 +885,7 @@ fn main() -> ExitCode {
         } => run_skill_validation(command),
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
+        Command::Planning { command } => run_planning(command),
         Command::Install { command } => run_install(command),
     }
 }
@@ -2302,6 +2320,23 @@ fn run_legacy(command: LegacyCommand) -> ExitCode {
     }
 }
 
+fn run_planning(command: PlanningCommand) -> ExitCode {
+    let PlanningCommand::InspectBackup {
+        transaction_dir,
+        repository_id,
+        task_id,
+    } = command;
+    let request = devcoordinator2_tooling::planning_backup::InspectRequest {
+        transaction_dir,
+        repository_id,
+        task_ids: task_id,
+    };
+    match devcoordinator2_tooling::planning_backup::inspect(&request) {
+        Ok(result) => emit_report(json!(result), true, 0),
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
 fn run_decision(command: DecisionCommand) -> ExitCode {
     let DecisionCommand::Import(args) = command;
     let source = args
@@ -2964,6 +2999,22 @@ mod tests {
                 command: DecisionCommand::Import(_)
             }
         ));
+
+        let planning = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "planning",
+            "inspect-backup",
+            "--transaction-dir",
+            "/saved/activation",
+            "--repository-id",
+            "r946ed77e45b31d74",
+            "--task-id",
+            "p9966151ec04cd9cf",
+        ])
+        .expect("read-only planning backup inspection");
+        assert!(matches!(planning.command, Command::Planning {
+            command: PlanningCommand::InspectBackup { task_id, .. }
+        } if task_id == ["p9966151ec04cd9cf"]));
 
         let install = Cli::try_parse_from([
             "devcoordinator2-tooling",

@@ -28,6 +28,34 @@ accounts, legacy unit names, paths) are instance data kept in the untracked
 
 ## Pre-cutover proofs (handover §20)
 
+### Inspect missing planning records without restoring authority
+
+Use the compiled local tool against one explicitly selected activation directory:
+
+```sh
+devcoordinator2-tooling planning inspect-backup \
+  --transaction-dir /absolute/saved/activation \
+  --repository-id r0000000000000001 \
+  --task-id p0000000000000001
+```
+
+It opens only the private saved `authority-before.sqlite3` and its activation
+snapshot, using read-only immutable SQLite without migrations or WAL/SHM creation.
+The result contains repository-scoped planning counts and the repository identity
+of each explicitly requested task, not private record text or installation
+contents. It checks file identity and hashes before and after inspection.
+Schema-2 snapshots must match their recorded backup hash; schema-1 snapshots
+without that historical binding are labelled `legacy_without_recorded_hash`.
+The newly calculated hash identifies the inspected bytes but does not establish
+their historical authenticity or completeness.
+
+This command does not restore records, change live authority, or make a backup
+the current completion ledger. Missing-record recovery requires a separately
+reviewed plan that preserves newer authoritative records; do not use whole-state
+installation rollback to merge missing planning history.
+
+### Required proofs
+
 1. **Public authentication/grant boundary** — register the console
    redirect URI with the identity provider for the canary origin, fill
    `/etc/devcoordinator2/edge/oidc.client_id|client_secret`, restart the
