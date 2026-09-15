@@ -2551,6 +2551,8 @@ command={command}
 fn case_no_domain_release_uses_only_the_declared_live_route(
     world: &mut World,
 ) -> Result<(), String> {
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, Some("example.test"))?;
     world.write_owned("marker.txt", "no-domain-route\n")?;
     let command = command_json(&fixture_command(world, &["http-server-file", "marker.txt"]))?;
     world.write_config(&format!(

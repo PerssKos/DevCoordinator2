@@ -130,6 +130,7 @@ fn environment_digest(
                     | b"SYSTEMD_EXEC_PID"
                     | b"JOURNAL_STREAM"
                     | b"NOTIFY_SOCKET"
+                    | b"MEMORY_PRESSURE_WATCH"
                     | b"_"
             )
         {
@@ -291,6 +292,10 @@ mod tests {
             vec![
                 (OsString::from("RUSTFLAGS"), OsString::from(flags)),
                 (OsString::from("INVOCATION_ID"), OsString::from(run)),
+                (
+                    OsString::from("MEMORY_PRESSURE_WATCH"),
+                    OsString::from(format!("/sys/fs/cgroup/{run}/memory.pressure")),
+                ),
             ]
         };
         let base = environment_digest(ambient("-O1", "first"), &BTreeMap::new());
