@@ -110,6 +110,7 @@ struct ReleaseOverviewRow {
     delivered_at: Option<String>,
     url: Option<String>,
     port: Option<u16>,
+    historical: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -340,8 +341,8 @@ impl PlanService {
                     let releases = read_release_overviews(connection, &repository_id_for_query)?;
                     let current_release = releases
                         .iter()
-                        .find(|release| matches!(release.status.as_str(), "planned" | "requested"))
-                        .or_else(|| releases.last())
+                        .find(|release| !release.historical && matches!(release.status.as_str(), "planned" | "requested"))
+                        .or_else(|| releases.iter().rev().find(|release| !release.historical))
                         .map(|release| -> Result<CurrentReleaseSummary, DatabaseError> {
                             Ok(CurrentReleaseSummary {
                                 name: release.name.clone(),
@@ -356,7 +357,7 @@ impl PlanService {
                         |row| row.get::<_, u32>(0),
                     )?;
                     let preview_requested = connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested')",
+                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                         [&repository_id_for_query],
                         |row| row.get::<_, i64>(0),
                     )? != 0;
@@ -1719,7 +1720,7 @@ impl PlanService {
         self.database
             .call(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested')",
+                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                     [&repository_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
@@ -1732,7 +1733,7 @@ impl PlanService {
         self.database
             .call(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' ORDER BY seq",
+                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq",
                 )?;
                 Ok(statement
                     .query_map([repository_id], |row| {
@@ -1883,7 +1884,7 @@ fn read_release_overviews(
     repository_id: &str,
 ) -> Result<Vec<ReleaseOverviewRow>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port,EXISTS(SELECT 1 FROM planning_recovery_records WHERE record_kind='releases' AND record_id=releases.release_id) FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
     )?;
     Ok(statement
         .query_map([repository_id], |row| {
@@ -1898,6 +1899,7 @@ fn read_release_overviews(
                 delivered_at: row.get(7)?,
                 url: row.get(8)?,
                 port: row.get(9)?,
+                historical: row.get(10)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)

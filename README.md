@@ -64,6 +64,26 @@ Apply only the reviewed plan using its required private transaction and digest.
 Installed entries are direct absolute links to this checkout. Unrelated skills
 and runtime files are preserved.
 
+## Recovering saved planning history
+
+`devcoordinator2 plan recovery` prepares a repository-scoped import from an
+explicit activation snapshot. Supply `--repository-id`, `--transaction-dir`,
+and the inspected `--backup-sha256`. The response contains counts, original-to-new
+display-number mappings, and a `live_sha256`; it contains no saved record text.
+Repeat the same command with `--apply --expected-live-sha256 <live_sha256>` only
+for the reviewed result. Changed inputs and identity conflicts reject the entire
+operation. A repeat of a completed import returns its permanent receipt without
+replaying it.
+
+Recovery preserves existing records, original saved identities, dates and
+relationships. Historical releases remain visible but cannot select the current
+release or replay an old preview request. Saved decision summaries are retained
+as recovery provenance rather than replacing current summaries. After import,
+review tasks through ordinary task/history/search operations and prepare a new
+combined decision summary. A legacy snapshot without a recorded activation hash
+remains explicitly labelled as such. This operation never performs an installation
+rollback or restores unrelated runtime, account, route or credential data.
+
 ## Development and validation
 
 Product checks:

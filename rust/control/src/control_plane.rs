@@ -118,6 +118,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "telegram.list",
     "event.wait",
     "plan.overview",
+    "plan.recovery",
     "glossary.list",
     "glossary.resolve",
     "glossary.get",
@@ -957,6 +958,22 @@ impl ControlPlane {
                     .then_some(principal.identity)
                     .flatten();
                 encode(self.telegram.list(email.as_deref())?)
+            }
+            "plan.recovery" => {
+                let request: devcoordinator2_api::recovery::Request = decode(params)?;
+                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
+                let result =
+                    crate::planning_recovery::recover(&self.database, request, &actor, &now)?;
+                if result.status == "applied" {
+                    self.publish_planning(
+                        "plan.recovered",
+                        &result.repository_id,
+                        "repository",
+                        &result.repository_id,
+                        Some("recovered".to_owned()),
+                    );
+                }
+                encode(result)
             }
             "plan.overview" => {
                 let params: params::PlanReference = decode(params)?;

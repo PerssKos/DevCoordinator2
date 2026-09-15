@@ -33,6 +33,7 @@ selftest-fixtures = []
 base64.workspace = true
 clap.workspace = true
 devcoordinator2-api = { path = "../api" }
+devcoordinator2-control = { path = "../control" }
 devcoordinator2-executor-protocol = { path = "../executor-protocol" }
 getrandom.workspace = true
 globset.workspace = true
