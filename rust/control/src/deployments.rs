@@ -376,9 +376,14 @@ impl Deployments {
                     "public callers cannot discover deployments from a path",
                 ));
             }
-            let registered = self
-                .registry
-                .register(Path::new(&path), caller.uid, caller.gid)?;
+            let registered = if caller.via_edge {
+                self.registry
+                    .registered_execution_source(Path::new(&path))?
+                    .0
+            } else {
+                self.registry
+                    .register(Path::new(&path), caller.uid, caller.gid)?
+            };
             let worktree = PathBuf::from(&registered.worktree_path);
             for name in list_deployment_names(&worktree).map_err(config_error)? {
                 let specification = load_deployment_spec(&worktree, &name).map_err(config_error)?;
@@ -1058,6 +1063,7 @@ impl Deployments {
                 && row.state != "stopped"
             {
                 let caller = Caller {
+                    via_edge: false,
                     pid: 0,
                     uid: row.created_by_uid,
                     gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
@@ -3744,7 +3750,7 @@ impl Deployments {
         let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
         if deployment_id.is_none() {
             self.registry
-                .register(&target.worktree, caller.uid, caller.gid)?;
+                .register(&target.worktree, target.caller_uid, target.caller_gid)?;
         }
         Ok(target)
     }
@@ -3773,7 +3779,7 @@ impl Deployments {
                     "recorded deployment source is no longer declared",
                 ));
             }
-            let (caller_uid, caller_gid) = if caller.identity.is_some() {
+            let (caller_uid, caller_gid) = if caller.is_console() {
                 (
                     row.created_by_uid,
                     primary_gid(row.created_by_uid).map_err(systemd_error)?,
@@ -3810,8 +3816,26 @@ impl Deployments {
                 "name or deployment_id is required",
             )
         })?;
-        let resolved =
-            crate::repository::resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
+        let (resolved, caller_uid, caller_gid) = if caller.via_edge {
+            let (source, uid, gid) = self.registry.registered_execution_source(Path::new(path))?;
+            (
+                crate::repository::WorktreeInfo {
+                    repository_root: source.root_path.into(),
+                    worktree_root: source.worktree_path.into(),
+                },
+                uid,
+                gid,
+            )
+        } else {
+            (
+                crate::repository::resolve_worktree(
+                    Path::new(path),
+                    Some((caller.uid, caller.gid)),
+                )?,
+                caller.uid,
+                caller.gid,
+            )
+        };
         let repository_id = crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
             ProtocolError::new(
                 ErrorCode::RepositoryNotFound,
@@ -3857,8 +3881,8 @@ impl Deployments {
             worktree,
             specification,
             source,
-            caller_uid: caller.uid,
-            caller_gid: caller.gid,
+            caller_uid,
+            caller_gid,
             client: client_kind_name(caller.client_kind).into(),
             session: caller.client_session.clone(),
         })
@@ -5528,6 +5552,7 @@ tcp="127.0.0.1:25"
 
         fn caller() -> Caller {
             Caller {
+                via_edge: false,
                 pid: 1,
                 uid: 1000,
                 gid: 1000,
@@ -5878,6 +5903,7 @@ image="cache:1"
             clock.clone(),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6046,6 +6072,7 @@ image="cache:1"
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6170,6 +6197,7 @@ command=["serve"]
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6284,6 +6312,7 @@ command=["serve"]
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6480,6 +6509,7 @@ route=true
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6691,6 +6721,7 @@ database="app"
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6803,6 +6834,7 @@ env_file=".web.env"
             Arc::new(HostClock),
         );
         let caller = Caller {
+            via_edge: false,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             ..World::caller()

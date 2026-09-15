@@ -351,7 +351,7 @@ impl TestLogService {
                 "path must be absolute",
             ));
         }
-        if caller.identity.is_some() {
+        if caller.is_console() {
             let path = path.to_string_lossy().to_string();
             return self
                 .database
@@ -723,6 +723,7 @@ mod tests {
             .expect("fixture");
         let service = TestLogService::new(database.clone(), Registry::new(database));
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: 999,
             gid: 999,

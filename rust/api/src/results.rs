@@ -519,6 +519,9 @@ pub struct TestSummary {
     pub stdout_bytes_observed: u64,
     pub stderr_bytes_observed: u64,
     pub caller_uid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
+    pub execution_uid: Option<u32>,
     pub client: String,
     pub proof: ProofKind,
     pub selection: Vec<String>,

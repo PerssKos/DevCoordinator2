@@ -89,6 +89,7 @@ impl World {
             verification_file: (files.len() > 1).then(|| "delivery.json".into()),
         };
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: 999,
             gid: 999,

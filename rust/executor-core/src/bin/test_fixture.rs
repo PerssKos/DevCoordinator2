@@ -211,6 +211,33 @@ fn run() -> Result<i32, String> {
             }
             Ok(0)
         }
+        "postgres-query-gate" => {
+            let query = Command::new("/usr/bin/psql")
+                .args([
+                    "--no-psqlrc",
+                    "--set=ON_ERROR_STOP=1",
+                    "-tA",
+                    "-c",
+                    &argument(2, "SQL")?,
+                ])
+                .output()
+                .map_err(|e| e.to_string())?;
+            io::stdout()
+                .write_all(&query.stdout)
+                .map_err(|e| e.to_string())?;
+            io::stderr()
+                .write_all(&query.stderr)
+                .map_err(|e| e.to_string())?;
+            if !query.status.success() {
+                return Ok(query.status.code().unwrap_or(1));
+            }
+            let mut socket = std::os::unix::net::UnixStream::connect(argument(3, "gate")?)
+                .map_err(|e| e.to_string())?;
+            socket.write_all(b"ready").map_err(|e| e.to_string())?;
+            let mut release = [0];
+            socket.read_exact(&mut release).map_err(|e| e.to_string())?;
+            Ok(0)
+        }
         "sleep-ignore-term" => {
             // SAFETY: setting SIGTERM to SIG_IGN is process-local and is the
             // exact behavior this disposable fixture exists to exercise.
@@ -379,7 +406,7 @@ fn run() -> Result<i32, String> {
                 .map_err(|error| error.to_string())?;
             Ok(0)
         }
-        "counted-build" => {
+        "counted-build" | "counted-compile" => {
             let input = fs::read(argument(2, "input")?).map_err(|error| error.to_string())?;
             let counter = PathBuf::from(argument(4, "counter")?);
             let count = fs::read_to_string(&counter)
@@ -388,6 +415,19 @@ fn run() -> Result<i32, String> {
                 .unwrap_or(0)
                 + 1;
             fs::write(&counter, count.to_string()).map_err(|error| error.to_string())?;
+            if std::env::args().nth(1).as_deref() == Some("counted-compile") {
+                let compiled = Command::new(argument(5, "compiler")?)
+                    .args([
+                        "-O2",
+                        "-S",
+                        &argument(2, "input")?,
+                        "-o",
+                        &argument(3, "output")?,
+                    ])
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                return Ok(compiled.code().unwrap_or(1));
+            }
             fs::write(argument(3, "output")?, input).map_err(|error| error.to_string())?;
             Ok(0)
         }

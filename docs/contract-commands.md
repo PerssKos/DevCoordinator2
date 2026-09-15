@@ -66,6 +66,13 @@ Args:
 Omitting `checks` produces proof `complete`; supplying it produces proof
 `selected` and always sets `readiness_eligible` false.
 
+Console requests address an exact registered worktree. After the usual caller
+authorization, repository code runs as its registered non-root account, so the
+edge needs no Git or source-write access. Status retains the original `caller_uid`
+and includes `execution_uid` only when the execution account differs. A client
+cannot choose that account through request parameters. CLI/local-agent requests
+retain their existing execution identity.
+
 Result (only after the process exists):
 
 ```json

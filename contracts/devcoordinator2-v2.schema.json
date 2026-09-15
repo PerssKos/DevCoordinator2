@@ -3009,6 +3009,14 @@
               }
             ]
           },
+          "execution_uid": {
+            "format": "uint32",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "exit_code": {
             "format": "int32",
             "type": [
@@ -12507,6 +12515,14 @@
                   {
                     "type": "null"
                   }
+                ]
+              },
+              "execution_uid": {
+                "format": "uint32",
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
                 ]
               },
               "exit_code": {

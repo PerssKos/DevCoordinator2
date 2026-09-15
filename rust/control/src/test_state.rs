@@ -611,6 +611,7 @@ pub fn initial_summary(
         stdout_bytes_observed: 0,
         stderr_bytes_observed: 0,
         caller_uid,
+        execution_uid: None,
         client: client.into(),
         proof: api_proof(proof),
         selection,
@@ -663,6 +664,11 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
 }
 
 fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
+    if summary.execution_uid == Some(0) {
+        return Err(TestStateError::Invalid(
+            "repository execution UID must not be root".into(),
+        ));
+    }
     validate_run_id(&summary.run_id)?;
     let memory_stop = summary.termination_reason == Some(RunTerminationReason::MemoryPressure);
     if summary.schema_version != 2

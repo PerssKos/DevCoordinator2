@@ -1713,6 +1713,7 @@ mod tests {
 
     fn local() -> Caller {
         Caller {
+            via_edge: false,
             pid: 1,
             uid: 1000,
             gid: 1000,
@@ -1725,6 +1726,7 @@ mod tests {
 
     fn public(identity: &str) -> Caller {
         Caller {
+            via_edge: false,
             pid: 2,
             uid: 999,
             gid: 999,

@@ -185,6 +185,17 @@ values into summaries, metadata, metrics, or agent results. Commands must not
 print those values because their stdout and stderr are retained byte-completely
 as private cold evidence.
 
+Test-wide PostgreSQL declarations create automatic **Database setup** and
+**Database cleanup** dependency nodes. `test.start` accepts the graph without
+waiting for provisioning; setup is admitted through the existing capacity broker.
+Only checks selected from that test depend on its setup and receive its private
+connection environment. Cleanup runs after their terminal results, including
+failure or cancellation, and keeps its own status, logs and duration. Setup
+failure blocks dependent checks while independent targets continue.
+The returned phase names support check selection and retry. Selecting only a
+database setup or cleanup phase runs that fixture and its cleanup without the
+consumer checks; it remains diagnostic evidence and cannot establish readiness.
+
 For independently selected database cases, set `cases_only=true` and declare
 template inputs. Shared test-scoped PostgreSQL remains the default.
 

@@ -33,6 +33,8 @@ jobs:
         run: cargo test --locked --workspace --no-fail-fast --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
       - name: Build Linux root-acceptance fixtures
         run: cargo build --locked --release --package devcoordinator2-control --features root-acceptance --bin devcoordinator2 --bin devcoordinator2-root-acceptance --package devcoordinator2-executor-core --bin devcoordinator2-executor-test-fixture
+      - name: Test Linux acceptance input and ownership guards
+        run: cargo test --locked --package devcoordinator2-control --features root-acceptance --bin devcoordinator2-root-acceptance
 
   edge:
     name: Edge runtime

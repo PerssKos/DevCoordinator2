@@ -359,7 +359,7 @@ impl TestEvidenceService {
         if !path.is_absolute() {
             return Err(invalid_argument("path must be absolute"));
         }
-        if caller.identity.is_some() {
+        if caller.is_console() {
             let requested = path.to_string_lossy().into_owned();
             return self
                 .database
@@ -2646,6 +2646,7 @@ mod tests {
 
     fn caller(identity: &str) -> Caller {
         Caller {
+            via_edge: false,
             pid: std::process::id(),
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
