@@ -533,6 +533,13 @@ struct SkillValidationArgs {
 
 #[derive(Debug, Subcommand)]
 enum SkillValidationCommand {
+    /// Export bounded diagnostics from isolated CI validation runs.
+    Evidence {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     Run {
         #[command(flatten)]
         options: SkillValidationArgs,
@@ -1002,6 +1009,15 @@ fn validation_options(
 fn run_skill_validation(command: SkillValidationCommand) -> ExitCode {
     use devcoordinator2_tooling::skill_validation;
     match command {
+        SkillValidationCommand::Evidence { root, output } => {
+            match devcoordinator2_tooling::ci_evidence::export(&root, &output) {
+                Ok(receipt) => {
+                    println!("{receipt}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
         SkillValidationCommand::InternalCheck { name, root } => {
             let root = root.canonicalize().map_err(|error| error.to_string());
             match root.and_then(|root| skill_validation::run_internal_check(&root, &name)) {

@@ -9,6 +9,8 @@ export async function verifyAnnotations({ page, daemon, check, scenario, baseUrl
   daemon.setEvidenceImage(await page.screenshot({ type: 'png' }), viewport.width, viewport.height);
   await page.goto(`${baseUrl}#/tests/t20260101T000100Z-def456`);
   await page.locator('#evidence-image:not([hidden])').waitFor();
+  await page.screenshot({ path: path.join(output, `annotation-arrival-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email')] });
+  await page.screenshot({ path: path.join(output, `annotation-arrival-${theme}-${viewport.width}-full.png`), fullPage: true, mask: [page.locator('#who-email')] });
   const initialView = await page.evaluate(() => {
     const image = document.querySelector('#evidence-scroll').getBoundingClientRect();
     const name = document.querySelector('#workspace-heading > span');

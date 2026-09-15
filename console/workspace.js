@@ -173,6 +173,8 @@ window.DevCoordinatorWorkspace = (() => {
       const root = document.querySelector('#workspace-root');
       root.hidden = !selected?.rootPath;
       root.textContent = selected?.rootPath ? `Root: ${selected.rootPath}` : '';
+      root.title = root.textContent;
+      root.dataset.uiAllowTruncation = 'The full repository path remains available in Checkouts';
       editPresentation.hidden = !selected || !identity()?.administrator;
       toggle.title = selected ? `Current repository: ${selected.name}` : 'Repositories';
       const record = selected?.records.find((item) => item.repository_id === selectedId);

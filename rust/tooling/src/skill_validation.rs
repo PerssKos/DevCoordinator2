@@ -848,6 +848,13 @@ pub fn run_complete(options: &ValidationOptions, run_id: &str) -> Result<Validat
         .current_dir(&options.root)
         .output()
         .map_err(|error| format!("cannot launch Rust executor: {error}"))?;
+    for (name, bytes) in [
+        ("executor.stdout.log", &completed.stdout),
+        ("executor.stderr.log", &completed.stderr),
+    ] {
+        write_new_bytes_nofollow(&options.current_dir.join(name), bytes, 0o600)
+            .map_err(|error| error.to_string())?;
+    }
     let report_path = options.current_dir.join("check-report.json");
     let bytes = read_bytes_nofollow(&report_path, Some(&options.root))
         .map_err(|error| error.to_string())?

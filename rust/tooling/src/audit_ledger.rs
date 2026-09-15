@@ -865,14 +865,15 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(write_bytes_nofollow(&link, b"bad", 0o600).is_err());
         let fifo = directory.path().join("fifo");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::FileType::Fifo,
-            Mode::from_raw_mode(0o600),
+        let fifo_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // The owned fixture path is NUL-terminated and remains alive for mkfifo.
+        // POSIX mkfifo is available on Linux and macOS; rustix mknodat is not.
+        assert_eq!(
+            unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) },
             0,
-        )
-        .unwrap();
+            "{}",
+            std::io::Error::last_os_error()
+        );
         assert!(write_bytes_nofollow(&fifo, b"bad", 0o600).is_err());
     }
 
