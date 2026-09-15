@@ -88,6 +88,22 @@ jobs:
       - name: Run complete repository validation
         run: target/release/devcoordinator2-tooling skills validate run --root "$GITHUB_WORKSPACE" --temp-root "$RUNNER_TEMP/devcoordinator2-skill-validation"
 
+      - name: Collect bounded CI validation diagnostics
+        if: always()
+        run: |
+          if [ -x target/release/devcoordinator2-tooling ]; then
+            target/release/devcoordinator2-tooling skills validate evidence --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/devcoordinator2-ci-evidence"
+          fi
+
+      - name: Retain CI validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: skill-diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/devcoordinator2-ci-evidence/*.json
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Run rendered Console verification
         if: runner.os == 'Linux'
         run: node console/verify.mjs

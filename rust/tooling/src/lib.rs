@@ -7,6 +7,7 @@ pub mod audit_ledger;
 pub mod audit_queue;
 pub mod audit_targets;
 pub mod audit_verify;
+pub mod ci_evidence;
 pub mod cutover;
 pub mod decision_import;
 pub mod formal_review;

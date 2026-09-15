@@ -1,8 +1,8 @@
 # Rust execution plane
 
-This workspace is the reusable governed-check execution foundation for the
-current Python control plane and the planned Rust daemon. It requires Rust
-1.85 or newer and accepts executor plan schema 2 only.
+This workspace contains the Rust control plane, reusable governed-check
+executor, and shared tooling. Use the repository's pinned Rust toolchain.
+The executor accepts plan schema 2 only.
 
 Build the release binary from the canonical checkout:
 
@@ -28,7 +28,7 @@ accepts platform path aliases such as macOS `/var` → `/private/var` without
 weakening containment.
 Repository commands remain argv arrays; the executor never invokes a shell.
 
-The Python control plane can request bounded content-free evidence without
+The control plane can request bounded content-free evidence without
 retaining a second hashing implementation:
 
 ```text
@@ -42,3 +42,17 @@ the exact stable `log_dir` named by the plan. There is no aggregate output copy
 or per-stream storage cap. `log-query` and `log-prune` are JSON-stdin internal
 surfaces used by the authenticated control plane; they expose bounded logical
 references rather than caller-supplied paths.
+
+After an isolated CI skill-validation run, export bounded diagnostics with:
+
+```text
+devcoordinator2-tooling skills validate evidence --root /absolute/ci-checkout --output /new/diagnostics-directory
+```
+
+The export includes typed report summaries and the last 16 KiB of each exact
+stdout/stderr stream, including executor diagnostics when no final report was
+sealed. It does not traverse fixture or evidence directories, copy authentication
+state, follow links, or overwrite an existing export. Known credential and private
+identity lines are withheld using the public-artifact guard; the command is for
+isolated CI fixtures, not arbitrary live runtime logs. CI uploads only these JSON
+files and retains them for seven days. Complete local streams remain private.
