@@ -72,6 +72,7 @@ fn direct(name: &str, command: Vec<String>) -> CheckPlan {
         display_name: None,
         source_name: None,
         expected_failure: None,
+        expected_exit_code: None,
         name: name.into(),
         tier: ValidationTier::Development,
         role: CheckRole::Work,
@@ -132,6 +133,8 @@ fn plan(repository: &Repository, run_id: &str, checks: Vec<CheckPlan>) -> Execut
     fs::create_dir_all(repository.current(run_id)).expect("create run directory");
     fs::create_dir_all(repository.logs(run_id)).expect("create log directory");
     ExecutionPlan {
+        database_checks: Default::default(),
+        fixture_program: None,
         environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: run_id.into(),
@@ -569,28 +572,30 @@ async fn missing_invalid_and_trailing_descriptor_manifests_are_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn invalid_manifest_cleanup_terminates_discovery_descendants() {
     let repository = Repository::new("manifest-cleanup");
+    let socket = repository.root.join(".devcoordinator/descendant.sock");
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let mut fanout = dynamic_fanout("cases", "invalid");
-    fanout.discover = Some(fixture(&["invalid-manifest-with-child"]));
+    fanout.discover = Some(fixture(&[
+        "invalid-manifest-with-child",
+        socket.to_str().unwrap(),
+    ]));
     let report = execute(plan(&repository, "run-manifest-cleanup", vec![fanout])).await;
     assert_eq!(report.status, RunStatus::Failed);
-    let pid: u32 = fs::read_to_string(
-        repository
-            .current("run-manifest-cleanup")
-            .join("scratch/cases/child.pid"),
+    let (mut descendant, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut observed = Vec::new();
+    use tokio::io::AsyncReadExt;
+    tokio::time::timeout(
+        Duration::from_secs(3),
+        descendant.read_to_end(&mut observed),
     )
-    .expect("child pid")
-    .parse()
-    .expect("pid number");
-    for _ in 0..100 {
-        if !PathBuf::from(format!("/proc/{pid}")).exists() {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert!(
-        !PathBuf::from(format!("/proc/{pid}")).exists(),
-        "discovery descendant survived cleanup"
-    );
+    .await
+    .expect("descendant closed its socket after cleanup")
+    .unwrap();
+    assert_eq!(observed, b"ready");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1062,6 +1067,149 @@ async fn cache_never_publishes_evidence_from_a_run_whose_source_changed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consumed_artifact_must_still_match_its_producer_receipt() {
+    use devcoordinator2_executor_core::protocol::ConsumedArtifact;
+    let repository = Repository::new("producer-receipt");
+    let artifact = ".devcoordinator/producer.bin";
+    let mut producer = direct(
+        "producer",
+        fixture(&["write-relative", artifact, "produced"]),
+    );
+    producer.produces = vec![artifact.into()];
+    let mut replacement = direct(
+        "replacement",
+        fixture(&["write-relative", artifact, "replaced"]),
+    );
+    replacement.requires = vec!["producer".into()];
+    let mut consumer = direct("consumer", fixture_exit(0));
+    consumer.requires = vec!["producer".into(), "replacement".into()];
+    consumer.consumes = vec![ConsumedArtifact {
+        check: "producer".into(),
+        path: artifact.into(),
+    }];
+    let report = execute(plan(
+        &repository,
+        "run-producer-receipt",
+        vec![producer, replacement, consumer],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Passed);
+    assert_eq!(report.checks[2].status, LeafStatus::Failed);
+    assert!(
+        report.checks[2].streams.is_empty(),
+        "the consumer must not execute with replaced inputs"
+    );
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_resource_wait_before_cache_or_process_execution() {
+    use devcoordinator2_executor_core::protocol::{ResourceAccess, ResourceClaim, ResourceKind};
+    use devcoordinator2_executor_core::{
+        PermitFuture, PermitProvider, PermitRequest, ReservationFuture,
+    };
+    struct WaitingProvider {
+        entered: tokio::sync::Notify,
+        inner: LocalPermitProvider,
+    }
+    impl PermitProvider for WaitingProvider {
+        fn acquire<'a>(&'a self, request: PermitRequest) -> PermitFuture<'a> {
+            self.inner.acquire(request)
+        }
+        fn reserve<'a>(&'a self, _: &'a str, _: &'a str) -> ReservationFuture<'a> {
+            Box::pin(async {
+                self.entered.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+    let provider = Arc::new(WaitingProvider {
+        entered: tokio::sync::Notify::new(),
+        inner: LocalPermitProvider::unbounded(),
+    });
+    let repository = cache_repository("resource-cancel");
+    let mut check = cached_build();
+    check.resources = vec![ResourceClaim {
+        kind: ResourceKind::Directory,
+        id: ".devcoordinator/build".into(),
+        access: ResourceAccess::Exclusive,
+    }];
+    let cancellation = Cancellation::default();
+    let executor = Executor::new(
+        plan(&repository, "run-resource-cancel", vec![check]),
+        provider.clone(),
+        cancellation.clone(),
+    )
+    .unwrap();
+    let running = tokio::spawn(executor.run());
+    tokio::time::timeout(Duration::from_secs(3), provider.entered.notified())
+        .await
+        .unwrap();
+    cancellation.cancel();
+    let report = tokio::time::timeout(Duration::from_secs(3), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.checks[0].status, LeafStatus::Cancelled);
+    assert!(!report.checks[0].resource_waiting);
+    assert!(!repository.root.join(".devcoordinator/build-count").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn focused_reuse_checks_configuration_toolchain_and_corrupt_receipts() {
+    let repository = cache_repository("focused-cache-inputs");
+    fs::create_dir_all(repository.root.join(".devcoordinator")).unwrap();
+    let executable = repository.root.join(".devcoordinator/compiler");
+    let mut check = cached_build();
+    fs::copy(&check.command.as_ref().unwrap()[0], &executable).unwrap();
+    check.command.as_mut().unwrap()[0] = executable.to_string_lossy().into_owned();
+    let first = execute(plan(&repository, "run-cache-origin", vec![check.clone()])).await;
+    assert_eq!(first.checks[0].status, LeafStatus::Passed);
+    let mut selected = plan(&repository, "run-cache-focused", vec![check.clone()]);
+    selected.test = "focused-target".into();
+    let reused = execute(selected).await;
+    assert_eq!(reused.checks[0].status, LeafStatus::Reused);
+    let mut configuration = plan(&repository, "run-cache-config", vec![check.clone()]);
+    configuration.config_digest = "d".repeat(64);
+    assert_eq!(
+        execute(configuration).await.checks[0].status,
+        LeafStatus::Passed
+    );
+    let receipt = repository
+        .root
+        .join(".devcoordinator/test/cache/build.json");
+    fs::write(&receipt, b"corrupt receipt").unwrap();
+    assert_eq!(
+        execute(plan(&repository, "run-cache-corrupt", vec![check.clone()]))
+            .await
+            .checks[0]
+            .status,
+        LeafStatus::Passed
+    );
+    let before = fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap();
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&executable)
+        .unwrap()
+        .write_all(b"toolchain revision")
+        .unwrap();
+    assert_eq!(
+        execute(plan(&repository, "run-cache-toolchain", vec![check]))
+            .await
+            .checks[0]
+            .status,
+        LeafStatus::Passed
+    );
+    let after = fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap();
+    assert_eq!(
+        after.parse::<u32>().unwrap(),
+        before.parse::<u32>().unwrap() + 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn qualification_accepts_only_its_measured_failure_and_then_runs_the_corrected_case() {
     let repository = Repository::new("qualified-failure");
     let mut negative = direct("qualification", fixture(&["junit", "valid"]));
@@ -1090,13 +1238,14 @@ async fn qualification_accepts_only_its_measured_failure_and_then_runs_the_corre
     negative.role = CheckRole::Preflight;
     negative.expect_failure = true;
     negative.expected_failure = Some(expected);
+    negative.expected_exit_code = Some(0);
     negative.qualification_of = Some("corrected".into());
     negative.invalidates = vec!["corrected".into()];
     let corrected = direct("corrected", fixture_exit(0));
     let report = execute(plan(
         &repository,
         "run-qualified",
-        vec![negative, corrected],
+        vec![negative.clone(), corrected.clone()],
     ))
     .await;
     assert_eq!(report.status, RunStatus::Passed);
@@ -1110,6 +1259,18 @@ async fn qualification_accepts_only_its_measured_failure_and_then_runs_the_corre
         report.checks[0].display_name.as_deref(),
         Some("parser / qualification")
     );
+    for defect in ["valid-then-crash", "unrelated-failure"] {
+        negative.command = Some(fixture(&["junit", defect]));
+        let failed = execute(plan(
+            &repository,
+            &format!("run-{defect}"),
+            vec![negative.clone(), corrected.clone()],
+        ))
+        .await;
+        assert_eq!(failed.status, RunStatus::Failed, "{defect}");
+        assert_eq!(failed.checks[0].status, LeafStatus::Failed, "{defect}");
+        assert_eq!(failed.checks[1].status, LeafStatus::Invalidated, "{defect}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

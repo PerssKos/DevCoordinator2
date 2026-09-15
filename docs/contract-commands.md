@@ -92,6 +92,12 @@ start includes `superseded_run_id` with that exact active run; the field is
 absent when no active run was replaced. Compose independent same-worktree
 checks inside one schema-2 graph rather than starting competing named tests.
 
+Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
+instead of `test`. `checks` accepts qualified `target/check` names, and
+`cases: {"target/check":["case-id"]}` selects exact cases. Responses retain
+`targets` and `case_selection` through completion and retry; namespaced check
+identities have a readable `display_name`. Run history preserves target names.
+
 Every dependency-ready leaf enters host-wide adaptive admission immediately.
 `after` requires terminal completion; `requires` requires success. Failed
 preflights mark their declared targets `invalidated`; unrelated branches
@@ -130,6 +136,12 @@ referenced Rust check report is schema 2 only; schema
 bounded preflight/check/case counts. States are `pending|running|passed|failed|reused|`
 `timed_out|invalidated|not_meaningful|cancelled|unsafe`. Capacity-wait counts,
 expanded-case totals, and preflight totals remain bounded summary fields.
+
+Checks may report `resource_waiting`, `phase`, and `phase_durations`.
+Each phase reports summed execution `duration_seconds`, separately measured
+`elapsed_seconds` (null when unavailable), and its node count. A database case
+also includes `phases` for fixture preparation, case execution and cleanup.
+Fixture and cleanup log selectors require both check and case identities.
 Measurements never control success progression.
 
 summary.json fields (result schema 2; schema 1 is not read or translated):
@@ -158,7 +170,7 @@ be null when unavailable. CLI equivalents are `test capacity show|set|clear`.
 ## test.log.catalog
 
 Args: `path` plus optional `run_id` (current by default), `check`,
-`phase` (`executor|check|discovery|case`), `case`, `stream`, opaque `cursor`,
+`phase` (`executor|check|discovery|fixture|case|cleanup`), `case`, `stream`, opaque `cursor`,
 and `limit` (1..100). The result is a stable page of content-free entries:
 logical `log_ref`, bytes, lines, first/last byte times, complete/truncated
 state, SHA-256, age expiry, depth rank/limit, and structured-evidence

@@ -366,6 +366,8 @@ impl FixtureSystemd {
             .checks
             .iter()
             .map(|check| CheckReport {
+                phase_durations: Vec::new(),
+                resource_waiting: false,
                 display_name: check.display_name.clone(),
                 execution: None,
                 name: check.name.clone(),
@@ -379,8 +381,6 @@ impl FixtureSystemd {
                 started_at: Some("2026-09-04T00:00:00Z".into()),
                 finished_at: Some("2026-09-04T00:00:01Z".into()),
                 duration_seconds: Some(1.0),
-                started_epoch_ms: Some(0),
-                finished_epoch_ms: Some(1000),
                 exit: DiagnosticExit {
                     code: Some(exit),
                     signal: None,
@@ -761,12 +761,20 @@ command=["true"]
     }
 
     fn wait_status(&self, expected: TestStatus) -> devcoordinator2_api::results::TestSummary {
+        self.wait_status_at(&self.worktree, expected)
+    }
+
+    fn wait_status_at(
+        &self,
+        path: &Path,
+        expected: TestStatus,
+    ) -> devcoordinator2_api::results::TestSummary {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             let observed = self.events.lock().unwrap().len();
             let status = self
                 .lifecycle
-                .status(self.worktree.to_str().unwrap(), &self.caller)
+                .status(path.to_str().unwrap(), &self.caller)
                 .unwrap();
             if status.status == expected {
                 return status;
@@ -1000,6 +1008,7 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
     let mut check = summary.checks.as_ref().unwrap()[0].clone();
     check.cases = (0..32)
         .map(|index| devcoordinator2_api::results::CaseProjection {
+            phases: Vec::new(),
             execution: None,
             id: format!("case-{index}-{}", "x".repeat(96)),
             status: devcoordinator2_api::results::LeafStatus::Passed,
@@ -1037,17 +1046,7 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
     .unwrap();
     let (other, second) = world.start_named("other-page");
     world.systemd.finish(&second.unit);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while world
-        .lifecycle
-        .status(other.to_str().unwrap(), &world.caller)
-        .unwrap()
-        .status
-        == TestStatus::Running
-    {
-        assert!(Instant::now() < deadline);
-        std::thread::yield_now();
-    }
+    world.wait_status_at(&other, TestStatus::Passed);
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
     loop {
@@ -2255,6 +2254,12 @@ database="app_test"
         identity: None,
     };
     assert_ne!(caller.uid, 0, "PostgreSQL lifecycle fixture needs non-root");
+    let (finished, completion) = std::sync::mpsc::channel();
+    lifecycle.set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+        if event.kind == "test.finished" {
+            finished.send(event.status).unwrap();
+        }
+    }));
     let started = lifecycle
         .start(
             StartTest {
@@ -2288,17 +2293,17 @@ database="app_test"
     assert!(!public.contains("postgresql://"));
 
     systemd.finish(&started.unit);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let status = lifecycle
+    assert_eq!(
+        completion.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Some(TestStatus::Passed)
+    );
+    assert_eq!(
+        lifecycle
             .status(worktree.to_str().unwrap(), &caller)
-            .unwrap();
-        if status.status == TestStatus::Passed {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        thread::yield_now();
-    }
+            .unwrap()
+            .status,
+        TestStatus::Passed
+    );
     assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
 }
 

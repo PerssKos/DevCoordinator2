@@ -34,6 +34,8 @@ pub enum LogPhase {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

@@ -1,12 +1,15 @@
 //! Content-bound receipts for opt-in reuse of completed direct checks.
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use devcoordinator2_executor_protocol::{ArtifactReceipt, CheckPlan, ExecutionPlan};
 use rustix::fs::{
-    AtFlags, FileType, Mode, OFlags, fstat, mkdirat, open, openat, renameat, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, fstat, mkdirat, open, openat, renameat, statat, unlinkat,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +29,40 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn prune(directory: &File, at: u64) {
+    let Ok(mut reader) = Dir::read_from(directory) else {
+        return;
+    };
+    let mut receipts = Vec::new();
+    for item in (&mut reader).take(4096) {
+        let Ok(item) = item else {
+            continue;
+        };
+        let Ok(name) = item.file_name().to_str() else {
+            continue;
+        };
+        let Some(check) = name.strip_suffix(".json") else {
+            continue;
+        };
+        if crate::LeafSelector::check(check).is_err() {
+            continue;
+        }
+        let Ok(stat) = statat(directory, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+            continue;
+        }
+        receipts.push((stat.st_mtime.max(0) as u64, name.to_owned()));
+    }
+    receipts.sort_unstable_by(|left, right| right.cmp(left));
+    for (index, (modified, name)) in receipts.into_iter().enumerate() {
+        if index >= 1024 || at.saturating_sub(modified) > 86400 {
+            let _ = unlinkat(directory, name.as_str(), AtFlags::empty());
+        }
+    }
 }
 
 fn directory(root: &Path) -> Option<File> {
@@ -73,6 +110,43 @@ fn binary(root: &Path, check: &CheckPlan) -> Option<PathBuf> {
         .ok()
 }
 
+fn environment_digest(
+    ambient: impl IntoIterator<Item = (OsString, OsString)>,
+    declared: &BTreeMap<String, String>,
+) -> String {
+    let mut environment = ambient.into_iter().collect::<BTreeMap<_, _>>();
+    environment.extend(
+        declared
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+    );
+    let mut digest = Sha256::new();
+    for (name, value) in environment {
+        let key = name.as_bytes();
+        if key.starts_with(b"DEVCOORDINATOR_")
+            || matches!(
+                key,
+                b"INVOCATION_ID"
+                    | b"SYSTEMD_EXEC_PID"
+                    | b"JOURNAL_STREAM"
+                    | b"NOTIFY_SOCKET"
+                    | b"_"
+            )
+        {
+            continue;
+        }
+        digest.update((key.len() as u64).to_be_bytes());
+        digest.update(key);
+        digest.update((value.as_bytes().len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 pub fn key(
     root: &Path,
     plan: &ExecutionPlan,
@@ -80,7 +154,11 @@ pub fn key(
     inputs: &[ArtifactReceipt],
     consumed: &[ArtifactReceipt],
 ) -> Option<String> {
-    if !check.cacheable || !check.retained_artifacts.is_empty() {
+    if !check.cacheable
+        || !check.retained_artifacts.is_empty()
+        || plan.environment_files.contains_key(&check.name)
+        || plan.database_checks.contains(&check.name)
+    {
         return None;
     }
     let mut executable = File::open(binary(root, check)?).ok()?;
@@ -93,19 +171,6 @@ pub fn key(
         }
         digest.update(&buffer[..count]);
     }
-    let mut declaration = check.clone();
-    if plan.environment_files.contains_key(&check.name) {
-        for name in [
-            "PGHOST",
-            "PGPORT",
-            "PGUSER",
-            "PGPASSWORD",
-            "PGDATABASE",
-            "DATABASE_URL",
-        ] {
-            declaration.env.remove(name);
-        }
-    }
     digest.update(
         serde_json::to_vec(&(
             1,
@@ -113,8 +178,8 @@ pub fn key(
             std::env::consts::ARCH,
             &plan.source_digest,
             &plan.config_digest,
-            &plan.test,
-            &declaration,
+            environment_digest(std::env::vars_os(), &check.env),
+            check,
             inputs,
             consumed,
         ))
@@ -214,4 +279,60 @@ pub fn record(
         );
     }
     let _ = unlinkat(&directory, temporary.as_str(), AtFlags::empty());
+    prune(&directory, now());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn inherited_build_inputs_invalidate_reuse_but_execution_metadata_does_not() {
+        let ambient = |flags: &str, run: &str| {
+            vec![
+                (OsString::from("RUSTFLAGS"), OsString::from(flags)),
+                (OsString::from("INVOCATION_ID"), OsString::from(run)),
+            ]
+        };
+        let base = environment_digest(ambient("-O1", "first"), &BTreeMap::new());
+        assert_ne!(
+            base,
+            environment_digest(ambient("-O2", "first"), &BTreeMap::new())
+        );
+        assert_eq!(
+            base,
+            environment_digest(ambient("-O1", "second"), &BTreeMap::new())
+        );
+        assert_eq!(
+            base,
+            environment_digest(
+                ambient("-O2", "first"),
+                &BTreeMap::from([("RUSTFLAGS".into(), "-O1".into())])
+            )
+        );
+    }
+    #[test]
+    fn expiration_removes_only_owned_receipts_and_never_follows_links() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = directory(root.path()).unwrap();
+        let cache = root.path().join(".devcoordinator/test/cache");
+        std::fs::write(cache.join("old.json"), b"{}").unwrap();
+        std::fs::write(root.path().join("preserve"), b"valuable").unwrap();
+        std::os::unix::fs::symlink(root.path().join("preserve"), cache.join("linked.json"))
+            .unwrap();
+        std::fs::write(cache.join("pending.tmp"), b"partial").unwrap();
+        prune(&directory, now() + 86401);
+        assert!(!cache.join("old.json").exists());
+        assert!(
+            cache
+                .join("linked.json")
+                .symlink_metadata()
+                .unwrap()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("preserve")).unwrap(),
+            b"valuable"
+        );
+        assert!(cache.join("pending.tmp").exists());
+    }
 }

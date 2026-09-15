@@ -25,6 +25,7 @@ import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
 import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
+import { verifyAssetRefresh } from './verify-asset-refresh.mjs';
 
 const BASE = 'example.test';
 const HOST = process.env.CONSOLE_VERIFY_HOST || `console.${BASE}`;
@@ -267,7 +268,7 @@ const fixtures = (scenario) => {
     'deployment.logs': { component: 'api', tail: 'line 1\nline 2 ' + 'long '.repeat(60) + '\nline 3', truncated_before_tail: true, log_path: '/state/logs/api.log' },
     'health.history': { subject_kind: 'component', subject_id: `${DEP}/api`, metric: 'cpu_percent', minutes: 60, points: scenario.empty ? [] : points, truncated: false },
     'test.list': { runs: scenario.empty ? [] : [
-      { checks: scenario.admission ? [{ name: 'compile', status: 'running', started_at: null, execution: { waiting: 1, admitted: 0, executing: 0, finished: 0, capacity_wait_ms: 0, process_duration_ms: 0 } }] : [], report_issue: scenario.reportIssue || null, run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', earlier_visual_evidence: scenario.earlierEvidence ? { run_id: 't20251231T000000Z-abc111', test: 'browser-journeys', started_at: '2025-12-31T00:00:00Z', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } } : null, visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
+      { targets: scenario.phaseTimings ? ['alpha', 'beta'] : [], phase_durations: scenario.phaseTimings ? [{phase:'build',duration_seconds:6,elapsed_seconds:4,checks:2},{phase:'cleanup',duration_seconds:0,elapsed_seconds:null,checks:1}] : [], checks: scenario.databasePhases ? [{name:'database-cases',status:'failed',phase:'case',cases:[{id:'missing-seed',status:'failed',duration_ms:250,phases:[{phase:'fixture',status:'failed',duration_ms:200},{phase:'case',status:'invalidated',duration_ms:0},{phase:'cleanup',status:'passed',duration_ms:50}]}]}] : scenario.admission ? [{ name: 'compile', status: 'running', started_at: null, execution: { waiting: 1, admitted: 0, executing: 0, finished: 0, capacity_wait_ms: 0, process_duration_ms: 0 } }] : [], report_issue: scenario.reportIssue || null, run_id: 't20260101T000000Z-abc123', test: 'unit', requested_tier: 'pre-merge', readiness_eligible: false, status: scenario.testFinished ? 'passed' : 'running', started_at: new Date(Date.now() - (scenario.testFinished ? 3600000 : 0)).toISOString(), finished_at: scenario.testFinished ? new Date().toISOString() : null, duration_seconds: scenario.testFinished ? 3600 : null, exit_code: scenario.testFinished ? 0 : null, stdout_bytes_observed: 123456789, stderr_bytes_observed: 0, display_name: 'repo-one', worktree_path: '/srv/repos/repo-one', repository_id: REPO, worktree_id: 'w1', earlier_visual_evidence: scenario.earlierEvidence ? { run_id: 't20251231T000000Z-abc111', test: 'browser-journeys', started_at: '2025-12-31T00:00:00Z', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } } : null, visual_evidence: scenario.evidenceWhileRunning ? { status: 'available', bundle_count: 1, image_count: 2, issue_count: 0, issues_truncated: false } : { status: 'unavailable', bundle_count: 0, image_count: 0, issue_count: 0, issues_truncated: false } },
       { run_id: TEST_RUN, test: 'ui-release', requested_tier: 'release', readiness_eligible: true, status: 'failed', started_at: new Date(Date.now() - 3600000).toISOString(), finished_at: new Date().toISOString(), duration_seconds: 3599.123, exit_code: 1, stdout_bytes_observed: 10, stderr_bytes_observed: 8388608, display_name: LONG, worktree_path: `/srv/repos/${LONG}`, repository_id: 'r2', worktree_id: 'w2', visual_evidence: { status: 'available', bundle_count: 1, image_count: 8, issue_count: 0, issues_truncated: false } }] },
     'test.capacity.get': {
       learned_capacity: 96, effective_capacity: 80, cap: 80, active: scenario.empty ? 0 : 52,
@@ -280,7 +281,11 @@ const fixtures = (scenario) => {
       },
     },
     'test.log.retention.get': { max_age_seconds: 86400, case_depth: 3, defaults: { max_age_seconds: 86400, case_depth: 3 }, updated_at: new Date().toISOString(), updated_by: 'schema-default', last_cleanup_at: new Date().toISOString(), last_cleanup_error_code: null },
-    'test.log.catalog': { entries: scenario.empty || scenario.logEmpty ? [] : [
+    'test.log.catalog': { entries: scenario.empty || scenario.logEmpty ? [] : scenario.databasePhases ? ['fixture', 'case', 'cleanup'].map((phase) => ({
+      log_ref: { run_id: 't20260101T000000Z-abc123', check: 'database-cases', phase, case: 'missing-seed', stream: 'stderr' },
+      bytes: 100, lines: 2, complete: true, truncated: false, sha256: 'a'.repeat(64),
+      structured_evidence: { available: false, formats: [], count: 0 },
+    })) : [
       { log_ref: { run_id: 't20260101T000000Z-abc123', check: 'unit', phase: 'case', case: 'parser-17', stream: 'stderr' }, bytes: 8388608, lines: 42000, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'a'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: true, formats: ['junit'], count: 2 } },
       { log_ref: { run_id: 't20260101T000000Z-abc123', phase: 'executor', stream: 'stdout' }, bytes: 220, lines: 2, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: false, truncated: false, sha256: null, expires_at: null, depth_rank: null, structured_evidence: { available: false, formats: [], count: 0 } },
       { log_ref: { run_id: 't20260101T000000Z-abc123', check: 'structured', phase: 'check', stream: 'stdout' }, bytes: 180, lines: 1, first_byte_at: new Date(Date.now() - 300000).toISOString(), last_byte_at: new Date().toISOString(), complete: true, truncated: false, sha256: 'e'.repeat(64), expires_at: new Date(Date.now() + 86400000).toISOString(), depth_rank: 1, structured_evidence: { available: false, formats: [], count: 0 } },
@@ -546,6 +551,7 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
+      if (cmd === 'test.start' && scenario.supersededRun) return reply({ ok: true, data: { run_id: 't20260101T000300Z-fed123', superseded_run_id: scenario.supersededRun } });
       if (cmd === 'test.list' && scenario.testPaged) {
         const data = fixtures(scenario)['test.list'];
         const page = req.params.after_worktree_id ? 1 : 0;
@@ -858,6 +864,18 @@ async function main() {
   const appSource = await fs.readFile(new URL('./app.js', import.meta.url), 'utf8');
   check('administrator controls have no native or data-driven confirmation path',
     !/window\.confirm|data-confirm|data-delete-data/.test(appSource));
+
+  if (process.env.CONSOLE_VERIFY_ASSET_REFRESH_ONLY) {
+    try { await verifyAssetRefresh({ browser, check }); }
+    catch (error) { check('ordinary reload acceptance', false, error.message); }
+    finally {
+      await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+      await browser.close(); await edge.close(); await daemon.close();
+    }
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    return;
+  }
 
   if (process.env.CONSOLE_VERIFY_PROGRESS_ONLY) {
     try {
@@ -2678,6 +2696,8 @@ async function main() {
     }
   }
 
+  try { await verifyAssetRefresh({ browser, check }); }
+  catch (error) { check('ordinary reload acceptance', false, error.message); }
   await browser.close();
   await edge.close();
   await daemon.close();

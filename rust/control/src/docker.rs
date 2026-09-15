@@ -1141,6 +1141,17 @@ pub trait DockerControl: Send + Sync {
         database: &str,
         timeout: Duration,
     ) -> Result<(), DockerError> {
+        self.wait_postgres_ready_cancellable(container_id, user, database, timeout, None)
+    }
+
+    fn wait_postgres_ready_cancellable(
+        &self,
+        container_id: &ExactContainerId,
+        user: &str,
+        database: &str,
+        timeout: Duration,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<(), DockerError> {
         if user.is_empty() || database.is_empty() || timeout.is_zero() {
             return Err(DockerError::InvalidRequest(
                 "PostgreSQL readiness identity and timeout are required".into(),
@@ -1166,8 +1177,18 @@ pub trait DockerControl: Send + Sync {
         let mut ready_events = 0_u8;
         let mut open = readers.len();
         let result = loop {
+            if cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                break Err(DockerError::Cancelled {
+                    operation: "ephemeral PostgreSQL readiness".into(),
+                });
+            }
             if ready_events >= 2 {
                 let arguments = vec![
+                    "exec".into(),
+                    container_id.as_str().into(),
                     "pg_isready".into(),
                     "-h".into(),
                     "127.0.0.1".into(),
@@ -1176,7 +1197,9 @@ pub trait DockerControl: Send + Sync {
                     "-d".into(),
                     database.into(),
                 ];
-                break if self.exec_ok(container_id, &arguments, Duration::from_secs(30)) {
+                let invocation = DockerInvocation::new(arguments, Duration::from_secs(30))?
+                    .with_cancellation(cancellation.clone());
+                break if self.invoke(invocation).is_ok_and(|result| result.success()) {
                     Ok(())
                 } else {
                     Err(DockerError::Command(

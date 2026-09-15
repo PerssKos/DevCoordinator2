@@ -690,7 +690,7 @@ fn validate_selector_filter(
         {
             return Err(LogQueryError::ArgsInvalid);
         }
-        Some(LogPhase::Case)
+        Some(LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup)
             if selector.check.is_none()
                 || (selector.case_id.is_none() && operation != LogQueryOperation::Catalog) =>
         {
@@ -878,8 +878,13 @@ fn scan_run_leaves(
                             &mut leaves,
                         )?;
                     }
-                    "cases" => {
-                        let cases = required_store_entry(open_dir(&check_dir, "cases"))?;
+                    "cases" | "fixtures" | "cleanup" => {
+                        let phase = match child.as_str() {
+                            "fixtures" => LogPhase::Fixture,
+                            "cleanup" => LogPhase::Cleanup,
+                            _ => LogPhase::Case,
+                        };
+                        let cases = required_store_entry(open_dir(&check_dir, &child))?;
                         for case_id in directory_names(&cases)? {
                             if !valid_case(&case_id) {
                                 return Err(LogQueryError::StoreMalformed);
@@ -890,7 +895,7 @@ fn scan_run_leaves(
                                 run,
                                 LeafSelector::new(
                                     Some(check_name.clone()),
-                                    LogPhase::Case,
+                                    phase,
                                     Some(case_id.clone()),
                                 )
                                 .map_err(|_| LogQueryError::StoreMalformed)?,
@@ -898,7 +903,7 @@ fn scan_run_leaves(
                                     run.run_id.clone(),
                                     "checks".into(),
                                     check_name.clone(),
-                                    "cases".into(),
+                                    child.clone(),
                                     case_id,
                                 ],
                                 active,

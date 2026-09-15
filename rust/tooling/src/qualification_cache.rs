@@ -221,6 +221,13 @@ pub fn inputs(
                         | "LC_CTYPE"
                         | "TZ"
                         | "NODE_PATH"
+                        | "NODE_OPTIONS"
+                        | "NODE_EXTRA_CA_CERTS"
+                        | "SSL_CERT_FILE"
+                        | "SSL_CERT_DIR"
+                        | "LD_LIBRARY_PATH"
+                        | "DYLD_LIBRARY_PATH"
+                        | "FONTCONFIG_PATH"
                         | "FORMAL_WEB_UI_NODE"
                         | "FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES"
                 )

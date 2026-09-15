@@ -73,11 +73,12 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.getByRole('button', { name: 'Run again', exact: true }).click();
   await page.locator('.test-action-error').filter({ hasText: /requires/ }).waitFor();
   verify('denied reruns preserve the result and explain the failure inline', await page.locator('.test-result-summary>.badge').textContent() === 'failed' && await page.locator('dialog[open]').count() === 0);
-  daemon.setScenario({ ...scenario, earlierEvidence: true });
+  daemon.setScenario({ ...scenario, earlierEvidence: true, supersededRun: 't20260101T000200Z-cab321' });
   daemon.calls.length = 0;
   await page.getByRole('button', { name: 'Run again', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('[data-test-start]')?.disabled);
   verify('rerun acts directly on the exact checkout, named test and tier', daemon.calls.some((call) => call.operation === 'test.start' && call.params.path.includes('a-very-long-deployment-name') && call.params.test === 'ui-release' && call.params.tier === 'release') && await page.locator('#test-run-dialog').count() === 0);
+  verify('replacement names the exact cancelled run', await page.locator('.test-replacement-notice').innerText() === 'Previous run t20260101T000200Z-cab321 was cancelled by this start.');
   await chooseRepository(page, 'repo-one');
   await page.getByRole('button', { name: 'Logs', exact: true }).click();
   await page.waitForSelector('#test-logs-dialog[open] .test-log-scroll');
@@ -136,6 +137,38 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.reload();
   await page.waitForSelector('main .notice.denied');
   verify('authorization still gates the collection', await page.locator('[data-test-start], #test-run-open').count() === 0);
+  if (await page.getAttribute('html', 'data-theme') !== theme) await page.click('#theme-toggle');
+  daemon.setScenario({ ...scenario, phaseTimings: true, databasePhases: true });
+  await page.reload();
+  await chooseRepository(page, 'repo-one');
+  await page.locator('.test-detail summary').first().click();
+  const phaseTable = page.getByRole('table', { name: 'Phase durations' });
+  verify('phase reporting distinguishes execution from elapsed time', (await phaseTable.getByRole('row').nth(1).innerText()).replace(/\s+/g, ' ').trim() === 'Build 6s 4s');
+  verify('an unmeasured phase span stays unavailable', (await phaseTable.getByRole('row').nth(2).innerText()).includes('Unavailable'));
+  verify('composed target names remain visible', /Alpha \+ Beta/i.test(await page.locator('.test-result-name').first().innerText()));
+  verify('case preparation failures show skipped execution and successful cleanup', /Database setup.*failed.*Execution.*Not run.*Cleanup.*passed/s.test(await page.locator('.test-case').innerText()));
+  verify('short phase durations remain measurable', /200ms/.test(await page.locator('.test-case').innerText()) && /50ms/.test(await page.locator('.test-case').innerText()));
+  verify('phase details fit this viewport', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await page.screenshot({ path: path.join(output, `tests-case-phases-${theme}-${viewport.width}.png`), fullPage: true });
+  await page.getByRole('button', { name: 'Logs', exact: true }).click();
+  await page.locator('#test-logs-dialog[open] .test-log-scroll').waitFor();
+  for (const [phase, label] of [['fixture', 'Database setup'], ['cleanup', 'Cleanup']]) {
+    daemon.calls.length = 0;
+    await page.locator('#test-log-stream').selectOption({ label: `database-cases · missing-seed · ${label} · Error output` });
+    await page.waitForFunction(() => !document.querySelector('#test-log-stream')?.disabled);
+    verify(`${label} opens the exact case output`, daemon.calls.some((call) => call.operation === 'test.log.tail' && call.params.check === 'database-cases' && call.params.case === 'missing-seed' && call.params.phase === phase));
+  }
+  await page.keyboard.press('Escape');
+  daemon.setScenario({ ...scenario, phaseTimings: true, testFinished: true, supersededRun: 't20260101T000200Z-cab321' });
+  await page.reload();
+  await chooseRepository(page, 'repo-one');
+  await page.click('#test-run-open');
+  daemon.calls.length = 0;
+  await page.locator('#test-run-form [name=tier]').selectOption('development');
+  await page.locator('#test-run-form button[type=submit]').click();
+  await page.locator('#test-run-form').waitFor({ state: 'detached' });
+  verify('run form preserves a composed target selection', daemon.calls.some((call) => call.operation === 'test.start' && call.params.targets?.join() === 'alpha,beta' && call.params.test === undefined && call.params.tier === 'development'));
+  verify('run form retains the replacement notice after refresh', /t20260101T000200Z-cab321/.test(await page.locator('.test-replacement-notice').innerText()));
   verify('no browser exceptions', errors.length === 0, errors.join('; '));
 }
 

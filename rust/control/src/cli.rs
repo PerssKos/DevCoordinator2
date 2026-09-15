@@ -284,6 +284,8 @@ enum LogPhaseArg {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 impl LogPhaseArg {
@@ -293,6 +295,8 @@ impl LogPhaseArg {
             Self::Check => "check",
             Self::Discovery => "discovery",
             Self::Case => "case",
+            Self::Fixture => "fixture",
+            Self::Cleanup => "cleanup",
         }
     }
 }
@@ -2254,6 +2258,14 @@ fn render_human_success(
     data: &Value,
     operation: Option<&str>,
 ) -> io::Result<()> {
+    if matches!(operation, Some("test.start" | "test.retry"))
+        && let Some(previous) = data.get("superseded_run_id").and_then(Value::as_str)
+    {
+        writeln!(
+            output,
+            "Previous run {previous} was cancelled by this start."
+        )?;
+    }
     if operation == Some("ping")
         && let Some(object) = data.as_object()
     {
@@ -2295,6 +2307,30 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
     use devcoordinator2_api::ErrorCode;
+
+    #[test]
+    fn human_start_names_the_exact_cancelled_predecessor() {
+        let mut output = Vec::new();
+        render_human_success(
+            &mut output,
+            &serde_json::json!({"run_id":"new-run","superseded_run_id":"exact-old-run"}),
+            Some("test.start"),
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .starts_with("Previous run exact-old-run was cancelled by this start.\n")
+        );
+        let mut ordinary = Vec::new();
+        render_human_success(
+            &mut ordinary,
+            &serde_json::json!({"run_id":"new-run","superseded_run_id":null}),
+            Some("test.start"),
+        )
+        .unwrap();
+        assert!(!String::from_utf8(ordinary).unwrap().contains("cancelled"));
+    }
 
     fn invocation(args: &[&str]) -> Result<Invocation, CliValidationError> {
         let argv = std::iter::once("devcoordinator2")

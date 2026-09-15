@@ -502,7 +502,9 @@ fn build_argv_with_identity(
         OsString::from(format!("--slice={}", specification.slice_name)),
         OsString::from(format!("--uid={}", specification.uid)),
         OsString::from(format!("--gid={}", specification.gid)),
-        OsString::from("--property=KillMode=control-group"),
+        // Let the executor cancel its children and run declared cleanup before
+        // systemd's existing final whole-cgroup kill deadline.
+        OsString::from("--property=KillMode=mixed"),
         OsString::from(format!("--property=TimeoutStopSec={STOP_GRACE_SECONDS}")),
         OsString::from(format!(
             "--property=RuntimeMaxSec={}s",

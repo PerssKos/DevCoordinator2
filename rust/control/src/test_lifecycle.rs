@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
@@ -44,6 +44,7 @@ use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
+use crate::test_databases::{DatabasePool, FixtureRun};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
     ENV_FILE, PLAN_FILE, PreparedRun, RetryEvidence, TestRunStore, api_tier, executor_tier,
@@ -92,6 +93,7 @@ where
 }
 
 struct Inner {
+    databases: Arc<DatabasePool>,
     config: Arc<Config>,
     database: Database,
     registry: Registry,
@@ -112,6 +114,7 @@ struct Inner {
 }
 
 struct RunHandle {
+    fixtures: Arc<FixtureRun>,
     work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
     test: String,
@@ -217,7 +220,6 @@ enum LaunchState {
 struct EphemeralPostgres {
     container: ExactContainerId,
     environment: BTreeMap<String, String>,
-    templates: BTreeMap<String, String>,
 }
 
 struct ContainerCleanup {
@@ -284,6 +286,7 @@ impl TestLifecycle {
         let admission = TestAdmission::new(runtime).map_err(admission_error)?;
         let lifecycle = Self {
             inner: Arc::new(Inner {
+                databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
                 config: Arc::new(config),
                 database,
                 registry,
@@ -345,6 +348,7 @@ impl TestLifecycle {
     }
 
     pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
+        self.inner.databases.prune_idle(false);
         let worktrees = self.inner.database.call(|connection| {
             let mut statement = connection.prepare(
                 "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
@@ -780,6 +784,25 @@ impl TestLifecycle {
             None
         };
         let selected = selected_closure(&specification.checks, requested, requested_tier)?;
+        for check in &selected {
+            for case in check.cases.iter().flatten() {
+                if let Some(branch) = &case.postgres {
+                    let postgres =
+                        postgres_for_check(&specification, &check.name).ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::RepositoryConfigInvalid,
+                                "PostgreSQL case has no declared fixture",
+                            )
+                        })?;
+                    if branch != "default" && !postgres.templates.contains_key(branch) {
+                        return Err(ProtocolError::new(
+                            ErrorCode::RepositoryConfigInvalid,
+                            "PostgreSQL case names an undeclared template",
+                        ));
+                    }
+                }
+            }
+        }
         self.validate_executables(&worktree, &specification, &selected, caller.uid, caller.gid)?;
 
         let mut admission = self
@@ -860,7 +883,11 @@ impl TestLifecycle {
         let mut containers = Vec::new();
         let mut environment_files = BTreeMap::new();
         let mut postgres_databases = BTreeMap::new();
-        if let Some(postgres) = &specification.postgres {
+        if let Some(postgres) = specification
+            .postgres
+            .as_ref()
+            .filter(|postgres| !postgres.cases_only)
+        {
             match self.provision_postgres(
                 postgres,
                 &worktree,
@@ -904,7 +931,7 @@ impl TestLifecycle {
                 .filter(|check| specification.check_postgres.get(&check.name) == Some(scope))
                 .map(|check| check.name.clone())
                 .collect::<Vec<_>>();
-            if owners.is_empty() {
+            if owners.is_empty() || postgres.cases_only {
                 continue;
             }
             let prepared_database = self.provision_postgres(
@@ -921,76 +948,6 @@ impl TestLifecycle {
                 Ok(database) => {
                     postgres_databases.insert(scope.clone(), postgres.database.clone());
                     containers.push(database.container.clone());
-                    let mut case_files = Vec::new();
-                    for owner in &owners {
-                        let Some(check) = specification
-                            .checks
-                            .iter()
-                            .find(|check| &check.name == owner)
-                        else {
-                            continue;
-                        };
-                        let selected_cases = case_selection
-                            .get(owner)
-                            .cloned()
-                            .or_else(|| {
-                                check
-                                    .cases
-                                    .as_ref()
-                                    .map(|cases| cases.iter().map(|case| case.id.clone()).collect())
-                            })
-                            .unwrap_or_default();
-                        for case_id in selected_cases {
-                            let Some(case) = check
-                                .cases
-                                .as_ref()
-                                .and_then(|cases| cases.iter().find(|case| case.id == case_id))
-                            else {
-                                continue;
-                            };
-                            let Some(branch) = case.postgres.as_deref() else {
-                                continue;
-                            };
-                            postgres_databases.insert(branch.to_owned(), postgres.database.clone());
-                            let Some(template) = database.templates.get(branch) else {
-                                postgres_databases.insert(
-                                    branch.to_owned(),
-                                    database.environment["PGDATABASE"].clone(),
-                                );
-                                continue;
-                            };
-                            let clone_name = format!(
-                                "dc2_case_{}_{}",
-                                run_id.trim_start_matches('t'),
-                                sql_identifier(&case_id)
-                            );
-                            self.clone_postgres_database(
-                                &database.container,
-                                &postgres.user,
-                                template,
-                                &clone_name,
-                            )?;
-                            postgres_databases
-                                .insert(format!("{owner}-{case_id}"), clone_name.clone());
-                            let mut environment = database.environment.clone();
-                            environment.insert("PGDATABASE".into(), clone_name.clone());
-                            if let Some(url) = environment.get_mut("DATABASE_URL") {
-                                *url = database_url_with_database(url, &clone_name);
-                            }
-                            let file = self
-                                .inner
-                                .store
-                                .write_database_environment(
-                                    &prepared.current,
-                                    &format!("{scope}-{}", case_id),
-                                    &environment,
-                                    caller.uid,
-                                    caller.gid,
-                                )
-                                .map_err(state_start_error)?;
-                            case_files.push((format!("{owner}/{case_id}"), file));
-                        }
-                    }
                     let persisted = self
                         .inner
                         .store
@@ -1017,7 +974,6 @@ impl TestLifecycle {
                             for owner in owners {
                                 environment_files.insert(owner, file.clone());
                             }
-                            environment_files.extend(case_files);
                         }
                         Err(error) => {
                             self.rollback_accepted_start(&worktree, &run_id, &containers);
@@ -1069,6 +1025,24 @@ impl TestLifecycle {
                 error.to_string(),
             ));
         }
+        let resources = plan
+            .checks
+            .iter()
+            .filter(|check| !check.resources.is_empty())
+            .map(|check| {
+                let mut claims = check.resources.clone();
+                for claim in &mut claims {
+                    if claim.kind == devcoordinator2_executor_protocol::ResourceKind::Directory {
+                        claim.id = worktree.join(&claim.id).to_string_lossy().into_owned();
+                    }
+                }
+                (check.name.clone(), claims)
+            })
+            .collect();
+        if let Err(error) = self.inner.capacity.register_resources(&run_id, resources) {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
+        }
         if let Err(error) =
             self.inner
                 .store
@@ -1076,6 +1050,54 @@ impl TestLifecycle {
         {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
+        }
+        let fixture_current = match prepared.current.try_clone() {
+            Ok(current) => current,
+            Err(_) => {
+                self.rollback_accepted_start(&worktree, &run_id, &containers);
+                return Err(ProtocolError::new(
+                    ErrorCode::TestStartFailed,
+                    "fixture state is unavailable",
+                ));
+            }
+        };
+        let fixture_specs = selected
+            .iter()
+            .filter_map(|check| {
+                postgres_for_check(&specification, &check.name)
+                    .map(|spec| (check.name.clone(), spec.clone()))
+            })
+            .collect();
+        let fixtures = Arc::new(FixtureRun::new(
+            self.inner.databases.clone(),
+            fixture_specs,
+            worktree.clone(),
+            fixture_current,
+            ManagedLabelContext {
+                instance: self.inner.config.unit_prefix.clone(),
+                repository_id: registered.repository_id.clone(),
+                worktree_id: registered.worktree_id.clone(),
+                run_id: Some(run_id.clone()),
+                deployment_id: None,
+                component: None,
+                generation: None,
+                ttl_seconds: None,
+                purpose: "test".into(),
+                caller_uid: caller.uid,
+                client: client.clone(),
+                session: caller.client_session.clone(),
+                created_at: started_at.clone(),
+                data_class: "disposable".into(),
+            },
+            caller.gid,
+        ));
+        if let Err(error) = self
+            .inner
+            .capacity
+            .register_fixture_handler(&run_id, fixtures.clone())
+        {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
         }
         let unit_specification = TransientUnitSpec {
             unit: unit.clone(),
@@ -1115,6 +1137,7 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            fixtures,
             targets: specification.targets.clone(),
             case_selection: plan.case_selection.clone(),
             work: caller.work.clone(),
@@ -1413,6 +1436,9 @@ impl TestLifecycle {
         if !memory().is_some_and(HostMemory::emergency) {
             return Ok(Vec::new());
         }
+        if self.inner.databases.prune_idle(true) && !memory().is_some_and(HostMemory::emergency) {
+            return Ok(Vec::new());
+        }
         let handles = self
             .inner
             .runs
@@ -1451,12 +1477,18 @@ impl TestLifecycle {
                 let mut bytes = property(&properties, "MemoryCurrent")
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
-                for container in handle
-                    .containers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .iter()
-                {
+                let mut database_containers = handle.fixtures.containers();
+                database_containers.extend(
+                    handle
+                        .containers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .iter()
+                        .cloned(),
+                );
+                database_containers.sort();
+                database_containers.dedup();
+                for container in database_containers {
                     let cgroup = source.container_cgroup(container.as_str());
                     bytes = bytes.saturating_add(
                         self.inner
@@ -1689,7 +1721,7 @@ impl TestLifecycle {
     fn provision_postgres(
         &self,
         specification: &crate::repository_config::PostgresSpec,
-        worktree: &Path,
+        _worktree: &Path,
         scope: Option<&str>,
         run_id: &str,
         repository_id: &str,
@@ -1787,65 +1819,6 @@ impl TestLifecycle {
                 return Err(postgres_error(error));
             }
         };
-        let mut templates = BTreeMap::new();
-        for (name, template) in &specification.templates {
-            let template_db = format!(
-                "dc2_template_{}_{}",
-                run_id.trim_start_matches('t'),
-                sql_identifier(name)
-            );
-            self.inner
-                .docker
-                .postgres_sql(
-                    &container,
-                    &specification.user,
-                    "postgres",
-                    sql_file(format!("CREATE DATABASE {template_db}"), &[])?,
-                    None,
-                )
-                .map_err(postgres_error)?;
-            for input in &template.init_sql {
-                let path = worktree.join(input).canonicalize().map_err(|error| {
-                    postgres_error(crate::docker::DockerError::InvalidRequest(format!(
-                        "template SQL unavailable: {error}"
-                    )))
-                })?;
-                if !path.starts_with(worktree) {
-                    return Err(ProtocolError::new(
-                        ErrorCode::RepositoryConfigInvalid,
-                        "database template SQL escapes the repository",
-                    ));
-                }
-                let metadata = std::fs::metadata(&path).map_err(|error| {
-                    postgres_error(crate::docker::DockerError::InvalidRequest(format!(
-                        "template SQL unavailable: {error}"
-                    )))
-                })?;
-                if !metadata.is_file() || metadata.len() > 2 * 1024 * 1024 {
-                    return Err(ProtocolError::new(
-                        ErrorCode::RepositoryConfigInvalid,
-                        "database template SQL exceeds its bound",
-                    ));
-                }
-                let bytes = std::fs::read(&path).map_err(|error| {
-                    postgres_error(crate::docker::DockerError::InvalidRequest(
-                        error.to_string(),
-                    ))
-                })?;
-                self.inner
-                    .docker
-                    .postgres_sql(
-                        &container,
-                        &specification.user,
-                        &template_db,
-                        sql_file_bytes(&bytes)?,
-                        None,
-                    )
-                    .map_err(postgres_error)?;
-            }
-            self.inner.docker.postgres_sql(&container, &specification.user, "postgres", sql_file(format!("ALTER DATABASE {template_db} IS_TEMPLATE true; ALTER DATABASE {template_db} ALLOW_CONNECTIONS false;"), &[])?, None).map_err(postgres_error)?;
-            templates.insert(name.clone(), template_db);
-        }
         let url = format!(
             "postgresql://{}:{}@127.0.0.1:{}/{}",
             specification.user, password, port, specification.database
@@ -1864,22 +1837,7 @@ impl TestLifecycle {
                 ("PGDATABASE".into(), specification.database.clone()),
                 ("DATABASE_URL".into(), url),
             ]),
-            templates,
         })
-    }
-
-    fn clone_postgres_database(
-        &self,
-        container: &ExactContainerId,
-        user: &str,
-        template: &str,
-        database: &str,
-    ) -> Result<(), ProtocolError> {
-        let statement = format!("CREATE DATABASE {database} TEMPLATE {template}");
-        self.inner
-            .docker
-            .postgres_sql(container, user, "postgres", sql_file(statement, &[])?, None)
-            .map_err(postgres_error)
     }
 
     fn resolve_history_worktree(
@@ -2077,6 +2035,16 @@ impl TestLifecycle {
             ProofKind::Selected
         };
         let plan = ExecutionPlan {
+            database_checks: selected
+                .iter()
+                .filter(|check| {
+                    postgres_for_check(specification, &check.name).is_some_and(|pg| !pg.cases_only)
+                })
+                .map(|check| check.name.clone())
+                .collect(),
+            fixture_program: (specification.postgres.is_some()
+                || !specification.postgres_instances.is_empty())
+            .then(|| self.inner.executor.to_string_lossy().into_owned()),
             environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: run_id.into(),
@@ -2272,7 +2240,7 @@ impl TestLifecycle {
             }
             state.stop.take()
         };
-        let (status, exit_code, termination) = if let Some(stop) = requested_stop {
+        let (mut status, exit_code, termination) = if let Some(stop) = requested_stop {
             let termination = if stop.termination.is_some() {
                 stop.termination
             } else if stop.status == TestStatus::Superseded {
@@ -2303,6 +2271,10 @@ impl TestLifecycle {
                 None,
             )
         };
+        let fixtures_cleaned = handle.fixtures.finish();
+        if !fixtures_cleaned && status == TestStatus::Passed {
+            status = TestStatus::Failed;
+        }
         self.remove_containers(
             &handle
                 .containers
@@ -2417,7 +2389,7 @@ impl TestLifecycle {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cleanup_complete = true;
+        state.cleanup_complete = fixtures_cleaned;
         handle.finalized.notify_all();
     }
 
@@ -2532,7 +2504,8 @@ impl TestLifecycle {
             ("devcoordinator2.purpose".into(), "test".into()),
             ("devcoordinator2.worktree".into(), worktree_id.into()),
         ]);
-        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+        if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            containers.retain(|container| !self.inner.databases.owns(container));
             self.remove_containers(&containers);
         }
         Ok(superseded_run_id)
@@ -2904,6 +2877,7 @@ fn reconcile_terminal_checks(summary: &mut TestSummary) {
         *counts.entry(key.into()).or_default() += running;
     }
     for check in summary.checks.iter_mut().flatten() {
+        check.resource_waiting = false;
         close_execution_observation(check.execution.as_mut());
         if matches!(check.status, LeafStatus::Pending | LeafStatus::Running) {
             check.status = if check.status == LeafStatus::Pending {
@@ -2974,6 +2948,12 @@ fn apply_report(
 
 fn api_check(check: &CheckReport) -> Result<CheckProjection, crate::test_state::TestStateError> {
     Ok(CheckProjection {
+        phase_durations: check
+            .phase_durations
+            .iter()
+            .map(convert)
+            .collect::<Result<Vec<_>, _>>()?,
+        resource_waiting: check.resource_waiting,
         display_name: check.display_name.clone(),
         phase: convert(&check.phase)?,
         execution: check.execution.as_ref().map(convert).transpose()?,
@@ -3069,6 +3049,10 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 pub(crate) fn default_executor_path() -> PathBuf {
+    #[cfg(feature = "root-acceptance")]
+    if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
+        return PathBuf::from(path);
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/release/devcoordinator2-executor")
@@ -3132,38 +3116,6 @@ fn base64_url_no_pad(bytes: &[u8]) -> String {
     output
 }
 
-fn sql_identifier(value: &str) -> String {
-    let mut output = value
-        .bytes()
-        .map(|byte| {
-            if byte.is_ascii_alphanumeric() || byte == b'_' {
-                byte as char
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if output.is_empty() || output.as_bytes()[0].is_ascii_digit() {
-        output.insert(0, '_');
-    }
-    output.chars().take(48).collect()
-}
-
-fn database_url_with_database(url: &str, database: &str) -> String {
-    let (base, suffix) = url
-        .split_once('?')
-        .map_or((url, ""), |(base, query)| (base, query));
-    let Some(slash) = base.rfind('/') else {
-        return url.to_owned();
-    };
-    let mut result = format!("{}{database}", &base[..=slash]);
-    if !suffix.is_empty() {
-        result.push('?');
-        result.push_str(suffix);
-    }
-    result
-}
-
 fn admission_error(error: AdmissionError) -> ProtocolError {
     let code = if matches!(error, AdmissionError::TestsDraining { .. }) {
         ErrorCode::TestsDraining
@@ -3171,6 +3123,17 @@ fn admission_error(error: AdmissionError) -> ProtocolError {
         ErrorCode::TestStartFailed
     };
     ProtocolError::new(code, error.to_string())
+}
+
+fn postgres_for_check<'a>(
+    spec: &'a TestSpec,
+    check: &str,
+) -> Option<&'a crate::repository_config::PostgresSpec> {
+    spec.postgres.as_ref().or_else(|| {
+        spec.check_postgres
+            .get(check)
+            .and_then(|scope| spec.postgres_instances.get(scope))
+    })
 }
 
 fn config_error(error: crate::repository_config::RepositoryConfigError) -> ProtocolError {
@@ -3186,35 +3149,6 @@ fn postgres_error(error: crate::docker::DockerError) -> ProtocolError {
         ErrorCode::TestStartFailed,
         format!("ephemeral PostgreSQL failed: {error}"),
     )
-}
-
-fn sql_file(statement: String, _unused: &[u8]) -> Result<File, ProtocolError> {
-    sql_file_bytes(statement.as_bytes())
-}
-
-fn sql_file_bytes(bytes: &[u8]) -> Result<File, ProtocolError> {
-    if bytes.len() > 2 * 1024 * 1024 {
-        return Err(ProtocolError::new(
-            ErrorCode::RepositoryConfigInvalid,
-            "database template SQL exceeds its bound",
-        ));
-    }
-    let mut file = tempfile::tempfile().map_err(|error| {
-        postgres_error(crate::docker::DockerError::InvalidRequest(
-            error.to_string(),
-        ))
-    })?;
-    file.write_all(bytes).map_err(|error| {
-        postgres_error(crate::docker::DockerError::InvalidRequest(
-            error.to_string(),
-        ))
-    })?;
-    file.seek(SeekFrom::Start(0)).map_err(|error| {
-        postgres_error(crate::docker::DockerError::InvalidRequest(
-            error.to_string(),
-        ))
-    })?;
-    Ok(file)
 }
 
 fn state_start_error(error: crate::test_state::TestStateError) -> ProtocolError {
@@ -3253,6 +3187,7 @@ mod tests {
             display_name: None,
             source_name: None,
             expected_failure: None,
+            expected_exit_code: None,
             name: name.into(),
             tier,
             role: devcoordinator2_executor_protocol::CheckRole::Work,

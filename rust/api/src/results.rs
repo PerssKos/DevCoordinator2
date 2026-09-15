@@ -92,7 +92,7 @@ pub struct PhaseDuration {
     pub phase: CheckPhase,
     pub duration_seconds: f64,
     #[serde(default)]
-    pub elapsed_seconds: f64,
+    pub elapsed_seconds: Option<f64>,
     pub checks: u32,
 }
 
@@ -113,6 +113,8 @@ pub enum LogPhase {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -398,6 +400,8 @@ pub struct ExecutionProgress {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaseProjection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phases: Vec<CasePhaseReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ExecutionProgress>,
     pub id: String,
@@ -410,6 +414,10 @@ pub struct CaseProjection {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckProjection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub phase_durations: Vec<PhaseDuration>,
+    #[serde(default)]
+    pub resource_waiting: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(default)]
@@ -432,6 +440,15 @@ pub struct CheckProjection {
     pub retained_artifacts_truncated: bool,
     pub cases: Vec<CaseProjection>,
     pub cases_truncated: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CasePhaseReport {
+    pub phase: CheckPhase,
+    pub status: LeafStatus,
+    pub duration_ms: u64,
+    pub streams: Vec<ExecutionLogStreamSummary>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

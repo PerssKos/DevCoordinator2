@@ -361,6 +361,22 @@ impl TestRunStore {
         Ok(file)
     }
 
+    pub fn fixture_log(
+        &self,
+        current: &File,
+        components: &[&str],
+        uid: u32,
+        gid: u32,
+    ) -> Result<File, TestStateError> {
+        let mut directory = current
+            .try_clone()
+            .map_err(|error| filesystem("open fixture log root", error))?;
+        for component in components {
+            directory = ensure_directory(&directory, component, 0o700, Some((uid, gid)))?;
+        }
+        create_file(&directory, "native.log", 0o600, uid, gid, true)
+    }
+
     pub fn write_containers(
         &self,
         current: &File,

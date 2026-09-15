@@ -27,6 +27,12 @@ window.DevCoordinatorTests = (() => {
     let refreshTimer;
     let refreshPromise;
     let previewDialog;
+    const replacementNotices = new Map();
+    const runSelection = (run) => ({ ...(run.targets?.length ? { targets: run.targets } : { test: run.test }), ...(run.selection?.length ? { checks: run.selection } : {}), ...(Object.keys(run.case_selection || {}).length ? { cases: run.case_selection } : {}) });
+    const recordReplacement = (run, result) => {
+      if (result.superseded_run_id) replacementNotices.set(run.worktree_path, `Previous run ${result.superseded_run_id} was cancelled by this start.`);
+      else replacementNotices.delete(run.worktree_path);
+    };
     const current = () => repository ? { name: repository.name, runs: runs.filter((run) => repository.ids.includes(run.repository_id)).sort((left, right) => timestamp(right) - timestamp(left) || left.run_id.localeCompare(right.run_id)) } : groups.find((group) => group.key === selected);
     const query = (selector) => main.querySelector(selector);
     const readable = (name) => {
@@ -41,6 +47,7 @@ window.DevCoordinatorTests = (() => {
       : run.earlier_visual_evidence ? { ...run, ...run.earlier_visual_evidence, earlier: true } : null;
 
     const checkState = (check) => {
+      if (check.resource_waiting) return 'waiting';
       const execution = check.execution;
       if (!activeStates.has(check.status) || !execution) return check.status;
       if (execution.executing) return 'running';
@@ -54,8 +61,10 @@ window.DevCoordinatorTests = (() => {
       return `${durationMs(execution.process_duration_ms)} process time · ${durationMs(execution.capacity_wait_ms)} waiting`;
     };
     const runLabel = (run) => run.targets?.length ? run.targets.map(readable).join(' + ') : readable(run.test);
-    const phaseTimes = (run) => run.phase_durations?.some((entry) => entry.phase !== 'check') ? `<section class="test-phase-times"><p class="muted">Summed check time by phase · parallel checks can overlap</p><dl>${run.phase_durations.map((entry) => `<div><dt>${esc(readable(entry.phase))}</dt><dd>${esc(durationMs(entry.duration_seconds * 1000))}</dd></div>`).join('')}</dl></section>` : '';
-    const checkRows = (checks) => checks.map((check) => `<div class="test-check"><span>${esc(check.display_name || readable(check.name))}</span>${badge(checkState(check))}<span class="muted">${esc(checkTiming(check))}</span></div>`).join('');
+    const phaseTime = (ms) => ms > 0 && ms < 1000 ? `${Math.max(1, Math.round(ms))}ms` : durationMs(ms);
+    const phaseTimes = (run) => run.phase_durations?.some((entry) => entry.phase !== 'check') ? `<table class="test-phase-times" aria-label="Phase durations"><thead><tr><th>Phase</th><th>Execution</th><th>Elapsed</th></tr></thead><tbody>${run.phase_durations.map((entry) => `<tr><th scope="row">${esc(readable(entry.phase))}</th><td>${esc(phaseTime(entry.duration_seconds * 1000))}</td><td>${entry.elapsed_seconds == null ? 'Unavailable' : esc(phaseTime(entry.elapsed_seconds * 1000))}</td></tr>`).join('')}</tbody></table>` : '';
+    const caseRows = (check) => (check.cases || []).filter((item) => item.phases?.length).map((item) => `<div class="test-case"><div class="test-case-heading"><strong>${esc(item.id)}</strong>${badge(item.status)}</div><ul>${item.phases.map((phase) => `<li class="test-case-phase"><span>${phase.phase === 'fixture' ? 'Database setup' : phase.phase === 'case' ? 'Execution' : esc(readable(phase.phase))}</span>${phase.status === 'invalidated' ? '<span class="badge">Not run</span>' : badge(phase.status)}<span>${phase.status === 'invalidated' ? '—' : esc(phaseTime(phase.duration_ms))}</span></li>`).join('')}</ul></div>`).join('');
+    const checkRows = (checks) => checks.map((check) => `<div class="test-check-group"><div class="test-check"><span>${esc(check.display_name || readable(check.name))}</span>${badge(checkState(check))}<span class="muted">${esc(checkTiming(check))}</span></div>${caseRows(check)}${check.cases_truncated ? `<p class="muted">${check.cases?.length || 0} of ${check.case_count} cases shown. All retained case output is available in Logs.</p>` : ''}</div>`).join('');
     const reportIssue = (issue) => ({
       missing: 'The run ended without a check report.',
       invalid: 'The check report could not be validated. The run logs are available for diagnosis.',
@@ -71,6 +80,7 @@ window.DevCoordinatorTests = (() => {
         <div class="test-result-summary"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${run.status === 'passed' ? 'circle-check' : run.status === 'failed' ? 'circle-x' : 'refresh'}" aria-hidden="true"></span></span><div class="test-result-name"><h2>${esc(runLabel(run))}</h2><div class="test-run-time"><time datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${esc(time(run))}</time>${run.duration_seconds == null ? '' : `<span>· ${esc(duration(run))}</span>`}</div></div>${badge(run.status)}</div>
         ${visual || files.length ? `<div class="test-previews" data-preview-run="${esc(run.run_id)}" aria-label="Screenshots for ${esc(runLabel(run))}"><span class="muted">Loading screenshots…</span></div>` : ''}
         <div class="test-result-actions"><button type="button" class="test-text-action" data-test-logs>Logs</button>${files.length || run.checks_truncated ? '<button type="button" class="test-text-action" data-test-artifacts>Files</button>' : ''}<button type="button" class="test-text-action ${activeStates.has(run.status) ? 'test-stop' : ''}" data-test-start>${activeStates.has(run.status) ? 'Stop run' : 'Run again'}</button><details class="test-detail" data-disclosure="${esc(run.run_id)}"><summary aria-label="Details for ${esc(runLabel(run))}">Details</summary><div class="test-detail-content"><div data-test-checks>${checkRows(run.checks || [])}</div>${phaseTimes(run)}<dl class="test-technical"><dt>Checkout</dt><dd>${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(run.requested_tier || 'Not recorded')}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl>${!files.length && !run.checks_truncated ? '<button type="button" class="test-text-action" data-test-artifacts>Earlier files</button>' : ''}</div></details></div><div class="test-action-error" role="status">${esc(reportIssue(run.report_issue))}</div>
+        <p class="test-replacement-notice" role="status">${esc(replacementNotices.get(run.worktree_path) || '')}</p>
       </article>`;
     }
 
@@ -79,7 +89,8 @@ window.DevCoordinatorTests = (() => {
       button.disabled = true;
       error.textContent = '';
       try {
-        await api(activeStates.has(run.status) ? 'test.stop' : 'test.start', { path: run.worktree_path, ...(activeStates.has(run.status) ? {} : { ...(run.targets?.length ? { targets: run.targets } : { test: run.test }), tier: run.requested_tier || 'release', ...(run.selection?.length ? { checks: run.selection } : {}), ...(Object.keys(run.case_selection || {}).length ? { cases: run.case_selection } : {}) }) }, false);
+        const result = await api(activeStates.has(run.status) ? 'test.stop' : 'test.start', { path: run.worktree_path, ...(activeStates.has(run.status) ? {} : { ...runSelection(run), tier: run.requested_tier || 'release' }) }, false);
+        recordReplacement(run, result);
         if (!signal.aborted) await refresh();
       } catch (failure) {
         if (!signal.aborted) error.textContent = failure.message;
@@ -327,7 +338,8 @@ window.DevCoordinatorTests = (() => {
         try {
           const fields = new FormData(form);
           const run = choices.find((choice) => choice.run_id === fields.get('run'));
-          await api('test.start', { path: run.worktree_path, test: run.test, tier: fields.get('tier') }, false);
+          const result = await api('test.start', { path: run.worktree_path, ...runSelection(run), tier: fields.get('tier') }, false);
+          recordReplacement(run, result);
           form.remove(); opener.focus();
           if (!signal.aborted) await refresh();
         } catch (error) { form.querySelector('[role=status]').textContent = error.message; event.submitter.disabled = false; }

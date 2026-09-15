@@ -47,6 +47,7 @@ impl RepositoryConfigError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostgresSpec {
+    pub cases_only: bool,
     pub image: String,
     pub database: String,
     pub user: String,
@@ -355,7 +356,7 @@ pub fn load_composed_test_spec(
         env: BTreeMap::new(),
         postgres: None,
         checks: Vec::new(),
-        config_digest: digest,
+        config_digest: definitions[0].config_digest.clone(),
         targets: ordered,
         check_aliases: BTreeMap::new(),
         postgres_instances: BTreeMap::new(),
@@ -710,6 +711,7 @@ fn validate_checks(
         "expect_failure",
         "qualification_of",
         "expected_failure",
+        "expected_exit_code",
     ];
     let mut checks = Vec::with_capacity(raw.len());
     let mut seen = BTreeSet::new();
@@ -913,6 +915,7 @@ fn validate_checks(
             display_name: None,
             source_name: None,
             expected_failure: optional_string(item, "expected_failure", &label)?,
+            expected_exit_code: decode_optional(item, "expected_exit_code", &label)?,
             name,
             tier,
             role,
@@ -1162,7 +1165,11 @@ fn validate_test_postgres(
     let table = value
         .as_table()
         .ok_or_else(|| RepositoryConfigError::new(format!("{label} must be a table")))?;
-    reject_unknown(table, &["image", "database", "user", "templates"], &label)?;
+    reject_unknown(
+        table,
+        &["image", "database", "user", "templates", "cases_only"],
+        &label,
+    )?;
     let image = optional_string(table, "image", &format!("{label}.image"))?
         .unwrap_or_else(|| POSTGRES_IMAGE_DEFAULT.to_owned());
     if !postgres_image_regex().is_match(&image) && !postgres_digest_image_regex().is_match(&image) {
@@ -1182,6 +1189,7 @@ fn validate_test_postgres(
         }
     }
     Ok(PostgresSpec {
+        cases_only: optional_bool(table, "cases_only", false, &label)?,
         image,
         database,
         user,

@@ -350,6 +350,7 @@ fn direct_check(
         display_name: None,
         source_name: None,
         expected_failure: None,
+        expected_exit_code: None,
         name: name.to_owned(),
         tier,
         role,
@@ -711,6 +712,8 @@ pub fn build_validation_plan(
         &serde_json::to_vec(&checks).map_err(|error| format!("cannot encode checks: {error}"))?,
     );
     let plan = ExecutionPlan {
+        database_checks: Default::default(),
+        fixture_program: None,
         environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: run_id.to_owned(),
@@ -978,6 +981,8 @@ pub fn self_test(executor: &Path, leaf: &Path) -> Result<Value, String> {
         );
         let run_id = "validator-self-test";
         let plan = ExecutionPlan {
+            database_checks: Default::default(),
+            fixture_program: None,
             environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: run_id.to_owned(),
