@@ -585,7 +585,7 @@ async fn invalid_manifest_cleanup_terminates_discovery_descendants() {
         if !PathBuf::from(format!("/proc/{pid}")).exists() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
     }
     assert!(
         !PathBuf::from(format!("/proc/{pid}")).exists(),

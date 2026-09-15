@@ -1046,7 +1046,7 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
         == TestStatus::Running
     {
         assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::yield_now();
     }
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
@@ -2297,7 +2297,7 @@ database="app_test"
             break;
         }
         assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(20));
+        thread::yield_now();
     }
     assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
 }
