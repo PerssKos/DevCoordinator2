@@ -2675,6 +2675,92 @@ health={{path="/healthz",timeout_seconds=10}}
     Ok(())
 }
 
+fn case_focused_runs_reuse_verified_builds_and_invalidate_changed_inputs(
+    world: &mut World,
+) -> Result<(), String> {
+    world.write_owned("README.md", "build input one\n")?;
+    world.write_owned(".gitignore", "artifact.bin\n")?;
+    let build = command_json(&fixture_command(
+        world,
+        &[
+            "counted-build",
+            "README.md",
+            "artifact.bin",
+            ".devcoordinator/build-count",
+        ],
+    ))?;
+    world.write_config(&format!(
+        r#"schema=2
+[test.build]
+[[test.build.check]]
+name="producer"
+tier="development"
+phase="build"
+command={build}
+cacheable=true
+cache_inputs=["README.md"]
+produces=["artifact.bin"]
+[[test.build.check]]
+name="consumer"
+tier="development"
+command=["/usr/bin/test","-s","artifact.bin"]
+consumes=[{{check="producer",path="artifact.bin"}}]
+[test.other]
+[[test.other.check]]
+name="independent"
+tier="development"
+command=["/usr/bin/true"]
+"#
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "cross-focused-run artifact reuse fixture"])?;
+    for (index, targets, expected_count) in [
+        (0, vec!["build", "other"], 1),
+        (1, vec!["build"], 1),
+        (2, vec!["build"], 2),
+    ] {
+        if index == 2 {
+            world.write_owned("README.md", "build input changed\n")?;
+        }
+        let start = Instant::now();
+        data(&world.call("test.start", json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development"}))?)?;
+        let status = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        ensure!(
+            status["status"] == "passed",
+            "focused build/consumer run failed"
+        );
+        let check = status["checks"]
+            .as_array()
+            .and_then(|checks| {
+                checks
+                    .iter()
+                    .find(|check| check["display_name"] == "build / producer")
+            })
+            .ok_or("producer evidence missing")?;
+        ensure!(
+            check["status"] == if index == 1 { "reused" } else { "passed" },
+            "focused build reuse status did not match its inputs"
+        );
+        let count = fs::read_to_string(world.repo.join(".devcoordinator/build-count"))
+            .map_err(|e| e.to_string())?;
+        ensure!(
+            count.trim() == expected_count.to_string(),
+            "focused run executed or skipped an incorrect number of builds"
+        );
+        world.measurements.insert(
+            format!("attempt_{index}_elapsed_ms"),
+            start.elapsed().as_millis(),
+        );
+        if let Some(duration) = check["duration_seconds"].as_f64() {
+            world.measurements.insert(
+                format!("attempt_{index}_producer_ms"),
+                (duration * 1000.0) as u128,
+            );
+        }
+    }
+    Ok(())
+}
+
 fn postgres_real_query_labels_secrecy_and_cleanup(
     world: &mut World,
     image: &str,
@@ -5571,6 +5657,10 @@ fn cases() -> Vec<Case> {
         (
             "no_domain_release_uses_only_the_declared_live_route",
             case_no_domain_release_uses_only_the_declared_live_route,
+        ),
+        (
+            "focused_runs_reuse_verified_builds_and_invalidate_changed_inputs",
+            case_focused_runs_reuse_verified_builds_and_invalidate_changed_inputs,
         ),
         (
             "bridge_observer_cutover_and_restart_receipt",

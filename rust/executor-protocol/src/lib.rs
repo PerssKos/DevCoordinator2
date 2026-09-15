@@ -822,8 +822,71 @@ impl ExecutionPlan {
             }
         }
         ensure_acyclic(&graph, &self.checks)?;
+        validate_output_ownership(&graph, &self.checks)?;
         Ok(())
     }
+}
+
+fn validate_output_ownership(
+    graph: &[Vec<usize>],
+    checks: &[CheckPlan],
+) -> Result<(), ContractError> {
+    fn reaches(graph: &[Vec<usize>], from: usize, target: usize) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut pending = vec![from];
+        while let Some(index) = pending.pop() {
+            if index == target {
+                return true;
+            }
+            if seen.insert(index) {
+                pending.extend(&graph[index]);
+            }
+        }
+        false
+    }
+    let outputs = checks
+        .iter()
+        .map(|check| {
+            check
+                .produces
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    check
+                        .retained_artifacts
+                        .iter()
+                        .map(|artifact| artifact.path.as_str()),
+                )
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    for (left_index, left) in checks.iter().enumerate() {
+        for (right_index, right) in checks.iter().enumerate().skip(left_index + 1) {
+            let collision = outputs[left_index].iter().any(|left| {
+                outputs[right_index].iter().any(|right| {
+                    Path::new(left).starts_with(right) || Path::new(right).starts_with(left)
+                })
+            });
+            if !collision {
+                continue;
+            }
+            let serialized = left
+                .resources
+                .iter()
+                .any(|claim| right.resources.iter().any(|other| claim.conflicts(other)))
+                || left.completion == CompletionMode::Process
+                    && reaches(graph, left_index, right_index)
+                || right.completion == CompletionMode::Process
+                    && reaches(graph, right_index, left_index);
+            if !serialized {
+                return Err(ContractError::new(format!(
+                    "checks {:?} and {:?} have overlapping output paths without ordering or conflicting resource claims",
+                    left.name, right.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
@@ -2340,6 +2403,68 @@ mod tests {
                 .replacen("\"schema\":2", "\"schema\":1", 1);
         let error = ExecutionPlan::from_json(old.as_bytes()).expect_err("schema one rejected");
         assert!(error.to_string().contains("schema must be 2"));
+    }
+
+    #[test]
+    fn overlapping_outputs_require_real_ordering_or_exclusive_ownership() {
+        let mut first = check("first", ValidationTier::Development);
+        let mut second = check("second", ValidationTier::Development);
+        first.produces = vec!["build/result".into()];
+        second.produces = first.produces.clone();
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("overlapping output")
+        );
+        second.produces = vec!["other/result".into()];
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        second.produces = first.produces.clone();
+        second.after = vec![first.name.clone()];
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        first.completion = CompletionMode::Event;
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .is_err()
+        );
+        first.completion = CompletionMode::Process;
+        second.after.clear();
+        first.resources = vec![ResourceClaim {
+            kind: ResourceKind::Directory,
+            id: "build".into(),
+            access: ResourceAccess::Shared,
+        }];
+        second.resources = first.resources.clone();
+        assert!(
+            plan(vec![first.clone(), second.clone()])
+                .validate()
+                .is_err()
+        );
+        first.resources[0].access = ResourceAccess::Exclusive;
+        plan(vec![first.clone(), second.clone()])
+            .validate()
+            .unwrap();
+        first.resources.clear();
+        second.resources.clear();
+        second.produces.clear();
+        second.retained_artifacts = vec![RetainedArtifactSpec {
+            name: "tree".into(),
+            path: "build".into(),
+            max_bytes: 1024,
+        }];
+        assert!(
+            plan(vec![first, second])
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("overlapping output")
+        );
     }
 
     #[test]

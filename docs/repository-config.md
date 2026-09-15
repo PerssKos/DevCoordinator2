@@ -84,7 +84,10 @@ and child paths conflict. The existing broker reserves all of a check's claims
 together, keeps them through discovery/cases or a live service, and releases them
 on completion or cancellation. An earlier conflicting writer is not starved by
 later readers; unrelated claims proceed. Real ordering and success requirements
-still use `after` and `requires`. Every leaf receives an isolated
+still use `after` and `requires`. Checks whose declared output files or retained
+trees overlap must have a dependency that waits for the earlier process to exit,
+or conflicting resource claims. An undeclared output collision is rejected
+before execution. Every leaf receives an isolated
 `DEVCOORDINATOR_CHECK_SCRATCH`, the shared
 `DEVCOORDINATOR_SHARED_ARTIFACTS`, a private
 `DEVCOORDINATOR_DIAGNOSTICS_DIR`, a dedicated inherited structured-diagnostic
