@@ -62,6 +62,7 @@ export function loadConfig(e = process.env) {
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
+    trustLocalConsole: e.EDGE_TRUST_LOCAL_CONSOLE === '1',
   };
 }
 
@@ -141,6 +142,18 @@ export async function createEdge(config, { log = console } = {}) {
     return session ? { email: session.email, sub: session.sub, name: session.name } : null;
   }
 
+  // Only a direct kernel-reported loopback peer receives the trusted-local
+  // development identity. Forwarded headers never participate in this check.
+  function trustedLocal(req) {
+    const address = req.socket?.remoteAddress || '';
+    return config.trustLocalConsole && (address === '::1' || address === '127.0.0.1' || address.startsWith('::ffff:127.'));
+  }
+
+  function localIdentity() {
+    const owner = store.current().access?.owners?.[0];
+    return owner ? { email: owner, sub: 'trusted-local', name: 'Trusted local' } : null;
+  }
+
   async function handleAuth(req, res, url, host) {
     const rt = url.searchParams.get('rt') || '/';
     if (url.pathname === '/auth/login') {
@@ -196,7 +209,7 @@ export async function createEdge(config, { log = console } = {}) {
       });
     }
     if (url.pathname.startsWith('/api/v2/')) {
-      const identity = identityOf(req);
+      const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);
       if (!identity) return writeJson(res, 401, { ok: false, error: { code: 'unauthenticated', message: 'sign in first' } });
       if (req.method !== 'POST') return writeJson(res, 405, { ok: false, error: { code: 'method_not_allowed' } });
       const operation = url.pathname.slice('/api/v2/'.length);
@@ -226,7 +239,7 @@ export async function createEdge(config, { log = console } = {}) {
         error: { code: 'protocol_unsupported', message: 'use /api/v2/<operation>', detail: '' },
       });
     }
-    const identity = identityOf(req);
+    const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);
     if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname)}`);
     if (consoleStatic) {
       if (url.pathname === '/' || url.pathname === '/index.html') req.url = '/index.html';
