@@ -179,6 +179,14 @@ atomically, and preserves previously configured sources.
 
 ## Enforcement
 
+For an owner-confirmed trusted host, `devcoordinator2-tooling install console-access
+--trusted-loopback enabled` changes only the existing edge configuration. It
+preserves its owner, group, permissions and other settings. The next reviewed
+activation enables Console access without an OIDC session for direct loopback
+requests. Disable it with the same command and `--trusted-loopback disabled`.
+Forwarded or cross-origin browser requests and deployment routes keep ordinary
+authentication. The option defaults to disabled; it is not a trusted LAN range.
+
 `devcoordinator2-tooling check no-instance-data` scans committed content against the
 untracked pattern list `instance/forbidden-strings.txt` and fails on any
 match. Run it before every commit and in the acceptance checklist.

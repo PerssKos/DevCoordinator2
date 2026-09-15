@@ -809,6 +809,25 @@ pub fn set_env_value(path: &Path, key: &str, value: &str) -> Result<bool, String
     Ok(true)
 }
 
+pub fn configure_loopback_console(
+    path: &Path,
+    enabled: bool,
+    expected_uid: u32,
+) -> Result<bool, String> {
+    let (_, metadata) = read_optional_regular(path)?;
+    let metadata = metadata.ok_or("the existing edge configuration is required")?;
+    if metadata.uid() != expected_uid || metadata.mode() & 0o027 != 0 {
+        return Err(
+            "edge configuration must retain its private installation owner and permissions".into(),
+        );
+    }
+    set_env_value(
+        path,
+        "EDGE_TRUST_LOCAL_CONSOLE",
+        if enabled { "1" } else { "0" },
+    )
+}
+
 pub fn compose_env_authorizations<R: CommandRunner>(
     specifications: &[String],
     runner: &R,
@@ -2215,6 +2234,36 @@ mod tests {
         assert!(set_env_value(&path, "B", "3").unwrap());
         assert!(!set_env_value(&path, "B", "3").unwrap());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "A=1\nB=3\n");
+    }
+
+    #[test]
+    fn loopback_console_configuration_preserves_existing_installation_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("edge.env");
+        std::fs::write(
+            &path,
+            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=preserved\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        assert!(configure_loopback_console(&path, true, before.uid()).unwrap());
+        assert!(!configure_loopback_console(&path, true, before.uid()).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=preserved\nEDGE_TRUST_LOCAL_CONSOLE=1\n"
+        );
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode()),
+            (after.uid(), after.gid(), after.mode())
+        );
+        assert!(configure_loopback_console(&path, false, before.uid()).unwrap());
+        assert!(configure_loopback_console(&path, true, before.uid() + 1).is_err());
+        assert!(
+            configure_loopback_console(&directory.path().join("missing"), true, before.uid())
+                .is_err()
+        );
     }
 
     #[test]

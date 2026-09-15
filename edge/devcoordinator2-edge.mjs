@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { URL, fileURLToPath } from 'node:url';
 
 import { createDaemonClient } from './lib/daemon-client.mjs';
@@ -100,6 +101,19 @@ export function authorize(doc, route, identity) {
   return { allowed: true, role: grant.role };
 }
 
+export function trustedLoopbackConsole(req, consoleOrigin, enabled) {
+  if (!enabled) return false;
+  const peer = req.socket?.remoteAddress || '';
+  const ipv4 = peer.startsWith('::ffff:') ? peer.slice(7) : peer;
+  if (peer !== '::1' && !(net.isIP(ipv4) === 4 && ipv4.startsWith('127.'))) return false;
+  // This mode is for a direct host connection. A local reverse proxy must
+  // retain ordinary public authentication rather than inherit host authority.
+  if (Object.keys(req.headers).some(name => name === 'forwarded' || name.startsWith('x-forwarded-'))) return false;
+  if (req.headers.origin && req.headers.origin !== consoleOrigin) return false;
+  if (['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) return false;
+  return true;
+}
+
 async function readJsonBody(req, limit = 65536) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -145,13 +159,13 @@ export async function createEdge(config, { log = console } = {}) {
   // Only a direct kernel-reported loopback peer receives the trusted-local
   // development identity. Forwarded headers never participate in this check.
   function trustedLocal(req) {
-    const address = req.socket?.remoteAddress || '';
-    return config.trustLocalConsole && (address === '::1' || address === '127.0.0.1' || address.startsWith('::ffff:127.'));
+    return trustedLoopbackConsole(req, consoleOrigin, config.trustLocalConsole);
   }
 
   function localIdentity() {
-    const owner = store.current().access?.owners?.[0];
-    return owner ? { email: owner, sub: 'trusted-local', name: 'Trusted local' } : null;
+    // No fabricated public user: the daemon already represents a request
+    // without a public assertion as its kernel-authenticated local caller.
+    return { email: null, sub: 'trusted-local', name: 'Trusted local' };
   }
 
   async function handleAuth(req, res, url, host) {
