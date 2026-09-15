@@ -997,6 +997,15 @@ async fn cache_reuses_a_completed_build_and_invalidates_artifact_source_and_cons
     let reused = execute(plan(&repository, "run-cache-second", vec![build.clone()])).await;
     assert_eq!(reused.checks[0].status, LeafStatus::Reused);
     assert_eq!(
+        reused
+            .phase_durations
+            .iter()
+            .find(|phase| phase.phase == CheckPhase::Build)
+            .unwrap()
+            .duration_seconds,
+        0.0
+    );
+    assert_eq!(
         fs::read_to_string(repository.root.join(".devcoordinator/build-count")).unwrap(),
         "1"
     );

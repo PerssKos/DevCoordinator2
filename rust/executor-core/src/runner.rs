@@ -3174,7 +3174,8 @@ fn timing_nodes(
     if check.processes.is_empty() {
         return vec![(
             check.plan.phase,
-            check.report.duration_seconds.unwrap_or(0.0),
+            // Receipt verification and queue time are not process execution.
+            0.0,
             None,
             None,
         )];

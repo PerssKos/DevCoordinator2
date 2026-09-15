@@ -2755,8 +2755,26 @@ command=["/usr/bin/true"]
         );
         if let Some(duration) = check["duration_seconds"].as_f64() {
             world.measurements.insert(
-                format!("attempt_{index}_producer_ms"),
+                format!("attempt_{index}_producer_check_elapsed_ms"),
                 (duration * 1000.0) as u128,
+            );
+        }
+        let execution_ms = check
+            .pointer("/execution/process_duration_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        world.measurements.insert(
+            format!("attempt_{index}_producer_execution_ms"),
+            u128::from(execution_ms),
+        );
+        if index == 1 {
+            ensure!(execution_ms == 0, "reused build reported process execution");
+            ensure!(
+                status["phase_durations"]
+                    .as_array()
+                    .and_then(|phases| phases.iter().find(|phase| phase["phase"] == "build"))
+                    .is_some_and(|phase| phase["duration_seconds"] == 0.0),
+                "cache verification time was counted as build execution"
             );
         }
     }
