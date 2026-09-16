@@ -146,7 +146,9 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   verify('phase reporting distinguishes execution from elapsed time', (await phaseTable.getByRole('row').nth(1).innerText()).replace(/\s+/g, ' ').trim() === 'Build 6s 4s');
   verify('an unmeasured phase span stays unavailable', (await phaseTable.getByRole('row').nth(2).innerText()).includes('Unavailable'));
   verify('composed target names remain visible', /Alpha \+ Beta/i.test(await page.locator('.test-result-name').first().innerText()));
+  verify('partial evidence is labeled as selected checks', /Selected checks/.test(await page.locator('.test-run-time').first().innerText()));
   verify('case preparation failures show skipped execution and successful cleanup', /Database setup.*failed.*Execution.*Not run.*Cleanup.*passed/s.test(await page.locator('.test-case').innerText()));
+  verify('a blocked database consumer is described as not run', /Not run/.test(await page.locator('.test-check').filter({hasText:'Skipped database check'}).innerText()));
   verify('short phase durations remain measurable', /200ms/.test(await page.locator('.test-case').innerText()) && /50ms/.test(await page.locator('.test-case').innerText()));
   verify('phase details fit this viewport', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: path.join(output, `tests-case-phases-${theme}-${viewport.width}.png`), fullPage: true });
@@ -154,7 +156,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.locator('#test-logs-dialog[open] .test-log-scroll').waitFor();
   for (const [phase, label] of [['fixture', 'Database setup'], ['cleanup', 'Cleanup']]) {
     daemon.calls.length = 0;
-    await page.locator('#test-log-stream').selectOption({ label: `database-cases · missing-seed · ${label} · Error output` });
+    await page.locator('#test-log-stream').selectOption({ label: `Database cases · missing-seed · ${label} · Error output` });
     await page.waitForFunction(() => !document.querySelector('#test-log-stream')?.disabled);
     verify(`${label} opens the exact case output`, daemon.calls.some((call) => call.operation === 'test.log.tail' && call.params.check === 'database-cases' && call.params.case === 'missing-seed' && call.params.phase === phase));
   }
@@ -168,6 +170,7 @@ export async function verifyTestsDesign({ page, daemon, check, scenario, baseUrl
   await page.locator('#test-run-form button[type=submit]').click();
   await page.locator('#test-run-form').waitFor({ state: 'detached' });
   verify('run form preserves a composed target selection', daemon.calls.some((call) => call.operation === 'test.start' && call.params.targets?.join() === 'alpha,beta' && call.params.test === undefined && call.params.tier === 'development'));
+  verify('Run tests restores the complete graph after a focused result', daemon.calls.some((call) => call.operation === 'test.start' && call.params.checks === undefined && call.params.cases === undefined));
   verify('run form retains the replacement notice after refresh', /t20260101T000200Z-cab321/.test(await page.locator('.test-replacement-notice').innerText()));
   verify('no browser exceptions', errors.length === 0, errors.join('; '));
 }

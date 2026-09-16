@@ -36,6 +36,8 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 /// Kernel-authenticated transport caller plus the protocol client context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Caller {
+    /// Derived from the kernel peer and configured edge account, never request data.
+    pub via_edge: bool,
     pub pid: u32,
     pub uid: u32,
     pub gid: u32,
@@ -58,6 +60,7 @@ impl Caller {
         validate_identity_assertion(uid, edge_uid, client.identity.as_deref())?;
         let work = client.work_attribution();
         Ok(Self {
+            via_edge: edge_uid == Some(uid),
             pid,
             uid,
             gid,
@@ -78,6 +81,10 @@ impl Caller {
         self.identity
             .clone()
             .unwrap_or_else(|| format!("uid:{}", self.uid))
+    }
+
+    pub fn is_console(&self) -> bool {
+        self.via_edge || self.identity.is_some()
     }
 }
 
@@ -1484,6 +1491,26 @@ fn database_or_domain(error: DatabaseError) -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn console_origin_is_derived_from_the_configured_kernel_peer() {
+        let edge = Caller::from_client(1, 999, 999, ClientContext::default(), Some(999)).unwrap();
+        assert!(edge.via_edge && edge.is_console());
+        assert_eq!(edge.identity, None);
+        assert_eq!(edge.actor(), "uid:999");
+        let claimed = Caller::from_client(
+            1,
+            1000,
+            1000,
+            ClientContext {
+                kind: ClientKind::Edge,
+                ..ClientContext::default()
+            },
+            Some(999),
+        )
+        .unwrap();
+        assert!(!claimed.via_edge && !claimed.is_console());
+        assert_eq!(claimed.actor(), "uid:1000");
+    }
     use std::sync::Mutex;
 
     use tempfile::tempdir;
@@ -1567,6 +1594,7 @@ mod tests {
 
     fn local() -> Caller {
         Caller {
+            via_edge: false,
             pid: 1,
             uid: 1000,
             gid: 1000,
@@ -1579,6 +1607,7 @@ mod tests {
 
     fn public(identity: &str) -> Caller {
         Caller {
+            via_edge: false,
             pid: 2,
             uid: 999,
             gid: 999,

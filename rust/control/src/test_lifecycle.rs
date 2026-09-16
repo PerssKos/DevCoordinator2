@@ -34,9 +34,7 @@ use crate::access::Caller;
 use crate::capacity::{CapacityBroker, HostMemory};
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
-use crate::docker::{
-    DockerCli, DockerControl, ExactContainerId, ManagedLabelContext, RunDetachedRequest,
-};
+use crate::docker::{DockerCli, DockerControl, ExactContainerId, ManagedLabelContext};
 use crate::metrics_source::{HostMetricSource, MetricSource};
 use crate::platform::{Clock, HostMonotonicClock, HostRandom, MonotonicClock, RandomSource};
 use crate::repository::{Registry, resolve_worktree};
@@ -44,7 +42,7 @@ use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
-use crate::test_databases::{DatabasePool, FixtureRun};
+use crate::test_databases::{DatabasePool, FixtureRun, add_shared_phases};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
     ENV_FILE, PLAN_FILE, PreparedRun, RetryEvidence, TestRunStore, api_tier, executor_tier,
@@ -114,6 +112,7 @@ struct Inner {
 }
 
 struct RunHandle {
+    requester_uid: u32,
     fixtures: Arc<FixtureRun>,
     work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
@@ -215,24 +214,6 @@ impl Drain {
 enum LaunchState {
     Active,
     Exited,
-}
-
-struct EphemeralPostgres {
-    container: ExactContainerId,
-    environment: BTreeMap<String, String>,
-}
-
-struct ContainerCleanup {
-    docker: Arc<dyn DockerControl>,
-    container: Option<ExactContainerId>,
-}
-
-impl Drop for ContainerCleanup {
-    fn drop(&mut self) {
-        if let Some(container) = self.container.take() {
-            let _ = self.docker.remove_container(&container, true);
-        }
-    }
 }
 
 impl TestLifecycle {
@@ -565,7 +546,7 @@ impl TestLifecycle {
             repository_id: repository_id.to_owned(),
             worktree_id: worktree_id.to_owned(),
             duration_seconds: summary.duration_seconds,
-            caller_uid: uid,
+            caller_uid: summary.caller_uid,
             client: summary.client,
         });
         Ok(())
@@ -621,16 +602,14 @@ impl TestLifecycle {
                 "repository code never runs as root; call as a non-root account",
             ));
         }
+        let requester_uid = caller.uid;
+        let (registered, execution_uid, execution_gid) = self.execution_source(path, caller)?;
         if retry.is_some() && requested.len() != 1 {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
                 "retry and explicit check selection are separate modes",
             ));
         }
-        let registered = self
-            .inner
-            .registry
-            .register(Path::new(path), caller.uid, caller.gid)?;
         let worktree = PathBuf::from(&registered.worktree_path);
         let restored = retry
             .map(|(run_id, _)| self.inner.store.find_evidence(&worktree, run_id))
@@ -720,7 +699,12 @@ impl TestLifecycle {
         let source_digest = self
             .inner
             .command
-            .source_digest(&self.inner.executor, &worktree, caller.uid, caller.gid)
+            .source_digest(
+                &self.inner.executor,
+                &worktree,
+                execution_uid,
+                execution_gid,
+            )
             .map_err(command_start_error)?;
         let origin = if let Some((run_id, check)) = retry {
             let mut origin = self
@@ -761,8 +745,8 @@ impl TestLifecycle {
                         &report,
                         &summary.status,
                         summary.work.as_ref(),
-                        caller.uid,
-                        caller.gid,
+                        execution_uid,
+                        execution_gid,
                     )
                     .map_err(state_start_error)?;
                 origin = self
@@ -783,7 +767,32 @@ impl TestLifecycle {
         } else {
             None
         };
-        let selected = selected_closure(&specification.checks, requested, requested_tier)?;
+        if requested.iter().collect::<HashSet<_>>().len() != requested.len() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "check selection contains duplicates",
+            ));
+        }
+        let mut normal_requested = Vec::new();
+        let mut shared_requested = false;
+        for check in requested {
+            if let Some(minimum) = crate::test_databases::shared_phase_tier(&specification, check) {
+                if minimum > requested_tier {
+                    return Err(ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "database phase is outside the requested validation tier",
+                    ));
+                }
+                shared_requested = true;
+            } else {
+                normal_requested.push(check.clone());
+            }
+        }
+        let selected = if shared_requested && normal_requested.is_empty() {
+            Vec::new()
+        } else {
+            selected_closure(&specification.checks, &normal_requested, requested_tier)?
+        };
         for check in &selected {
             for case in check.cases.iter().flatten() {
                 if let Some(branch) = &case.postgres {
@@ -803,7 +812,15 @@ impl TestLifecycle {
                 }
             }
         }
-        self.validate_executables(&worktree, &specification, &selected, caller.uid, caller.gid)?;
+        crate::test_databases::validate_shared_phase_names(&specification, &selected, requested)
+            .map_err(|error| ProtocolError::new(ErrorCode::RepositoryConfigInvalid, error))?;
+        self.validate_executables(
+            &worktree,
+            &specification,
+            &selected,
+            execution_uid,
+            execution_gid,
+        )?;
 
         let mut admission = self
             .inner
@@ -815,7 +832,7 @@ impl TestLifecycle {
         let prepared = self
             .inner
             .store
-            .prepare(&worktree, &run_id, caller.uid, caller.gid)
+            .prepare(&worktree, &run_id, execution_uid, execution_gid)
             .map_err(state_start_error)?;
         let proof = if retry.is_some() {
             ProofKind::Retry
@@ -830,25 +847,27 @@ impl TestLifecycle {
             &run_id,
             &specification.name,
             &started_at,
-            caller.uid,
+            requester_uid,
             &client,
             proof,
             requested.to_vec(),
             retry.map(|value| value.0.to_owned()),
             requested_tier,
         );
+        summary.execution_uid = (requester_uid != execution_uid).then_some(execution_uid);
         summary.work = caller.work.clone();
         summary.targets = specification.targets.clone();
         summary.case_selection = case_selection.clone();
         self.inner
             .store
-            .prepare_log_metadata(&worktree, &summary, caller.uid, caller.gid)
+            .prepare_log_metadata(&worktree, &summary, execution_uid, execution_gid)
             .map_err(state_start_error)?;
-        if let Err(error) =
-            self.inner
-                .store
-                .write_summary(&prepared.current, &summary, caller.uid, caller.gid)
-        {
+        if let Err(error) = self.inner.store.write_summary(
+            &prepared.current,
+            &summary,
+            execution_uid,
+            execution_gid,
+        ) {
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(state_start_error(error));
         }
@@ -862,7 +881,7 @@ impl TestLifecycle {
             return Err(admission_error(error));
         }
         let _launch_guard = admission.release_global();
-        if let Err(error) = self.inner.capacity.register_run(&run_id, caller.uid) {
+        if let Err(error) = self.inner.capacity.register_run(&run_id, execution_uid) {
             let _ = self.inner.admission.finished(&run_id);
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(error);
@@ -880,118 +899,12 @@ impl TestLifecycle {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let mut containers = Vec::new();
-        let mut environment_files = BTreeMap::new();
-        let mut postgres_databases = BTreeMap::new();
-        if let Some(postgres) = specification
-            .postgres
-            .as_ref()
-            .filter(|postgres| !postgres.cases_only)
-        {
-            match self.provision_postgres(
-                postgres,
-                &worktree,
-                None,
-                &run_id,
-                &registered.repository_id,
-                &registered.worktree_id,
-                &started_at,
-                caller,
-            ) {
-                Ok(postgres) => {
-                    postgres_databases.insert(
-                        "default".into(),
-                        specification.postgres.as_ref().unwrap().database.clone(),
-                    );
-                    environment.extend(postgres.environment);
-                    containers.push(postgres.container);
-                    let identities = containers
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>();
-                    if let Err(error) = self.inner.store.write_containers(
-                        &prepared.current,
-                        &identities,
-                        caller.uid,
-                        caller.gid,
-                    ) {
-                        self.rollback_accepted_start(&worktree, &run_id, &containers);
-                        return Err(state_start_error(error));
-                    }
-                }
-                Err(error) => {
-                    self.rollback_accepted_start(&worktree, &run_id, &containers);
-                    return Err(error);
-                }
-            }
-        }
-        for (scope, postgres) in &specification.postgres_instances {
-            let owners = selected
-                .iter()
-                .filter(|check| specification.check_postgres.get(&check.name) == Some(scope))
-                .map(|check| check.name.clone())
-                .collect::<Vec<_>>();
-            if owners.is_empty() || postgres.cases_only {
-                continue;
-            }
-            let prepared_database = self.provision_postgres(
-                postgres,
-                &worktree,
-                Some(scope),
-                &run_id,
-                &registered.repository_id,
-                &registered.worktree_id,
-                &started_at,
-                caller,
-            );
-            match prepared_database {
-                Ok(database) => {
-                    postgres_databases.insert(scope.clone(), postgres.database.clone());
-                    containers.push(database.container.clone());
-                    let persisted = self
-                        .inner
-                        .store
-                        .write_containers(
-                            &prepared.current,
-                            &containers
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>(),
-                            caller.uid,
-                            caller.gid,
-                        )
-                        .and_then(|()| {
-                            self.inner.store.write_database_environment(
-                                &prepared.current,
-                                scope,
-                                &database.environment,
-                                caller.uid,
-                                caller.gid,
-                            )
-                        });
-                    match persisted {
-                        Ok(file) => {
-                            for owner in owners {
-                                environment_files.insert(owner, file.clone());
-                            }
-                        }
-                        Err(error) => {
-                            self.rollback_accepted_start(&worktree, &run_id, &containers);
-                            return Err(state_start_error(error));
-                        }
-                    }
-                }
-                Err(error) => {
-                    self.rollback_accepted_start(&worktree, &run_id, &containers);
-                    return Err(error);
-                }
-            }
-        }
+        let containers = Vec::new();
         if let Err(error) = self.inner.store.write_environment(
             &prepared.current,
             &environment,
-            caller.uid,
-            caller.gid,
+            execution_uid,
+            execution_gid,
         ) {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
@@ -1007,7 +920,7 @@ impl TestLifecycle {
             origin.as_ref(),
             retry.map(|value| value.0),
             requested_tier,
-            caller,
+            (execution_uid, execution_gid),
         ) {
             Ok(plan) => plan,
             Err(error) => {
@@ -1016,8 +929,13 @@ impl TestLifecycle {
             }
         };
         plan.case_selection = case_selection;
-        plan.environment_files = environment_files;
-        plan.postgres_databases = postgres_databases;
+        let shared_fixtures = match add_shared_phases(&mut plan, &specification) {
+            Ok(fixtures) => fixtures,
+            Err(error) => {
+                self.rollback_accepted_start(&worktree, &run_id, &containers);
+                return Err(ProtocolError::new(ErrorCode::ParamsInvalid, error));
+            }
+        };
         if let Err(error) = plan.validate() {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(ProtocolError::new(
@@ -1046,7 +964,7 @@ impl TestLifecycle {
         if let Err(error) =
             self.inner
                 .store
-                .write_plan(&prepared.current, &plan, caller.uid, caller.gid)
+                .write_plan(&prepared.current, &plan, execution_uid, execution_gid)
         {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
@@ -1083,13 +1001,14 @@ impl TestLifecycle {
                 generation: None,
                 ttl_seconds: None,
                 purpose: "test".into(),
-                caller_uid: caller.uid,
+                caller_uid: execution_uid,
                 client: client.clone(),
                 session: caller.client_session.clone(),
                 created_at: started_at.clone(),
                 data_class: "disposable".into(),
             },
-            caller.gid,
+            execution_gid,
+            shared_fixtures,
         ));
         if let Err(error) = self
             .inner
@@ -1102,8 +1021,8 @@ impl TestLifecycle {
         let unit_specification = TransientUnitSpec {
             unit: unit.clone(),
             slice_name: self.inner.config.slice_name.clone(),
-            uid: caller.uid,
-            gid: caller.gid,
+            uid: execution_uid,
+            gid: execution_gid,
             timeout_seconds: specification.timeout_seconds,
             working_directory: worktree.clone(),
             environment_file: Some(prepared.current_path.join(ENV_FILE)),
@@ -1137,6 +1056,7 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            requester_uid,
             fixtures,
             targets: specification.targets.clone(),
             case_selection: plan.case_selection.clone(),
@@ -1147,8 +1067,8 @@ impl TestLifecycle {
             worktree_id: registered.worktree_id.clone(),
             worktree: worktree.clone(),
             repository_id: registered.repository_id.clone(),
-            caller_uid: caller.uid,
-            caller_gid: caller.gid,
+            caller_uid: execution_uid,
+            caller_gid: execution_gid,
             client,
             started_at,
             started_mono: self.inner.monotonic.seconds(),
@@ -1212,7 +1132,7 @@ impl TestLifecycle {
                     repository_id: started.repository_id.clone(),
                     worktree_id: started.worktree_id.clone(),
                     duration_seconds: None,
-                    caller_uid: caller.uid,
+                    caller_uid: requester_uid,
                     client: client_name(caller),
                 });
                 Ok(started)
@@ -1654,7 +1574,10 @@ impl TestLifecycle {
                     let metadata = worktree.metadata().ok()?;
                     crate::repository::test_repository_source(
                         &worktree,
-                        (summary.caller_uid, metadata.gid()),
+                        (
+                            summary.execution_uid.unwrap_or(summary.caller_uid),
+                            metadata.gid(),
+                        ),
                     )
                 })
                 .clone();
@@ -1717,129 +1640,6 @@ impl TestLifecycle {
         self.inner.admission.reset().map_err(admission_error)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn provision_postgres(
-        &self,
-        specification: &crate::repository_config::PostgresSpec,
-        _worktree: &Path,
-        scope: Option<&str>,
-        run_id: &str,
-        repository_id: &str,
-        worktree_id: &str,
-        started_at: &str,
-        caller: &Caller,
-    ) -> Result<EphemeralPostgres, ProtocolError> {
-        if !self.inner.docker.available() {
-            return Err(ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "ephemeral PostgreSQL failed: Docker is unavailable",
-            ));
-        }
-        if specification.image.contains("@sha256:") {
-            self.inner.docker.ensure_digest_image(&specification.image)
-        } else {
-            self.inner.docker.ensure_image(&specification.image)
-        }
-        .map_err(postgres_error)?;
-        let mut random = [0_u8; 24];
-        self.inner.random.fill(&mut random).map_err(|error| {
-            ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "ephemeral PostgreSQL credentials could not be generated",
-            )
-            .with_detail(error.to_string())
-        })?;
-        let password = base64_url_no_pad(&random);
-        let values = BTreeMap::from([
-            ("POSTGRES_USER".into(), specification.user.clone()),
-            ("POSTGRES_PASSWORD".into(), password.clone()),
-            ("POSTGRES_DB".into(), specification.database.clone()),
-            ("PGDATA".into(), "/var/lib/postgresql/data".into()),
-        ]);
-        let container = self
-            .inner
-            .docker
-            .run_detached(&RunDetachedRequest {
-                name: format!(
-                    "devcoordinator2-test-{}-postgres{}",
-                    run_id.trim_start_matches('t'),
-                    scope.map(|scope| format!("-{scope}")).unwrap_or_default()
-                ),
-                image: specification.image.clone(),
-                label_context: ManagedLabelContext {
-                    instance: self.inner.config.unit_prefix.clone(),
-                    repository_id: repository_id.into(),
-                    worktree_id: worktree_id.into(),
-                    run_id: Some(run_id.into()),
-                    deployment_id: None,
-                    component: scope.map(str::to_owned),
-                    generation: None,
-                    ttl_seconds: None,
-                    purpose: "test".into(),
-                    caller_uid: caller.uid,
-                    client: client_name(caller),
-                    session: caller.client_session.clone(),
-                    created_at: started_at.into(),
-                    data_class: "disposable".into(),
-                },
-                labels: BTreeMap::new(),
-                env_names: vec![
-                    "POSTGRES_USER".into(),
-                    "POSTGRES_PASSWORD".into(),
-                    "POSTGRES_DB".into(),
-                    "PGDATA".into(),
-                ],
-                env_values: values,
-                publish: vec!["127.0.0.1::5432".into()],
-                tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
-                command: Vec::new(),
-            })
-            .map_err(postgres_error)?;
-        let mut cleanup = ContainerCleanup {
-            docker: self.inner.docker.clone(),
-            container: Some(container.clone()),
-        };
-        let prepared = (|| {
-            let port = self
-                .inner
-                .docker
-                .published_host_port(&container, "5432/tcp")?;
-            self.inner.docker.wait_postgres_ready(
-                &container,
-                &specification.user,
-                &specification.database,
-                Duration::from_secs(90),
-            )?;
-            Ok::<_, crate::docker::DockerError>(port)
-        })();
-        let port = match prepared {
-            Ok(port) => port,
-            Err(error) => {
-                let _ = self.inner.docker.remove_container(&container, true);
-                return Err(postgres_error(error));
-            }
-        };
-        let url = format!(
-            "postgresql://{}:{}@127.0.0.1:{}/{}",
-            specification.user, password, port, specification.database
-        );
-        let container = cleanup
-            .container
-            .take()
-            .expect("container cleanup identity");
-        Ok(EphemeralPostgres {
-            container,
-            environment: BTreeMap::from([
-                ("PGHOST".into(), "127.0.0.1".into()),
-                ("PGPORT".into(), port.to_string()),
-                ("PGUSER".into(), specification.user.clone()),
-                ("PGPASSWORD".into(), password),
-                ("PGDATABASE".into(), specification.database.clone()),
-                ("DATABASE_URL".into(), url),
-            ]),
-        })
-    }
-
     fn resolve_history_worktree(
         &self,
         path: &str,
@@ -1851,7 +1651,7 @@ impl TestLifecycle {
                 "path must be absolute",
             ));
         }
-        if caller.identity.is_none() {
+        if !caller.is_console() {
             return self.resolve(path, caller).map(|(worktree, _)| worktree);
         }
         let requested = path.to_owned();
@@ -1878,12 +1678,50 @@ impl TestLifecycle {
     }
 
     fn resolve(&self, path: &str, caller: &Caller) -> Result<(PathBuf, String), ProtocolError> {
+        if caller.is_console() {
+            let worktree = self.resolve_history_worktree(path, caller)?;
+            let requested = path.to_owned();
+            let id = self
+                .inner
+                .database
+                .call(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT worktree_id FROM worktrees WHERE worktree_path=?1",
+                            [requested],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .map_err(DatabaseError::from)
+                })
+                .map_err(database_error)?;
+            return Ok((worktree, id));
+        }
         let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
         let worktree_id = crate::ids::worktree_id(&info.worktree_root).map_err(|error| {
             ProtocolError::new(ErrorCode::RepositoryNotFound, "cannot identify worktree")
                 .with_detail(error.to_string())
         })?;
         Ok((info.worktree_root, worktree_id))
+    }
+
+    fn execution_source(
+        &self,
+        path: &str,
+        caller: &Caller,
+    ) -> Result<(devcoordinator2_api::results::RegisteredRepository, u32, u32), ProtocolError> {
+        if caller.is_console() {
+            self.inner
+                .registry
+                .registered_execution_source(Path::new(path))
+        } else {
+            Ok((
+                self.inner
+                    .registry
+                    .register(Path::new(path), caller.uid, caller.gid)?,
+                caller.uid,
+                caller.gid,
+            ))
+        }
     }
 
     fn validate_executables(
@@ -1952,7 +1790,7 @@ impl TestLifecycle {
         origin: Option<&RetryEvidence>,
         origin_run_id: Option<&str>,
         requested_tier: ValidationTier,
-        caller: &Caller,
+        execution: (u32, u32),
     ) -> Result<ExecutionPlan, ProtocolError> {
         let selected_names = selected
             .iter()
@@ -1993,8 +1831,8 @@ impl TestLifecycle {
                             &self.inner.executor,
                             worktree,
                             &previous.artifacts,
-                            caller.uid,
-                            caller.gid,
+                            execution.0,
+                            execution.1,
                         )
                         .map_err(command_start_error)?
                 {
@@ -2066,10 +1904,6 @@ impl TestLifecycle {
             reused_qualifications: Default::default(),
             checks,
         };
-        plan.validate().map_err(|error| {
-            ProtocolError::new(ErrorCode::TestStartFailed, "executor plan is invalid")
-                .with_detail(error.to_string())
-        })?;
         Ok(plan)
     }
 
@@ -2285,13 +2119,15 @@ impl TestLifecycle {
             &handle.run_id,
             &handle.test,
             &handle.started_at,
-            handle.caller_uid,
+            handle.requester_uid,
             &handle.client,
             handle.proof,
             handle.selection.clone(),
             handle.origin_run_id.clone(),
             handle.requested_tier,
         );
+        summary.execution_uid =
+            (handle.requester_uid != handle.caller_uid).then_some(handle.caller_uid);
         summary.work = handle.work.clone();
         summary.targets = handle.targets.clone();
         summary.case_selection = handle.case_selection.clone();
@@ -2382,7 +2218,7 @@ impl TestLifecycle {
             repository_id: handle.repository_id.clone(),
             worktree_id: handle.worktree_id.clone(),
             duration_seconds: summary.duration_seconds,
-            caller_uid: handle.caller_uid,
+            caller_uid: handle.requester_uid,
             client: handle.client.clone(),
         });
         let mut state = handle
@@ -2760,6 +2596,7 @@ fn validate_retry(
         .checks
         .iter()
         .any(|candidate| candidate.name == check)
+        && crate::test_databases::shared_phase_tier(specification, check).is_none()
     {
         return Err(ProtocolError::new(
             ErrorCode::ParamsInvalid,
@@ -3115,25 +2952,6 @@ fn lower_hex(bytes: &[u8]) -> String {
     value
 }
 
-fn base64_url_no_pad(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(TABLE[usize::from(first >> 2)] as char);
-        output.push(TABLE[usize::from((first & 0x03) << 4 | second >> 4)] as char);
-        if chunk.len() > 1 {
-            output.push(TABLE[usize::from((second & 0x0f) << 2 | third >> 6)] as char);
-        }
-        if chunk.len() > 2 {
-            output.push(TABLE[usize::from(third & 0x3f)] as char);
-        }
-    }
-    output
-}
-
 fn admission_error(error: AdmissionError) -> ProtocolError {
     let code = if matches!(error, AdmissionError::TestsDraining { .. }) {
         ErrorCode::TestsDraining
@@ -3160,13 +2978,6 @@ fn config_error(error: crate::repository_config::RepositoryConfigError) -> Proto
 
 fn command_start_error(error: crate::test_command::TestCommandError) -> ProtocolError {
     ProtocolError::new(ErrorCode::TestStartFailed, error.to_string())
-}
-
-fn postgres_error(error: crate::docker::DockerError) -> ProtocolError {
-    ProtocolError::new(
-        ErrorCode::TestStartFailed,
-        format!("ephemeral PostgreSQL failed: {error}"),
-    )
 }
 
 fn state_start_error(error: crate::test_state::TestStateError) -> ProtocolError {

@@ -875,14 +875,15 @@ function logSelector(entry) {
     return out;
   }, {});
 }
-function logEntryLabel(entry) {
+function logEntryLabel(entry, run) {
   const ref = logSelector(entry);
+  const check = run?.checks?.find((check) => check.name === ref.check)?.display_name || ref.check;
   const stream = ref.stream === 'stderr' ? 'Error output' : 'Standard output';
   if (ref.phase === 'executor') return `Test runner · ${stream}`;
-  if (ref.phase === 'discovery') return `${ref.check} · Discovery · ${stream}`;
-  if (ref.phase === 'case') return `${ref.check} · ${ref.case || 'Cases'} · ${stream}`;
-  if (ref.phase === 'fixture' || ref.phase === 'cleanup') return `${ref.check} · ${ref.case} · ${ref.phase === 'fixture' ? 'Database setup' : 'Cleanup'} · ${stream}`;
-  return `${ref.check || 'Check'} · ${stream}`;
+  if (ref.phase === 'discovery') return `${check} · Discovery · ${stream}`;
+  if (ref.phase === 'case') return `${check} · ${ref.case || 'Cases'} · ${stream}`;
+  if (ref.phase === 'fixture' || ref.phase === 'cleanup') return `${check} · ${ref.case} · ${ref.phase === 'fixture' ? 'Database setup' : 'Cleanup'} · ${stream}`;
+  return `${check || 'Check'} · ${stream}`;
 }
 function logResultRows(result) {
   for (const key of ['segments', 'matches', 'contexts']) {
@@ -1139,7 +1140,7 @@ async function openTestLogsDialog(run, retention, opener) {
     }
     selectedIndex = Math.min(selectedIndex, entries.length - 1);
     catalogRoot.innerHTML = `<div class="test-log-reader">
-      <div class="test-log-stream-row"><label class="f">Output stream<select id="test-log-stream">${entries.map((entry, index) => `<option value="${index}"${index === selectedIndex ? ' selected' : ''}>${esc(logEntryLabel(entry))}</option>`).join('')}</select></label>
+      <div class="test-log-stream-row"><label class="f">Output stream<select id="test-log-stream">${entries.map((entry, index) => `<option value="${index}"${index === selectedIndex ? ' selected' : ''}>${esc(logEntryLabel(entry, run))}</option>`).join('')}</select></label>
         ${catalogCursor ? '<button class="btn" type="button" id="test-log-more">Show more streams</button>' : ''}</div>
       <div class="test-log-summary" id="test-log-summary"></div>
       <details class="test-log-details"><summary>Stream details</summary><div id="test-log-metadata"></div></details>

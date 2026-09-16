@@ -18,10 +18,233 @@ use crate::platform::RandomSource;
 use crate::repository_config::{PostgresSpec, PostgresTemplateSpec};
 use crate::test_state::TestRunStore;
 
+#[derive(Clone)]
+pub(crate) struct SharedNode {
+    pub scope: String,
+    pub cleanup: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct SharedFixtures {
+    pub specifications: BTreeMap<String, PostgresSpec>,
+    pub nodes: BTreeMap<String, SharedNode>,
+}
+
+struct SharedDatabase {
+    docker: Arc<dyn DockerControl>,
+    container: Option<ExactContainerId>,
+    environment: BTreeMap<String, String>,
+}
+
+impl SharedDatabase {
+    fn remove(&mut self) -> Result<(), String> {
+        if let Some(container) = &self.container {
+            self.docker
+                .remove_container(container, true)
+                .map_err(|_| "shared database cleanup failed")?;
+            self.container = None;
+        }
+        Ok(())
+    }
+}
+impl Drop for SharedDatabase {
+    fn drop(&mut self) {
+        let _ = self.remove();
+    }
+}
+
+fn shared_declarations(
+    spec: &crate::repository_config::TestSpec,
+    checks: &[devcoordinator2_executor_protocol::CheckPlan],
+    requested: &[String],
+) -> Vec<(String, PostgresSpec, Vec<String>)> {
+    let mut scopes = spec.postgres_instances.clone();
+    if let Some(postgres) = &spec.postgres {
+        scopes.insert("default".into(), postgres.clone());
+    }
+    scopes
+        .into_iter()
+        .filter_map(|(scope, postgres)| {
+            if postgres.cases_only {
+                return None;
+            }
+            let owners = checks
+                .iter()
+                .filter(|check| {
+                    spec.check_postgres
+                        .get(&check.name)
+                        .is_some_and(|value| value == &scope)
+                        || spec.postgres.is_some() && scope == "default"
+                })
+                .map(|check| check.name.clone())
+                .collect::<Vec<_>>();
+            let (_, setup, cleanup) = shared_phase_ids(&scope);
+            (!owners.is_empty() || requested.contains(&setup) || requested.contains(&cleanup))
+                .then_some((scope, postgres, owners))
+        })
+        .collect()
+}
+fn shared_phase_ids(scope: &str) -> (String, String, String) {
+    let suffix = &hash(scope.as_bytes())[..16];
+    (
+        format!("shared-{suffix}"),
+        format!("postgres-setup-{suffix}"),
+        format!("postgres-cleanup-{suffix}"),
+    )
+}
+pub(crate) fn validate_shared_phase_names(
+    spec: &crate::repository_config::TestSpec,
+    checks: &[devcoordinator2_executor_protocol::CheckPlan],
+    requested: &[String],
+) -> Result<(), String> {
+    let declarations = shared_declarations(spec, checks, requested);
+    if checks.len() + declarations.len() * 2 > 256 {
+        return Err("automatic database phases would exceed the 256-check plan limit".into());
+    }
+    for (scope, _, _) in declarations {
+        let (_, setup, cleanup) = shared_phase_ids(&scope);
+        if spec
+            .checks
+            .iter()
+            .chain(checks)
+            .any(|check| check.name == setup || check.name == cleanup)
+        {
+            return Err("automatic database phase conflicts with a declared check name".into());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn shared_phase_tier(
+    spec: &crate::repository_config::TestSpec,
+    name: &str,
+) -> Option<devcoordinator2_executor_protocol::ValidationTier> {
+    shared_declarations(spec, &spec.checks, &[])
+        .into_iter()
+        .find_map(|(scope, _, owners)| {
+            let (_, setup, cleanup) = shared_phase_ids(&scope);
+            if name != setup && name != cleanup {
+                return None;
+            }
+            spec.checks
+                .iter()
+                .filter(|check| owners.contains(&check.name))
+                .map(|check| check.tier)
+                .min()
+        })
+}
+
+pub(crate) fn add_shared_phases(
+    plan: &mut devcoordinator2_executor_protocol::ExecutionPlan,
+    spec: &crate::repository_config::TestSpec,
+) -> Result<SharedFixtures, String> {
+    use devcoordinator2_executor_protocol::{CheckPhase, CheckRole, CompletionMode, FailureMode};
+    let mut result = SharedFixtures::default();
+    validate_shared_phase_names(spec, &plan.checks, &plan.selection)?;
+    for (scope, postgres, owners) in shared_declarations(spec, &plan.checks, &plan.selection) {
+        let (key, setup, cleanup) = shared_phase_ids(&scope);
+        let definitions = if owners.is_empty() {
+            &spec.checks
+        } else {
+            &plan.checks
+        };
+        let scoped = definitions
+            .iter()
+            .filter(|check| {
+                owners.contains(&check.name)
+                    || owners.is_empty()
+                        && (spec.check_postgres.get(&check.name) == Some(&scope)
+                            || spec.postgres.is_some() && scope == "default")
+            })
+            .collect::<Vec<_>>();
+        let mut prototype = scoped.first().copied().unwrap().clone();
+        prototype.tier = scoped.iter().map(|check| check.tier).min().unwrap();
+        prototype.source_name = None;
+        prototype.role = CheckRole::Work;
+        prototype.on_failure = FailureMode::Continue;
+        prototype.resources.clear();
+        prototype.after.clear();
+        prototype.requires.clear();
+        prototype.invalidates.clear();
+        prototype.cwd = ".".into();
+        prototype.env.clear();
+        prototype.timeout_seconds = Some(120);
+        prototype.completion = CompletionMode::Process;
+        prototype.produces.clear();
+        prototype.retained_artifacts.clear();
+        prototype.diagnostic_sources.clear();
+        prototype.consumes.clear();
+        prototype.cacheable = false;
+        prototype.cache_inputs.clear();
+        prototype.discover = None;
+        prototype.case_command = None;
+        prototype.cases = None;
+        prototype.expect_failure = false;
+        prototype.expected_failure = None;
+        prototype.expected_exit_code = None;
+        prototype.qualification_of = None;
+        prototype.fingerprint = plan.config_digest.clone();
+        for (name, phase, is_cleanup) in [
+            (setup.clone(), CheckPhase::Setup, false),
+            (cleanup.clone(), CheckPhase::Cleanup, true),
+        ] {
+            let mut check = prototype.clone();
+            check.name = name.clone();
+            check.phase = phase;
+            check.display_name = Some(if spec.targets.is_empty() {
+                if is_cleanup {
+                    "Database cleanup".into()
+                } else {
+                    "Database setup".into()
+                }
+            } else {
+                format!(
+                    "{scope} / Database {}",
+                    if is_cleanup { "cleanup" } else { "setup" }
+                )
+            });
+            check.command = Some(vec![
+                plan.fixture_program
+                    .clone()
+                    .ok_or("database fixture program missing")?,
+                "fixture".into(),
+                name.clone(),
+            ]);
+            if is_cleanup {
+                check.after = owners
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(setup.clone()))
+                    .collect();
+            }
+            plan.checks.push(check);
+            result.nodes.insert(
+                name,
+                SharedNode {
+                    scope: key.clone(),
+                    cleanup: is_cleanup,
+                },
+            );
+        }
+        for check in &mut plan.checks {
+            if owners.contains(&check.name) {
+                check.requires.push(setup.clone());
+                plan.environment_files
+                    .insert(check.name.clone(), format!("database-{key}.json"));
+                plan.reused.remove(&check.name);
+            }
+        }
+        result.specifications.insert(key, postgres);
+    }
+    Ok(result)
+}
+
 type Log = Option<Arc<Mutex<File>>>;
 type Slot = Arc<Mutex<Option<Arc<Template>>>>;
 
 pub(crate) struct FixtureRun {
+    shared: SharedFixtures,
+    shared_databases: Mutex<BTreeMap<String, Arc<Mutex<Option<SharedDatabase>>>>>,
     pool: Arc<DatabasePool>,
     specifications: BTreeMap<String, PostgresSpec>,
     root: PathBuf,
@@ -33,6 +256,100 @@ pub(crate) struct FixtureRun {
 }
 
 impl FixtureRun {
+    fn execute_shared(
+        &self,
+        node: &str,
+        shared: &SharedNode,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let log = Arc::new(Mutex::new(
+            TestRunStore
+                .fixture_log(
+                    &self.current,
+                    &["scratch", node],
+                    self.context.caller_uid,
+                    self.gid,
+                )
+                .map_err(|_| "shared database diagnostics unavailable")?,
+        ));
+        let slot = self
+            .shared_databases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(shared.scope.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(None)))
+            .clone();
+        let mut instance = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = (|| {
+            if shared.cleanup {
+                if let Some(database) = instance.as_mut() {
+                    database.remove()?;
+                }
+                *instance = None;
+                return Ok(());
+            }
+            if self.closed.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire) {
+                return Err("shared database setup cancelled".into());
+            }
+            if instance.is_none() {
+                let spec = self
+                    .shared
+                    .specifications
+                    .get(&shared.scope)
+                    .ok_or("shared database specification missing")?;
+                *instance = Some(self.pool.create_shared(
+                    spec,
+                    &self.context,
+                    &shared.scope,
+                    cancelled.clone(),
+                    Some(log.clone()),
+                )?);
+            }
+            if self.closed.load(Ordering::Acquire) || cancelled.load(Ordering::Acquire) {
+                return Err("shared database setup cancelled".into());
+            }
+            TestRunStore
+                .write_database_environment(
+                    &self.current,
+                    &shared.scope,
+                    &instance.as_ref().unwrap().environment,
+                    self.context.caller_uid,
+                    self.gid,
+                )
+                .map_err(|_| "cannot publish private shared database environment")?;
+            Ok(())
+        })();
+        if let Err(error) = &result {
+            let _ = writeln!(
+                log.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                "{error}"
+            );
+        } else {
+            let _ = writeln!(
+                log.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                "shared database {} completed",
+                if shared.cleanup { "cleanup" } else { "setup" }
+            );
+        }
+        drop(instance);
+        TestRunStore
+            .write_containers(
+                &self.current,
+                &self
+                    .containers()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>(),
+                self.context.caller_uid,
+                self.gid,
+            )
+            .map_err(|_| "cannot retain database ownership receipt")?;
+        result
+    }
     pub fn new(
         pool: Arc<DatabasePool>,
         specifications: BTreeMap<String, PostgresSpec>,
@@ -40,8 +357,11 @@ impl FixtureRun {
         current: File,
         context: ManagedLabelContext,
         gid: u32,
+        shared: SharedFixtures,
     ) -> Self {
         Self {
+            shared,
+            shared_databases: Mutex::new(BTreeMap::new()),
             pool,
             specifications,
             root,
@@ -54,7 +374,8 @@ impl FixtureRun {
     }
 
     pub fn containers(&self) -> Vec<ExactContainerId> {
-        self.leases
+        let mut containers = self
+            .leases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
@@ -63,7 +384,21 @@ impl FixtureRun {
                     .ok()
                     .and_then(|entry| entry.as_ref().map(|lease| lease.container().clone()))
             })
-            .collect()
+            .collect::<Vec<_>>();
+        containers.extend(
+            self.shared_databases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .filter_map(|slot| {
+                    slot.try_lock().ok().and_then(|value| {
+                        value
+                            .as_ref()
+                            .and_then(|database| database.container.clone())
+                    })
+                }),
+        );
+        containers
     }
 
     pub fn finish(&self) -> bool {
@@ -75,6 +410,21 @@ impl FixtureRun {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         let mut complete = true;
+        let shared = std::mem::take(
+            &mut *self
+                .shared_databases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for slot in shared.values() {
+            if let Some(mut database) = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                complete &= database.remove().is_ok();
+            }
+        }
         for (_, slot) in slots {
             if let Some(lease) = slot
                 .lock()
@@ -91,6 +441,9 @@ impl FixtureRun {
 
 impl FixtureHandler for FixtureRun {
     fn execute(&self, node: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
+        if let Some(shared) = self.shared.nodes.get(node) {
+            return self.execute_shared(node, shared, cancelled);
+        }
         let parts = node.split('/').collect::<Vec<_>>();
         if parts.len() != 4 || !matches!(parts[1], "fixture" | "cleanup") {
             return Err("invalid fixture node".into());
@@ -342,6 +695,107 @@ pub(crate) fn read_sql_inputs(
 }
 
 impl DatabasePool {
+    fn create_shared(
+        &self,
+        spec: &PostgresSpec,
+        context: &ManagedLabelContext,
+        scope: &str,
+        cancelled: Arc<AtomicBool>,
+        log: Log,
+    ) -> Result<SharedDatabase, String> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("shared database setup cancelled".into());
+        }
+        if !self.docker.available() {
+            return Err("Docker is unavailable for the shared database".into());
+        }
+        if spec.image.contains("@sha256:") {
+            self.docker.ensure_digest_image(&spec.image)
+        } else {
+            self.docker.ensure_image(&spec.image)
+        }
+        .map_err(|_| "shared database image is unavailable")?;
+        let password = self.secret()?;
+        let mut labels = context.clone();
+        labels.component = Some(scope.into());
+        let run_id = context
+            .run_id
+            .as_deref()
+            .ok_or("shared database run identity missing")?;
+        let container = self
+            .docker
+            .run_detached(&RunDetachedRequest {
+                name: format!(
+                    "devcoordinator2-test-{}-postgres-{scope}",
+                    run_id.trim_start_matches('t')
+                ),
+                image: spec.image.clone(),
+                label_context: labels,
+                labels: BTreeMap::new(),
+                env_names: vec![
+                    "POSTGRES_USER".into(),
+                    "POSTGRES_PASSWORD".into(),
+                    "POSTGRES_DB".into(),
+                    "PGDATA".into(),
+                ],
+                env_values: BTreeMap::from([
+                    ("POSTGRES_USER".into(), spec.user.clone()),
+                    ("POSTGRES_PASSWORD".into(), password.clone()),
+                    ("POSTGRES_DB".into(), spec.database.clone()),
+                    ("PGDATA".into(), "/var/lib/postgresql/data".into()),
+                ]),
+                publish: vec!["127.0.0.1::5432".into()],
+                tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
+                command: Vec::new(),
+            })
+            .map_err(|_| "cannot start owned shared database")?;
+        let mut database = SharedDatabase {
+            docker: self.docker.clone(),
+            container: Some(container.clone()),
+            environment: BTreeMap::new(),
+        };
+        let port = self
+            .docker
+            .published_host_port(&container, "5432/tcp")
+            .map_err(|_| "shared database port unavailable")?;
+        if self
+            .docker
+            .wait_postgres_ready_cancellable(
+                &container,
+                &spec.user,
+                &spec.database,
+                Duration::from_secs(90),
+                Some(cancelled.clone()),
+            )
+            .is_err()
+        {
+            if let Ok(invocation) = DockerInvocation::new(
+                vec!["logs".into(), container.as_str().into()],
+                Duration::from_secs(30),
+            ) {
+                let _ = self.docker.invoke(invocation.with_output_log(log));
+            }
+            return Err("shared database did not become ready; inspect setup diagnostics".into());
+        }
+        if cancelled.load(Ordering::Acquire) {
+            return Err("shared database setup cancelled".into());
+        }
+        database.environment = BTreeMap::from([
+            ("PGHOST".into(), "127.0.0.1".into()),
+            ("PGPORT".into(), port.to_string()),
+            ("PGUSER".into(), spec.user.clone()),
+            ("PGPASSWORD".into(), password.clone()),
+            ("PGDATABASE".into(), spec.database.clone()),
+            (
+                "DATABASE_URL".into(),
+                format!(
+                    "postgresql://{}:{}@127.0.0.1:{port}/{}",
+                    spec.user, password, spec.database
+                ),
+            ),
+        ]);
+        Ok(database)
+    }
     pub fn new(docker: Arc<dyn DockerControl>, random: Arc<dyn RandomSource>) -> Self {
         Self {
             docker,
@@ -737,6 +1191,34 @@ impl DatabasePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_phase_names_and_limits_are_checked_before_replacing_a_run() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".devcoordinator.toml"),"schema=2\n[test.unit]\n[test.unit.postgres]\nimage='postgres:16-alpine'\n[[test.unit.check]]\nname='body'\ntier='release'\ncommand=['true']\n").unwrap();
+        let spec = crate::repository_config::load_test_spec(root.path(), Some("unit")).unwrap();
+        let mut checks = spec.checks.clone();
+        validate_shared_phase_names(&spec, &checks, &[]).unwrap();
+        checks[0].name = shared_phase_ids("default").1;
+        assert!(
+            validate_shared_phase_names(&spec, &checks, &[])
+                .unwrap_err()
+                .contains("conflicts")
+        );
+        let mut checks = (0..254)
+            .map(|index| {
+                let mut check = spec.checks[0].clone();
+                check.name = format!("case-{index}");
+                check
+            })
+            .collect::<Vec<_>>();
+        validate_shared_phase_names(&spec, &checks, &[]).unwrap();
+        checks.push(spec.checks[0].clone());
+        assert!(
+            validate_shared_phase_names(&spec, &checks, &[])
+                .unwrap_err()
+                .contains("256")
+        );
+    }
     #[test]
     fn template_fingerprint_binds_repository_image_user_paths_bytes_and_order() {
         let inputs = vec![

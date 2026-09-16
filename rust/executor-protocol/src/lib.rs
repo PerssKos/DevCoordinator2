@@ -710,18 +710,10 @@ impl ExecutionPlan {
                 validate_digest("artifact sha256", &receipt.sha256)?;
             }
         }
-        for name in &self.reused_qualifications {
-            let Some(index) = names.get(name.as_str()) else {
-                return Err(ContractError::new(format!(
-                    "qualification reuse references unknown check {name:?}"
-                )));
-            };
-            let check = &self.checks[*index];
-            if check.phase != CheckPhase::Qualification || !check.cacheable {
-                return Err(ContractError::new(format!(
-                    "qualification reuse {name:?} is not a cacheable qualification"
-                )));
-            }
+        if !self.reused_qualifications.is_empty() {
+            return Err(ContractError::new(
+                "qualification reuse requires verified cache receipts, not plan flags",
+            ));
         }
 
         let mut graph = vec![Vec::<usize>::new(); self.checks.len()];
@@ -2403,6 +2395,42 @@ mod tests {
                 .replacen("\"schema\":2", "\"schema\":1", 1);
         let error = ExecutionPlan::from_json(old.as_bytes()).expect_err("schema one rejected");
         assert!(error.to_string().contains("schema must be 2"));
+    }
+
+    #[test]
+    fn qualification_reuse_flags_cannot_substitute_for_bound_receipts() {
+        let mut qualifier = check("qualification", ValidationTier::Development);
+        qualifier.phase = CheckPhase::Qualification;
+        qualifier.role = CheckRole::Preflight;
+        qualifier.expect_failure = true;
+        qualifier.expected_failure = Some(format!("sha256:{}", "a".repeat(64)));
+        qualifier.qualification_of = Some("corrected".into());
+        qualifier.invalidates = vec!["corrected".into()];
+        qualifier.cacheable = true;
+        qualifier.cache_inputs = vec!["README.md".into()];
+        qualifier.fingerprint = "b".repeat(64);
+        let mut valid = plan(vec![
+            qualifier,
+            check("corrected", ValidationTier::Development),
+        ]);
+        valid.validate().unwrap();
+        valid.reused_qualifications.insert("qualification".into());
+        assert!(
+            valid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("verified cache receipts")
+        );
+        valid.reused_qualifications.clear();
+        valid.checks[1].name = "renamed".into();
+        assert!(
+            valid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unknown check")
+        );
     }
 
     #[test]

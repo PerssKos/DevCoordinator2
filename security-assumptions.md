@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-07 (trusted local development and dependency-repair authority)
+Last reviewed: 2026-09-15 (trusted local Console access and preserved execution attribution)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -62,6 +62,14 @@ untracked `instance/` directory and in the installed instance configuration
   controls must still name their exact target and effect, and the server keeps
   exact-target validation, authorization, and permanent history. A host or
   tool-owned approval mechanism remains outside this Console rule.
+- Authorized Console checks use the non-root account already recorded for the
+  exact registered repository. The daemon validates the current Git identity
+  before execution; the edge receives no additional traversal, Git or write
+  permissions. Requester attribution remains the original kernel caller, with
+  a separate execution UID when these differ. Edge-origin detection comes from
+  the configured kernel peer, not a request flag or public identity substitution
+  (DC2-20260915-CONSOLE-EXECUTION-IDENTITY, applying the administrator authority,
+  trusted-local attribution, and EDGE-LIVE-SOURCE-READ assumptions above).
 - Repository source and permanent deployment/database data may be valuable.
   Test results and test scratch data are disposable and reproducible.
 - Credentials, bot tokens, identity assertions, database passwords, and

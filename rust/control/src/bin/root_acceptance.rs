@@ -2680,15 +2680,32 @@ health={{path="/healthz",timeout_seconds=10}}
 fn case_focused_runs_reuse_verified_builds_and_invalidate_changed_inputs(
     world: &mut World,
 ) -> Result<(), String> {
-    world.write_owned("README.md", "build input one\n")?;
+    let compiler = "/usr/bin/cc";
+    ensure!(
+        Path::new(compiler).is_file(),
+        "the build-reuse measurement requires the C compiler used by this Rust workspace"
+    );
+    let source=(0..384).map(|index|format!("unsigned f{index}(unsigned x){{for(unsigned i=0;i<32;i++) x=(x*17+i)^(x>>3);return x;}}\n")).collect::<String>();
+    world.write_owned("input.c", &source)?;
+    let compiler_bytes = fs::read(compiler).map_err(|e| e.to_string())?;
+    let compiler_version = command_stdout(compiler, &["--version"])?;
+    world.write_owned(
+        "toolchain.txt",
+        format!(
+            "{}\n{}\n",
+            sha256_hex(&compiler_bytes),
+            sha256_hex(compiler_version.as_bytes())
+        ),
+    )?;
     world.write_owned(".gitignore", "artifact.bin\n")?;
     let build = command_json(&fixture_command(
         world,
         &[
-            "counted-build",
-            "README.md",
+            "counted-compile",
+            "input.c",
             "artifact.bin",
             ".devcoordinator/build-count",
+            compiler,
         ],
     ))?;
     world.write_config(&format!(
@@ -2700,7 +2717,7 @@ tier="development"
 phase="build"
 command={build}
 cacheable=true
-cache_inputs=["README.md"]
+cache_inputs=["input.c","toolchain.txt"]
 produces=["artifact.bin"]
 [[test.build.check]]
 name="consumer"
@@ -2722,7 +2739,10 @@ command=["/usr/bin/true"]
         (2, vec!["build"], 2),
     ] {
         if index == 2 {
-            world.write_owned("README.md", "build input changed\n")?;
+            world.write_owned(
+                "input.c",
+                format!("{source}unsigned added(unsigned x){{return x+1;}}\n"),
+            )?;
         }
         let start = Instant::now();
         data(&world.call("test.start", json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development"}))?)?;
@@ -2781,17 +2801,336 @@ command=["/usr/bin/true"]
     Ok(())
 }
 
+fn case_shared_database_failure_blocks_only_its_dependents(
+    world: &mut World,
+) -> Result<(), String> {
+    let prohibited = command_json(&fixture_command(
+        world,
+        &["write-relative", ".devcoordinator/must-not-run", "bad"],
+    ))?;
+    let independent = command_json(&fixture_command(
+        world,
+        &["write-relative", ".devcoordinator/independent", "passed"],
+    ))?;
+    world.write_config(&format!(
+        r#"schema=2
+[test.broken]
+timeout_seconds=120
+[test.broken.postgres]
+image="postgres:16-alpine"
+user="pg_invalid_owner"
+database="app_test"
+[[test.broken.check]]
+name="dependent"
+tier="release"
+command={prohibited}
+[test.independent]
+[[test.independent.check]]
+name="sibling"
+tier="release"
+command={independent}
+"#
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "shared database setup failure fixture"])?;
+    data(&world.call(
+        "test.start",
+        json!({"path":world.repo,"targets":["broken","independent"]}),
+    )?)?;
+    let status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    ensure!(
+        status["status"] == "failed",
+        "failed database setup was reported green"
+    );
+    let checks = status["checks"]
+        .as_array()
+        .ok_or("shared database phase results missing")?;
+    for (name, expected) in [
+        ("broken / dependent", "not_meaningful"),
+        ("broken / Database setup", "failed"),
+        ("broken / Database cleanup", "passed"),
+        ("independent / sibling", "passed"),
+    ] {
+        ensure!(
+            checks
+                .iter()
+                .any(|check| check["display_name"] == name && check["status"] == expected),
+            format!("shared database failure lost expected phase: {name}")
+        );
+    }
+    ensure!(
+        !world.repo.join(".devcoordinator/must-not-run").exists(),
+        "database consumer ran after failed setup"
+    );
+    ensure!(
+        fs::read_to_string(world.repo.join(".devcoordinator/independent"))
+            .map_err(|e| e.to_string())?
+            == "passed",
+        "independent target was abandoned"
+    );
+    ensure!(
+        docker_ids("instance", &world.unit_prefix)?.is_empty(),
+        "failed shared setup leaked an owned container"
+    );
+    let setup = checks
+        .iter()
+        .find(|check| check["phase"] == "setup")
+        .and_then(|check| check["name"].as_str())
+        .ok_or("setup identity missing")?
+        .to_owned();
+    let cleanup = checks
+        .iter()
+        .find(|check| check["phase"] == "cleanup")
+        .and_then(|check| check["name"].as_str())
+        .ok_or("cleanup identity missing")?
+        .to_owned();
+    data(&world.call(
+        "test.retry",
+        json!({"path":world.repo,"run_id":status["run_id"],"check":setup}),
+    )?)?;
+    let retry = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    ensure!(
+        retry["status"] == "failed"
+            && retry["proof"] == "retry"
+            && retry["checks"]
+                .as_array()
+                .is_some_and(|checks| checks.len() == 2),
+        "setup retry did not isolate its fixture and cleanup"
+    );
+    let corrected = fs::read_to_string(world.repo.join(".devcoordinator.toml"))
+        .map_err(|e| e.to_string())?
+        .replace("pg_invalid_owner", "app");
+    world.write_config(&corrected)?;
+    for phase in [setup, cleanup] {
+        data(&world.call(
+            "test.start",
+            json!({"path":world.repo,"targets":["broken","independent"],"checks":[phase]}),
+        )?)?;
+        let focused = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        ensure!(
+            focused["status"] == "passed"
+                && focused["readiness_eligible"] == false
+                && focused["checks"]
+                    .as_array()
+                    .is_some_and(|checks| checks.len() == 2),
+            "direct phase selection ran unrelated consumers or claimed complete readiness"
+        );
+        ensure!(
+            !world.repo.join(".devcoordinator/must-not-run").exists(),
+            "phase-only selection ran a consumer"
+        );
+    }
+    Ok(())
+}
+
+fn case_console_test_requests_use_registered_source_without_edge_git_access(
+    world: &mut World,
+) -> Result<(), String> {
+    let edge_uid = 65_534;
+    ensure!(
+        world.harness.caller_uid != edge_uid,
+        "console fixture needs distinct requester and execution identities"
+    );
+    world.write_config(&unit_config(&["/usr/bin/true".into()], None)?)?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "console execution identity fixture"])?;
+    data(&world.call("repository.register", json!({"path":world.repo}))?)?;
+    world.stop_daemon(false)?;
+    fs::set_permissions(&world.repo, fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    let helper = world.base.join("public-request");
+    fs::copy(&world.harness.executable, &helper).map_err(|e| e.to_string())?;
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    world.start_daemon(Some(edge_uid), Some("owner@example.test"), None)?;
+    for identity in [Some("owner@example.test"), None] {
+        let started = call_as(
+            &helper,
+            edge_uid,
+            edge_uid,
+            &world.socket,
+            request("test.start", json!({"path":world.repo}), "edge", identity),
+        )?;
+        ensure!(
+            started["ok"] == true,
+            format!(
+                "authorized Console test could not start: {}",
+                bounded_json(&started)
+            )
+        );
+        let finished = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        ensure!(
+            finished["status"] == "passed",
+            "Console-requested check did not execute"
+        );
+        let read = call_as(
+            &helper,
+            edge_uid,
+            edge_uid,
+            &world.socket,
+            request("test.status", json!({"path":world.repo}), "edge", identity),
+        )?;
+        ensure!(
+            data(&read)?["caller_uid"] == edge_uid
+                && data(&read)?["execution_uid"] == world.harness.caller_uid,
+            "Console requester or execution ownership was misattributed"
+        );
+    }
+    let denied = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request(
+            "test.start",
+            json!({"path":world.repo}),
+            "edge",
+            Some("outsider@example.test"),
+        ),
+    )?;
+    ensure!(
+        error_code(&denied) == Some("permission_denied"),
+        "unauthorized Console identity gained execution authority"
+    );
+    let unknown = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request(
+            "test.start",
+            json!({"path":world.base.join("unregistered")}),
+            "edge",
+            None,
+        ),
+    )?;
+    ensure!(
+        unknown["ok"] == false,
+        "Console execution accepted an unregistered source"
+    );
+    let forged = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request(
+            "test.start",
+            json!({"path":world.repo,"execution_uid":0}),
+            "edge",
+            None,
+        ),
+    )?;
+    ensure!(
+        error_code(&forged) == Some("params_invalid"),
+        "Console request selected its execution account"
+    );
+    let (listener, gate) = database_case_gate(world)?;
+    world.write_config(&unit_config(
+        &fixture_command(
+            world,
+            &["hold-socket", gate.to_str().ok_or("invalid gate path")?],
+        ),
+        None,
+    )?)?;
+    let started = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request("test.start", json!({"path":world.repo}), "edge", None),
+    )?;
+    let run = data(&started)?["run_id"]
+        .as_str()
+        .ok_or("Console run identity missing")?;
+    let ready = await_database_case(&listener)?;
+    let catalog = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request(
+            "test.log.catalog",
+            json!({"path":world.repo,"run_id":run}),
+            "edge",
+            None,
+        ),
+    )?;
+    ensure!(
+        data(&catalog)?["entries"]
+            .as_array()
+            .is_some_and(|entries| !entries.is_empty()),
+        "local Console could not catalogue its retained logs"
+    );
+    data(&call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request("test.stop", json!({"path":world.repo}), "edge", None),
+    )?)?;
+    drop(ready);
+    let stopped = world.wait_status(&["cancelled"], Duration::from_secs(30))?;
+    ensure!(
+        stopped["caller_uid"] == edge_uid && stopped["execution_uid"] == world.harness.caller_uid,
+        "cancellation lost original requester attribution"
+    );
+    let tail = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request(
+            "test.log.tail",
+            json!({"path":world.repo,"run_id":run,"check":"main","phase":"check","stream":"stdout","lines":5,"max_bytes":1024}),
+            "edge",
+            None,
+        ),
+    )?;
+    ensure!(
+        response_text(data(&tail)?).contains('1'),
+        "local Console could not read its completed process output"
+    );
+    ensure!(
+        fs::metadata(&world.repo).map_err(|e| e.to_string())?.mode() & 0o777 == 0o700,
+        "Console execution widened repository filesystem access"
+    );
+    let database = rusqlite::Connection::open(world.state.join("authority.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    database
+        .execute("UPDATE repositories SET registered_by_uid=0", [])
+        .map_err(|e| e.to_string())?;
+    let root_owner = call_as(
+        &helper,
+        edge_uid,
+        edge_uid,
+        &world.socket,
+        request("test.start", json!({"path":world.repo}), "edge", None),
+    )?;
+    database
+        .execute(
+            "UPDATE repositories SET registered_by_uid=?1",
+            [world.harness.caller_uid],
+        )
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        error_code(&root_owner) == Some("params_invalid"),
+        "Console execution accepted a root-owned registration"
+    );
+    Ok(())
+}
+
 fn postgres_real_query_labels_secrecy_and_cleanup(
     world: &mut World,
     image: &str,
 ) -> Result<(), String> {
-    let command = vec![
-        "/usr/bin/psql".to_owned(),
-        "-v".to_owned(),
-        "ON_ERROR_STOP=1".to_owned(),
-        "-c".to_owned(),
-        "create table t(x int); insert into t values (42); select x from t".to_owned(),
-    ];
+    let (listener, gate) = database_case_gate(world)?;
+    let command = fixture_command(
+        world,
+        &[
+            "postgres-query-gate",
+            "create table t(x int); insert into t values (42); select x from t",
+            gate.to_str().ok_or("invalid gate path")?,
+        ],
+    );
     world.write_config(&unit_config_postgres(
         &command,
         120,
@@ -2809,6 +3148,7 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
         .as_str()
         .ok_or_else(|| "start omitted unit".to_owned())?
         .to_owned();
+    let mut ready = await_database_case(&listener)?;
     let containers = docker_ids("run", &run_id)?;
     ensure!(
         containers.len() == 1,
@@ -2845,7 +3185,18 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
         metadata.mode() & 0o777 == 0o600 && metadata.uid() == world.harness.caller_uid,
         "private executor environment ownership or mode drifted"
     );
+    ready.write_all(b"1").map_err(|e| e.to_string())?;
     let final_status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    for phase in ["setup", "cleanup"] {
+        ensure!(
+            final_status["checks"]
+                .as_array()
+                .is_some_and(|checks| checks
+                    .iter()
+                    .any(|check| check["phase"] == phase && check["status"] == "passed")),
+            "shared PostgreSQL phase was not independently successful"
+        );
+    }
     let stdout = response_text(&world.log_tail(&run_id, "main", "stdout")?);
     let stderr = response_text(&world.log_tail(&run_id, "main", "stderr")?);
     ensure!(
@@ -2911,7 +3262,11 @@ fn case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(
 }
 
 fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Result<(), String> {
-    let command = fixture_command(world, &["sleep", "120"]);
+    let (listener, gate) = database_case_gate(world)?;
+    let command = fixture_command(
+        world,
+        &["hold-socket", gate.to_str().ok_or("invalid gate path")?],
+    );
     world.write_config(&unit_config_postgres(
         &command,
         180,
@@ -2924,6 +3279,7 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         .as_str()
         .ok_or_else(|| "first start omitted run_id".to_owned())?
         .to_owned();
+    let first_ready = await_database_case(&listener)?;
     ensure!(
         docker_ids("run", &first_id)?.len() == 1,
         "first PostgreSQL fixture did not start"
@@ -2933,6 +3289,8 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         .as_str()
         .ok_or_else(|| "second start omitted run_id".to_owned())?
         .to_owned();
+    let second_ready = await_database_case(&listener)?;
+    drop(first_ready);
     ensure!(
         docker_ids("run", &first_id)?.is_empty(),
         "superseded PostgreSQL fixture survived"
@@ -2947,6 +3305,7 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         "hard daemon stop unexpectedly removed the orphan fixture"
     );
     world.start_daemon(None, None, None)?;
+    drop(second_ready);
     ensure!(
         docker_ids("run", &second_id)?.is_empty(),
         "restart recovery did not remove the orphan fixture"
@@ -5681,6 +6040,14 @@ fn cases() -> Vec<Case> {
         (
             "focused_runs_reuse_verified_builds_and_invalidate_changed_inputs",
             case_focused_runs_reuse_verified_builds_and_invalidate_changed_inputs,
+        ),
+        (
+            "shared_database_failure_blocks_only_its_dependents",
+            case_shared_database_failure_blocks_only_its_dependents,
+        ),
+        (
+            "console_test_requests_use_registered_source_without_edge_git_access",
+            case_console_test_requests_use_registered_source_without_edge_git_access,
         ),
         (
             "bridge_observer_cutover_and_restart_receipt",

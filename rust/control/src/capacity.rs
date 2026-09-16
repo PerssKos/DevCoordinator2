@@ -578,13 +578,25 @@ impl CapacityBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
-    pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
+    pub async fn serve(&self, shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
+        self.serve_with_readiness(shutdown, None).await
+    }
+
+    /// Notify the service owner after binding, without a filesystem polling race.
+    pub async fn serve_with_readiness(
+        &self,
+        mut shutdown: watch::Receiver<bool>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> std::io::Result<()> {
         prepare_socket_path(&self.inner.socket_path).await?;
         let listener = UnixListener::bind(&self.inner.socket_path)?;
         std::fs::set_permissions(
             &self.inner.socket_path,
             std::fs::Permissions::from_mode(0o666),
         )?;
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
         let mut connections = JoinSet::new();
         let mut emergency = JoinSet::new();
         let mut sampler = interval(self.inner.sample_interval);

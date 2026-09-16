@@ -212,6 +212,22 @@ impl DockerControl for PostgresDocker {
         Ok(())
     }
 
+    fn wait_postgres_ready_cancellable(
+        &self,
+        container: &ExactContainerId,
+        user: &str,
+        database: &str,
+        timeout: Duration,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<(), DockerError> {
+        assert!(
+            !cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        );
+        self.wait_postgres_ready(container, user, database, timeout)
+    }
+
     fn list_ids_by_labels(
         &self,
         _labels: &BTreeMap<String, String>,
@@ -589,6 +605,7 @@ impl SystemdControl for FixtureSystemd {
 }
 
 struct LifecycleWorld {
+    capacity: CapacityBroker,
     _temporary: tempfile::TempDir,
     worktree: PathBuf,
     lifecycle: TestLifecycle,
@@ -597,6 +614,46 @@ struct LifecycleWorld {
     events_changed: Arc<Condvar>,
     caller: Caller,
     monotonic: Arc<FixtureMonotonic>,
+}
+
+fn execute_admitted_database_setup(
+    capacity: &CapacityBroker,
+    started: &TestStarted,
+    worktree: &Path,
+) {
+    use devcoordinator2_executor_core::{PermitProvider, PermitRequest, UnixPermitProvider};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let plan = ExecutionPlan::from_json(
+        &std::fs::read(worktree.join(".devcoordinator/test/current/check-plan.json")).unwrap(),
+    )
+    .unwrap();
+    let setup = plan
+        .checks
+        .iter()
+        .find(|check| check.phase == devcoordinator2_executor_protocol::CheckPhase::Setup)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (shutdown,receive)=tokio::sync::watch::channel(false);
+        let (ready,ready_wait)=tokio::sync::oneshot::channel();
+        let broker=capacity.clone();
+        let server=tokio::spawn(async move {broker.serve_with_readiness(receive,Some(ready)).await});
+        tokio::time::timeout(Duration::from_secs(5),ready_wait).await.unwrap().unwrap();
+        let provider=UnixPermitProvider::new(capacity.socket_path().to_owned()).unwrap();
+        let permit=provider.acquire(PermitRequest{run_id:started.run_id.clone(),leaf_id:setup.name.clone()}).await.unwrap();
+        let mut stream=tokio::net::UnixStream::connect(capacity.socket_path()).await.unwrap();
+        let mut payload=serde_json::to_vec(&serde_json::json!({"schema":1,"action":"fixture","run_id":started.run_id,"leaf_id":setup.name})).unwrap();payload.push(b'\n');
+        stream.write_all(&payload).await.unwrap();
+        let mut response=String::new();
+        BufReader::new(stream).read_line(&mut response).await.unwrap();
+        let result:serde_json::Value=serde_json::from_str(&response).unwrap();
+        assert_eq!(result["ok"],true);
+        drop(permit);shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    });
 }
 
 impl LifecycleWorld {
@@ -665,7 +722,7 @@ command=["true"]
             config,
             database,
             registry,
-            capacity,
+            capacity.clone(),
             logs,
             systemd.clone(),
             docker,
@@ -686,6 +743,7 @@ command=["true"]
             changed.notify_all();
         }));
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -696,6 +754,7 @@ command=["true"]
         };
         assert_ne!(caller.uid, 0, "lifecycle fixture requires non-root caller");
         Self {
+            capacity,
             _temporary: temporary,
             worktree,
             lifecycle,
@@ -942,6 +1001,7 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
     completion.recv_timeout(Duration::from_secs(10)).unwrap();
     let current = world.wait_status(TestStatus::Passed);
     let public = Caller {
+        via_edge: false,
         uid: 999,
         gid: 999,
         client_kind: devcoordinator2_api::ClientKind::Edge,
@@ -1389,6 +1449,8 @@ fn postgres_18_tag_uses_explicit_disposable_data_directory() {
     );
     std::fs::write(path, config).unwrap();
     let started = world.start();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 0);
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
     assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
     world.systemd.finish(&started.unit);
     world.wait_status(TestStatus::Passed);
@@ -1710,6 +1772,7 @@ fn memory_emergency_counts_and_cleans_up_owned_database_containers() {
     text.push_str(&format!("\n[test.all.postgres]\nimage=\"postgres@sha256:{}\"\nuser=\"app\"\ndatabase=\"app_test\"\n", "a".repeat(64)));
     std::fs::write(configuration, text).unwrap();
     let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
     let gib = 1024_u64.pow(3);
     world.systemd.memory.lock().unwrap().extend([
         (started.unit.clone(), "1024".into()),
@@ -2232,7 +2295,7 @@ database="app_test"
         config,
         database,
         registry,
-        capacity,
+        capacity.clone(),
         logs,
         systemd.clone(),
         docker.clone(),
@@ -2245,6 +2308,7 @@ database="app_test"
     )
     .unwrap();
     let caller = Caller {
+        via_edge: false,
         pid: 1,
         uid: rustix::process::getuid().as_raw(),
         gid: rustix::process::getgid().as_raw(),
@@ -2273,8 +2337,21 @@ database="app_test"
             &caller,
         )
         .unwrap();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 0);
+    execute_admitted_database_setup(&capacity, &started, &worktree);
     assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
-    let environment = worktree.join(".devcoordinator/test/current/env");
+    let plan = ExecutionPlan::from_json(
+        &std::fs::read(worktree.join(".devcoordinator/test/current/check-plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        plan.checks
+            .iter()
+            .any(|check| check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+    );
+    let environment = worktree
+        .join(".devcoordinator/test/current")
+        .join(&plan.environment_files["unit"]);
     assert_eq!(
         std::fs::metadata(&environment)
             .unwrap()
@@ -2284,7 +2361,12 @@ database="app_test"
         0o600
     );
     let private_environment = std::fs::read_to_string(&environment).unwrap();
-    assert!(private_environment.contains("PGPASSWORD="));
+    assert!(private_environment.contains("PGPASSWORD"));
+    assert!(
+        !std::fs::read_to_string(worktree.join(".devcoordinator/test/current/env"))
+            .unwrap()
+            .contains("PGPASSWORD")
+    );
     let summary = lifecycle
         .status(worktree.to_str().unwrap(), &caller)
         .unwrap();
@@ -2348,6 +2430,7 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
         codex_usage_sources: Vec::new(),
     };
     let caller = Caller {
+        via_edge: false,
         pid: 1,
         uid: rustix::process::getuid().as_raw(),
         gid: rustix::process::getgid().as_raw(),

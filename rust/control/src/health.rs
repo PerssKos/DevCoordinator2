@@ -643,6 +643,7 @@ mod tests {
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let registry = Registry::new(database.clone());
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
