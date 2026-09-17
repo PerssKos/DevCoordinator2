@@ -290,12 +290,11 @@ async fn run_daemon(config: &Config) -> ExitCode {
     };
     if let Err(error) = plane.recover_tests() {
         eprintln!("governed-test recovery failed: {error}");
-        return ExitCode::from(1);
     }
-    let app = Arc::new(daemon::App::with_executor(
-        config.edge_uid,
-        Arc::new(plane.clone()),
-    ));
+    let app = Arc::new(
+        daemon::App::with_executor(config.edge_uid, Arc::new(plane.clone()))
+            .with_installation_fence(config.socket_path.clone()),
+    );
     let capacity = plane.capacity().clone();
     let logs = plane.logs().clone();
     let metrics = plane.health().sampler().clone();
@@ -327,6 +326,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
         let _ = signal_shutdown.send(true);
     });
     let mut services = JoinSet::new();
+    let bridge_app = Arc::clone(&app);
     let mut daemon_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         (
@@ -336,6 +336,22 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 .await
                 .map_err(|error| error.to_string()),
         )
+    });
+    let bridge_directory = config.sandbox_bridge_dir.clone();
+    let bridge_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        (
+            "sandbox request bridge",
+            serve_sandbox_bridge(bridge_app, bridge_directory, bridge_shutdown).await,
+        )
+    });
+    let test_reconciliation = plane.tests().clone();
+    let test_reconciliation_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        test_reconciliation
+            .serve_reconciliation(test_reconciliation_shutdown)
+            .await;
+        ("test lifecycle reconciliation", Ok(()))
     });
     let capacity_shutdown = shutdown_rx.clone();
     services.spawn(async move {
@@ -369,7 +385,11 @@ async fn run_daemon(config: &Config) -> ExitCode {
                 () = tokio::time::sleep(Duration::from_millis(100)) => {
                     if tokio::time::Instant::now() >= next_expiry {
                         let plane = expiry_plane.clone();
-                        match tokio::task::spawn_blocking(move || plane.expire_previews()).await {
+                        match tokio::task::spawn_blocking(move || {
+                            let expired = plane.expire_previews();
+                            if let Err(error) = plane.reconcile_routes() { tracing::error!(code=%error.code, "route reconciliation incomplete"); }
+                            expired
+                        }).await {
                             Ok(Ok(_)) => {}
                             Ok(Err(error)) => tracing::error!(%error, "preview expiry failed"),
                             Err(error) => tracing::error!(%error, "preview expiry worker failed"),
@@ -394,6 +414,36 @@ async fn run_daemon(config: &Config) -> ExitCode {
         Some((surface, error)) => {
             eprintln!("{surface} failed: {error}");
             ExitCode::from(1)
+        }
+    }
+}
+
+async fn serve_sandbox_bridge(
+    app: Arc<daemon::App>,
+    directory: std::path::PathBuf,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let mut retry_delay = Duration::from_secs(1);
+    loop {
+        match devcoordinator2_control::sandbox_bridge::serve(
+            Arc::clone(&app),
+            &directory,
+            shutdown.clone(),
+        )
+        .await
+        {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                tracing::error!(path = %directory.display(), %error, "sandbox request bridge unavailable");
+                tokio::select! {
+                    changed = shutdown.changed() => {
+                        if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                    }
+                    () = tokio::time::sleep(retry_delay) => {
+                        retry_delay = (retry_delay * 2).min(Duration::from_secs(30));
+                    }
+                }
+            }
         }
     }
 }
@@ -446,6 +496,7 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: temporary.path().join("unopened-state"),
             unit_prefix: "isolated-duplicate-test".to_owned(),
             slice_name: "isolated-duplicate-test.slice".to_owned(),

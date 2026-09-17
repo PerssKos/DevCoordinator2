@@ -570,7 +570,7 @@ fn quarantine_name(bug_id: &str) -> Result<String, BugError> {
 
 fn file_identity(file: &File, operation: &'static str) -> Result<(u64, u64), BugError> {
     let details = unix_fs::fstat(file).map_err(|error| store_error(operation, error))?;
-    Ok((details.st_dev, details.st_ino))
+    Ok((details.st_dev as _, details.st_ino))
 }
 
 fn store_error(operation: &'static str, error: rustix::io::Errno) -> BugError {

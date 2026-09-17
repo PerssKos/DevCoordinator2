@@ -47,9 +47,29 @@ enum Command {
         #[command(subcommand)]
         command: DecisionCommand,
     },
+    Planning {
+        #[command(subcommand)]
+        command: PlanningCommand,
+    },
     Install {
         #[command(subcommand)]
         command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanningCommand {
+    /// Inspect counts and requested IDs in a saved activation backup. Never restore data.
+    InspectBackup {
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        task_id: Vec<String>,
+        /// Include bounded record IDs, ordering numbers and hashed decision references.
+        #[arg(long)]
+        identities: bool,
     },
 }
 
@@ -67,6 +87,8 @@ enum FormalUiCommand {
         phase: String,
         #[arg(long)]
         coordinator_fixture: Option<PathBuf>,
+        #[arg(long)]
+        qualification_cache: Option<PathBuf>,
     },
     /// Run the retained Node browser verifier through the Rust tooling surface.
     Verify {
@@ -336,6 +358,11 @@ enum JourneyDocsCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    /// Configure direct loopback Console access for the next reviewed activation.
+    ConsoleAccess {
+        #[arg(long, value_parser = ["enabled", "disabled"])]
+        trusted_loopback: String,
+    },
     Configure {
         #[arg(long, default_value = ".")]
         source_root: PathBuf,
@@ -391,8 +418,8 @@ enum InstallCommand {
             default_value = "/etc/devcoordinator2/candidate-install-manifest.json"
         )]
         candidate_manifest: PathBuf,
-        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
-        transaction_dir: PathBuf,
+        #[arg(long)]
+        transaction_dir: Option<PathBuf>,
         #[arg(long)]
         canary: bool,
         #[arg(long)]
@@ -401,8 +428,8 @@ enum InstallCommand {
         yes: bool,
     },
     Recover {
-        #[arg(long, default_value = "/var/lib/devcoordinator2/cutover/rust-v2")]
-        transaction_dir: PathBuf,
+        #[arg(long)]
+        transaction_dir: Option<PathBuf>,
         #[arg(long)]
         yes: bool,
     },
@@ -517,6 +544,13 @@ struct SkillValidationArgs {
 
 #[derive(Debug, Subcommand)]
 enum SkillValidationCommand {
+    /// Export bounded diagnostics from isolated CI validation runs.
+    Evidence {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     Run {
         #[command(flatten)]
         options: SkillValidationArgs,
@@ -637,6 +671,12 @@ enum ContractCommand {
 
 #[derive(Debug, Subcommand)]
 enum CheckCommand {
+    PreCommit {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        tree: Option<String>,
+    },
     PublicArtifacts {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -704,6 +744,19 @@ fn main() -> ExitCode {
     }
     let cli = Cli::parse();
     match cli.command {
+        Command::Check {
+            command: CheckCommand::PreCommit { root, tree },
+        } => match devcoordinator2_tooling::pre_commit::check(&root, tree.as_deref()) {
+            Ok(report) => {
+                println!("{report}");
+                if report["ok"] == true {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(error) => tooling_error(&error, 2),
+        },
         Command::Audit { command } => run_audit(command),
         Command::FormalUi { command } => run_formal_ui(command),
         Command::Contract {
@@ -872,6 +925,7 @@ fn main() -> ExitCode {
         } => run_skill_validation(command),
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
+        Command::Planning { command } => run_planning(command),
         Command::Install { command } => run_install(command),
     }
 }
@@ -985,6 +1039,15 @@ fn validation_options(
 fn run_skill_validation(command: SkillValidationCommand) -> ExitCode {
     use devcoordinator2_tooling::skill_validation;
     match command {
+        SkillValidationCommand::Evidence { root, output } => {
+            match devcoordinator2_tooling::ci_evidence::export(&root, &output) {
+                Ok(receipt) => {
+                    println!("{receipt}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
         SkillValidationCommand::InternalCheck { name, root } => {
             let root = root.canonicalize().map_err(|error| error.to_string());
             match root.and_then(|root| skill_validation::run_internal_check(&root, &name)) {
@@ -1067,6 +1130,7 @@ fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
             timeout_seconds,
             phase,
             coordinator_fixture,
+            qualification_cache,
         } => match devcoordinator2_tooling::formal_selftest::run(
             &devcoordinator2_tooling::formal_selftest::SelfTestOptions {
                 workspace_parent,
@@ -1074,6 +1138,7 @@ fn run_formal_ui(command: FormalUiCommand) -> ExitCode {
                 timeout_seconds,
                 phase,
                 coordinator_fixture,
+                qualification_cache,
             },
         ) {
             Ok(result) => {
@@ -1959,6 +2024,19 @@ fn audit_archive_stamp() -> Result<String, String> {
 fn run_install(command: InstallCommand) -> ExitCode {
     use devcoordinator2_tooling::install::{self, HostRunner};
     let result = match command {
+        InstallCommand::ConsoleAccess { trusted_loopback } => (|| {
+            if rustix::process::geteuid().as_raw() != 0 {
+                return Err("install console-access must run as root".into());
+            }
+            let changed = install::configure_loopback_console(
+                std::path::Path::new("/etc/devcoordinator2/edge.env"),
+                trusted_loopback == "enabled",
+                0,
+            )?;
+            Ok(
+                serde_json::json!({"trusted_loopback":trusted_loopback,"changed":changed,"activation_required":true}),
+            )
+        })(),
         InstallCommand::Configure {
             source_root,
             base_domain,
@@ -2089,7 +2167,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
             }
             let config = devcoordinator2_tooling::cutover::HostCutoverConfig {
                 candidate_manifest,
-                transaction_dir,
+                transaction_dir: transaction_dir.unwrap_or_else(|| {
+                    PathBuf::from(format!(
+                        "/var/lib/devcoordinator2/cutover/activation-{}-{}",
+                        time::OffsetDateTime::now_utc().unix_timestamp_nanos(),
+                        std::process::id()
+                    ))
+                }),
                 canary,
                 ..Default::default()
             };
@@ -2141,6 +2225,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
             transaction_dir,
             yes,
         } => {
+            if transaction_dir.is_none() {
+                println!(
+                    "{}",
+                    serde_json::json!({"ok":false,"error":{"code":"recovery_target_required","message":"Specify the in-progress installation transaction returned by activation."}})
+                );
+                return ExitCode::from(2);
+            }
             if !yes {
                 return tooling_error(
                     "install recover requires --yes to restore the captured prior installation",
@@ -2151,7 +2242,7 @@ fn run_install(command: InstallCommand) -> ExitCode {
                 return tooling_error("install recover must run as root", 2);
             }
             let config = devcoordinator2_tooling::cutover::RecoveryConfig {
-                transaction_dir,
+                transaction_dir: transaction_dir.unwrap_or_default(),
                 ..Default::default()
             };
             devcoordinator2_tooling::cutover::recover_host(&config, &HostRunner, (0, 0)).and_then(
@@ -2164,6 +2255,13 @@ fn run_install(command: InstallCommand) -> ExitCode {
     };
     match result {
         Ok(value) => emit_report(value, true, 1),
+        Err(error) if error.starts_with("recovery target") => {
+            println!(
+                "{}",
+                serde_json::json!({"ok":false,"error":{"code":"recovery_target_invalid","message":error}})
+            );
+            ExitCode::from(2)
+        }
         Err(error) => tooling_error(&error, 2),
     }
 }
@@ -2292,6 +2390,25 @@ fn run_legacy(command: LegacyCommand) -> ExitCode {
     };
     match result {
         Ok(value) => emit_report(value, true, 1),
+        Err(error) => tooling_error(&error, 2),
+    }
+}
+
+fn run_planning(command: PlanningCommand) -> ExitCode {
+    let PlanningCommand::InspectBackup {
+        transaction_dir,
+        repository_id,
+        task_id,
+        identities,
+    } = command;
+    let request = devcoordinator2_tooling::planning_backup::InspectRequest {
+        transaction_dir,
+        repository_id,
+        task_ids: task_id,
+        include_identities: identities,
+    };
+    match devcoordinator2_tooling::planning_backup::inspect(&request) {
+        Ok(result) => emit_report(json!(result), true, 0),
         Err(error) => tooling_error(&error, 2),
     }
 }
@@ -2958,6 +3075,22 @@ mod tests {
                 command: DecisionCommand::Import(_)
             }
         ));
+
+        let planning = Cli::try_parse_from([
+            "devcoordinator2-tooling",
+            "planning",
+            "inspect-backup",
+            "--transaction-dir",
+            "/saved/activation",
+            "--repository-id",
+            "r946ed77e45b31d74",
+            "--task-id",
+            "p9966151ec04cd9cf",
+        ])
+        .expect("read-only planning backup inspection");
+        assert!(matches!(planning.command, Command::Planning {
+            command: PlanningCommand::InspectBackup { task_id, .. }
+        } if task_id == ["p9966151ec04cd9cf"]));
 
         let install = Cli::try_parse_from([
             "devcoordinator2-tooling",

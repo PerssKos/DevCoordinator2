@@ -50,6 +50,8 @@ pub struct PreparedRun {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TestHistoryEntry {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
@@ -77,6 +79,10 @@ pub struct RetryCheckEvidence {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RetryEvidence {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub case_selection: BTreeMap<String, Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     pub run_id: String,
@@ -159,6 +165,8 @@ impl TestRunStore {
         let logs = ensure_directory(&test, "logs", 0o711, None)?;
         let runs = ensure_directory(&logs, "runs", 0o711, None)?;
         let run = create_directory(&runs, run_id, 0o700, Some((uid, gid)))?;
+        create_file(&run, "active.lock", 0o600, uid, gid, true)?;
+        create_file(&run, "finalization.pending", 0o600, uid, gid, true)?;
         let executor = create_directory(&run, "executor", 0o700, Some((uid, gid)))?;
         let executor_stdout = create_file(&executor, "stdout.log", 0o600, uid, gid, true)?;
         let executor_stderr = create_file(&executor, "stderr.log", 0o600, uid, gid, true)?;
@@ -174,6 +182,59 @@ impl TestRunStore {
             executor_stdout,
             executor_stderr,
         })
+    }
+
+    pub fn prepare_log_metadata(
+        &self,
+        worktree: &Path,
+        summary: &TestSummary,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), TestStateError> {
+        use devcoordinator2_executor_core::RunLogMetadata;
+        let root = open_worktree(worktree)?;
+        let run = open_chain(
+            &root,
+            &[".devcoordinator", "test", "logs", "runs", &summary.run_id],
+        )?
+        .ok_or_else(|| TestStateError::Invalid("log run directory is missing".into()))?;
+        let started = time::PrimitiveDateTime::parse(
+            &summary.started_at,
+            &time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z"),
+        )
+        .map_err(|_| TestStateError::Invalid("run start timestamp is invalid".into()))?
+        .assume_utc();
+        let metadata = RunLogMetadata {
+            schema: 2,
+            run_id: summary.run_id.clone(),
+            test: summary.test.clone(),
+            started_at_epoch_ms: (started.unix_timestamp_nanos() / 1_000_000)
+                .try_into()
+                .map_err(|_| TestStateError::Invalid("negative run start".into()))?,
+            finished_at_epoch_ms: None,
+            status: RunStatus::Running,
+            complete: false,
+        };
+        atomic_json(&run, "run.json", &metadata, 0o600, uid, gid)
+    }
+
+    pub fn finish_log_finalization(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<(), TestStateError> {
+        validate_run_id(run_id)?;
+        let root = open_worktree(worktree)?;
+        if let Some(run) = open_chain(&root, &[".devcoordinator", "test", "logs", "runs", run_id])?
+        {
+            match unix_fs::unlinkat(&run, "finalization.pending", AtFlags::empty()) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(filesystem("remove finalization marker", error)),
+            }
+            run.sync_all()
+                .map_err(|error| filesystem("sync log finalization", error))?;
+        }
+        Ok(())
     }
 
     pub fn remove_current(&self, worktree: &Path) -> Result<(), TestStateError> {
@@ -278,6 +339,44 @@ impl TestRunStore {
         atomic_bytes(current, ENV_FILE, &payload, 0o600, uid, gid)
     }
 
+    pub fn write_database_environment(
+        &self,
+        current: &File,
+        name: &str,
+        environment: &BTreeMap<String, String>,
+        uid: u32,
+        gid: u32,
+    ) -> Result<String, TestStateError> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(TestStateError::Invalid(
+                "invalid database environment identity".into(),
+            ));
+        }
+        let file = format!("database-{name}.json");
+        atomic_json(current, &file, environment, 0o600, uid, gid)?;
+        Ok(file)
+    }
+
+    pub fn fixture_log(
+        &self,
+        current: &File,
+        components: &[&str],
+        uid: u32,
+        gid: u32,
+    ) -> Result<File, TestStateError> {
+        let mut directory = current
+            .try_clone()
+            .map_err(|error| filesystem("open fixture log root", error))?;
+        for component in components {
+            directory = ensure_directory(&directory, component, 0o700, Some((uid, gid)))?;
+        }
+        create_file(&directory, "native.log", 0o600, uid, gid, true)
+    }
+
     pub fn write_containers(
         &self,
         current: &File,
@@ -324,6 +423,7 @@ impl TestRunStore {
         let mut runs = self.read_history(worktree)?;
         runs.retain(|run| run.run_id != summary.run_id);
         runs.push(TestHistoryEntry {
+            targets: summary.targets.clone(),
             work: summary.work.clone(),
             run_id: summary.run_id.clone(),
             test: summary.test.clone(),
@@ -410,6 +510,16 @@ impl TestRunStore {
         let mut runs = self.read_evidence(worktree)?;
         runs.retain(|run| run.run_id != report.run_id);
         runs.push(RetryEvidence {
+            targets: self
+                .read_current_summary(worktree)?
+                .filter(|summary| summary.run_id == report.run_id)
+                .map(|summary| summary.targets)
+                .unwrap_or_default(),
+            case_selection: self
+                .read_current_summary(worktree)?
+                .filter(|summary| summary.run_id == report.run_id)
+                .map(|summary| summary.case_selection)
+                .unwrap_or_default(),
             work: work.cloned(),
             run_id: report.run_id.clone(),
             test: report.test.clone(),
@@ -486,6 +596,9 @@ pub fn initial_summary(
     requested_tier: ValidationTier,
 ) -> TestSummary {
     TestSummary {
+        targets: Vec::new(),
+        case_selection: BTreeMap::new(),
+        phase_durations: Vec::new(),
         work: None,
         schema_version: 2,
         run_id: run_id.into(),
@@ -498,6 +611,7 @@ pub fn initial_summary(
         stdout_bytes_observed: 0,
         stderr_bytes_observed: 0,
         caller_uid,
+        execution_uid: None,
         client: client.into(),
         proof: api_proof(proof),
         selection,
@@ -550,6 +664,11 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
 }
 
 fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
+    if summary.execution_uid == Some(0) {
+        return Err(TestStateError::Invalid(
+            "repository execution UID must not be root".into(),
+        ));
+    }
     validate_run_id(&summary.run_id)?;
     let memory_stop = summary.termination_reason == Some(RunTerminationReason::MemoryPressure);
     if summary.schema_version != 2
@@ -677,13 +796,13 @@ fn ensure_directory(
     owner: Option<(u32, u32)>,
 ) -> Result<File, TestStateError> {
     validate_atom(name)?;
-    match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode)) {
+    match unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode as _)) {
         Ok(()) | Err(rustix::io::Errno::EXIST) => {}
         Err(error) => return Err(errno("create governed-test directory", error)),
     }
     let directory = open_child(parent, name)?
         .ok_or_else(|| TestStateError::Filesystem("governed-test directory vanished".into()))?;
-    unix_fs::fchmod(&directory, Mode::from_raw_mode(mode))
+    unix_fs::fchmod(&directory, Mode::from_raw_mode(mode as _))
         .map_err(|error| errno("set governed-test directory mode", error))?;
     if let Some((uid, gid)) = owner {
         fchown(&directory, uid, gid)?;
@@ -698,7 +817,7 @@ fn create_directory(
     owner: Option<(u32, u32)>,
 ) -> Result<File, TestStateError> {
     validate_atom(name)?;
-    unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode)).map_err(|error| {
+    unix_fs::mkdirat(parent, name, Mode::from_raw_mode(mode as _)).map_err(|error| {
         if error == rustix::io::Errno::EXIST {
             TestStateError::Invalid(format!("governed-test directory {name:?} already exists"))
         } else {
@@ -723,10 +842,10 @@ fn create_file(
     } else {
         flags |= OFlags::TRUNC;
     }
-    let file = unix_fs::openat(parent, name, flags, Mode::from_raw_mode(mode))
+    let file = unix_fs::openat(parent, name, flags, Mode::from_raw_mode(mode as _))
         .map(File::from)
         .map_err(|error| errno("create governed-test file", error))?;
-    unix_fs::fchmod(&file, Mode::from_raw_mode(mode))
+    unix_fs::fchmod(&file, Mode::from_raw_mode(mode as _))
         .map_err(|error| errno("set governed-test file mode", error))?;
     fchown(&file, uid, gid)?;
     Ok(file)

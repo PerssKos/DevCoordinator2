@@ -172,11 +172,11 @@ test('real edge signs admitted reviewer requests, replaces spoofed headers and e
   context.after(() => new Promise((resolve) => { upstream.closeAllConnections(); upstream.close(resolve); }));
   const routeFile = path.join(f.directory, 'routes.json');
   const payload = { generation: 1, published_at: '2026-09-14T00:00:00Z', domain: 'example.test',
-    routes: ['app', 'other', 'open'].map((label) => ({ deployment_id: `deployment-${label}`, component: 'web', label,
+    routes: ['app', 'other', 'open'].map((label) => ({ deployment_id: `deployment-${label}`, lease_id: `lease-${label}`, component: 'web', label,
       domain: `${label}.example.test`, port: upstream.address().port, scheme: 'http',
       auth: label === 'open' ? 'public' : 'authenticated', generation: 1 })),
     access: { owners: [], grants: ['app', 'other'].map((label) => ({ identity: f.identity.email, deployment_id: `deployment-${label}`, role: 'viewer' })) } };
-  await fs.writeFile(routeFile, JSON.stringify({ schema: 1, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload }));
+  await fs.writeFile(routeFile, JSON.stringify({ schema: 2, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload }));
   const config = { baseDomain: 'example.test', consoleHost: 'console.example.test', httpOnly: true, httpPort: 0,
     sessionSecret: 'fixture-session-secret-long-enough', oidcIssuer: f.policy.identity_provider_issuer,
     oidcClientId: 'fixture', oidcClientSecret: 'fixture', reviewIdentityFile: f.file, routesFile: routeFile,

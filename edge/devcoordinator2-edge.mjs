@@ -16,6 +16,7 @@ import path from 'node:path';
 import { X509Certificate } from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
+import net from 'node:net';
 import { URL, fileURLToPath } from 'node:url';
 
 import { createDaemonClient } from './lib/daemon-client.mjs';
@@ -91,6 +92,7 @@ export function loadConfig(e = process.env) {
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
+    trustLocalConsole: e.EDGE_TRUST_LOCAL_CONSOLE === '1',
   };
 }
 
@@ -126,6 +128,19 @@ export function authorize(doc, route, identity) {
   const grant = doc.access.grants.find((g) => g.identity === identity && g.deployment_id === route.deployment_id);
   if (!grant || ROLE_RANK[grant.role] === undefined) return { allowed: false, reason: 'no grant for this deployment' };
   return { allowed: true, role: grant.role };
+}
+
+export function trustedLoopbackConsole(req, consoleOrigin, enabled) {
+  if (!enabled) return false;
+  const peer = req.socket?.remoteAddress || '';
+  const ipv4 = peer.startsWith('::ffff:') ? peer.slice(7) : peer;
+  if (peer !== '::1' && !(net.isIP(ipv4) === 4 && ipv4.startsWith('127.'))) return false;
+  // This mode is for a direct host connection. A local reverse proxy must
+  // retain ordinary public authentication rather than inherit host authority.
+  if (Object.keys(req.headers).some(name => name === 'forwarded' || name.startsWith('x-forwarded-'))) return false;
+  if (req.headers.origin && req.headers.origin !== consoleOrigin) return false;
+  if (['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) return false;
+  return true;
 }
 
 async function readJsonBody(req, limit = 65536) {
@@ -174,6 +189,18 @@ export async function createEdge(config, { log = console } = {}) {
     return session ? { email: session.email, sub: session.sub, name: session.name } : null;
   }
 
+  // Only a direct kernel-reported loopback peer receives the trusted-local
+  // development identity. Forwarded headers never participate in this check.
+  function trustedLocal(req) {
+    return trustedLoopbackConsole(req, consoleOrigin, config.trustLocalConsole);
+  }
+
+  function localIdentity() {
+    // No fabricated public user: the daemon already represents a request
+    // without a public assertion as its kernel-authenticated local caller.
+    return { email: null, sub: 'trusted-local', name: 'Trusted local' };
+  }
+
   async function handleAuth(req, res, url, host) {
     const rt = url.searchParams.get('rt') || '/';
     if (url.pathname === '/auth/login') {
@@ -219,10 +246,17 @@ export async function createEdge(config, { log = console } = {}) {
 
   async function handleConsole(req, res, url) {
     if (url.pathname === '/healthz') {
-      return writeJson(res, 200, { ok: true, route_generation: store.current().generation, source: store.source() });
+      return writeJson(res, 200, {
+        ok: store.rejectedGeneration() === null,
+        route_generation: store.current().generation,
+        route_schema: store.current().schema,
+        route_sha256: store.current().payload_sha256,
+        rejected_route_generation: store.rejectedGeneration(),
+        source: store.source(),
+      });
     }
     if (url.pathname.startsWith('/api/v2/')) {
-      const identity = identityOf(req);
+      const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);
       if (!identity) return writeJson(res, 401, { ok: false, error: { code: 'unauthenticated', message: 'sign in first' } });
       if (req.method !== 'POST') return writeJson(res, 405, { ok: false, error: { code: 'method_not_allowed' } });
       const operation = url.pathname.slice('/api/v2/'.length);
@@ -252,7 +286,7 @@ export async function createEdge(config, { log = console } = {}) {
         error: { code: 'protocol_unsupported', message: 'use /api/v2/<operation>', detail: '' },
       });
     }
-    const identity = identityOf(req);
+    const identity = identityOf(req) || (trustedLocal(req) ? localIdentity() : null);
     if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname)}`);
     if (consoleStatic) {
       if (url.pathname === '/' || url.pathname === '/index.html') req.url = '/index.html';

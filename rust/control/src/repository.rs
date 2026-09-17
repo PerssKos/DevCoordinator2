@@ -84,6 +84,37 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Resolve a registered execution account without granting the edge filesystem access.
+    pub(crate) fn registered_execution_source(
+        &self,
+        path: &Path,
+    ) -> Result<(RegisteredRepository, u32, u32), ProtocolError> {
+        validate_absolute_path(path)?;
+        let requested = path_text(path)?;
+        let (registration,uid)=self.database.call(move|connection|{
+            connection.query_row("SELECT repository.repository_id,repository.root_path,repository.display_name,worktree.worktree_id,worktree.worktree_path,repository.registered_by_uid FROM worktrees worktree JOIN repositories repository USING(repository_id) WHERE worktree.worktree_path=?1 AND repository.archived_at IS NULL",[requested],|row|Ok((RegisteredRepository{repository_id:row.get(0)?,root_path:row.get(1)?,display_name:row.get(2)?,worktree_id:row.get(3)?,worktree_path:row.get(4)?,registered:false},row.get::<_,u32>(5)?))).optional().map_err(DatabaseError::from)
+        }).map_err(database_error)?.ok_or_else(||repository_not_found("No registered worktree matches this request."))?;
+        if uid == 0 {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "registered repository execution requires a non-root account",
+            ));
+        }
+        let gid = crate::systemd::primary_gid(uid)
+            .map_err(|_| repository_not_found("Registered execution account is unavailable."))?;
+        let resolved = resolve_worktree(path, Some((uid, gid)))?;
+        if path_text(&resolved.worktree_root)? != registration.worktree_path
+            || ids::repository_id(&resolved.repository_root).map_err(id_error)?
+                != registration.repository_id
+            || ids::worktree_id(&resolved.worktree_root).map_err(id_error)?
+                != registration.worktree_id
+        {
+            return Err(repository_not_found(
+                "Registered source identity changed; refresh its local registration.",
+            ));
+        }
+        Ok((registration, uid, gid))
+    }
     pub fn new(database: Database) -> Self {
         Self::with_archive_blockers(database, NoAdditionalArchiveBlockers)
     }

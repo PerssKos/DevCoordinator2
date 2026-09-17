@@ -3,11 +3,13 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use devcoordinator2_api::results::{Capacity, CapacityAdjustment};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
+use devcoordinator2_executor_protocol::ResourceClaim;
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use time::{format_description::FormatItem, macros::format_description};
@@ -89,6 +91,20 @@ impl HostMemory {
 
 type MemoryPressureHandler = Arc<dyn Fn() + Send + Sync>;
 
+/// A run-bound native fixture operation. Implementations own their exact
+/// resources; the transport accepts no caller-supplied paths or commands.
+pub trait FixtureHandler: Send + Sync {
+    fn execute(&self, node: &str, cancelled: Arc<AtomicBool>) -> Result<(), String>;
+}
+
+struct FixtureCancellation(Arc<AtomicBool>);
+
+impl Drop for FixtureCancellation {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 pub struct ProcMetrics {
     root: PathBuf,
     previous_cpu: Option<(u64, u64)>,
@@ -137,6 +153,7 @@ struct Inner {
     random: Arc<dyn RandomSource>,
     metrics: Mutex<Box<dyn Metrics>>,
     memory_pressure_handler: Mutex<Option<MemoryPressureHandler>>,
+    fixture_handlers: Mutex<BTreeMap<String, Arc<dyn FixtureHandler>>>,
     sample_interval: Duration,
     min_epoch_seconds: f64,
 }
@@ -146,6 +163,8 @@ struct State {
     learned: u32,
     cap: Option<u32>,
     registered_runs: BTreeMap<String, u32>,
+    resources: BTreeMap<String, BTreeMap<String, Vec<ResourceClaim>>>,
+    reservations: BTreeMap<u64, Reservation>,
     queues: BTreeMap<String, VecDeque<u64>>,
     round_robin: VecDeque<String>,
     pending: BTreeMap<u64, Pending>,
@@ -169,6 +188,7 @@ struct State {
 #[derive(Clone, Debug)]
 struct Pending {
     run_id: String,
+    leaf_id: String,
     waited: bool,
     outcome: PendingOutcome,
 }
@@ -191,6 +211,27 @@ struct Grant {
 #[derive(Clone, Debug)]
 struct ActivePermit {
     run_id: String,
+    leaf_id: String,
+}
+
+#[derive(Debug)]
+struct Reservation {
+    run_id: String,
+    claims: Vec<ResourceClaim>,
+    granted: bool,
+}
+
+struct ReservationOwner {
+    broker: CapacityBroker,
+    id: u64,
+}
+impl Drop for ReservationOwner {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.broker.state() {
+            state.reservations.remove(&self.id);
+        }
+        self.broker.inner.notify.notify_waiters();
+    }
 }
 
 /// Holds exact connection ownership across every I/O error and task cancellation.
@@ -319,6 +360,7 @@ impl CapacityBroker {
                 random,
                 metrics: Mutex::new(metrics),
                 memory_pressure_handler: Mutex::new(None),
+                fixture_handlers: Mutex::new(BTreeMap::new()),
                 sample_interval,
                 min_epoch_seconds,
             }),
@@ -344,11 +386,56 @@ impl CapacityBroker {
         Ok(())
     }
 
+    pub fn register_fixture_handler(
+        &self,
+        run_id: &str,
+        handler: Arc<dyn FixtureHandler>,
+    ) -> Result<(), ProtocolError> {
+        let state = self.state()?;
+        if !state.registered_runs.contains_key(run_id) {
+            return Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "fixture run is not registered",
+            ));
+        }
+        self.inner
+            .fixture_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.to_owned(), handler);
+        Ok(())
+    }
+
+    pub fn register_resources(
+        &self,
+        run_id: &str,
+        resources: BTreeMap<String, Vec<ResourceClaim>>,
+    ) -> Result<(), ProtocolError> {
+        let mut state = self.state()?;
+        if !state.registered_runs.contains_key(run_id) {
+            return Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "resource run is not registered",
+            ));
+        }
+        state.resources.insert(run_id.to_owned(), resources);
+        Ok(())
+    }
+
     pub fn unregister_run(&self, run_id: &str) -> Result<(), ProtocolError> {
+        self.inner
+            .fixture_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(run_id);
         let now = self.inner.monotonic.seconds();
         let (adjustment, learned, cap) = {
             let mut state = self.state()?;
             state.registered_runs.remove(run_id);
+            state.resources.remove(run_id);
+            state
+                .reservations
+                .retain(|_, reservation| reservation.run_id != run_id);
             if let Some(queue) = state.queues.remove(run_id) {
                 for pending_id in queue {
                     if let Some(pending) = state.pending.get_mut(&pending_id) {
@@ -491,13 +578,25 @@ impl CapacityBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handler);
     }
 
-    pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
+    pub async fn serve(&self, shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
+        self.serve_with_readiness(shutdown, None).await
+    }
+
+    /// Notify the service owner after binding, without a filesystem polling race.
+    pub async fn serve_with_readiness(
+        &self,
+        mut shutdown: watch::Receiver<bool>,
+        ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> std::io::Result<()> {
         prepare_socket_path(&self.inner.socket_path).await?;
         let listener = UnixListener::bind(&self.inner.socket_path)?;
         std::fs::set_permissions(
             &self.inner.socket_path,
             std::fs::Permissions::from_mode(0o666),
         )?;
+        if let Some(ready) = ready {
+            let _ = ready.send(());
+        }
         let mut connections = JoinSet::new();
         let mut emergency = JoinSet::new();
         let mut sampler = interval(self.inner.sample_interval);
@@ -579,7 +678,7 @@ impl CapacityBroker {
         let request: AcquireRequest = match serde_json::from_slice::<AcquireRequest>(&raw) {
             Ok(request)
                 if request.schema == CAPACITY_PROTOCOL_SCHEMA
-                    && request.action == "acquire"
+                    && matches!(request.action.as_str(), "acquire" | "fixture" | "reserve")
                     && valid_run_id(&request.run_id)
                     && !request.leaf_id.is_empty()
                     && request.leaf_id.len() <= 512 =>
@@ -591,6 +690,98 @@ impl CapacityBroker {
                 return Ok(());
             }
         };
+        if request.action == "reserve" {
+            let id = match self.queue_reservation(&request.run_id, &request.leaf_id, peer_uid) {
+                Ok(id) => id,
+                Err(_) => {
+                    send_denied(&mut stream, "resource ownership was not declared").await;
+                    return Ok(());
+                }
+            };
+            let _owner = ReservationOwner {
+                broker: self.clone(),
+                id,
+            };
+            let mut input = [0u8];
+            loop {
+                let notified = self.inner.notify.notified();
+                if self.try_reservation(id).map_err(protocol_io)? {
+                    break;
+                }
+                tokio::select! { _ = notified => {}, _ = stream.read(&mut input) => { return Ok(()); } }
+            }
+            write_response(
+                &mut stream,
+                &BrokerResponse {
+                    schema: CAPACITY_PROTOCOL_SCHEMA,
+                    status: "reserved",
+                    permit_id: None,
+                    learned_capacity: None,
+                    effective_capacity: None,
+                    waited: None,
+                    error: None,
+                },
+            )
+            .await?;
+            loop {
+                let notified = self.inner.notify.notified();
+                if !self
+                    .state()
+                    .map_err(protocol_io)?
+                    .reservations
+                    .contains_key(&id)
+                {
+                    break;
+                }
+                tokio::select! { _ = notified => {}, _ = stream.read(&mut input) => { break; } }
+            }
+            return Ok(());
+        }
+        if request.action == "fixture" {
+            let authorized = {
+                let state = self.state().map_err(protocol_io)?;
+                state.registered_runs.get(&request.run_id) == Some(&peer_uid)
+                    && state.active.values().any(|permit| {
+                        permit.run_id == request.run_id && permit.leaf_id == request.leaf_id
+                    })
+            };
+            let handler = authorized
+                .then(|| {
+                    self.inner
+                        .fixture_handlers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get(&request.run_id)
+                        .cloned()
+                })
+                .flatten();
+            let Some(handler) = handler else {
+                send_denied(&mut stream, "fixture run identity is unavailable").await;
+                return Ok(());
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let _cancellation_guard = FixtureCancellation(cancelled.clone());
+            let worker_cancelled = cancelled.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
+                handler.execute(&request.leaf_id, worker_cancelled)
+            });
+            let mut disconnected = [0u8];
+            let result = tokio::select! {
+                result = &mut worker => result,
+                _ = stream.read(&mut disconnected) => {
+                    cancelled.store(true, Ordering::Release);
+                    let _ = worker.await;
+                    return Ok(());
+                }
+            };
+            let ok = matches!(result, Ok(Ok(())));
+            let response =
+                serde_json::json!({"schema":CAPACITY_PROTOCOL_SCHEMA,"status":"completed","ok":ok});
+            let mut encoded = serde_json::to_vec(&response).map_err(std::io::Error::other)?;
+            encoded.push(b'\n');
+            timeout(WRITE_DEADLINE, stream.write_all(&encoded)).await??;
+            return Ok(());
+        }
         let pending_id = match self.enqueue(&request.run_id, &request.leaf_id, peer_uid) {
             Ok(pending_id) => pending_id,
             Err(_) => {
@@ -655,7 +846,61 @@ impl CapacityBroker {
         Ok(())
     }
 
-    fn enqueue(&self, run_id: &str, _leaf_id: &str, uid: u32) -> Result<u64, ProtocolError> {
+    fn queue_reservation(&self, run: &str, check: &str, uid: u32) -> Result<u64, ProtocolError> {
+        let mut state = self.state()?;
+        if state.stopping || state.registered_runs.get(run) != Some(&uid) {
+            return Err(ProtocolError::new(
+                ErrorCode::PermissionDenied,
+                "resource run identity is unavailable",
+            ));
+        }
+        let claims = state
+            .resources
+            .get(run)
+            .and_then(|checks| checks.get(check))
+            .cloned()
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::PermissionDenied,
+                    "resource check is not registered",
+                )
+            })?;
+        let id = state.next_pending_id;
+        state.next_pending_id = id.wrapping_add(1).max(1);
+        state.reservations.insert(
+            id,
+            Reservation {
+                run_id: run.into(),
+                claims,
+                granted: false,
+            },
+        );
+        Ok(id)
+    }
+
+    fn try_reservation(&self, id: u64) -> Result<bool, ProtocolError> {
+        let mut state = self.state()?;
+        let requested = state.reservations.get(&id).ok_or_else(|| {
+            ProtocolError::new(ErrorCode::PermissionDenied, "resource reservation ended")
+        })?;
+        if requested.granted {
+            return Ok(true);
+        }
+        let conflict = state.reservations.iter().any(|(other_id, other)| {
+            *other_id != id
+                && (other.granted || *other_id < id)
+                && requested
+                    .claims
+                    .iter()
+                    .any(|left| other.claims.iter().any(|right| left.conflicts(right)))
+        });
+        if !conflict {
+            state.reservations.get_mut(&id).unwrap().granted = true;
+        }
+        Ok(!conflict)
+    }
+
+    fn enqueue(&self, run_id: &str, leaf_id: &str, uid: u32) -> Result<u64, ProtocolError> {
         let now = self.inner.monotonic.seconds();
         let pending_id = {
             let mut state = self.state()?;
@@ -679,6 +924,7 @@ impl CapacityBroker {
                 pending_id,
                 Pending {
                     run_id: run_id.to_owned(),
+                    leaf_id: leaf_id.to_owned(),
                     waited: false,
                     outcome: PendingOutcome::Waiting,
                 },
@@ -776,6 +1022,8 @@ impl CapacityBroker {
             state.queues.clear();
             state.round_robin.clear();
             state.active.clear();
+            state.reservations.clear();
+            state.resources.clear();
         }
         self.inner.notify.notify_waiters();
     }
@@ -831,6 +1079,8 @@ impl State {
             learned,
             cap,
             registered_runs: BTreeMap::new(),
+            resources: BTreeMap::new(),
+            reservations: BTreeMap::new(),
             queues: BTreeMap::new(),
             round_robin: VecDeque::new(),
             pending: BTreeMap::new(),
@@ -909,6 +1159,7 @@ impl State {
                     permit_id,
                     ActivePermit {
                         run_id: pending.run_id.clone(),
+                        leaf_id: pending.leaf_id.clone(),
                     },
                 );
                 pending.outcome = PendingOutcome::Granted(grant);
@@ -1340,6 +1591,68 @@ mod tests {
         .expect("broker")
     }
 
+    #[tokio::test]
+    async fn native_fixture_requires_the_registered_peer_and_active_node_permit() {
+        struct Handler(AtomicU64);
+        impl FixtureHandler for Handler {
+            fn execute(&self, node: &str, _: Arc<AtomicBool>) -> Result<(), String> {
+                if node != "database-setup" {
+                    return Err("unknown node".into());
+                }
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        async fn call(broker: &CapacityBroker, node: &str) -> serde_json::Value {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let server = {
+                let broker = broker.clone();
+                tokio::spawn(async move { broker.serve_connection(server).await.unwrap() })
+            };
+            let payload = serde_json::json!({"schema":1,"action":"fixture","run_id":"run-fixture","leaf_id":node});
+            client
+                .write_all(format!("{payload}\n").as_bytes())
+                .await
+                .unwrap();
+            let result = serde_json::from_slice(&read_line(&mut client).await.unwrap()).unwrap();
+            server.await.unwrap();
+            result
+        }
+        let temporary = tempdir().unwrap();
+        let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let broker = make_broker(
+            database,
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        let uid = rustix::process::getuid().as_raw();
+        let handler = Arc::new(Handler(AtomicU64::new(0)));
+        broker.register_run("run-fixture", uid).unwrap();
+        broker
+            .register_fixture_handler("run-fixture", handler.clone())
+            .unwrap();
+        assert_eq!(call(&broker, "database-setup").await["status"], "denied");
+        let _permit = broker
+            .enqueue("run-fixture", "database-setup", uid)
+            .unwrap();
+        assert_eq!(call(&broker, "database-setup").await["ok"], true);
+        assert_eq!(call(&broker, "other-node").await["status"], "denied");
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        broker.unregister_run("run-fixture").unwrap();
+        assert_eq!(call(&broker, "database-setup").await["status"], "denied");
+        broker
+            .register_run("run-fixture", uid.saturating_add(1))
+            .unwrap();
+        broker
+            .register_fixture_handler("run-fixture", handler.clone())
+            .unwrap();
+        broker
+            .enqueue("run-fixture", "database-setup", uid.saturating_add(1))
+            .unwrap();
+        assert_eq!(call(&broker, "database-setup").await["status"], "denied");
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn caps_fairness_pressure_recovery_and_learning_are_deterministic() {
         let temporary = tempdir().expect("tempdir");
@@ -1400,6 +1713,76 @@ mod tests {
             })
             .expect("persisted");
         assert_eq!(persisted, 6);
+    }
+
+    #[test]
+    fn resource_reservations_are_atomic_fair_and_released_with_run_ownership() {
+        use devcoordinator2_executor_protocol::{ResourceAccess, ResourceKind};
+        let temporary = tempdir().unwrap();
+        let broker = make_broker(
+            Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
+            temporary.path().join("capacity.sock"),
+            Arc::new(ManualMonotonic::new()),
+        );
+        let directory = |id: &str, access| ResourceClaim {
+            kind: ResourceKind::Directory,
+            id: id.into(),
+            access,
+        };
+        for (run, claims) in [
+            (
+                "reader",
+                vec![directory("/repo/shared", ResourceAccess::Shared)],
+            ),
+            (
+                "writer",
+                vec![directory("/repo/shared/output", ResourceAccess::Exclusive)],
+            ),
+            (
+                "later-reader",
+                vec![directory("/repo/shared", ResourceAccess::Shared)],
+            ),
+            (
+                "independent",
+                vec![directory("/repo/other", ResourceAccess::Exclusive)],
+            ),
+        ] {
+            broker.register_run(run, 1000).unwrap();
+            broker
+                .register_resources(run, BTreeMap::from([("check".into(), claims)]))
+                .unwrap();
+        }
+        assert!(
+            broker
+                .queue_reservation("reader", "undeclared", 1000)
+                .is_err()
+        );
+        assert!(broker.queue_reservation("reader", "check", 1001).is_err());
+        let reader = broker.queue_reservation("reader", "check", 1000).unwrap();
+        assert!(broker.try_reservation(reader).unwrap());
+        let writer = broker.queue_reservation("writer", "check", 1000).unwrap();
+        assert!(!broker.try_reservation(writer).unwrap());
+        let later = broker
+            .queue_reservation("later-reader", "check", 1000)
+            .unwrap();
+        assert!(
+            !broker.try_reservation(later).unwrap(),
+            "later readers cannot starve a waiting writer"
+        );
+        let other = broker
+            .queue_reservation("independent", "check", 1000)
+            .unwrap();
+        assert!(
+            broker.try_reservation(other).unwrap(),
+            "disjoint work is never gated by an unrelated waiter"
+        );
+        broker.unregister_run("reader").unwrap();
+        assert!(broker.try_reservation(writer).unwrap());
+        assert!(!broker.try_reservation(later).unwrap());
+        broker.unregister_run("writer").unwrap();
+        assert!(broker.try_reservation(later).unwrap());
+        broker.stop();
+        assert!(broker.state().unwrap().reservations.is_empty());
     }
 
     #[test]

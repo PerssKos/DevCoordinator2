@@ -347,6 +347,10 @@ fn direct_check(
     timeout_seconds: u64,
 ) -> CheckPlan {
     CheckPlan {
+        display_name: None,
+        source_name: None,
+        expected_failure: None,
+        expected_exit_code: None,
         name: name.to_owned(),
         tier,
         role,
@@ -615,6 +619,11 @@ pub fn validation_checks(options: &ValidationOptions) -> Vec<CheckPlan> {
                     "all",
                     "--coordinator-fixture",
                     &coordinator_fixture,
+                    "--qualification-cache",
+                    &options
+                        .root
+                        .join(".devcoordinator/test/qualification-cache")
+                        .to_string_lossy(),
                 ],
             ),
             false,
@@ -703,6 +712,9 @@ pub fn build_validation_plan(
         &serde_json::to_vec(&checks).map_err(|error| format!("cannot encode checks: {error}"))?,
     );
     let plan = ExecutionPlan {
+        database_checks: Default::default(),
+        fixture_program: None,
+        environment_files: BTreeMap::new(),
         schema: Schema2,
         run_id: run_id.to_owned(),
         test: "agent-skills".to_owned(),
@@ -848,6 +860,13 @@ pub fn run_complete(options: &ValidationOptions, run_id: &str) -> Result<Validat
         .current_dir(&options.root)
         .output()
         .map_err(|error| format!("cannot launch Rust executor: {error}"))?;
+    for (name, bytes) in [
+        ("executor.stdout.log", &completed.stdout),
+        ("executor.stderr.log", &completed.stderr),
+    ] {
+        write_new_bytes_nofollow(&options.current_dir.join(name), bytes, 0o600)
+            .map_err(|error| error.to_string())?;
+    }
     let report_path = options.current_dir.join("check-report.json");
     let bytes = read_bytes_nofollow(&report_path, Some(&options.root))
         .map_err(|error| error.to_string())?
@@ -962,6 +981,9 @@ pub fn self_test(executor: &Path, leaf: &Path) -> Result<Value, String> {
         );
         let run_id = "validator-self-test";
         let plan = ExecutionPlan {
+            database_checks: Default::default(),
+            fixture_program: None,
+            environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: run_id.to_owned(),
             test: "validator".to_owned(),

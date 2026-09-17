@@ -311,7 +311,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PathBuf>, CheckError> {
                 )
             })?;
             if relative.components().any(|component| {
-                matches!(component, Component::Normal(value) if value == OsStr::new(".git") || value == OsStr::new("node_modules") || value == OsStr::new("__pycache__") || value == OsStr::new("target"))
+                matches!(component, Component::Normal(value) if value == OsStr::new(".git") || value == OsStr::new("node_modules") || value == OsStr::new("__pycache__") || value == OsStr::new("target") || value == OsStr::new(".devcoordinator"))
             }) {
                 continue;
             }
@@ -3003,21 +3003,29 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
         6,
         &[
             "first ordinary failure",
-            "finite sealed test, audit, rehearsal, or deployment run",
-            "begin diagnosis and repair immediately in separate isolated state",
-            "scope, approval, and mistake-prevention gates",
-            "let the original run finish collecting every safe finding",
-            "do not inject fixes into its running surface, restart it, or destroy its evidence",
-            "rather than creating tasks as they appear",
-            "stop or mitigate immediately only when",
-            "security or safety harm",
-            "data loss",
-            "shared-state corruption",
-            "destruction of useful evidence",
-            "results invalid enough",
-            "reconcile all findings",
-            "promote only diagnosed durable gaps",
-            "batch related fixes",
+            "preserve the failing input, observed state, and evidence",
+            "originating defect",
+            "effects propagate while the original run continues",
+            "every remaining safe, meaningful observation",
+            "error handling, cleanup, rollback, and recovery",
+            "keep independent cases running",
+            "never swallow failures or convert them into success",
+            "trace the actual propagation",
+            "relevant downstream consumers",
+            "what was received, what the contract required, what actually happened",
+            "detected, contained, transformed, silently accepted, or amplified",
+            "secondary failures in handling and recovery as distinct defects",
+            "preserve truthful results",
+            "mark unsupported conclusions as blocked or inconclusive",
+            "never treat corrupted-input behavior as evidence that the normal success path passed",
+            "do not modify the sealed run, fabricate successful prerequisites, or bypass production validation controls",
+            "stop or contain only the affected branch",
+            "safety, valuable data, shared state, or evidence",
+            "continue safe observations and unaffected branches",
+            "until containment, recovery, or a user-visible consequence is demonstrated",
+            "identify the exact evidence gap",
+            "distinguish the initiating defect, expected downstream rejection, broken downstream handling, independent failures, and unverified paths",
+            "batch related repairs and add regressions",
             "focused checks during repair",
             "one final complete pass",
         ],
@@ -4003,13 +4011,14 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             ][..],
         ),
         (
-            "first-failure fixes must overlap the unchanged sealed run",
+            "first-failure investigation preserves the sealed run and traces downstream effects",
             6,
             &[
                 "first ordinary failure",
-                "begin diagnosis and repair immediately in separate isolated state",
-                "let the original run finish collecting every safe finding",
-                "do not inject fixes into its running surface",
+                "originating defect",
+                "effects propagate while the original run continues",
+                "relevant downstream consumers",
+                "do not modify the sealed run",
             ][..],
         ),
     ] {
@@ -4374,6 +4383,27 @@ mod tests {
             root.join("docs/holy-skills-snapshot.md"),
             "Imported /home/holyskills historically.\n",
         );
+    }
+
+    #[test]
+    fn repository_boundaries_exclude_private_runtime_evidence() {
+        use std::os::unix::fs::PermissionsExt;
+        let tree = TestTree::new("private-runtime-boundary");
+        repository_boundary_fixture(&tree.path);
+        let evidence = tree.path.join(".devcoordinator/private-evidence");
+        write(
+            evidence.join("captured-output.md"),
+            "reference/codex-app-wide is quoted private evidence\n",
+        );
+        fs::set_permissions(&evidence, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = audit_repository_boundaries(&tree.path);
+        fs::set_permissions(&evidence, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.unwrap().is_clean());
+        write(
+            tree.path.join("src/incorrect.rs"),
+            "// reference/codex-app-wide\n",
+        );
+        assert!(!audit_repository_boundaries(&tree.path).unwrap().is_clean());
     }
 
     #[test]
@@ -4827,6 +4857,60 @@ mod tests {
         assert!(boundaries.is_clean(), "{:?}", boundaries.findings);
         let waits = check_no_test_timer_waits(&root).unwrap();
         assert!(waits.is_clean(), "{:?}", waits.findings);
+    }
+
+    #[test]
+    fn approved_diagnostic_policy_keeps_safe_continuation_and_causal_analysis() {
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
+        let paraphrased = policy
+            .replace("Begin investigating both", "Immediately investigate both")
+            .replace(
+                "Continue the failing test or scenario through",
+                "Carry the failing scenario through",
+            );
+        assert!(find_app_wide_policy_violations(&paraphrased).is_empty());
+        for (required, weakened) in [
+            (
+                "Keep independent cases running",
+                "Stop independent cases immediately",
+            ),
+            (
+                "never swallow\n  failures or convert them into success",
+                "accept failures as success",
+            ),
+            (
+                "relevant downstream consumers",
+                "the first failing function only",
+            ),
+            (
+                "what was received, what the contract required, what actually happened",
+                "the exception title",
+            ),
+            (
+                "secondary failures in\n  handling and recovery as distinct defects",
+                "secondary failures as irrelevant",
+            ),
+            ("Do not modify the sealed run", "Modify the sealed run"),
+            (
+                "Mark unsupported conclusions as blocked or inconclusive",
+                "Treat unsupported conclusions as passed",
+            ),
+            (
+                "identify the exact evidence\n  gap",
+                "assume downstream behavior is correct",
+            ),
+        ] {
+            assert!(
+                policy.contains(required),
+                "missing regression fixture {required:?}"
+            );
+            assert_policy_violation(
+                &policy.replacen(required, weakened, 1),
+                "complete-cycle contract",
+            );
+        }
     }
 
     #[test]

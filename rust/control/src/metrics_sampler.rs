@@ -1229,6 +1229,7 @@ mod tests {
         let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("run/daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: temporary.path().join("state"),
             unit_prefix: "fixture".into(),
             slice_name: "fixture.slice".into(),

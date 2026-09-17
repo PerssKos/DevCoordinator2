@@ -12,6 +12,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
+use tokio::sync::{Notify, watch};
+use tokio::time::sleep;
 
 use devcoordinator2_api::params::{RetryTest, StartTest};
 use devcoordinator2_api::results::{
@@ -32,16 +34,15 @@ use crate::access::Caller;
 use crate::capacity::{CapacityBroker, HostMemory};
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
-use crate::docker::{
-    DockerCli, DockerControl, ExactContainerId, ManagedLabelContext, RunDetachedRequest,
-};
+use crate::docker::{DockerCli, DockerControl, ExactContainerId, ManagedLabelContext};
 use crate::metrics_source::{HostMetricSource, MetricSource};
 use crate::platform::{Clock, HostMonotonicClock, HostRandom, MonotonicClock, RandomSource};
 use crate::repository::{Registry, resolve_worktree};
-use crate::repository_config::{TestSpec, load_test_spec};
+use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec};
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
+use crate::test_databases::{DatabasePool, FixtureRun, add_shared_phases};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
     ENV_FILE, PLAN_FILE, PreparedRun, RetryEvidence, TestRunStore, api_tier, executor_tier,
@@ -90,6 +91,7 @@ where
 }
 
 struct Inner {
+    databases: Arc<DatabasePool>,
     config: Arc<Config>,
     database: Database,
     registry: Registry,
@@ -106,12 +108,17 @@ struct Inner {
     executor: PathBuf,
     events: Mutex<Option<Arc<dyn TestEventSink>>>,
     runs: Mutex<HashMap<String, Arc<RunHandle>>>,
+    reconcile_wake: Arc<Notify>,
 }
 
 struct RunHandle {
+    requester_uid: u32,
+    fixtures: Arc<FixtureRun>,
     work: Option<devcoordinator2_api::work_context::WorkAttribution>,
     run_id: String,
     test: String,
+    targets: Vec<String>,
+    case_selection: BTreeMap<String, Vec<String>>,
     unit: String,
     worktree_id: String,
     worktree: PathBuf,
@@ -131,6 +138,8 @@ struct RunHandle {
     containers: Mutex<Vec<ExactContainerId>>,
     state: Mutex<RunState>,
     finalized: Condvar,
+    finalizing: AtomicBool,
+    supervisor_alive: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -139,6 +148,8 @@ struct RunState {
     final_status: Option<TestStatus>,
     cleanup_complete: bool,
     evidence_complete: bool,
+    terminal_summary: Option<TestSummary>,
+    missing_unit_since: Option<f64>,
 }
 
 struct RequestedStop {
@@ -205,11 +216,6 @@ enum LaunchState {
     Exited,
 }
 
-struct EphemeralPostgres {
-    container: ExactContainerId,
-    environment: BTreeMap<String, String>,
-}
-
 impl TestLifecycle {
     pub fn new(
         config: Config,
@@ -261,6 +267,7 @@ impl TestLifecycle {
         let admission = TestAdmission::new(runtime).map_err(admission_error)?;
         let lifecycle = Self {
             inner: Arc::new(Inner {
+                databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
                 config: Arc::new(config),
                 database,
                 registry,
@@ -277,6 +284,7 @@ impl TestLifecycle {
                 executor,
                 events: Mutex::new(None),
                 runs: Mutex::new(HashMap::new()),
+                reconcile_wake: Arc::new(Notify::new()),
             }),
         };
         let weak = Arc::downgrade(&lifecycle.inner);
@@ -299,13 +307,266 @@ impl TestLifecycle {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
     }
 
+    pub async fn serve_reconciliation(&self, mut shutdown: watch::Receiver<bool>) {
+        loop {
+            if *shutdown.borrow() {
+                return;
+            }
+            let lifecycle = self.clone();
+            if let Err(error) =
+                tokio::task::spawn_blocking(move || lifecycle.reconcile_orphans()).await
+            {
+                tracing::error!(%error, "test reconciliation worker failed");
+            }
+            tokio::select! {
+                _ = self.inner.reconcile_wake.notified() => {}
+                _ = sleep(Duration::from_secs(30)) => {}
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() { return; }
+                }
+            }
+        }
+    }
+
+    pub fn reconcile_orphans(&self) -> Result<(), ProtocolError> {
+        self.inner.databases.prune_idle(false);
+        let worktrees = self.inner.database.call(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT w.worktree_id,w.worktree_path,w.repository_id FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.rowid",
+            )?;
+            Ok(statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        PathBuf::from(row.get::<_, String>(1)?),
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?)
+        }).map_err(database_error)?;
+        let mut first_error = None;
+        for (worktree_id, worktree, repository_id) in worktrees {
+            let result = self.reconcile_worktree(&worktree_id, &worktree, &repository_id);
+            if let Err(error) = result {
+                tracing::warn!(code = %error.code, worktree_id, "test reconciliation failed");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reconcile_worktree(
+        &self,
+        worktree_id: &str,
+        worktree: &Path,
+        repository_id: &str,
+    ) -> Result<(), ProtocolError> {
+        let Some(_guard) = self
+            .inner
+            .admission
+            .try_worktree_guard(worktree_id)
+            .map_err(admission_error)?
+        else {
+            return Ok(());
+        };
+        if !worktree.exists() {
+            return Ok(());
+        }
+        let handle = self
+            .inner
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(worktree_id)
+            .cloned();
+        if let Some(handle) = handle {
+            if handle.finalizing.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let properties = self
+                .inner
+                .systemd
+                .show_unit(&handle.unit, &["ActiveState", "MainPID"]);
+            let valid = properties.as_ref().is_ok_and(|p| {
+                property(p, "ActiveState") == Some("active")
+                    && property(p, "MainPID")
+                        .and_then(|id| id.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0)
+            });
+            if handle.supervisor_alive.load(Ordering::Acquire) {
+                let mut state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if valid {
+                    state.missing_unit_since = None;
+                    return Ok(());
+                }
+                // systemd can collect a fast unit before its live reaper has
+                // joined output and published the terminal receipt. Allow the
+                // existing stop-completion window, then interrupt a stalled
+                // handoff. Emergency memory containment remains immediate.
+                let now = self.inner.monotonic.seconds();
+                let since = *state.missing_unit_since.get_or_insert(now);
+                if now - since < STOP_WAIT.as_secs_f64() {
+                    return Ok(());
+                }
+            }
+            // Never call this from a client read, or while another start owns
+            // this worktree. The exact run, not its age, determines cleanup.
+            {
+                let mut state = handle
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if state.stop.is_none() {
+                    state.stop = Some(RequestedStop {
+                        status: TestStatus::Interrupted,
+                        detail: None,
+                        termination: Some(
+                            devcoordinator2_api::results::RunTerminationReason::Interrupted,
+                        ),
+                    });
+                }
+            }
+            self.stop_unit(&handle.unit)?;
+            self.finalize(&handle, None, false);
+            return Ok(());
+        }
+        let Some(mut summary) = self
+            .inner
+            .store
+            .read_current_summary(worktree)
+            .map_err(state_error)?
+        else {
+            return Ok(());
+        };
+        if summary.status != TestStatus::Running {
+            return Ok(());
+        }
+        let unit = crate::ids::unit_name(
+            &self.inner.config.unit_prefix,
+            worktree_id,
+            summary.run_id.trim_start_matches('t'),
+        );
+        let units = self
+            .inner
+            .systemd
+            .list_matching_units(&unit)
+            .map_err(systemd_error)?;
+        if units.iter().any(|existing| existing == &unit) {
+            self.stop_unit(&unit)?;
+        }
+        let Some(current) = self
+            .inner
+            .store
+            .open_current(worktree)
+            .map_err(state_error)?
+        else {
+            return Ok(());
+        };
+        let (uid, gid) = self.inner.store.owner(&current).map_err(state_error)?;
+        if let Ok(Some(report)) = self.inner.store.read_report(&current)
+            && report.run_id == summary.run_id
+            && report.test == summary.test
+        {
+            apply_report(&mut summary, &report).map_err(state_error)?;
+            self.inner
+                .store
+                .record_evidence(
+                    worktree,
+                    &report,
+                    &TestStatus::Interrupted,
+                    summary.work.as_ref(),
+                    uid,
+                    gid,
+                )
+                .map_err(state_error)?;
+        }
+        let labels = BTreeMap::from([
+            (
+                "devcoordinator2.instance".into(),
+                self.inner.config.unit_prefix.clone(),
+            ),
+            ("devcoordinator2.purpose".into(), "test".into()),
+            ("devcoordinator2.run".into(), summary.run_id.clone()),
+        ]);
+        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            self.remove_containers(&containers);
+        }
+        let now = self.timestamp()?;
+        let elapsed = time::PrimitiveDateTime::parse(&summary.started_at, TIMESTAMP_FORMAT)
+            .ok()
+            .map(|at| {
+                (self.inner.clock.now_utc() - at.assume_utc())
+                    .as_seconds_f64()
+                    .max(0.0)
+            })
+            .unwrap_or(0.0);
+        terminal_status(
+            &mut summary,
+            TestStatus::Interrupted,
+            now,
+            elapsed,
+            None,
+            Some(devcoordinator2_api::results::RunTerminationReason::Interrupted),
+        );
+        reconcile_terminal_checks(&mut summary);
+        self.inner
+            .store
+            .write_summary(&current, &summary, uid, gid)
+            .map_err(state_error)?;
+        self.inner
+            .store
+            .record_history(worktree, &summary, uid, gid)
+            .map_err(state_error)?;
+        self.inner
+            .store
+            .finish_log_finalization(worktree, &summary.run_id)
+            .map_err(state_error)?;
+        self.inner.capacity.unregister_run(&summary.run_id)?;
+        self.inner
+            .admission
+            .finished(&summary.run_id)
+            .map_err(admission_error)?;
+        self.inner
+            .logs
+            .notify_run_finished(worktree, &summary.run_id);
+        self.publish_event(TestLifecycleEvent {
+            kind: "test.finished",
+            run_id: summary.run_id,
+            test: summary.test,
+            status: Some(TestStatus::Interrupted),
+            exit_code: None,
+            repository_id: repository_id.to_owned(),
+            worktree_id: worktree_id.to_owned(),
+            duration_seconds: summary.duration_seconds,
+            caller_uid: summary.caller_uid,
+            client: summary.client,
+        });
+        Ok(())
+    }
+
     pub fn start(&self, params: StartTest, caller: &Caller) -> Result<TestStarted, ProtocolError> {
+        if params.test.is_some() && !params.targets.is_empty() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "test and target composition are separate modes",
+            ));
+        }
         self.start_inner(
             &params.path,
             params.test.as_deref(),
             &params.checks,
             executor_tier(params.tier),
             None,
+            &params.targets,
+            &params.cases,
             caller,
         )
     }
@@ -317,11 +578,13 @@ impl TestLifecycle {
             std::slice::from_ref(&params.check),
             ValidationTier::Release,
             Some((&params.run_id, &params.check)),
+            &[],
+            &BTreeMap::new(),
             caller,
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn start_inner(
         &self,
         path: &str,
@@ -329,6 +592,8 @@ impl TestLifecycle {
         requested: &[String],
         mut requested_tier: ValidationTier,
         retry: Option<(&str, &str)>,
+        requested_targets: &[String],
+        requested_cases: &BTreeMap<String, Vec<String>>,
         caller: &Caller,
     ) -> Result<TestStarted, ProtocolError> {
         if caller.uid == 0 {
@@ -337,18 +602,94 @@ impl TestLifecycle {
                 "repository code never runs as root; call as a non-root account",
             ));
         }
+        let requester_uid = caller.uid;
+        let (registered, execution_uid, execution_gid) = self.execution_source(path, caller)?;
         if retry.is_some() && requested.len() != 1 {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
                 "retry and explicit check selection are separate modes",
             ));
         }
-        let registered = self
-            .inner
-            .registry
-            .register(Path::new(path), caller.uid, caller.gid)?;
         let worktree = PathBuf::from(&registered.worktree_path);
-        let specification = load_test_spec(&worktree, test_name).map_err(config_error)?;
+        let restored = retry
+            .map(|(run_id, _)| self.inner.store.find_evidence(&worktree, run_id))
+            .transpose()
+            .map_err(state_start_error)?
+            .flatten();
+        let pending_origin = if let Some((run_id, _)) = retry {
+            self.inner
+                .store
+                .read_current_summary(&worktree)
+                .map_err(state_start_error)?
+                .filter(|summary| summary.run_id == run_id)
+        } else {
+            None
+        };
+        let targets = restored
+            .as_ref()
+            .map(|evidence| evidence.targets.as_slice())
+            .or_else(|| {
+                pending_origin
+                    .as_ref()
+                    .map(|summary| summary.targets.as_slice())
+            })
+            .unwrap_or(requested_targets);
+        let specification = if targets.is_empty() {
+            load_test_spec(&worktree, test_name)
+        } else {
+            load_composed_test_spec(&worktree, targets)
+        }
+        .map_err(config_error)?;
+        let resolve = |name: &String| {
+            specification
+                .check_aliases
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| name.clone())
+        };
+        let cases = restored
+            .as_ref()
+            .map(|evidence| &evidence.case_selection)
+            .or_else(|| {
+                pending_origin
+                    .as_ref()
+                    .map(|summary| &summary.case_selection)
+            })
+            .unwrap_or(requested_cases);
+        let case_selection = cases
+            .iter()
+            .map(|(check, cases)| (resolve(check), cases.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if case_selection.len() != cases.len() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "case selections repeat a check through aliases",
+            ));
+        }
+        for (name, cases) in &case_selection {
+            let check = specification
+                .checks
+                .iter()
+                .find(|check| &check.name == name)
+                .ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "case selection names an unknown check",
+                    )
+                })?;
+            check
+                .validate_case_selection(cases)
+                .map_err(|error| ProtocolError::new(ErrorCode::ParamsInvalid, error.to_string()))?;
+        }
+        let retry_check = retry.map(|(_, check)| resolve(&check.to_owned()));
+        let retry = retry.map(|(run, _)| (run, retry_check.as_deref().expect("retry selection")));
+        let mut selections = requested.iter().map(resolve).collect::<Vec<_>>();
+        for check in case_selection.keys() {
+            if !selections.contains(check) {
+                selections.push(check.clone());
+            }
+        }
+        let requested = selections.as_slice();
         if !self.inner.command.executor_available(&self.inner.executor) {
             return Err(ProtocolError::new(
                 ErrorCode::TestStartFailed,
@@ -358,7 +699,12 @@ impl TestLifecycle {
         let source_digest = self
             .inner
             .command
-            .source_digest(&self.inner.executor, &worktree, caller.uid, caller.gid)
+            .source_digest(
+                &self.inner.executor,
+                &worktree,
+                execution_uid,
+                execution_gid,
+            )
             .map_err(command_start_error)?;
         let origin = if let Some((run_id, check)) = retry {
             let mut origin = self
@@ -399,8 +745,8 @@ impl TestLifecycle {
                         &report,
                         &summary.status,
                         summary.work.as_ref(),
-                        caller.uid,
-                        caller.gid,
+                        execution_uid,
+                        execution_gid,
                     )
                     .map_err(state_start_error)?;
                 origin = self
@@ -421,8 +767,60 @@ impl TestLifecycle {
         } else {
             None
         };
-        let selected = selected_closure(&specification.checks, requested, requested_tier)?;
-        self.validate_executables(&worktree, &specification, &selected, caller.uid, caller.gid)?;
+        if requested.iter().collect::<HashSet<_>>().len() != requested.len() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "check selection contains duplicates",
+            ));
+        }
+        let mut normal_requested = Vec::new();
+        let mut shared_requested = false;
+        for check in requested {
+            if let Some(minimum) = crate::test_databases::shared_phase_tier(&specification, check) {
+                if minimum > requested_tier {
+                    return Err(ProtocolError::new(
+                        ErrorCode::ParamsInvalid,
+                        "database phase is outside the requested validation tier",
+                    ));
+                }
+                shared_requested = true;
+            } else {
+                normal_requested.push(check.clone());
+            }
+        }
+        let selected = if shared_requested && normal_requested.is_empty() {
+            Vec::new()
+        } else {
+            selected_closure(&specification.checks, &normal_requested, requested_tier)?
+        };
+        for check in &selected {
+            for case in check.cases.iter().flatten() {
+                if let Some(branch) = &case.postgres {
+                    let postgres =
+                        postgres_for_check(&specification, &check.name).ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::RepositoryConfigInvalid,
+                                "PostgreSQL case has no declared fixture",
+                            )
+                        })?;
+                    if branch != "default" && !postgres.templates.contains_key(branch) {
+                        return Err(ProtocolError::new(
+                            ErrorCode::RepositoryConfigInvalid,
+                            "PostgreSQL case names an undeclared template",
+                        ));
+                    }
+                }
+            }
+        }
+        crate::test_databases::validate_shared_phase_names(&specification, &selected, requested)
+            .map_err(|error| ProtocolError::new(ErrorCode::RepositoryConfigInvalid, error))?;
+        self.validate_executables(
+            &worktree,
+            &specification,
+            &selected,
+            execution_uid,
+            execution_gid,
+        )?;
 
         let mut admission = self
             .inner
@@ -434,7 +832,7 @@ impl TestLifecycle {
         let prepared = self
             .inner
             .store
-            .prepare(&worktree, &run_id, caller.uid, caller.gid)
+            .prepare(&worktree, &run_id, execution_uid, execution_gid)
             .map_err(state_start_error)?;
         let proof = if retry.is_some() {
             ProofKind::Retry
@@ -449,19 +847,27 @@ impl TestLifecycle {
             &run_id,
             &specification.name,
             &started_at,
-            caller.uid,
+            requester_uid,
             &client,
             proof,
             requested.to_vec(),
             retry.map(|value| value.0.to_owned()),
             requested_tier,
         );
+        summary.execution_uid = (requester_uid != execution_uid).then_some(execution_uid);
         summary.work = caller.work.clone();
-        if let Err(error) =
-            self.inner
-                .store
-                .write_summary(&prepared.current, &summary, caller.uid, caller.gid)
-        {
+        summary.targets = specification.targets.clone();
+        summary.case_selection = case_selection.clone();
+        self.inner
+            .store
+            .prepare_log_metadata(&worktree, &summary, execution_uid, execution_gid)
+            .map_err(state_start_error)?;
+        if let Err(error) = self.inner.store.write_summary(
+            &prepared.current,
+            &summary,
+            execution_uid,
+            execution_gid,
+        ) {
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(state_start_error(error));
         }
@@ -474,8 +880,8 @@ impl TestLifecycle {
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(admission_error(error));
         }
-        drop(admission);
-        if let Err(error) = self.inner.capacity.register_run(&run_id, caller.uid) {
+        let _launch_guard = admission.release_global();
+        if let Err(error) = self.inner.capacity.register_run(&run_id, execution_uid) {
             let _ = self.inner.admission.finished(&run_id);
             self.cleanup_unstarted(&worktree, &run_id);
             return Err(error);
@@ -493,49 +899,17 @@ impl TestLifecycle {
                 .to_string_lossy()
                 .into_owned(),
         );
-        let mut containers = Vec::new();
-        if let Some(postgres) = &specification.postgres {
-            match self.provision_postgres(
-                postgres,
-                &run_id,
-                &registered.repository_id,
-                &registered.worktree_id,
-                &started_at,
-                caller,
-            ) {
-                Ok(postgres) => {
-                    environment.extend(postgres.environment);
-                    containers.push(postgres.container);
-                    let identities = containers
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>();
-                    if let Err(error) = self.inner.store.write_containers(
-                        &prepared.current,
-                        &identities,
-                        caller.uid,
-                        caller.gid,
-                    ) {
-                        self.rollback_accepted_start(&worktree, &run_id, &containers);
-                        return Err(state_start_error(error));
-                    }
-                }
-                Err(error) => {
-                    self.rollback_accepted_start(&worktree, &run_id, &containers);
-                    return Err(error);
-                }
-            }
-        }
+        let containers = Vec::new();
         if let Err(error) = self.inner.store.write_environment(
             &prepared.current,
             &environment,
-            caller.uid,
-            caller.gid,
+            execution_uid,
+            execution_gid,
         ) {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
         }
-        let plan = match self.build_plan(
+        let mut plan = match self.build_plan(
             &specification,
             &selected,
             &run_id,
@@ -546,7 +920,7 @@ impl TestLifecycle {
             origin.as_ref(),
             retry.map(|value| value.0),
             requested_tier,
-            caller,
+            (execution_uid, execution_gid),
         ) {
             Ok(plan) => plan,
             Err(error) => {
@@ -554,19 +928,101 @@ impl TestLifecycle {
                 return Err(error);
             }
         };
+        plan.case_selection = case_selection;
+        let shared_fixtures = match add_shared_phases(&mut plan, &specification) {
+            Ok(fixtures) => fixtures,
+            Err(error) => {
+                self.rollback_accepted_start(&worktree, &run_id, &containers);
+                return Err(ProtocolError::new(ErrorCode::ParamsInvalid, error));
+            }
+        };
+        if let Err(error) = plan.validate() {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                error.to_string(),
+            ));
+        }
+        let resources = plan
+            .checks
+            .iter()
+            .filter(|check| !check.resources.is_empty())
+            .map(|check| {
+                let mut claims = check.resources.clone();
+                for claim in &mut claims {
+                    if claim.kind == devcoordinator2_executor_protocol::ResourceKind::Directory {
+                        claim.id = worktree.join(&claim.id).to_string_lossy().into_owned();
+                    }
+                }
+                (check.name.clone(), claims)
+            })
+            .collect();
+        if let Err(error) = self.inner.capacity.register_resources(&run_id, resources) {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
+        }
         if let Err(error) =
             self.inner
                 .store
-                .write_plan(&prepared.current, &plan, caller.uid, caller.gid)
+                .write_plan(&prepared.current, &plan, execution_uid, execution_gid)
         {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(state_start_error(error));
         }
+        let fixture_current = match prepared.current.try_clone() {
+            Ok(current) => current,
+            Err(_) => {
+                self.rollback_accepted_start(&worktree, &run_id, &containers);
+                return Err(ProtocolError::new(
+                    ErrorCode::TestStartFailed,
+                    "fixture state is unavailable",
+                ));
+            }
+        };
+        let fixture_specs = selected
+            .iter()
+            .filter_map(|check| {
+                postgres_for_check(&specification, &check.name)
+                    .map(|spec| (check.name.clone(), spec.clone()))
+            })
+            .collect();
+        let fixtures = Arc::new(FixtureRun::new(
+            self.inner.databases.clone(),
+            fixture_specs,
+            worktree.clone(),
+            fixture_current,
+            ManagedLabelContext {
+                instance: self.inner.config.unit_prefix.clone(),
+                repository_id: registered.repository_id.clone(),
+                worktree_id: registered.worktree_id.clone(),
+                run_id: Some(run_id.clone()),
+                deployment_id: None,
+                component: None,
+                generation: None,
+                ttl_seconds: None,
+                purpose: "test".into(),
+                caller_uid: execution_uid,
+                client: client.clone(),
+                session: caller.client_session.clone(),
+                created_at: started_at.clone(),
+                data_class: "disposable".into(),
+            },
+            execution_gid,
+            shared_fixtures,
+        ));
+        if let Err(error) = self
+            .inner
+            .capacity
+            .register_fixture_handler(&run_id, fixtures.clone())
+        {
+            self.rollback_accepted_start(&worktree, &run_id, &containers);
+            return Err(error);
+        }
         let unit_specification = TransientUnitSpec {
             unit: unit.clone(),
             slice_name: self.inner.config.slice_name.clone(),
-            uid: caller.uid,
-            gid: caller.gid,
+            uid: execution_uid,
+            gid: execution_gid,
             timeout_seconds: specification.timeout_seconds,
             working_directory: worktree.clone(),
             environment_file: Some(prepared.current_path.join(ENV_FILE)),
@@ -600,6 +1056,10 @@ impl TestLifecycle {
             Arc::clone(&stderr_bytes),
         );
         let handle = Arc::new(RunHandle {
+            requester_uid,
+            fixtures,
+            targets: specification.targets.clone(),
+            case_selection: plan.case_selection.clone(),
             work: caller.work.clone(),
             run_id: run_id.clone(),
             test: specification.name.clone(),
@@ -607,8 +1067,8 @@ impl TestLifecycle {
             worktree_id: registered.worktree_id.clone(),
             worktree: worktree.clone(),
             repository_id: registered.repository_id.clone(),
-            caller_uid: caller.uid,
-            caller_gid: caller.gid,
+            caller_uid: execution_uid,
+            caller_gid: execution_gid,
             client,
             started_at,
             started_mono: self.inner.monotonic.seconds(),
@@ -622,6 +1082,8 @@ impl TestLifecycle {
             containers: Mutex::new(containers),
             state: Mutex::new(RunState::default()),
             finalized: Condvar::new(),
+            finalizing: AtomicBool::new(false),
+            supervisor_alive: Arc::new(AtomicBool::new(true)),
         });
         let launch = self.verify_launch(
             &handle,
@@ -635,8 +1097,17 @@ impl TestLifecycle {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .insert(registered.worktree_id.clone(), Arc::clone(&handle));
-                self.spawn_reaper(handle, process, stdout, stderr);
+                if let Err(error) = self.spawn_reaper(Arc::clone(&handle), process, stdout, stderr)
+                {
+                    handle.supervisor_alive.store(false, Ordering::Release);
+                    self.inner.reconcile_wake.notify_one();
+                    self.stop_unit(&unit)?;
+                    self.finalize(&handle, None, false);
+                    return Err(error);
+                }
+                self.inner.reconcile_wake.notify_one();
                 let started = TestStarted {
+                    targets: specification.targets.clone(),
                     run_id,
                     repository_id: registered.repository_id,
                     worktree_id: registered.worktree_id,
@@ -661,7 +1132,7 @@ impl TestLifecycle {
                     repository_id: started.repository_id.clone(),
                     worktree_id: started.worktree_id.clone(),
                     duration_seconds: None,
-                    caller_uid: caller.uid,
+                    caller_uid: requester_uid,
                     client: client_name(caller),
                 });
                 Ok(started)
@@ -683,13 +1154,15 @@ impl TestLifecycle {
             .read_current_summary(&worktree)
             .map_err(state_error)?
             .ok_or_else(test_not_found)?;
-        if let Some(handle) = self
-            .inner
-            .runs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&worktree_id)
-            .cloned()
+        let handle = {
+            self.inner
+                .runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&worktree_id)
+                .cloned()
+        };
+        if let Some(handle) = handle
             && summary.status == TestStatus::Running
         {
             self.project_live(&mut summary, &handle)?;
@@ -725,6 +1198,7 @@ impl TestLifecycle {
         {
             records.retain(|record| record.run_id != current.run_id);
             records.push(crate::test_state::TestHistoryEntry {
+                targets: current.targets.clone(),
                 work: current.work,
                 run_id: current.run_id,
                 test: current.test,
@@ -760,6 +1234,7 @@ impl TestLifecycle {
         let mut bytes = 0;
         for record in &records[start..end] {
             let row = devcoordinator2_api::results::TestHistoryRun {
+                targets: record.targets.clone(),
                 work: record.work.clone(),
                 run_id: record.run_id.clone(),
                 test: record.test.clone(),
@@ -881,6 +1356,9 @@ impl TestLifecycle {
         if !memory().is_some_and(HostMemory::emergency) {
             return Ok(Vec::new());
         }
+        if self.inner.databases.prune_idle(true) && !memory().is_some_and(HostMemory::emergency) {
+            return Ok(Vec::new());
+        }
         let handles = self
             .inner
             .runs
@@ -919,12 +1397,18 @@ impl TestLifecycle {
                 let mut bytes = property(&properties, "MemoryCurrent")
                     .and_then(|value| value.parse::<u64>().ok())
                     .unwrap_or(0);
-                for container in handle
-                    .containers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .iter()
-                {
+                let mut database_containers = handle.fixtures.containers();
+                database_containers.extend(
+                    handle
+                        .containers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .iter()
+                        .cloned(),
+                );
+                database_containers.sort();
+                database_containers.dedup();
+                for container in database_containers {
                     let cgroup = source.container_cgroup(container.as_str());
                     bytes = bytes.saturating_add(
                         self.inner
@@ -943,6 +1427,7 @@ impl TestLifecycle {
                 .then_with(|| left.1.run_id.cmp(&right.1.run_id))
         });
         let mut stopped = Vec::new();
+        let mut containment_error = None;
         for (index, (_, handle)) in candidates.iter().enumerate() {
             let Some(host) = memory().filter(|host| host.emergency()) else {
                 break;
@@ -978,7 +1463,10 @@ impl TestLifecycle {
                     ),
                 });
             }
-            self.stop_unit(&handle.unit)?;
+            if let Err(error) = self.stop_unit(&handle.unit) {
+                containment_error = Some(error);
+                continue;
+            }
             let state = handle
                 .state
                 .lock()
@@ -994,12 +1482,15 @@ impl TestLifecycle {
                 ));
             }
             if !state.evidence_complete {
-                return Err(ProtocolError::new(
+                containment_error = Some(ProtocolError::new(
                     ErrorCode::UnitStopFailed,
                     "memory emergency test stopped but its evidence could not be retained",
                 ));
             }
             stopped.push(handle.run_id.clone());
+        }
+        if let Some(error) = containment_error {
+            return Err(error);
         }
         Ok(stopped)
     }
@@ -1083,7 +1574,10 @@ impl TestLifecycle {
                     let metadata = worktree.metadata().ok()?;
                     crate::repository::test_repository_source(
                         &worktree,
-                        (summary.caller_uid, metadata.gid()),
+                        (
+                            summary.execution_uid.unwrap_or(summary.caller_uid),
+                            metadata.gid(),
+                        ),
                     )
                 })
                 .clone();
@@ -1142,157 +1636,8 @@ impl TestLifecycle {
         if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
             self.remove_containers(&containers);
         }
-        for worktree in self.inner.registry.registered_worktree_paths()? {
-            let Some(mut summary) = self
-                .inner
-                .store
-                .read_current_summary(&worktree)
-                .map_err(state_error)?
-            else {
-                continue;
-            };
-            if summary.status != TestStatus::Running {
-                continue;
-            }
-            let Some(current) = self
-                .inner
-                .store
-                .open_current(&worktree)
-                .map_err(state_error)?
-            else {
-                continue;
-            };
-            terminal_status(
-                &mut summary,
-                TestStatus::Interrupted,
-                self.timestamp()?,
-                0.0,
-                None,
-                Some(devcoordinator2_api::results::RunTerminationReason::Interrupted),
-            );
-            let (owner_uid, owner_gid) = self.inner.store.owner(&current).map_err(state_error)?;
-            let _ = self
-                .inner
-                .store
-                .write_summary(&current, &summary, owner_uid, owner_gid);
-            let _ = self
-                .inner
-                .store
-                .record_history(&worktree, &summary, owner_uid, owner_gid);
-        }
+        self.reconcile_orphans()?;
         self.inner.admission.reset().map_err(admission_error)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn provision_postgres(
-        &self,
-        specification: &crate::repository_config::PostgresSpec,
-        run_id: &str,
-        repository_id: &str,
-        worktree_id: &str,
-        started_at: &str,
-        caller: &Caller,
-    ) -> Result<EphemeralPostgres, ProtocolError> {
-        if !self.inner.docker.available() {
-            return Err(ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "ephemeral PostgreSQL failed: Docker is unavailable",
-            ));
-        }
-        if specification.image.contains("@sha256:") {
-            self.inner.docker.ensure_digest_image(&specification.image)
-        } else {
-            self.inner.docker.ensure_image(&specification.image)
-        }
-        .map_err(postgres_error)?;
-        let mut random = [0_u8; 24];
-        self.inner.random.fill(&mut random).map_err(|error| {
-            ProtocolError::new(
-                ErrorCode::TestStartFailed,
-                "ephemeral PostgreSQL credentials could not be generated",
-            )
-            .with_detail(error.to_string())
-        })?;
-        let password = base64_url_no_pad(&random);
-        let values = BTreeMap::from([
-            ("POSTGRES_USER".into(), specification.user.clone()),
-            ("POSTGRES_PASSWORD".into(), password.clone()),
-            ("POSTGRES_DB".into(), specification.database.clone()),
-            ("PGDATA".into(), "/var/lib/postgresql/data".into()),
-        ]);
-        let container = self
-            .inner
-            .docker
-            .run_detached(&RunDetachedRequest {
-                name: format!(
-                    "devcoordinator2-test-{}-postgres",
-                    run_id.trim_start_matches('t')
-                ),
-                image: specification.image.clone(),
-                label_context: ManagedLabelContext {
-                    instance: self.inner.config.unit_prefix.clone(),
-                    repository_id: repository_id.into(),
-                    worktree_id: worktree_id.into(),
-                    run_id: Some(run_id.into()),
-                    deployment_id: None,
-                    component: None,
-                    generation: None,
-                    ttl_seconds: None,
-                    purpose: "test".into(),
-                    caller_uid: caller.uid,
-                    client: client_name(caller),
-                    session: caller.client_session.clone(),
-                    created_at: started_at.into(),
-                    data_class: "disposable".into(),
-                },
-                labels: BTreeMap::new(),
-                env_names: vec![
-                    "POSTGRES_USER".into(),
-                    "POSTGRES_PASSWORD".into(),
-                    "POSTGRES_DB".into(),
-                    "PGDATA".into(),
-                ],
-                env_values: values,
-                publish: vec!["127.0.0.1::5432".into()],
-                tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
-                command: Vec::new(),
-            })
-            .map_err(postgres_error)?;
-        let prepared = (|| {
-            let port = self
-                .inner
-                .docker
-                .published_host_port(&container, "5432/tcp")?;
-            self.inner.docker.wait_postgres_ready(
-                &container,
-                &specification.user,
-                &specification.database,
-                Duration::from_secs(90),
-            )?;
-            Ok::<_, crate::docker::DockerError>(port)
-        })();
-        let port = match prepared {
-            Ok(port) => port,
-            Err(error) => {
-                let _ = self.inner.docker.remove_container(&container, true);
-                return Err(postgres_error(error));
-            }
-        };
-        let url = format!(
-            "postgresql://{}:{}@127.0.0.1:{}/{}",
-            specification.user, password, port, specification.database
-        );
-        Ok(EphemeralPostgres {
-            container,
-            environment: BTreeMap::from([
-                ("PGHOST".into(), "127.0.0.1".into()),
-                ("PGPORT".into(), port.to_string()),
-                ("PGUSER".into(), specification.user.clone()),
-                ("PGPASSWORD".into(), password),
-                ("PGDATABASE".into(), specification.database.clone()),
-                ("DATABASE_URL".into(), url),
-            ]),
-        })
     }
 
     fn resolve_history_worktree(
@@ -1306,7 +1651,7 @@ impl TestLifecycle {
                 "path must be absolute",
             ));
         }
-        if caller.identity.is_none() {
+        if !caller.is_console() {
             return self.resolve(path, caller).map(|(worktree, _)| worktree);
         }
         let requested = path.to_owned();
@@ -1333,12 +1678,50 @@ impl TestLifecycle {
     }
 
     fn resolve(&self, path: &str, caller: &Caller) -> Result<(PathBuf, String), ProtocolError> {
+        if caller.is_console() {
+            let worktree = self.resolve_history_worktree(path, caller)?;
+            let requested = path.to_owned();
+            let id = self
+                .inner
+                .database
+                .call(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT worktree_id FROM worktrees WHERE worktree_path=?1",
+                            [requested],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .map_err(DatabaseError::from)
+                })
+                .map_err(database_error)?;
+            return Ok((worktree, id));
+        }
         let info = resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
         let worktree_id = crate::ids::worktree_id(&info.worktree_root).map_err(|error| {
             ProtocolError::new(ErrorCode::RepositoryNotFound, "cannot identify worktree")
                 .with_detail(error.to_string())
         })?;
         Ok((info.worktree_root, worktree_id))
+    }
+
+    fn execution_source(
+        &self,
+        path: &str,
+        caller: &Caller,
+    ) -> Result<(devcoordinator2_api::results::RegisteredRepository, u32, u32), ProtocolError> {
+        if caller.is_console() {
+            self.inner
+                .registry
+                .registered_execution_source(Path::new(path))
+        } else {
+            Ok((
+                self.inner
+                    .registry
+                    .register(Path::new(path), caller.uid, caller.gid)?,
+                caller.uid,
+                caller.gid,
+            ))
+        }
     }
 
     fn validate_executables(
@@ -1407,7 +1790,7 @@ impl TestLifecycle {
         origin: Option<&RetryEvidence>,
         origin_run_id: Option<&str>,
         requested_tier: ValidationTier,
-        caller: &Caller,
+        execution: (u32, u32),
     ) -> Result<ExecutionPlan, ProtocolError> {
         let selected_names = selected
             .iter()
@@ -1448,8 +1831,8 @@ impl TestLifecycle {
                             &self.inner.executor,
                             worktree,
                             &previous.artifacts,
-                            caller.uid,
-                            caller.gid,
+                            execution.0,
+                            execution.1,
                         )
                         .map_err(command_start_error)?
                 {
@@ -1490,6 +1873,17 @@ impl TestLifecycle {
             ProofKind::Selected
         };
         let plan = ExecutionPlan {
+            database_checks: selected
+                .iter()
+                .filter(|check| {
+                    postgres_for_check(specification, &check.name).is_some_and(|pg| !pg.cases_only)
+                })
+                .map(|check| check.name.clone())
+                .collect(),
+            fixture_program: (specification.postgres.is_some()
+                || !specification.postgres_instances.is_empty())
+            .then(|| self.inner.executor.to_string_lossy().into_owned()),
+            environment_files: BTreeMap::new(),
             schema: Schema2,
             run_id: run_id.into(),
             test: specification.name.clone(),
@@ -1510,10 +1904,6 @@ impl TestLifecycle {
             reused_qualifications: Default::default(),
             checks,
         };
-        plan.validate().map_err(|error| {
-            ProtocolError::new(ErrorCode::TestStartFailed, "executor plan is invalid")
-                .with_detail(error.to_string())
-        })?;
         Ok(plan)
     }
 
@@ -1600,50 +1990,74 @@ impl TestLifecycle {
         mut process: Box<dyn UnitProcess>,
         stdout: Drain,
         stderr: Drain,
-    ) {
+    ) -> Result<(), ProtocolError> {
         let lifecycle = self.clone();
-        thread::spawn(move || {
-            let stdout_failed = stdout.failure_flag();
-            let stderr_failed = stderr.failure_flag();
-            let (sender, receiver) = mpsc::sync_channel(1);
-            let waiter = thread::spawn(move || {
-                let _ = sender.send(process.wait());
-            });
-            let mut stop_requested = false;
-            let exit = loop {
-                match receiver.recv_timeout(Duration::from_millis(100)) {
-                    Ok(exit) => break exit.ok(),
-                    Err(RecvTimeoutError::Disconnected) => break None,
-                    Err(RecvTimeoutError::Timeout) => {
-                        if !stop_requested
-                            && (stdout_failed.load(Ordering::SeqCst)
-                                || stderr_failed.load(Ordering::SeqCst))
-                        {
-                            let _ = lifecycle.stop_unit(&handle.unit);
-                            stop_requested = true;
-                        }
+        thread::Builder::new()
+            .spawn(move || {
+                struct SupervisorGuard(Arc<AtomicBool>, Arc<Notify>);
+                impl Drop for SupervisorGuard {
+                    fn drop(&mut self) {
+                        self.0.store(false, Ordering::Release);
+                        self.1.notify_one();
                     }
                 }
-            };
-            let _ = waiter.join();
-            let streams_complete = stdout.finish() && stderr.finish();
-            lifecycle.finalize(&handle, exit, streams_complete);
-            let _ = lifecycle.inner.systemd.reset_failed(&handle.unit);
-            let mut runs = lifecycle
-                .inner
-                .runs
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if runs
-                .get(&handle.worktree_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &handle))
-            {
-                runs.remove(&handle.worktree_id);
-            }
-        });
+                let _supervisor = SupervisorGuard(
+                    Arc::clone(&handle.supervisor_alive),
+                    Arc::clone(&lifecycle.inner.reconcile_wake),
+                );
+                let stdout_failed = stdout.failure_flag();
+                let stderr_failed = stderr.failure_flag();
+                let (sender, receiver) = mpsc::sync_channel(1);
+                let waiter = thread::spawn(move || {
+                    let _ = sender.send(process.wait());
+                });
+                let mut stop_requested = false;
+                let exit = loop {
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(exit) => break exit.ok(),
+                        Err(RecvTimeoutError::Disconnected) => break None,
+                        Err(RecvTimeoutError::Timeout) => {
+                            if !stop_requested
+                                && (stdout_failed.load(Ordering::SeqCst)
+                                    || stderr_failed.load(Ordering::SeqCst))
+                            {
+                                let _ = lifecycle.stop_unit(&handle.unit);
+                                stop_requested = true;
+                            }
+                        }
+                    }
+                };
+                let _ = waiter.join();
+                let streams_complete = stdout.finish() && stderr.finish();
+                lifecycle.finalize(&handle, exit, streams_complete);
+                let _ = lifecycle.inner.systemd.reset_failed(&handle.unit);
+                let mut runs = lifecycle
+                    .inner
+                    .runs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if runs
+                    .get(&handle.worktree_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                {
+                    runs.remove(&handle.worktree_id);
+                }
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                ProtocolError::new(ErrorCode::TestStartFailed, "cannot start test supervisor")
+                    .with_detail(error.to_string())
+            })
     }
 
     fn finalize(&self, handle: &RunHandle, exit: Option<ExitStatus>, streams_complete: bool) {
+        if handle
+            .finalizing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
         let (report, report_issue) = self.report_snapshot(handle, true);
         let properties = self
             .inner
@@ -1660,7 +2074,7 @@ impl TestLifecycle {
             }
             state.stop.take()
         };
-        let (status, exit_code, termination) = if let Some(stop) = requested_stop {
+        let (mut status, exit_code, termination) = if let Some(stop) = requested_stop {
             let termination = if stop.termination.is_some() {
                 stop.termination
             } else if stop.status == TestStatus::Superseded {
@@ -1691,6 +2105,10 @@ impl TestLifecycle {
                 None,
             )
         };
+        let fixtures_cleaned = handle.fixtures.finish();
+        if !fixtures_cleaned && status == TestStatus::Passed {
+            status = TestStatus::Failed;
+        }
         self.remove_containers(
             &handle
                 .containers
@@ -1701,14 +2119,18 @@ impl TestLifecycle {
             &handle.run_id,
             &handle.test,
             &handle.started_at,
-            handle.caller_uid,
+            handle.requester_uid,
             &handle.client,
             handle.proof,
             handle.selection.clone(),
             handle.origin_run_id.clone(),
             handle.requested_tier,
         );
+        summary.execution_uid =
+            (handle.requester_uid != handle.caller_uid).then_some(handle.caller_uid);
         summary.work = handle.work.clone();
+        summary.targets = handle.targets.clone();
+        summary.case_selection = handle.case_selection.clone();
         summary.report_issue = report_issue;
         terminal_status(
             &mut summary,
@@ -1766,7 +2188,15 @@ impl TestLifecycle {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.final_status = Some(status.clone());
+        state.terminal_summary = Some(summary.clone());
         state.evidence_complete = summary_written && history_written && retry_evidence_written;
+        if state.evidence_complete {
+            state.evidence_complete = self
+                .inner
+                .store
+                .finish_log_finalization(&handle.worktree, &handle.run_id)
+                .is_ok();
+        }
         handle.finalized.notify_all();
         drop(state);
         // Publish the terminal summary before releasing admission. A
@@ -1778,6 +2208,7 @@ impl TestLifecycle {
         self.inner
             .logs
             .notify_run_finished(&handle.worktree, &handle.run_id);
+        self.inner.reconcile_wake.notify_one();
         self.publish_event(TestLifecycleEvent {
             kind: "test.finished",
             run_id: handle.run_id.clone(),
@@ -1787,14 +2218,14 @@ impl TestLifecycle {
             repository_id: handle.repository_id.clone(),
             worktree_id: handle.worktree_id.clone(),
             duration_seconds: summary.duration_seconds,
-            caller_uid: handle.caller_uid,
+            caller_uid: handle.requester_uid,
             client: handle.client.clone(),
         });
         let mut state = handle
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cleanup_complete = true;
+        state.cleanup_complete = fixtures_cleaned;
         handle.finalized.notify_all();
     }
 
@@ -1803,6 +2234,16 @@ impl TestLifecycle {
         summary: &mut TestSummary,
         handle: &RunHandle,
     ) -> Result<(), ProtocolError> {
+        if let Some(terminal) = handle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .terminal_summary
+            .clone()
+        {
+            *summary = terminal;
+            return Ok(());
+        }
         summary.stdout_bytes_observed = handle.stdout_bytes.load(Ordering::SeqCst);
         summary.stderr_bytes_observed = handle.stderr_bytes.load(Ordering::SeqCst);
         let (report, issue) = self.report_snapshot(handle, false);
@@ -1899,7 +2340,8 @@ impl TestLifecycle {
             ("devcoordinator2.purpose".into(), "test".into()),
             ("devcoordinator2.worktree".into(), worktree_id.into()),
         ]);
-        if let Ok(containers) = self.inner.docker.list_ids_by_labels(&labels) {
+        if let Ok(mut containers) = self.inner.docker.list_ids_by_labels(&labels) {
+            containers.retain(|container| !self.inner.databases.owns(container));
             self.remove_containers(&containers);
         }
         Ok(superseded_run_id)
@@ -2018,7 +2460,11 @@ fn selected_closure(
     }
     let excluded = requested
         .iter()
-        .filter(|name| by_name[name.as_str()].tier > tier)
+        .filter(|name| {
+            by_name[name.as_str()].tier > tier
+                && by_name[name.as_str()].phase
+                    != devcoordinator2_executor_protocol::CheckPhase::Cleanup
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !excluded.is_empty() {
@@ -2043,7 +2489,7 @@ fn selected_closure(
                 format!("no checks are configured for the {} tier", tier_name(tier)),
             ));
         }
-        return Ok(selected);
+        return Ok(include_cleanup(configured, selected));
     }
     let mut included = requested.iter().cloned().collect::<HashSet<_>>();
     let mut pending = requested.to_vec();
@@ -2055,11 +2501,66 @@ fn selected_closure(
             }
         }
     }
-    Ok(configured
+    Ok(include_cleanup(
+        configured,
+        configured
+            .iter()
+            .filter(|check| {
+                included.contains(&check.name)
+                    && (check.tier <= tier
+                        || check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+            })
+            .cloned()
+            .collect(),
+    ))
+}
+
+fn include_cleanup(configured: &[CheckPlan], mut selected: Vec<CheckPlan>) -> Vec<CheckPlan> {
+    use devcoordinator2_executor_protocol::CheckPhase;
+    let mut included = selected
         .iter()
-        .filter(|check| included.contains(&check.name) && check.tier <= tier)
-        .cloned()
-        .collect())
+        .map(|check| check.name.clone())
+        .collect::<HashSet<_>>();
+    loop {
+        let mut changed = false;
+        for check in configured
+            .iter()
+            .filter(|check| check.phase == CheckPhase::Cleanup)
+        {
+            if !included.contains(&check.name)
+                && (check.after.is_empty() && check.requires.is_empty()
+                    || check
+                        .after
+                        .iter()
+                        .chain(&check.requires)
+                        .any(|name| included.contains(name)))
+            {
+                included.insert(check.name.clone());
+                selected.push(check.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let ordinary = selected
+        .iter()
+        .filter(|check| check.phase != CheckPhase::Cleanup)
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>();
+    for check in selected
+        .iter_mut()
+        .filter(|check| check.phase == CheckPhase::Cleanup)
+    {
+        let whole_run = check.after.is_empty() && check.requires.is_empty();
+        check.after.retain(|name| included.contains(name));
+        check.requires.retain(|name| included.contains(name));
+        if whole_run {
+            check.after.extend(ordinary.iter().cloned());
+        }
+    }
+    selected
 }
 
 fn validate_retry(
@@ -2095,6 +2596,7 @@ fn validate_retry(
         .checks
         .iter()
         .any(|candidate| candidate.name == check)
+        && crate::test_databases::shared_phase_tier(specification, check).is_none()
     {
         return Err(ProtocolError::new(
             ErrorCode::ParamsInvalid,
@@ -2212,6 +2714,7 @@ fn reconcile_terminal_checks(summary: &mut TestSummary) {
         *counts.entry(key.into()).or_default() += running;
     }
     for check in summary.checks.iter_mut().flatten() {
+        check.resource_waiting = false;
         close_execution_observation(check.execution.as_mut());
         if matches!(check.status, LeafStatus::Pending | LeafStatus::Running) {
             check.status = if check.status == LeafStatus::Pending {
@@ -2252,6 +2755,11 @@ fn apply_report(
             .collect::<Result<Vec<_>, _>>()?,
     );
     summary.checks_truncated = Some(all_checks.len() > 64);
+    summary.phase_durations = report
+        .phase_durations
+        .iter()
+        .map(convert)
+        .collect::<Result<Vec<_>, _>>()?;
     summary.failure_index = Some(
         report
             .failure_index
@@ -2277,6 +2785,14 @@ fn apply_report(
 
 fn api_check(check: &CheckReport) -> Result<CheckProjection, crate::test_state::TestStateError> {
     Ok(CheckProjection {
+        phase_durations: check
+            .phase_durations
+            .iter()
+            .map(convert)
+            .collect::<Result<Vec<_>, _>>()?,
+        resource_waiting: check.resource_waiting,
+        display_name: check.display_name.clone(),
+        phase: convert(&check.phase)?,
         execution: check.execution.as_ref().map(convert).transpose()?,
         name: check.name.clone(),
         tier: api_tier(check.tier),
@@ -2370,6 +2886,28 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 pub(crate) fn default_executor_path() -> PathBuf {
+    #[cfg(feature = "root-acceptance")]
+    if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
+        return PathBuf::from(path);
+    }
+    // Unit tests may use an isolated Cargo target directory. Resolve candidates
+    // from that test executable, never from another checkout or installed daemon.
+    #[cfg(test)]
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(profile) = executable.parent().and_then(Path::parent)
+    {
+        let release = profile
+            .parent()
+            .map(|target| target.join("release/devcoordinator2-executor"));
+        for candidate in release
+            .into_iter()
+            .chain(std::iter::once(profile.join("devcoordinator2-executor")))
+        {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("target/release/devcoordinator2-executor")
@@ -2414,25 +2952,6 @@ fn lower_hex(bytes: &[u8]) -> String {
     value
 }
 
-fn base64_url_no_pad(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = chunk.get(1).copied().unwrap_or(0);
-        let third = chunk.get(2).copied().unwrap_or(0);
-        output.push(TABLE[usize::from(first >> 2)] as char);
-        output.push(TABLE[usize::from((first & 0x03) << 4 | second >> 4)] as char);
-        if chunk.len() > 1 {
-            output.push(TABLE[usize::from((second & 0x0f) << 2 | third >> 6)] as char);
-        }
-        if chunk.len() > 2 {
-            output.push(TABLE[usize::from(third & 0x3f)] as char);
-        }
-    }
-    output
-}
-
 fn admission_error(error: AdmissionError) -> ProtocolError {
     let code = if matches!(error, AdmissionError::TestsDraining { .. }) {
         ErrorCode::TestsDraining
@@ -2442,19 +2961,23 @@ fn admission_error(error: AdmissionError) -> ProtocolError {
     ProtocolError::new(code, error.to_string())
 }
 
+fn postgres_for_check<'a>(
+    spec: &'a TestSpec,
+    check: &str,
+) -> Option<&'a crate::repository_config::PostgresSpec> {
+    spec.postgres.as_ref().or_else(|| {
+        spec.check_postgres
+            .get(check)
+            .and_then(|scope| spec.postgres_instances.get(scope))
+    })
+}
+
 fn config_error(error: crate::repository_config::RepositoryConfigError) -> ProtocolError {
     ProtocolError::new(ErrorCode::RepositoryConfigInvalid, error.to_string())
 }
 
 fn command_start_error(error: crate::test_command::TestCommandError) -> ProtocolError {
     ProtocolError::new(ErrorCode::TestStartFailed, error.to_string())
-}
-
-fn postgres_error(error: crate::docker::DockerError) -> ProtocolError {
-    ProtocolError::new(
-        ErrorCode::TestStartFailed,
-        format!("ephemeral PostgreSQL failed: {error}"),
-    )
 }
 
 fn state_start_error(error: crate::test_state::TestStateError) -> ProtocolError {
@@ -2490,6 +3013,10 @@ mod tests {
 
     fn check(name: &str, tier: ValidationTier, dependencies: &[&str]) -> CheckPlan {
         CheckPlan {
+            display_name: None,
+            source_name: None,
+            expected_failure: None,
+            expected_exit_code: None,
             name: name.into(),
             tier,
             role: devcoordinator2_executor_protocol::CheckRole::Work,

@@ -359,7 +359,7 @@ impl TestEvidenceService {
         if !path.is_absolute() {
             return Err(invalid_argument("path must be absolute"));
         }
-        if caller.identity.is_some() {
+        if caller.is_console() {
             let requested = path.to_string_lossy().into_owned();
             return self
                 .database
@@ -2646,6 +2646,7 @@ mod tests {
 
     fn caller(identity: &str) -> Caller {
         Caller {
+            via_edge: false,
             pid: std::process::id(),
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -2827,6 +2828,7 @@ mod tests {
         let plane = crate::control_plane::ControlPlane::with_adapters(
             crate::config::Config {
                 socket_path: root.join("daemon.sock"),
+                sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
                 state_dir: root.join("state"),
                 unit_prefix: "devcoordinator2-evidence-fixture".into(),
                 slice_name: "unused-fixture.slice".into(),
@@ -2918,9 +2920,44 @@ mod tests {
                 .execute("test.evidence.feedback.create", create.clone(), &outsider)
                 .is_err()
         );
+        world.database.call(|connection| {
+            connection.execute_batch("CREATE TRIGGER reject_feedback_commit BEFORE INSERT ON plan_events BEGIN SELECT RAISE(ABORT,'isolated feedback transaction failure'); END;")?;
+            Ok(())
+        }).unwrap();
+        assert!(
+            plane
+                .execute("test.evidence.feedback.create", create.clone(), &owner)
+                .is_err()
+        );
+        let event_count = |kind: &str| {
+            let kind = kind.to_owned();
+            world
+                .database
+                .call(move |connection| {
+                    connection
+                        .query_row(
+                            "SELECT COUNT(*) FROM owned_events WHERE kind=?1",
+                            [kind],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .map_err(DatabaseError::from)
+                })
+                .unwrap()
+        };
+        assert_eq!(event_count("feedback.created"), 0);
+        assert_eq!(event_count("task.created"), 0);
+        world
+            .database
+            .call(|connection| {
+                connection.execute_batch("DROP TRIGGER reject_feedback_commit")?;
+                Ok(())
+            })
+            .unwrap();
         let created = plane
             .execute("test.evidence.feedback.create", create, &owner)
             .unwrap();
+        assert_eq!(event_count("feedback.created"), 1);
+        assert_eq!(event_count("task.created"), 1);
         let task_id = created["task_id"].as_str().unwrap();
         let overview = plane
             .execute(
@@ -2974,6 +3011,18 @@ mod tests {
             .execute("test.evidence.feedback.delete", target, &owner)
             .unwrap();
         assert_eq!(deleted["feedback"]["state"], "deleted");
+        for (kind, expected) in [
+            ("feedback.replied", 1),
+            ("feedback.edited", 1),
+            ("feedback.state_changed", 2),
+            ("feedback.deleted", 1),
+        ] {
+            assert_eq!(
+                event_count(kind),
+                expected,
+                "feedback publication count drifted for {kind}"
+            );
+        }
         world
             .database
             .call(move |connection| {

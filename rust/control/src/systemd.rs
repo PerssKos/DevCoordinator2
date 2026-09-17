@@ -127,6 +127,9 @@ pub trait SystemdControl: Send + Sync + 'static {
     }
     fn prove_cgroup_empty(&self, cgroup: Option<&Path>, deadline: Duration) -> bool;
     fn process_uids(&self, pid: u32) -> Option<[u32; 4]>;
+    fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +176,12 @@ impl SystemdCli {
 }
 
 impl SystemdControl for SystemdCli {
+    fn owns_tcp_listener(&self, unit: &str, port: u16) -> bool {
+        self.control_group_path(unit)
+            .ok()
+            .flatten()
+            .is_some_and(|group| cgroup_owns_listener(Path::new("/proc"), &group, port))
+    }
     fn spawn_transient(
         &self,
         specification: &TransientUnitSpec,
@@ -493,7 +502,9 @@ fn build_argv_with_identity(
         OsString::from(format!("--slice={}", specification.slice_name)),
         OsString::from(format!("--uid={}", specification.uid)),
         OsString::from(format!("--gid={}", specification.gid)),
-        OsString::from("--property=KillMode=control-group"),
+        // Let the executor cancel its children and run declared cleanup before
+        // systemd's existing final whole-cgroup kill deadline.
+        OsString::from("--property=KillMode=mixed"),
         OsString::from(format!("--property=TimeoutStopSec={STOP_GRACE_SECONDS}")),
         OsString::from(format!(
             "--property=RuntimeMaxSec={}s",
@@ -534,15 +545,27 @@ pub fn supplementary_groups(uid: u32) -> Result<Vec<(u32, OsString)>, SystemdErr
     // SAFETY: getgrouplist reads the NUL-terminated user name and uses the
     // null/zero pair only to report the required element count.
     unsafe {
-        libc::getgrouplist(user.as_ptr(), primary_gid, std::ptr::null_mut(), &mut count);
+        libc::getgrouplist(
+            user.as_ptr(),
+            primary_gid as _,
+            std::ptr::null_mut(),
+            &mut count,
+        );
     }
     if count <= 0 || count > 65_536 {
         return Ok(Vec::new());
     }
-    let mut groups = vec![0 as libc::gid_t; count as usize];
-    // SAFETY: `groups` has exactly `count` writable gid_t elements.
-    let status =
-        unsafe { libc::getgrouplist(user.as_ptr(), primary_gid, groups.as_mut_ptr(), &mut count) };
+    // Infer getgrouplist's native element type: macOS uses c_int, Linux gid_t.
+    let mut groups = vec![0; count as usize];
+    // SAFETY: `groups` has exactly `count` writable elements of the API's type.
+    let status = unsafe {
+        libc::getgrouplist(
+            user.as_ptr(),
+            primary_gid as _,
+            groups.as_mut_ptr(),
+            &mut count,
+        )
+    };
     if status < 0 {
         return Err(SystemdError::Operation(
             "cannot resolve supplementary groups".into(),
@@ -554,7 +577,10 @@ pub fn supplementary_groups(uid: u32) -> Result<Vec<(u32, OsString)>, SystemdErr
     groups
         .into_iter()
         .filter(|gid| *gid != 0)
-        .map(|gid| Ok((gid, group_name(gid)?)))
+        .map(|gid| {
+            let gid: u32 = gid as _;
+            Ok((gid, group_name(gid)?))
+        })
         .collect()
 }
 
@@ -741,6 +767,59 @@ fn prove_cgroup_empty(cgroup: &Path, deadline: Duration) -> bool {
             return false;
         }
     }
+}
+
+fn cgroup_owns_listener(proc_root: &Path, group: &Path, port: u16) -> bool {
+    let mut sockets = std::collections::HashSet::new();
+    for name in ["tcp", "tcp6"] {
+        let Ok(file) = File::open(proc_root.join("net").join(name)) else {
+            continue;
+        };
+        let mut text = String::new();
+        if file
+            .take(4 * 1024 * 1024 + 1)
+            .read_to_string(&mut text)
+            .is_err()
+            || text.len() > 4 * 1024 * 1024
+        {
+            return false;
+        }
+        for line in text.lines().skip(1) {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() > 9
+                && fields[3] == "0A"
+                && fields[1]
+                    .rsplit(':')
+                    .next()
+                    .and_then(|p| u16::from_str_radix(p, 16).ok())
+                    == Some(port)
+            {
+                sockets.insert(format!("socket:[{}]", fields[9]));
+            }
+        }
+    }
+    let Ok(file) = File::open(group.join("cgroup.procs")) else {
+        return false;
+    };
+    let mut pids = String::new();
+    if file.take(1024 * 1024).read_to_string(&mut pids).is_err() {
+        return false;
+    }
+    for pid in pids.lines().filter(|pid| pid.parse::<u32>().is_ok()) {
+        let Ok(descriptors) = std::fs::read_dir(proc_root.join(pid).join("fd")) else {
+            continue;
+        };
+        for entry in descriptors.flatten() {
+            if std::fs::read_link(entry.path())
+                .ok()
+                .and_then(|p| p.to_str().map(str::to_owned))
+                .is_some_and(|p| sockets.contains(&p))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn process_uids_at(proc_root: &Path, pid: u32) -> Option<[u32; 4]> {

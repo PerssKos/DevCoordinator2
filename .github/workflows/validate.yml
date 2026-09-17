@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   rust:
@@ -25,12 +25,16 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Lint Rust workspace
         run: cargo clippy --locked --workspace --all-targets --features devcoordinator2-tooling/selftest-fixtures,devcoordinator2-control/root-acceptance -- -D warnings
-      - name: Test Rust workspace
-        run: cargo test --locked --workspace --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
       - name: Build release binaries
         run: cargo build --locked --release --package devcoordinator2-control --package devcoordinator2-tooling --package devcoordinator2-executor --features devcoordinator2-tooling/selftest-fixtures
+      - name: Check committed file privacy, evidence, sizes, and executable modes
+        run: target/release/devcoordinator2-tooling check pre-commit --root . --tree HEAD
+      - name: Test Rust workspace
+        run: cargo test --locked --workspace --no-fail-fast --features devcoordinator2-tooling/selftest-fixtures -- --test-threads=1
       - name: Build Linux root-acceptance fixtures
-        run: cargo build --locked --release --package devcoordinator2-control --features root-acceptance --bin devcoordinator2-root-acceptance --package devcoordinator2-executor-core --bin devcoordinator2-executor-test-fixture
+        run: cargo build --locked --release --package devcoordinator2-control --features root-acceptance --bin devcoordinator2 --bin devcoordinator2-root-acceptance --package devcoordinator2-executor-core --bin devcoordinator2-executor-test-fixture
+      - name: Test Linux acceptance input and ownership guards
+        run: cargo test --locked --package devcoordinator2-control --features root-acceptance --bin devcoordinator2-root-acceptance
 
   edge:
     name: Edge runtime
@@ -45,7 +49,7 @@ jobs:
           node-version: "20"
       - name: Run edge tests and syntax checks
         run: |
-          node --test edge/test/edge.test.mjs
+          node --test edge/test/*.test.mjs
           node --check console/app.js
           node --check console/verify.mjs
 
@@ -87,6 +91,22 @@ jobs:
 
       - name: Run complete repository validation
         run: target/release/devcoordinator2-tooling skills validate run --root "$GITHUB_WORKSPACE" --temp-root "$RUNNER_TEMP/devcoordinator2-skill-validation"
+
+      - name: Collect bounded CI validation diagnostics
+        if: always()
+        run: |
+          if [ -x target/release/devcoordinator2-tooling ]; then
+            target/release/devcoordinator2-tooling skills validate evidence --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/devcoordinator2-ci-evidence"
+          fi
+
+      - name: Retain CI validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: skill-diagnostics-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/devcoordinator2-ci-evidence/*.json
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Run rendered Console verification
         if: runner.os == 'Linux'

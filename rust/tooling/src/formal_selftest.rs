@@ -151,24 +151,26 @@ impl StaticServer {
     fn start_handler(handler: HttpHandler) -> Result<Self, String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .map_err(|error| format!("cannot bind self-test server: {error}"))?;
-        listener
-            .set_nonblocking(true)
-            .map_err(|error| format!("cannot configure self-test server: {error}"))?;
         let address = listener.local_addr().map_err(|error| error.to_string())?;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_worker = Arc::clone(&stop);
         let thread = thread::spawn(move || {
+            let mut connections = Vec::new();
             while !stop_worker.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if stop_worker.load(Ordering::Acquire) {
+                            break;
+                        }
                         let handler = Arc::clone(&handler);
-                        thread::spawn(move || serve_connection(stream, &handler));
+                        connections.push(thread::spawn(move || serve_connection(stream, &handler)));
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
+            }
+            for connection in connections {
+                let _ = connection.join();
             }
         });
         Ok(Self {
@@ -194,26 +196,17 @@ impl Drop for StaticServer {
 }
 
 fn serve_connection(mut stream: TcpStream, handler: &HttpHandler) {
+    // Accepted sockets may inherit nonblocking mode on BSD-family platforms.
+    // This fixture uses blocking read/write_all, so set the mode explicitly.
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut request = [0u8; 16 * 1024];
-    let Ok(count) = stream.read(&mut request) else {
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let Some(request) = read_fixture_request(&mut stream) else {
         return;
     };
-    let raw = String::from_utf8_lossy(&request[..count]);
-    let path = raw
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/")
-        .to_owned();
-    let headers = raw
-        .lines()
-        .skip(1)
-        .take_while(|line| !line.trim().is_empty())
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        .collect::<BTreeMap<_, _>>();
-    let response = handler(HttpRequest { path, headers });
+    let response = handler(request);
     if !response.delay.is_zero() {
         thread::sleep(response.delay);
     }
@@ -230,6 +223,57 @@ fn serve_connection(mut stream: TcpStream, handler: &HttpHandler) {
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(&response.body);
     let _ = stream.flush();
+}
+
+fn read_fixture_request(reader: &mut impl Read) -> Option<HttpRequest> {
+    const LIMIT: usize = 16 * 1024;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 1024];
+    let end = loop {
+        if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+            break end + 4;
+        }
+        if bytes.len() == LIMIT {
+            return None;
+        }
+        let room = chunk.len().min(LIMIT - bytes.len());
+        let count = reader.read(&mut chunk[..room]).ok()?;
+        if count == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    };
+    let raw = std::str::from_utf8(&bytes[..end]).ok()?;
+    let path = raw.lines().next()?.split_whitespace().nth(1)?.to_owned();
+    let headers = raw
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    if headers.contains_key("transfer-encoding") {
+        return None;
+    }
+    let body = headers
+        .get("content-length")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .ok()?
+        .unwrap_or(0);
+    let required = end.checked_add(body)?;
+    if required > LIMIT {
+        return None;
+    }
+    while bytes.len() < required {
+        let room = chunk.len().min(required - bytes.len());
+        let count = reader.read(&mut chunk[..room]).ok()?;
+        if count == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    Some(HttpRequest { path, headers })
 }
 
 fn source_root() -> PathBuf {
@@ -647,8 +691,10 @@ fn run_verifier(
     let (status, stdout, stderr) = wait_child(child, timeout)?;
     let exit = status.code().unwrap_or(2);
     if !expected_exits.contains(&exit) {
+        let diagnostic = unexpected_exit_diagnostic(&json_out, output);
         return Err(format!(
-            "formal verifier exit mismatch: expected {expected_exits:?}, got {exit}; stderr={} stdout={}",
+            "formal verifier exit mismatch in {}: expected {expected_exits:?}, got {exit}; report={diagnostic}; stderr={} stdout={}",
+            output.file_name().unwrap_or_default().to_string_lossy(),
             String::from_utf8_lossy(&stderr)
                 .chars()
                 .take(500)
@@ -719,6 +765,22 @@ fn run_verifier(
         }
     }
     Ok(report)
+}
+
+fn unexpected_exit_diagnostic(json_out: &Path, output: &Path) -> String {
+    let report = read_bytes_nofollow(json_out, Some(output))
+        .ok()
+        .flatten()
+        .filter(|bytes| bytes.len() <= 16 * 1024 * 1024)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let Some(report) = report else {
+        return "unavailable".into();
+    };
+    let pages = report["pages"].as_array().into_iter().flatten().take(3).map(|page| json!({
+        "outcome":page["outcome"],
+        "reason":page["skipReason"].as_str().map(|reason| reason.chars().take(500).collect::<String>()),
+    })).collect::<Vec<_>>();
+    json!({"coverage_failed":report.pointer("/coverage/failed"),"pages":pages}).to_string()
 }
 
 fn page_rules(page: &Value) -> Vec<(&str, &str)> {
@@ -2078,7 +2140,11 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
                 response
             }
             "/slow-lcp" => HttpResponse::html(html_page(
-                "<p>Initial content</p><img id='late-lcp' width='1000' height='420' alt='Late largest image'><script>setTimeout(()=>{const image=document.querySelector('#late-lcp');image.addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{image.dataset.lcpReady='true';})),{once:true});image.src='/lcp.png';},1200)</script>",
+                "<p>Initial content</p><img id='late-lcp' width='1000' height='420' alt='Late largest image'><script>setTimeout(()=>{const image=document.querySelector('#late-lcp');image.addEventListener('load',async()=>{try{await image.decode();image.dataset.lcpReady='true';}catch{image.dataset.lcpError='true';}},{once:true});image.addEventListener('error',()=>{image.dataset.lcpError='true';},{once:true});image.src='/lcp.png';},1200)</script>",
+                "",
+            )),
+            "/suspended-frames" => HttpResponse::html(html_page(
+                "<h1>Static page with suspended painting callbacks</h1><script>window.requestAnimationFrame=()=>0</script>",
                 "",
             )),
             "/no-lcp" => HttpResponse::html(html_page(
@@ -2167,7 +2233,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
     }
 
     let mut slow_lcp_target = performance_target(root, format!("{base}/slow-lcp"));
-    slow_lcp_target.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
+    slow_lcp_target.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","errorSelector":"#late-lcp[data-lcp-error='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
     slow_lcp_target.insert(
         "performance".to_owned(),
         json!({"ttfbMs":10000,"lcpMs":800}),
@@ -2207,7 +2273,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         json!({"ttfbMs":10000,"lcpMs":10000}),
     );
     let mut prescribed_lcp = performance_target(root, format!("{base}/slow-lcp"));
-    prescribed_lcp.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
+    prescribed_lcp.insert("waitFor".to_owned(),json!({"selector":"#late-lcp[data-lcp-ready='true']","errorSelector":"#late-lcp[data-lcp-error='true']","responseUrl":"**/lcp.png","timeoutMs":5000}));
     prescribed_lcp.insert(
         "performance".to_owned(),
         json!({"ttfbMs":10000,"lcpMs":10000}),
@@ -2244,6 +2310,26 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         return Err("per-target performance thresholds did not override defaults".to_owned());
     }
 
+    let mut suspended_target = performance_target(root, format!("{base}/suspended-frames"));
+    suspended_target.insert("waitFor".into(), json!({"selector":"h1"}));
+    suspended_target.insert("performance".into(), json!({"ttfbMs":10000,"lcpMs":800}));
+    let suspended = run_verifier(
+        root,
+        &performance_config(root, vec![Value::Object(suspended_target)]),
+        &work.join("suspended-frames"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    if suspended.pointer("/pages/0/metrics/performance/lcp/status") != Some(&json!("unavailable"))
+        || suspended.pointer("/pages/0/metrics/performance/lcp/valueMs") != Some(&Value::Null)
+        || suspended.pointer("/pages/0/metrics/performance/lcp/reason")
+            != Some(&json!("observer delivery did not complete"))
+    {
+        return Err(
+            "suspended painting callbacks did not produce an unavailable LCP measurement".into(),
+        );
+    }
     let mut unavailable_target = performance_target(root, format!("{base}/no-lcp"));
     unavailable_target.insert(
         "performance".to_owned(),
@@ -2276,7 +2362,7 @@ fn run_performance_phase(root: &Path, work: &Path, timeout: Duration) -> Result<
         serde_json::to_string(&module_url).map_err(|error| error.to_string())?
     );
     run_node_probe(root, &probe, timeout)?;
-    Ok(6)
+    Ok(7)
 }
 
 fn recursive_named_files(root: &Path, name: &str) -> Vec<PathBuf> {
@@ -3996,6 +4082,7 @@ pub struct SelfTestOptions {
     pub timeout_seconds: u64,
     pub phase: String,
     pub coordinator_fixture: Option<PathBuf>,
+    pub qualification_cache: Option<PathBuf>,
 }
 
 fn settle_phase(
@@ -4038,6 +4125,25 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     }
     let root = source_root();
     validate_skill_contract(&root)?;
+    let qualification_inputs =
+        if options.phase == "all" && !options.keep && options.qualification_cache.is_some() {
+            playwright_module_dir(&root).ok().and_then(|modules| {
+                crate::qualification_cache::inputs(
+                    &root,
+                    &modules,
+                    options.coordinator_fixture.as_deref(),
+                    options.timeout_seconds,
+                )
+                .ok()
+            })
+        } else {
+            None
+        };
+    if let (Some(directory), Some(inputs)) = (&options.qualification_cache, &qualification_inputs)
+        && let Some(receipt) = crate::qualification_cache::lookup(directory, inputs)
+    {
+        return Ok(receipt);
+    }
     let pages = load_pages(&root)?;
     let mut matrix = load_matrix(&root)?;
     if options.phase == "rendering" {
@@ -4244,6 +4350,11 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
     })();
     match result {
         Ok(mut summary) => {
+            if qualification_inputs.is_some()
+                && crate::qualification_cache::managed_browser_evidence(&work)
+            {
+                summary["qualification_browser"] = json!("playwright-managed-browser");
+            }
             if options.keep {
                 summary["workspace"] = json!(work);
             } else {
@@ -4251,6 +4362,26 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
                 std::fs::remove_dir_all(&work)
                     .map_err(|error| format!("cannot clean self-test workspace: {error}"))?;
                 summary["workspace"] = Value::Null;
+            }
+            summary["qualification"] = json!("executed");
+            if let (Some(directory), Some(inputs)) =
+                (&options.qualification_cache, &qualification_inputs)
+                && playwright_module_dir(&root)
+                    .ok()
+                    .and_then(|modules| {
+                        crate::qualification_cache::inputs(
+                            &root,
+                            &modules,
+                            options.coordinator_fixture.as_deref(),
+                            options.timeout_seconds,
+                        )
+                        .ok()
+                    })
+                    .as_ref()
+                    == Some(inputs)
+            {
+                summary["qualification_cache_saved"] =
+                    json!(crate::qualification_cache::record(directory, inputs, &summary).is_ok());
             }
             Ok(summary)
         }
@@ -4264,6 +4395,164 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_http_handles_inherited_nonblocking_sockets_without_truncating_media() {
+        use std::os::fd::AsRawFd;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .write_all(b"GET /lcp.png HTTP/1.1\r\nHost: fixture\r\n\r\n")
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let buffer_bytes: libc::c_int = 4096;
+        // SAFETY: the descriptor and option buffer are live for this exact fixture socket.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    server.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&buffer_bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&buffer_bytes) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let expected = lcp_png();
+        let body = expected.clone();
+        let blocking = Arc::new(AtomicBool::new(false));
+        let observed = blocking.clone();
+        let descriptor = server.as_raw_fd();
+        let handler: HttpHandler = Arc::new(move |request| {
+            assert_eq!(request.path, "/lcp.png");
+            // SAFETY: serve_connection still owns this descriptor while invoking the handler.
+            observed.store(
+                unsafe { libc::fcntl(descriptor, libc::F_GETFL) } & libc::O_NONBLOCK == 0,
+                Ordering::Release,
+            );
+            HttpResponse {
+                status: "200 OK",
+                content_type: "image/png",
+                headers: Vec::new(),
+                body: body.clone(),
+                delay: Duration::ZERO,
+            }
+        });
+        let worker = thread::spawn(move || serve_connection(server, &handler));
+        client
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut response = Vec::new();
+        let received = client.read_to_end(&mut response);
+        worker.join().unwrap();
+        received.unwrap();
+        let body_at = response
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert!(
+            response[body_at..] == expected,
+            "binary fixture response was truncated: expected {} bytes, received {}",
+            expected.len(),
+            response.len() - body_at
+        );
+        assert!(
+            blocking.load(Ordering::Acquire),
+            "blocking fixture I/O inherited nonblocking mode"
+        );
+    }
+
+    #[test]
+    fn fixture_http_reads_fragmented_headers_and_body_before_replying() {
+        struct Fragments(std::io::Cursor<Vec<u8>>);
+        impl Read for Fragments {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let take = output.len().min(3);
+                self.0.read(&mut output[..take])
+            }
+        }
+        let input=b"POST /saved HTTP/1.1\r\nHost: fixture\r\nX-Test: complete\r\nContent-Length: 5\r\n\r\nhello".to_vec();
+        let mut fragmented = Fragments(std::io::Cursor::new(input.clone()));
+        let request = read_fixture_request(&mut fragmented).unwrap();
+        assert_eq!(request.path, "/saved");
+        assert_eq!(request.headers["x-test"], "complete");
+        assert_eq!(fragmented.0.position(), input.len() as u64);
+        let mut incomplete = std::io::Cursor::new(b"GET /cut HTTP/1.1\r\nHost: fixture".to_vec());
+        assert!(read_fixture_request(&mut incomplete).is_none());
+        let mut missing_body =
+            std::io::Cursor::new(b"POST /cut HTTP/1.1\r\nContent-Length: 9\r\n\r\nshort".to_vec());
+        assert!(read_fixture_request(&mut missing_body).is_none());
+        let mut oversized = std::io::Cursor::new(vec![b'a'; 16 * 1024 + 1]);
+        assert!(read_fixture_request(&mut oversized).is_none());
+        assert_eq!(oversized.position(), 16 * 1024);
+    }
+
+    #[test]
+    fn suspended_paint_delivery_finishes_with_unavailable_without_a_real_sleep() {
+        let root = source_root();
+        let verifier =
+            root.join("skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs");
+        let source = format!(
+            r#"
+import fs from 'node:fs';
+const source = fs.readFileSync({}, 'utf8');
+const start = source.indexOf('async function waitForLcpObserverDelivery(');
+const end = source.indexOf('\nasync function assessRenderedPerformance(', start);
+const wait = new Function(source.slice(start,end) + '; return waitForLcpObserverDelivery;')();
+const timers = [];
+globalThis.document = {{images:[]}};
+globalThis.requestAnimationFrame = () => 1;
+globalThis.cancelAnimationFrame = () => {{}};
+globalThis.setTimeout = (callback) => {{timers.push(callback);return timers.length;}};
+globalThis.clearTimeout = () => {{}};
+let settled=false, result=null;
+wait({{evaluate:fn=>fn()}}).then(value=>{{settled=true;result=value;}});
+await new Promise(setImmediate);
+for(const callback of timers) callback();
+await new Promise(setImmediate);
+if(!settled || result!==false) throw new Error('suspended painting was not bounded and unavailable');
+const frames=[];
+globalThis.requestAnimationFrame=callback=>{{frames.push(callback);return frames.length;}};
+let delivered=false;
+wait({{evaluate:fn=>fn()}}).then(value=>{{delivered=value;}});
+await new Promise(setImmediate);
+for(let tick=0;tick<32 && frames.length;tick++) frames.shift()();
+await new Promise(setImmediate);
+if(!delivered) throw new Error('delivered painting callbacks were incorrectly unavailable');
+const readyStart=source.indexOf('async function waitForRenderFrames(');
+const readyEnd=source.indexOf('\nasync function applyWaitFor(',readyStart);
+const readiness=new Function(source.slice(readyStart,readyEnd)+';return waitForRenderFrames;')();
+globalThis.requestAnimationFrame=()=>1;
+timers.length=0;
+let readinessFailure='';
+readiness({{evaluate:(fn,args)=>fn(args)}},2,10).catch(error=>{{readinessFailure=error.message;}});
+await new Promise(setImmediate);
+for(const callback of timers) callback();
+await new Promise(setImmediate);
+if(readinessFailure!=='render-frame readiness deadline reached') throw new Error('painting readiness ignored its deadline');
+"#,
+            serde_json::to_string(&verifier).unwrap()
+        );
+        run_node_probe(&root, &source, Duration::from_secs(10)).unwrap();
+    }
+
+    #[test]
+    fn unexpected_exit_retains_the_exact_fixture_coverage_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let report = directory.path().join("report.json");
+        assert_eq!(
+            unexpected_exit_diagnostic(&report, directory.path()),
+            "unavailable"
+        );
+        std::fs::write(&report, serde_json::to_vec(&json!({"coverage":{"failed":true},"pages":[{"outcome":"navigation_failed","skipReason":"navigation-failed: connection reset","url":"private fixture URL omitted","html":"not copied"}]})).unwrap()).unwrap();
+        let diagnostic = unexpected_exit_diagnostic(&report, directory.path());
+        assert!(diagnostic.contains("connection reset"));
+        assert!(!diagnostic.contains("URL omitted"));
+        assert!(!diagnostic.contains("not copied"));
+    }
 
     #[test]
     fn static_fixture_matrix_is_complete_and_contract_bound() {

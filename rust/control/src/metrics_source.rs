@@ -175,10 +175,10 @@ impl MetricSource for HostMetricSource {
         if unsafe { libc::statvfs(path.as_ptr(), &mut value) } != 0 {
             return FilesystemStats::default();
         }
-        let fragment = value.f_frsize;
-        let size = fragment.saturating_mul(value.f_blocks);
-        let free = fragment.saturating_mul(value.f_bavail);
-        let used = size.saturating_sub(fragment.saturating_mul(value.f_bfree));
+        let fragment: u64 = value.f_frsize as _;
+        let size = fragment.saturating_mul(value.f_blocks as _);
+        let free = fragment.saturating_mul(value.f_bavail as _);
+        let used = size.saturating_sub(fragment.saturating_mul(value.f_bfree as _));
         FilesystemStats { size, free, used }
     }
 

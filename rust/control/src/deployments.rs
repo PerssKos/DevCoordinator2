@@ -376,9 +376,14 @@ impl Deployments {
                     "public callers cannot discover deployments from a path",
                 ));
             }
-            let registered = self
-                .registry
-                .register(Path::new(&path), caller.uid, caller.gid)?;
+            let registered = if caller.via_edge {
+                self.registry
+                    .registered_execution_source(Path::new(&path))?
+                    .0
+            } else {
+                self.registry
+                    .register(Path::new(&path), caller.uid, caller.gid)?
+            };
             let worktree = PathBuf::from(&registered.worktree_path);
             for name in list_deployment_names(&worktree).map_err(config_error)? {
                 let specification = load_deployment_spec(&worktree, &name).map_err(config_error)?;
@@ -576,18 +581,7 @@ impl Deployments {
             }
         }
 
-        let generation = target
-            .row
-            .as_ref()
-            .and_then(|row| row.current_generation)
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::DeploymentApplyFailed,
-                    "deployment generation counter is exhausted",
-                )
-            })?;
+        let generation = self.next_generation(&target)?;
         let ttl_expires_at = target
             .specification
             .ttl_seconds
@@ -715,12 +709,7 @@ impl Deployments {
                 "deployment has no current generation",
             )
         })?;
-        let generation = current.checked_add(1).ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::RollbackUnavailable,
-                "deployment generation counter is exhausted",
-            )
-        })?;
+        let generation = self.next_generation(&target)?;
         let old_components = self
             .store
             .components(&target.deployment_id)?
@@ -990,6 +979,11 @@ impl Deployments {
         let mut components = target.specification.components.clone();
         components.reverse();
         self.stop_components(&target, &row, &components)?;
+        if self.config.edge_uid.is_some() {
+            self.routes.publish_current()?;
+            let edge_state = self.config.state_dir.with_file_name("devcoordinator2-edge");
+            self.routes.wait_for_edge(&edge_state)?;
+        }
         let stored = self.store.components(&target.deployment_id)?;
         let mut deleted_volumes = Vec::new();
         for component in stored {
@@ -1069,6 +1063,7 @@ impl Deployments {
                 && row.state != "stopped"
             {
                 let caller = Caller {
+                    via_edge: false,
                     pid: 0,
                     uid: row.created_by_uid,
                     gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
@@ -1694,6 +1689,48 @@ impl Deployments {
         self.restore_desired(target, desired)
     }
 
+    fn next_generation(&self, target: &DeploymentTarget) -> Result<u32, ProtocolError> {
+        // The selected generation is not a reservation counter: publication
+        // failure or interruption can leave a newer candidate on disk.
+        let mut last = self
+            .store
+            .generations(&target.deployment_id)?
+            .iter()
+            .map(|row| row.number)
+            .max()
+            .unwrap_or(0);
+        if let Some(row) = &target.row {
+            last = last
+                .max(row.current_generation.unwrap_or(0))
+                .max(row.previous_generation.unwrap_or(0));
+        }
+        loop {
+            last = last.checked_add(1).ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentApplyFailed,
+                    "deployment generation counter is exhausted",
+                )
+            })?;
+            if target.source != "checkout" {
+                return Ok(last);
+            }
+            let path = self
+                .files
+                .generation_path(&target.deployment_id, last)
+                .map_err(file_apply_error)?;
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => continue, // Preserve even unrecorded or foreign paths.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(last),
+                Err(_) => {
+                    return Err(ProtocolError::new(
+                        ErrorCode::DeploymentApplyFailed,
+                        "cannot inspect the next checkout generation; retained paths were preserved",
+                    ));
+                }
+            }
+        }
+    }
+
     fn prepare_generation(
         &self,
         target: &DeploymentTarget,
@@ -1926,11 +1963,73 @@ impl Deployments {
         rollback: Option<(u32, u32)>,
         desired: DesiredSnapshot,
     ) -> Result<DeploymentStatus, ProtocolError> {
+        let id = target.deployment_id.clone();
+        let previous_route = self
+            .database
+            .call(move |connection| {
+                connection.query_row(
+                "SELECT domain,component,port,generation FROM domain_routes WHERE deployment_id=?1",
+                [id], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?,
+                    row.get::<_,Option<u16>>(2)?, row.get::<_,Option<u32>>(3)?)),
+            ).optional().map_err(DatabaseError::from)
+            })
+            .map_err(database_error)?;
         let port_map = self.allocate_ports(target, generation)?;
         let mut started = Vec::new();
         let mut failed_component = None;
+        let mut stopped_route_component = None;
         let convergence = (|| {
             for component in &target.specification.components {
+                if target
+                    .specification
+                    .route_component()
+                    .is_some_and(|route| route.name == component.name)
+                    && DeploymentStore::is_generation_scoped(component)
+                    && let Some(old) = old_components.get(&component.name)
+                    && old.state == "running"
+                    && let Some(identity) = old.binding_identity.as_deref()
+                {
+                    let previous_spec: ComponentSpec = target
+                        .row
+                        .as_ref()
+                        .and_then(|row| {
+                            serde_json::from_str::<serde_json::Value>(&row.spec_json).ok()
+                        })
+                        .and_then(|value| {
+                            value
+                                .get("components")
+                                .and_then(|v| v.as_array())
+                                .and_then(|components| {
+                                    components.iter().find(|value| {
+                                        value.get("name").and_then(|v| v.as_str())
+                                            == Some(component.name.as_str())
+                                    })
+                                })
+                                .cloned()
+                        })
+                        .and_then(|value| serde_json::from_value(value).ok())
+                        .ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::DeploymentApplyFailed,
+                                "cannot restore prior routed component specification",
+                            )
+                        })?;
+                    let old_generation = old.generation.unwrap_or(0);
+                    let old_path = self
+                        .store
+                        .generation(&target.deployment_id, old_generation)?
+                        .map(|generation| generation.path)
+                        .unwrap_or_else(|| target.worktree.clone());
+                    self.stop_binding(
+                        target,
+                        old.binding_kind.as_deref().unwrap_or(""),
+                        identity,
+                        Some(component),
+                        &old_path,
+                        old_generation,
+                    )?;
+                    stopped_route_component = Some((previous_spec, old_generation, old_path));
+                }
                 let binding = match self.bring_up(
                     target,
                     component,
@@ -2040,6 +2139,20 @@ impl Deployments {
                         ..Default::default()
                     },
                 )?;
+                if readiness.ready
+                    && target
+                        .specification
+                        .route_component()
+                        .is_some_and(|route| route.name == component.name)
+                    && port_map
+                        .get(&component.name)
+                        .is_some_and(|port| !self.binding_owns_port(component, &binding, *port))
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RouteLeaseConflict,
+                        "the routed listener is not owned by the selected component",
+                    ));
+                }
                 if !readiness.ready {
                     return Err(ProtocolError::new(
                         ErrorCode::DeploymentApplyFailed,
@@ -2057,6 +2170,37 @@ impl Deployments {
                     "finite workload cancelled before commit",
                 ));
             }
+            // Route validation and file publication can fail after every
+            // component is healthy. They must use the same rollback boundary.
+            if let (Some(domain), Some(component)) =
+                (domain, target.specification.route_component())
+            {
+                let port = port_map.get(&component.name).copied().ok_or_else(|| {
+                    ProtocolError::new(
+                        ErrorCode::DeploymentApplyFailed,
+                        "routed component has no allocated port",
+                    )
+                })?;
+                self.store.set_route(
+                    Some(domain),
+                    &target.deployment_id,
+                    Some(&component.name),
+                    Some(port),
+                    Some(generation),
+                )?;
+                self.store.set_component_runtime(
+                    &target.deployment_id,
+                    &component.name,
+                    ComponentRuntimePatch {
+                        last_error: Some(None),
+                        ..Default::default()
+                    },
+                )?;
+            } else {
+                self.store
+                    .set_route(None, &target.deployment_id, None, None, None)?;
+            }
+            self.routes.publish_current()?;
             Ok(())
         })();
 
@@ -2069,6 +2213,34 @@ impl Deployments {
                 old_components,
                 &desired,
             )?;
+            if let Some((component, old_generation, old_path)) = stopped_route_component.take() {
+                let mut old_ports =
+                    crate::ports::assigned(&self.database, &target.deployment_id, 0)
+                        .map_err(runtime_error)?;
+                old_ports.extend(
+                    crate::ports::assigned(&self.database, &target.deployment_id, old_generation)
+                        .map_err(runtime_error)?,
+                );
+                let restored = self
+                    .start_component(target, &component, old_generation, &old_path, &old_ports)
+                    .and_then(|binding| {
+                        self.prove_health(target, &component, &binding, &old_ports, old_generation)
+                    });
+                if !restored.is_ok_and(|health| health.ready) {
+                    self.store.set_component_runtime(
+                        &target.deployment_id,
+                        &component.name,
+                        ComponentRuntimePatch {
+                            state: Some("failed".into()),
+                            health: Some("unhealthy".into()),
+                            last_error: Some(Some(
+                                "previous routed component could not be restored".into(),
+                            )),
+                            ..Default::default()
+                        },
+                    )?;
+                }
+            }
             if let Some(name) = failed_component
                 && self
                     .store
@@ -2085,7 +2257,39 @@ impl Deployments {
                     },
                 )?;
             }
-            let _ = self.validate_or_withdraw_route(&target.deployment_id);
+            // Re-establish the old route through the original lease checks,
+            // after restarting its process. A persistent publication fault is
+            // reported as incomplete recovery, not masked by healthy processes.
+            let route_recovery = (|| {
+                let restoration = match &previous_route {
+                    Some((domain, component, port, selected)) => self.store.set_route(
+                        Some(domain),
+                        &target.deployment_id,
+                        Some(component),
+                        *port,
+                        *selected,
+                    ),
+                    None => self
+                        .store
+                        .set_route(None, &target.deployment_id, None, None, None),
+                };
+                // A rejected restoration must still reconcile the existing row
+                // and publish any withdrawal before returning its failure.
+                let route_healthy = self.validate_or_withdraw_route(&target.deployment_id)?;
+                self.routes.publish_current()?;
+                restoration?;
+                if previous_route
+                    .as_ref()
+                    .is_some_and(|route| route.2.is_some())
+                    && !route_healthy
+                {
+                    return Err(ProtocolError::new(
+                        ErrorCode::RouteLeaseConflict,
+                        "previous route could not be restored",
+                    ));
+                }
+                Ok::<_, ProtocolError>(())
+            })();
             let had_generation = target
                 .row
                 .as_ref()
@@ -2123,30 +2327,14 @@ impl Deployments {
             let message = error.message;
             return Err(
                 ProtocolError::new(ErrorCode::DeploymentApplyFailed, message.clone()).with_detail(
-                    serde_json::json!({"failed": message, "components": components}).to_string(),
+                    serde_json::json!({"failed": message, "components": components,
+                        "route_recovery_complete": route_recovery.is_ok(),
+                        "route_recovery_error": route_recovery.err().map(|error| error.code)})
+                    .to_string(),
                 ),
             );
         }
 
-        if let (Some(domain), Some(component)) = (domain, target.specification.route_component()) {
-            let port = port_map.get(&component.name).copied().ok_or_else(|| {
-                ProtocolError::new(
-                    ErrorCode::DeploymentApplyFailed,
-                    "routed component has no allocated port",
-                )
-            })?;
-            self.store.set_route(
-                Some(domain),
-                &target.deployment_id,
-                Some(&component.name),
-                Some(port),
-                Some(generation),
-            )?;
-        } else {
-            self.store
-                .set_route(None, &target.deployment_id, None, None, None)?;
-        }
-        self.routes.publish_current()?;
         let previous = target.row.as_ref().and_then(|row| row.current_generation);
         self.retire_previous(
             target,
@@ -2237,11 +2425,43 @@ impl Deployments {
         let stable = crate::ports::assigned(&self.database, &target.deployment_id, 0)
             .map_err(runtime_error)?;
         let now = self.store.current_timestamp()?;
+        let routed_component = target
+            .specification
+            .route_component()
+            .map(|component| component.name.as_str());
         for component in &target.specification.components {
             if !component.wants_port || !DeploymentStore::is_owned(component) {
                 continue;
             }
-            let port = if DeploymentStore::is_generation_scoped(component) {
+            let port = if routed_component == Some(component.name.as_str()) {
+                if let Some(port) = stable.get(&component.name) {
+                    *port
+                } else if let Some(port) = crate::ports::adopt_stable(
+                    &self.database,
+                    &target.deployment_id,
+                    &component.name,
+                    target
+                        .row
+                        .as_ref()
+                        .and_then(|row| row.current_generation)
+                        .unwrap_or(generation),
+                )
+                .map_err(runtime_error)?
+                {
+                    port
+                } else {
+                    crate::ports::lease_with_availability(
+                        &self.database,
+                        self.config.port_range,
+                        &target.deployment_id,
+                        &component.name,
+                        0,
+                        &now,
+                        self.port_availability.as_ref(),
+                    )
+                    .map_err(runtime_error)?
+                }
+            } else if DeploymentStore::is_generation_scoped(component) {
                 crate::ports::lease_with_availability(
                     &self.database,
                     self.config.port_range,
@@ -2362,6 +2582,7 @@ impl Deployments {
             .filter_map(|component| component.generation)
             .collect::<BTreeSet<_>>();
         keep.insert(0);
+        keep.insert(generation);
         self.store.prune_generations(&target.deployment_id, &keep)?;
         if let Some(row) = &target.row {
             self.store.restore_apply_snapshot(
@@ -2370,6 +2591,16 @@ impl Deployments {
                 &desired.1,
             )
         } else {
+            // set_route selects its candidate transactionally. A failed first
+            // publication has no previous snapshot to restore that selection.
+            self.store.patch_deployment_runtime(
+                &target.deployment_id,
+                DeploymentRuntimePatch {
+                    current_generation: Some(None),
+                    previous_generation: Some(None),
+                    ..Default::default()
+                },
+            )?;
             self.restore_desired(target, desired)
         }
     }
@@ -3051,13 +3282,6 @@ impl Deployments {
                     "routed Compose component has no allocated host port",
                 )
             })?;
-            let (published, note) = self
-                .docker
-                .compose_publishes_host_port(&binding.1, port)
-                .map_err(|error| apply_runtime_error("cannot verify Compose route", error))?;
-            if !published {
-                return Ok(Readiness::failed(note));
-            }
             Some(port)
         } else {
             None
@@ -3176,7 +3400,21 @@ impl Deployments {
                     generation,
                     &candidates,
                 )?;
-                if ready && let Some(port) = routed_compose_port {
+                if !ready {
+                    return Ok(Readiness::failed(note));
+                }
+                if let Some(port) = routed_compose_port {
+                    let (published, note) = self
+                        .docker
+                        .compose_publishes_host_port(&binding.1, port)
+                        .map_err(|error| {
+                            apply_runtime_error("cannot verify Compose route", error)
+                        })?;
+                    if !published {
+                        return Ok(Readiness::failed(note));
+                    }
+                }
+                if let Some(port) = routed_compose_port {
                     return Ok(self.health.tcp_ready(
                         "127.0.0.1",
                         port,
@@ -3184,11 +3422,7 @@ impl Deployments {
                         &terminal,
                     ));
                 }
-                Ok(if ready {
-                    Readiness::ready(note)
-                } else {
-                    Readiness::failed(note)
-                })
+                Ok(Readiness::ready(note))
             }
             _ => Ok(Readiness::ready("no check")),
         }
@@ -3341,30 +3575,144 @@ impl Deployments {
         }
     }
 
+    fn binding_owns_port(
+        &self,
+        component: &ComponentSpec,
+        binding: &(String, String),
+        port: u16,
+    ) -> bool {
+        match binding.0.as_str() {
+            "unit" => self.systemd.owns_tcp_listener(&binding.1, port),
+            "container" => ExactContainerId::parse(binding.1.clone())
+                .ok()
+                .zip(component.container_port)
+                .is_some_and(|(id, inner)| {
+                    self.docker
+                        .published_host_port(&id, &format!("{inner}/tcp"))
+                        .ok()
+                        == Some(port)
+                }),
+            "compose" => self
+                .docker
+                .compose_publishes_host_port(&binding.1, port)
+                .is_ok_and(|proof| proof.0),
+            _ => false,
+        }
+    }
+
+    pub fn reconcile_routes(&self) -> Result<(), ProtocolError> {
+        let ids = self
+            .database
+            .call(|connection| {
+                let mut statement = connection
+                    .prepare("SELECT deployment_id FROM domain_routes WHERE port IS NOT NULL")?;
+                Ok(statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?)
+            })
+            .map_err(database_error)?;
+        for id in ids {
+            let Ok(_busy) = self.acquire_busy(&id) else {
+                continue;
+            };
+            if let Err(error) = self.validate_or_withdraw_route(&id) {
+                tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+            }
+        }
+        self.routes.publish_current()?;
+        Ok(())
+    }
+
     fn validate_or_withdraw_route(&self, deployment_id: &str) -> Result<bool, ProtocolError> {
         let deployment_id_owned = deployment_id.to_owned();
-        let port = self
+        let route = self
             .database
             .call(move |connection| {
                 connection
                     .query_row(
-                        "SELECT port FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
                         [&deployment_id_owned],
-                        |row| row.get::<_, Option<u16>>(0),
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<u16>>(2)?,
+                                row.get::<_, Option<u32>>(3)?,
+                                row.get::<_, Option<String>>(4)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(DatabaseError::from)
             })
             .map_err(database_error)?
-            .flatten();
-        let Some(port) = port else {
+            ;
+        let Some((_, component, Some(port), generation, lease_id)) = route else {
             return Ok(false);
         };
-        if self.health.tcp_probe("127.0.0.1", port) {
+        let component_name = component.clone();
+        let deployment_id_for_lease = deployment_id.to_owned();
+        let valid_lease = self
+            .database
+            .call(move |connection| {
+                Ok(connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM port_assignments p JOIN components c ON c.deployment_id=p.deployment_id AND c.name=p.component WHERE p.lease_id=?1 AND p.port=?2 AND p.deployment_id=?3 AND p.component=?4 AND p.generation IN (?5,0) AND c.state='running' AND c.health='healthy')",
+                    rusqlite::params![lease_id, port, deployment_id_for_lease, component, generation.unwrap_or(0)],
+                    |row| row.get::<_, i64>(0),
+                )? != 0)
+            })
+            .map_err(database_error)?;
+        let runtime_matches = self
+            .store
+            .get(deployment_id)?
+            .and_then(|row| {
+                let spec: serde_json::Value = serde_json::from_str(&row.spec_json).ok()?;
+                let component: ComponentSpec = serde_json::from_value(
+                    spec.get("components")?
+                        .as_array()?
+                        .iter()
+                        .find(|v| {
+                            v.get("name").and_then(|v| v.as_str()) == Some(component_name.as_str())
+                        })?
+                        .clone(),
+                )
+                .ok()?;
+                let binding = self
+                    .store
+                    .components(deployment_id)
+                    .ok()?
+                    .into_iter()
+                    .find(|r| r.name == component_name)?;
+                // A Compose stack can contain a stopped independent worker or a
+                // failed finite job while its previously committed endpoint is
+                // still healthy. Prove the serving container, not aggregate health.
+                let runtime_healthy = if component.kind == ComponentKind::Compose {
+                    binding.desired_state != "stopped"
+                } else {
+                    let live = self
+                        .component_status(&row, &binding, Some(&component), Some(port))
+                        .ok()?;
+                    live.state == "running" && live.health == "healthy"
+                };
+                Some(
+                    runtime_healthy
+                        && self.binding_owns_port(
+                            &component,
+                            &(binding.binding_kind?, binding.binding_identity?),
+                            port,
+                        ),
+                )
+            })
+            .unwrap_or(false);
+        if valid_lease && runtime_matches && self.health.tcp_probe("127.0.0.1", port) {
             return Ok(true);
         }
-        self.store
-            .set_route(None, deployment_id, None, None, None)?;
+        let id = deployment_id.to_owned();
+        self.database
+            .transaction(move |connection| {
+                crate::ports::withdraw_conflict(connection, &id, &component_name)
+            })
+            .map_err(database_error)?;
         self.routes.publish_current()?;
         Ok(false)
     }
@@ -3402,7 +3750,7 @@ impl Deployments {
         let target = self.resolve_target_readonly(path, name, deployment_id, caller)?;
         if deployment_id.is_none() {
             self.registry
-                .register(&target.worktree, caller.uid, caller.gid)?;
+                .register(&target.worktree, target.caller_uid, target.caller_gid)?;
         }
         Ok(target)
     }
@@ -3431,7 +3779,7 @@ impl Deployments {
                     "recorded deployment source is no longer declared",
                 ));
             }
-            let (caller_uid, caller_gid) = if caller.identity.is_some() {
+            let (caller_uid, caller_gid) = if caller.is_console() {
                 (
                     row.created_by_uid,
                     primary_gid(row.created_by_uid).map_err(systemd_error)?,
@@ -3468,8 +3816,26 @@ impl Deployments {
                 "name or deployment_id is required",
             )
         })?;
-        let resolved =
-            crate::repository::resolve_worktree(Path::new(path), Some((caller.uid, caller.gid)))?;
+        let (resolved, caller_uid, caller_gid) = if caller.via_edge {
+            let (source, uid, gid) = self.registry.registered_execution_source(Path::new(path))?;
+            (
+                crate::repository::WorktreeInfo {
+                    repository_root: source.root_path.into(),
+                    worktree_root: source.worktree_path.into(),
+                },
+                uid,
+                gid,
+            )
+        } else {
+            (
+                crate::repository::resolve_worktree(
+                    Path::new(path),
+                    Some((caller.uid, caller.gid)),
+                )?,
+                caller.uid,
+                caller.gid,
+            )
+        };
         let repository_id = crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
             ProtocolError::new(
                 ErrorCode::RepositoryNotFound,
@@ -3515,8 +3881,8 @@ impl Deployments {
             worktree,
             specification,
             source,
-            caller_uid: caller.uid,
-            caller_gid: caller.gid,
+            caller_uid,
+            caller_gid,
             client: client_kind_name(caller.client_kind).into(),
             session: caller.client_session.clone(),
         })
@@ -3593,20 +3959,68 @@ impl Deployments {
             state = "degraded".into();
         }
         let deployment_id = row.deployment_id.clone();
-        let (domain, route_port) = self
+        let (domain, route_port, route_valid) = self
             .database
             .call(move |connection| {
-                connection
+                let route = connection
                     .query_row(
-                        "SELECT domain,port FROM domain_routes WHERE deployment_id=?1",
+                        "SELECT domain,component,port,generation,lease_id FROM domain_routes WHERE deployment_id=?1",
                         [&deployment_id],
-                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u16>>(1)?)),
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+                            row.get::<_, Option<u16>>(2)?, row.get::<_, Option<u32>>(3)?,
+                            row.get::<_, Option<String>>(4)?)),
                     )
-                    .optional()
-                    .map(|value| value.unwrap_or((String::new(), None)))
-                    .map_err(DatabaseError::from)
+                    .optional()?;
+                let Some((domain, component, port, generation, lease)) = route else {
+                    return Ok((String::new(), None, false));
+                };
+                let valid = match (port, lease.as_deref()) {
+                    (Some(port), Some(lease)) => crate::ports::route_lease(connection,
+                        &deployment_id, &component, port, generation, Some(lease))?.is_some(),
+                    _ => false,
+                };
+                Ok((domain, port, valid))
             })
             .map_err(database_error)?;
+        let mut blockers = Vec::new();
+        let expected_domain =
+            DeploymentStore::effective_domain(Some(row), &resolved.specification, &row.source);
+        if expected_domain.is_some()
+            && resolved.specification.route_component().is_some()
+            && (expected_domain.as_deref() != Some(domain.as_str()) || !route_valid)
+        {
+            blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                component: resolved
+                    .specification
+                    .route_component()
+                    .unwrap()
+                    .name
+                    .clone(),
+                code: ErrorCode::RouteLeaseConflict,
+                file: None,
+                message: "the declared hostname has no healthy route for the selected generation"
+                    .into(),
+            });
+            if state == "running" {
+                state = "degraded".into();
+            }
+        }
+        if matches!(row.state.as_str(), "failed" | "degraded")
+            || owned.iter().any(|component| {
+                component.generation.is_some_and(|generation| {
+                    generation != 0 && Some(generation) != row.current_generation
+                })
+            })
+        {
+            blockers.push(devcoordinator2_api::results::DeploymentBlocker {
+                component: String::new(),
+                code: ErrorCode::DeploymentApplyFailed,
+                file: None,
+                message:
+                    "the last update did not commit successfully; inspect or reapply the deployment"
+                        .into(),
+            });
+        }
         let repository_id = row.repository_id.clone();
         let repository_name = self
             .database
@@ -3654,7 +4068,7 @@ impl Deployments {
                 expected_components,
                 missing_components,
                 pending_apply: None,
-                blockers: Vec::new(),
+                blockers,
             }),
         })
     }
@@ -3780,6 +4194,14 @@ impl Deployments {
             None
         };
         Ok(Component {
+            lease_id: match port {
+                Some(port) => {
+                    let deployment_id = row.deployment_id.clone();
+                    let name = row.name.clone();
+                    self.database.call(move |c| Ok(c.query_row("SELECT lease_id FROM port_assignments WHERE port=?1 AND deployment_id=?2 AND component=?3",rusqlite::params![port,deployment_id,name],|r|r.get::<_,String>(0)).optional()?)).map_err(database_error)?
+                }
+                None => None,
+            },
             name: row.name.clone(),
             display_name: None,
             r#type: row.kind.clone(),
@@ -4116,6 +4538,7 @@ fn truncate_tail(value: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    mod route_recovery;
     use super::*;
     use crate::deployment_state::{
         ComponentRuntimePatch, ComposeCompletionInput, ObservedContainerInput,
@@ -4246,6 +4669,9 @@ mod tests {
     struct FakeSystemd;
 
     impl SystemdControl for FakeSystemd {
+        fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+            true
+        }
         fn spawn_transient(
             &self,
             _specification: &TransientUnitSpec,
@@ -4338,6 +4764,8 @@ mod tests {
         actions: Mutex<Vec<String>>,
         states: Mutex<HashMap<String, String>>,
         build_exit: std::sync::atomic::AtomicI32,
+        listener_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        reject_running_starts: std::sync::atomic::AtomicBool,
     }
 
     impl MutationSystemd {
@@ -4346,11 +4774,20 @@ mod tests {
                 actions: Mutex::new(Vec::new()),
                 states: Mutex::new(HashMap::new()),
                 build_exit: std::sync::atomic::AtomicI32::new(0),
+                listener_hook: Mutex::new(None),
+                reject_running_starts: std::sync::atomic::AtomicBool::new(false),
             }
         }
     }
 
     impl SystemdControl for MutationSystemd {
+        fn owns_tcp_listener(&self, _unit: &str, _port: u16) -> bool {
+            let hook = self.listener_hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+            true
+        }
         fn spawn_transient(
             &self,
             specification: &TransientUnitSpec,
@@ -4369,6 +4806,19 @@ mod tests {
         }
 
         fn start_persistent(&self, specification: &PersistentUnitSpec) -> Result<(), SystemdError> {
+            if self.reject_running_starts.load(Ordering::SeqCst)
+                && self
+                    .states
+                    .lock()
+                    .unwrap()
+                    .get(&specification.unit)
+                    .is_some_and(|state| state == "running")
+            {
+                return Err(SystemdError::Operation(format!(
+                    "cannot recreate a non-terminal unit: {}",
+                    specification.unit
+                )));
+            }
             self.actions
                 .lock()
                 .unwrap()
@@ -4456,6 +4906,8 @@ mod tests {
         next: AtomicU64,
         fail_create: std::sync::atomic::AtomicBool,
         fail_compose: std::sync::atomic::AtomicBool,
+        compose_starting: std::sync::atomic::AtomicBool,
+        compose_missing_port: std::sync::atomic::AtomicBool,
         block_finite: std::sync::atomic::AtomicBool,
         finite_started: std::sync::atomic::AtomicBool,
     }
@@ -4468,6 +4920,8 @@ mod tests {
                 next: AtomicU64::new(1),
                 fail_create: std::sync::atomic::AtomicBool::new(false),
                 fail_compose: std::sync::atomic::AtomicBool::new(false),
+                compose_starting: std::sync::atomic::AtomicBool::new(false),
+                compose_missing_port: std::sync::atomic::AtomicBool::new(false),
                 block_finite: std::sync::atomic::AtomicBool::new(false),
                 finite_started: std::sync::atomic::AtomicBool::new(false),
             }
@@ -4660,6 +5114,7 @@ mod tests {
                     "fixture build progress\n".repeat(400)
                 )));
             }
+            self.compose_starting.store(true, Ordering::Release);
             Ok(())
         }
 
@@ -4710,8 +5165,34 @@ mod tests {
             host_port: u16,
         ) -> Result<(bool, String), DockerError> {
             Ok((
-                true,
+                !self.compose_starting.load(Ordering::Acquire)
+                    && !self.compose_missing_port.load(Ordering::Acquire),
                 format!("allocated host port {host_port} is published"),
+            ))
+        }
+
+        fn compose_ready(
+            &self,
+            project: &str,
+            services: &[String],
+            finite_services: &[String],
+            completions: &BTreeSet<String>,
+            desired_states: &BTreeMap<String, RuntimeState>,
+            _timeout: Duration,
+            _cancellation: Option<Arc<std::sync::atomic::AtomicBool>>,
+        ) -> Result<(bool, String, DockerComposeState), DockerError> {
+            self.compose_starting.store(false, Ordering::Release);
+            let state = self.compose_state(
+                project,
+                services,
+                finite_services,
+                completions,
+                desired_states,
+            )?;
+            Ok((
+                matches!(state.state, RuntimeState::Running | RuntimeState::Completed),
+                format!("compose {}", state.state.as_str()),
+                state,
             ))
         }
 
@@ -5033,6 +5514,7 @@ tcp="127.0.0.1:25"
             }).unwrap();
             let config = Config {
                 socket_path: temporary.path().join("daemon.sock"),
+                sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
                 state_dir: temporary.path().join("state"),
                 unit_prefix: "devcoordinator2-test".into(),
                 slice_name: "devcoordinator2-tests.slice".into(),
@@ -5070,6 +5552,7 @@ tcp="127.0.0.1:25"
 
         fn caller() -> Caller {
             Caller {
+                via_edge: false,
                 pid: 1,
                 uid: 1000,
                 gid: 1000,
@@ -5134,8 +5617,12 @@ tcp="127.0.0.1:25"
                     },
                 )
                 .unwrap();
+            self.deployments
+                .store
+                .set_deployment_runtime(&deployment_id, "running", Some(1), None)
+                .unwrap();
             self.database.transaction({let deployment_id=deployment_id.clone(); move |transaction| {
-                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at) VALUES(20001,?1,'api',1,'t')",[deployment_id])?;
+                transaction.execute("INSERT INTO port_assignments(port,deployment_id,component,generation,assigned_at,lease_id) VALUES(20001,?1,'api',0,'t','lfixture')",[deployment_id])?;
                 Ok(())
             }}).unwrap();
             self.deployments
@@ -5383,6 +5870,7 @@ image="cache:1"
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -5415,6 +5903,7 @@ image="cache:1"
             clock.clone(),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -5473,7 +5962,7 @@ image="cache:2"
         let reapplied = deployments
             .apply(None, None, Some(&deployment_id), &caller)
             .unwrap();
-        assert_eq!(reapplied.current_generation, Some(2));
+        assert_eq!(reapplied.current_generation, Some(3));
 
         let stopped = deployments
             .control("stop", None, None, Some(&deployment_id), None, &caller)
@@ -5550,6 +6039,7 @@ image="cache:1"
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -5582,6 +6072,7 @@ image="cache:1"
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -5674,6 +6165,7 @@ command=["serve"]
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -5705,6 +6197,7 @@ command=["serve"]
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -5758,7 +6251,8 @@ command=["serve"]
         let recovered = deployments
             .apply(None, None, Some(&first.deployment_id), &caller)
             .unwrap();
-        assert_eq!(recovered.current_generation, Some(2));
+        // The failed build's retained g2 receipt must not be overwritten.
+        assert_eq!(recovered.current_generation, Some(3));
     }
 
     fn finite_world() -> (
@@ -5786,6 +6280,7 @@ command=["serve"]
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -5817,6 +6312,7 @@ command=["serve"]
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -5933,6 +6429,15 @@ command=["serve"]
 
     #[test]
     fn compose_finite_receipts_independent_control_logs_and_removal_are_preserved() {
+        assert_compose_lifecycle(false);
+    }
+
+    #[test]
+    fn compose_healthy_without_allocated_port_is_not_ready() {
+        assert_compose_lifecycle(true);
+    }
+
+    fn assert_compose_lifecycle(missing_port: bool) {
         let temporary = tempdir().unwrap();
         let worktree = temporary.path().join("repository");
         std::fs::create_dir(&worktree).unwrap();
@@ -5972,6 +6477,7 @@ route=true
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -6003,6 +6509,7 @@ route=true
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6012,9 +6519,16 @@ route=true
             identity: None,
         };
         assert_ne!(caller.uid, 0, "Compose fixture requires a non-root caller");
-        let applied = deployments
-            .apply(Some(worktree.to_str().unwrap()), Some("web"), None, &caller)
-            .unwrap();
+        docker
+            .compose_missing_port
+            .store(missing_port, Ordering::Release);
+        let result =
+            deployments.apply(Some(worktree.to_str().unwrap()), Some("web"), None, &caller);
+        if missing_port {
+            assert_eq!(result.unwrap_err().code, ErrorCode::DeploymentApplyFailed);
+            return;
+        }
+        let applied = result.unwrap();
         let stack = &applied.components[0];
         assert_eq!(stack.state, "running");
         assert_eq!(applied.domain.as_deref(), Some("app"));
@@ -6175,6 +6689,7 @@ database="app"
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -6206,6 +6721,7 @@ database="app"
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
         );
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -6318,6 +6834,7 @@ env_file=".web.env"
             Arc::new(HostClock),
         );
         let caller = Caller {
+            via_edge: false,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             ..World::caller()

@@ -44,6 +44,7 @@ impl Fixture {
         }).unwrap();
         let config = Config {
             socket_path: root.join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: root.join("state"),
             unit_prefix: "fixture".into(),
             slice_name: "fixture.slice".into(),

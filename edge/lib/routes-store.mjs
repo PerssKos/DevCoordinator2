@@ -15,17 +15,30 @@ export function validateDocument(text) {
     throw new Error('route document is empty or oversized');
   }
   const doc = JSON.parse(text);
-  if (doc?.schema !== 1) throw new Error('unsupported route schema');
+  if (doc?.schema !== 1 && doc?.schema !== 2) throw new Error('unsupported route schema');
   const { schema: _s, payload_sha256: sha, ...payload } = doc;
   const canonical = canonicalJson(payload);
   const expected = crypto.createHash('sha256').update(canonical).digest('hex');
   if (sha !== expected) throw new Error('route document checksum mismatch');
-  if (!Number.isInteger(doc.generation) || !Array.isArray(doc.routes)) {
+  if ((!Number.isSafeInteger(doc.generation) || doc.generation < 1) || !Array.isArray(doc.routes)) {
     throw new Error('route document missing generation or routes');
   }
+  const domains = new Set();
+  const leases = new Map();
   for (const r of doc.routes) {
     if (typeof r.domain !== 'string' || !Number.isInteger(r.port) || typeof r.deployment_id !== 'string') {
       throw new Error('route entry malformed');
+    }
+    if (r.port < 1 || r.port > 65535 || domains.has(r.domain)) throw new Error('route domain or port is invalid');
+    domains.add(r.domain);
+    if (doc.schema === 2 && r.observed !== true
+      && (typeof r.lease_id !== 'string' || r.lease_id.length < 2 || r.lease_id.length > 128)) {
+      throw new Error('route entry lease identity is malformed');
+    }
+    if (r.lease_id) {
+      const identity = JSON.stringify([r.deployment_id, r.component, r.port]);
+      if (leases.has(r.lease_id) && leases.get(r.lease_id) !== identity) throw new Error('route lease has conflicting ownership');
+      leases.set(r.lease_id, identity);
     }
   }
   if (!doc.access || !Array.isArray(doc.access.owners) || !Array.isArray(doc.access.grants)) {
@@ -45,8 +58,11 @@ export function canonicalJson(value) {
 
 export async function createRoutesStore({ file, stateDir, log }) {
   const lkgFile = path.join(stateDir, 'routes.last-known-good.json');
-  let current = { schema: 1, generation: 0, routes: [], access: { owners: [], grants: [] }, domain: '' };
+  let current = { schema: 2, generation: 0, routes: [], access: { owners: [], grants: [] }, domain: '' };
   let source = 'none';
+  let rejectedGeneration = null;
+  let lastRejected = null;
+  let pendingLoad = Promise.resolve();
 
   async function tryLoad(candidate, label) {
     let text;
@@ -62,19 +78,31 @@ export async function createRoutesStore({ file, stateDir, log }) {
       log?.warn?.('route document rejected', { file: candidate, error: error.message });
       return false;
     }
-    if (doc.generation < current.generation) {
-      log?.warn?.('route document older than served generation ignored', { generation: doc.generation, served: current.generation });
+    if (doc.generation < current.generation || (doc.generation === current.generation && doc.payload_sha256 !== current.payload_sha256)) {
+      rejectedGeneration = doc.generation;
+      if (lastRejected !== doc.payload_sha256) log?.warn?.('route document older than served generation ignored', { generation: doc.generation, served: current.generation });
+      lastRejected = doc.payload_sha256;
       return false;
     }
+    lastRejected = null;
+    rejectedGeneration = null;
     if (doc.generation === current.generation && source !== 'none') return true;
-    current = doc;
-    source = label;
-    if (label === 'live') {
+
+    if (label === 'live' && doc.schema === 2) {
       await fsp.mkdir(stateDir, { recursive: true });
       const tmp = `${lkgFile}.tmp`;
       await fsp.writeFile(tmp, text, { mode: 0o600 });
       await fsp.rename(tmp, lkgFile);
     }
+    const accepted = path.join(stateDir, 'routes.accepted.json');
+    const handle = await fsp.open(accepted + '.tmp', 'w', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify({ schema: doc.schema, generation: doc.generation, payload_sha256: doc.payload_sha256 }));
+      await handle.sync();
+    } finally { await handle.close(); }
+    await fsp.rename(accepted + '.tmp', accepted);
+    current = doc;
+    source = label;
     log?.info?.('route document loaded', { generation: doc.generation, routes: doc.routes.length, source: label });
     return true;
   }
@@ -83,11 +111,12 @@ export async function createRoutesStore({ file, stateDir, log }) {
   await tryLoad(lkgFile, 'last-known-good');
   await tryLoad(file, 'live');
 
-  let timer = setInterval(() => { tryLoad(file, 'live').catch(() => {}); }, POLL_MS);
+  function reload() { pendingLoad = pendingLoad.catch(() => false).then(() => tryLoad(file, 'live')); return pendingLoad; }
+  let timer = setInterval(() => { reload().catch(() => {}); }, POLL_MS);
   timer.unref();
   let watcher = null;
   try {
-    watcher = fs.watch(path.dirname(file), () => { tryLoad(file, 'live').catch(() => {}); });
+    watcher = fs.watch(path.dirname(file), () => { reload().catch(() => {}); });
     watcher.unref?.();
   } catch {
     watcher = null;
@@ -96,7 +125,8 @@ export async function createRoutesStore({ file, stateDir, log }) {
   return {
     current: () => current,
     source: () => source,
-    reload: () => tryLoad(file, 'live'),
+    rejectedGeneration: () => rejectedGeneration,
+    reload,
     close: () => { clearInterval(timer); watcher?.close(); },
   };
 }

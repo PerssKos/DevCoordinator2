@@ -523,6 +523,7 @@ impl ProgressService {
             {
                 runs.entry(summary.run_id.clone())
                     .or_insert(TestHistoryEntry {
+                        targets: summary.targets.clone(),
                         work: summary.work,
                         run_id: summary.run_id,
                         test: summary.test,
@@ -562,7 +563,7 @@ impl ProgressService {
             .call(move |connection| {
                 connection
                     .query_row(
-                        "SELECT release_id,name,status FROM releases WHERE repository_id=?1 AND status IN ('planned','requested') ORDER BY seq LIMIT 1",
+                        "SELECT release_id,name,status FROM releases WHERE repository_id=?1 AND status IN ('planned','requested') AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq LIMIT 1",
                         [repository_id],
                         |row| Ok(Release { id:row.get(0)?,name:row.get(1)?,status:row.get(2)? }),
                     )
@@ -1269,6 +1270,7 @@ mod tests {
             .unwrap();
         let config = Config {
             socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "fixture".into(),
             slice_name: "fixture.slice".into(),

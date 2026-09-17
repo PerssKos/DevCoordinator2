@@ -1109,13 +1109,17 @@ fn read_private_token(path: &Path) -> Option<String> {
         .read_to_end(&mut bytes)
         .ok()?;
     let after = file.metadata().ok()?;
-    if after.dev() != before.st_dev
+    // rustix uses the native dev_t/nanosecond types; MetadataExt normalizes them.
+    let before_device: u64 = before.st_dev as _;
+    let before_modified_nanoseconds: u64 = before.st_mtime_nsec as _;
+    let before_changed_nanoseconds: u64 = before.st_ctime_nsec as _;
+    if after.dev() != before_device
         || after.ino() != before.st_ino
         || after.size() != before.st_size as u64
         || after.mtime() != before.st_mtime
-        || u64::try_from(after.mtime_nsec()).ok() != Some(before.st_mtime_nsec)
+        || u64::try_from(after.mtime_nsec()).ok() != Some(before_modified_nanoseconds)
         || after.ctime() != before.st_ctime
-        || u64::try_from(after.ctime_nsec()).ok() != Some(before.st_ctime_nsec)
+        || u64::try_from(after.ctime_nsec()).ok() != Some(before_changed_nanoseconds)
         || bytes.len() as u64 != before.st_size as u64
     {
         return None;

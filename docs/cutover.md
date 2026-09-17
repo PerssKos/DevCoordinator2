@@ -52,6 +52,37 @@ left as expiring invitations. Approved historical requests are not pending work.
 
 ## Pre-cutover proofs (handover §20)
 
+### Inspect missing planning records without restoring authority
+
+Use the compiled local tool against one explicitly selected activation directory:
+
+```sh
+devcoordinator2-tooling planning inspect-backup \
+  --transaction-dir /absolute/saved/activation \
+  --repository-id r0000000000000001 \
+  --task-id p0000000000000001
+```
+
+It opens only the private saved `authority-before.sqlite3` and its activation
+snapshot, using read-only immutable SQLite without migrations or WAL/SHM creation.
+The result contains repository-scoped planning counts and the repository identity
+of each explicitly requested task, not private record text or installation
+contents. It checks file identity and hashes before and after inspection.
+Optional `--identities` adds up to 4,096 IDs and ordering numbers per planning
+family, plus hashes of decision references, for collision analysis. It does not
+export titles, outcomes, reference text or private installation values.
+Schema-2 snapshots must match their recorded backup hash; schema-1 snapshots
+without that historical binding are labelled `legacy_without_recorded_hash`.
+The newly calculated hash identifies the inspected bytes but does not establish
+their historical authenticity or completeness.
+
+This command does not restore records, change live authority, or make a backup
+the current completion ledger. Missing-record recovery requires a separately
+reviewed plan that preserves newer authoritative records; do not use whole-state
+installation rollback to merge missing planning history.
+
+### Required proofs
+
 1. **Public authentication/grant boundary** — register the console
    redirect URI with the identity provider for the canary origin, fill
    `/etc/devcoordinator2/edge/oidc.client_id|client_secret`, restart the
@@ -91,11 +122,22 @@ left as expiring invitations. Approved historical requests are not pending work.
    waits for finite accepted requests to finish, rejects an
    applying deployment, creates the private SQLite backup and installation
    snapshot, switches the units and direct binary links, and verifies the v2
-   daemon and Node edge. If interrupted, run
-   `devcoordinator2-tooling install recover --yes`; it restores the captured
+   daemon and Node edge. The replacement answers readiness pings while the
+   prior socket is retained, but resumes normal API admission only after the
+   activation commits, so rollback cannot discard newly accepted user writes.
+   If interrupted, run
+   `devcoordinator2-tooling install recover --transaction-dir <the interrupted transaction> --yes`;
+   identify the unfinished transaction from the activation receipt. Recovery
+   rejects a missing target, a completed transaction, a mismatched installation,
+   or a changed backup; it never selects an old historical transaction by default.
+   It restores the captured
    installation and restores the database when integrity fails or the failed
    candidate changed its schema beyond the captured prior installation.
    Same-schema startup failures preserve intact current data.
+   Before reporting success, activation and recovery reconcile stable route
+   leases and live listeners, publish above the durable route-generation floor,
+   and verify that the edge accepted that document. The edge retains its last
+   valid route while this reconciliation runs.
    Subsequent source updates are developed and validated in worktrees, merged
    to `origin/main`, then fetched and fast-forwarded into the clean
    `/home/DevCoordinator2` checkout. A later `install build`, `verify`, and

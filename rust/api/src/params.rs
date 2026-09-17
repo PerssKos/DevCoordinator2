@@ -34,6 +34,8 @@ pub enum LogPhase {
     Check,
     Discovery,
     Case,
+    Fixture,
+    Cleanup,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -276,6 +278,11 @@ pub struct StartTest {
     pub test: Option<String>,
     #[serde(default)]
     pub checks: Vec<String>,
+    #[serde(default)]
+    #[schemars(length(max = 32))]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub cases: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default = "release_tier")]
     pub tier: ValidationTier,
 }

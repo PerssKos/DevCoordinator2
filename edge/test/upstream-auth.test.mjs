@@ -66,10 +66,10 @@ test('private route credentials reach only the authorized HTTP and WebSocket ups
   await fs.writeFile(privateFile, JSON.stringify({ schema: 1, routes: credentials }), { mode: 0o600 });
   const payload = { generation: 1, published_at: '2026-09-07T00:00:00Z', domain: 'example.test',
     routes: ['app', 'second', 'other', 'open'].map((label) => ({
-      deployment_id: `deployment-${label}`, component: 'web', label, domain: `${label}.example.test`,
+      deployment_id: `deployment-${label}`, lease_id: `lease-${label}`, component: 'web', label, domain: `${label}.example.test`,
       port: upstreamPort, scheme: 'http', auth: label === 'open' ? 'public' : 'authenticated', generation: 1,
     })), access: { owners: ['owner@example.test'], grants: [] } };
-  const document = { schema: 1, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload };
+  const document = { schema: 2, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload };
   await fs.writeFile(routeFile, JSON.stringify(document));
   const config = { baseDomain: 'example.test', consoleHost: 'console.example.test', httpOnly: true, httpPort: 0,
     sessionSecret: 'fixture-session-secret-long-enough', oidcIssuer: 'http://127.0.0.1', oidcClientId: 'fixture',

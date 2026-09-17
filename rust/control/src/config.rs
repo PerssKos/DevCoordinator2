@@ -23,6 +23,7 @@ pub struct CodexUsageSource {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     pub socket_path: PathBuf,
+    pub sandbox_bridge_dir: PathBuf,
     pub state_dir: PathBuf,
     pub unit_prefix: String,
     pub slice_name: String,
@@ -90,6 +91,8 @@ impl Config {
                 })
                 .unwrap_or_else(|| default.to_owned())
         };
+        let socket_path: PathBuf =
+            value("DEVCOORDINATOR2_SOCKET", "/run/devcoordinator2/daemon.sock").into();
         let port_range = parse_port_range(&value("DEVCOORDINATOR2_PORT_RANGE", "20000-29999"))?;
         let compose_path = optional_path(&value("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", ""));
         let usage_path = optional_path(&value("DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE", ""));
@@ -108,8 +111,10 @@ impl Config {
         while base_domain.ends_with('.') {
             base_domain.pop();
         }
+        let sandbox_bridge_dir = sandbox_bridge_directory(&socket_path);
         Ok(Self {
-            socket_path: value("DEVCOORDINATOR2_SOCKET", "/run/devcoordinator2/daemon.sock").into(),
+            socket_path,
+            sandbox_bridge_dir,
             state_dir: value("DEVCOORDINATOR2_STATE_DIR", "/var/lib/devcoordinator2").into(),
             unit_prefix: value("DEVCOORDINATOR2_UNIT_PREFIX", "devcoordinator2-test"),
             slice_name: value("DEVCOORDINATOR2_SLICE", "devcoordinator2-tests.slice"),
@@ -166,6 +171,18 @@ impl Config {
     pub fn deploy_unit_prefix(&self) -> String {
         format!("{}-deploy", self.unit_prefix.replace("-test", ""))
     }
+}
+
+pub fn sandbox_bridge_directory(socket_path: &Path) -> PathBuf {
+    let file_values = instance_file_values();
+    std::env::var_os("DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            file_values
+                .get("DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR")
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| crate::sandbox_bridge::default_directory(socket_path))
 }
 
 fn optional_path(value: &str) -> Option<PathBuf> {

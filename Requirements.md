@@ -297,9 +297,12 @@ not contradict them.
 - **REQ-DEPLOY-04** (P3, done): Stop/restart/redeploy never deletes persistent
   database or volume data; destructive removal is a separate explicit
   action.
-- **REQ-DEPLOY-05** (P3, done): Port and domain assignments are transactionally unique
-  and route only to healthy selected generations via atomic route-document
-  publication.
+- **REQ-DEPLOY-05** (P3, in scope): Port and domain assignments are transactionally
+  unique and every routed repository/worker component keeps one immutable stable
+  lease across deployment generations. Route publication includes the lease
+  identity and refuses mismatched, unleased, or unhealthy targets via atomic
+  route-document publication. Non-routed blue/green components may remain
+  generation-scoped.
 - **REQ-DEPLOY-06** (P8, done; amended 2026-08-24): A reviewed migration may
   import exact currently running native identities as a replaceable
   observed-only projection. It exposes attribution, status, health, and
@@ -526,6 +529,15 @@ not contradict them.
 - **REQ-ACCESS-04**: Local agent calls via the Unix socket are independent
   of public deployment grants; the kernel peer UID is the caller identity
   and request bodies cannot assert identity (P1, in scope).
+- **REQ-ACCESS-05**: Agents running under a sandbox that denies socket
+  syscalls can use the same protocol-2 CLI and MCP workflow without owner
+  intervention. On client-side `EPERM` only, the client uses the daemon-owned
+  bounded file bridge. The daemon derives caller UID/GID from the private
+  request file owner, validates the same envelope and operation schemas, and
+  publishes a private response file. No TCP listener, public proxy, second
+  scheduler, or alternate authorization model is introduced. Interrupted
+  bridge processing returns a bounded re-query error rather than replaying an
+  accepted mutation.
 
 ## Planning, completion ledger, and decisions (REQ-PLAN, Schemas 8, 11, and 13)
 
@@ -614,6 +626,10 @@ not contradict them.
   readiness aborts promptly when the underlying unit or container becomes
   irrecoverably terminal after its restart policy, while recoverable restarts
   retain the configured readiness window.
+- **REQ-REL-08** (P1, in scope): Coordinator recovery selects an explicit
+  in-progress transaction, preserves the edge last-known-good route while
+  state is reconciled, and does not report recovery complete until database,
+  stable leases, route ownership, listeners, and edge generation agree.
 - **REQ-REL-08** (2026-09-02, done): The three exhaustive audit skills
   resolve their installed direct links to the one root `full_repo_harness` in
   the canonical live checkout. No vendored harness tree, synchronization tool,

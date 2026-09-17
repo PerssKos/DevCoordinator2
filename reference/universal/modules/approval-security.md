@@ -50,6 +50,8 @@
   conversational confirmation for the same authorized action.
 - Ask again only when new evidence materially changes the authorized
   outcome or boundaries.
+- Don't ask for approvals to commit, push or deploy test/dev servers and 
+  Coordinator's owned local projects. 
 
 ### Security-posture decisions
 

@@ -62,7 +62,14 @@ fn serve_http(version: &str) -> Result<i32, String> {
     for connection in listener.incoming() {
         let mut stream = connection.map_err(|error| error.to_string())?;
         let mut request = [0u8; 4096];
-        let _ = stream.read(&mut request);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|error| error.to_string())?;
+        // TCP readiness probes close without an HTTP request. A disconnected
+        // client must not terminate the server used to test live ownership.
+        if !matches!(stream.read(&mut request), Ok(count) if count > 0) {
+            continue;
+        }
         let body = serde_json::to_vec(&json!({
             "version": version,
             "generation": env::var("DC2_GENERATION").ok(),
@@ -71,13 +78,12 @@ fn serve_http(version: &str) -> Result<i32, String> {
             "port": env::var("PORT").ok(),
         }))
         .map_err(|error| error.to_string())?;
-        write!(
+        let _ = write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
-        .and_then(|()| stream.write_all(&body))
-        .map_err(|error| error.to_string())?;
+        .and_then(|()| stream.write_all(&body));
     }
     Ok(0)
 }
@@ -128,14 +134,32 @@ fn run() -> Result<i32, String> {
             Ok(0)
         }
         "invalid-manifest-with-child" => {
-            let child = Command::new(env::current_exe().map_err(|error| error.to_string())?)
-                .args(["sleep", "30"])
+            let mut child = Command::new(env::current_exe().map_err(|error| error.to_string())?)
+                .args(["hold-socket", &argument(2, "descendant socket")?])
+                .stdout(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|error| format!("cannot spawn child fixture: {error}"))?;
+            let mut ready = [0u8];
+            child
+                .stdout
+                .take()
+                .ok_or("missing child readiness pipe")?
+                .read_exact(&mut ready)
+                .map_err(|e| e.to_string())?;
             let scratch = PathBuf::from(environment("DEVCOORDINATOR_CHECK_SCRATCH")?);
             fs::write(scratch.join("child.pid"), child.id().to_string())
                 .map_err(|error| error.to_string())?;
             write_descriptor("DEVCOORDINATOR_CASE_MANIFEST_FD", b"not-json")?;
+            Ok(0)
+        }
+        "hold-socket" => {
+            let mut socket = std::os::unix::net::UnixStream::connect(argument(2, "socket")?)
+                .map_err(|e| e.to_string())?;
+            socket.write_all(b"ready").map_err(|e| e.to_string())?;
+            io::stdout().write_all(b"1").map_err(|e| e.to_string())?;
+            io::stdout().flush().map_err(|e| e.to_string())?;
+            let mut end = [0];
+            socket.read(&mut end).map_err(|e| e.to_string())?;
             Ok(0)
         }
         "sleep" => {
@@ -143,6 +167,75 @@ fn run() -> Result<i32, String> {
                 .parse::<u64>()
                 .map_err(|_| "invalid sleep seconds".to_owned())?;
             sleep_seconds(seconds);
+            Ok(0)
+        }
+        "postgres-isolated-case" => {
+            fn query(sql: &str) -> Result<std::process::Output, String> {
+                Command::new("/usr/bin/psql")
+                    .args(["--no-psqlrc", "--set=ON_ERROR_STOP=1", "-tA", "-c", sql])
+                    .output()
+                    .map_err(|_| "fixture psql is unavailable".into())
+            }
+            let count = query("SELECT count(*) FROM seeded")?;
+            if !count.status.success() || String::from_utf8_lossy(&count.stdout).trim() != "4096" {
+                return Err("case did not receive its isolated seed".into());
+            }
+            if !query("INSERT INTO seeded VALUES (99999)")?.status.success() {
+                return Err("case write collided or lacked ownership".into());
+            }
+            let template =
+                query("SELECT datname FROM pg_database WHERE datname LIKE 'dc2_template_%'")?;
+            let template =
+                String::from_utf8(template.stdout).map_err(|_| "invalid template identifier")?;
+            let template = template.trim();
+            if !template
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                || template.is_empty()
+            {
+                return Err("template identity unavailable".into());
+            }
+            if query(&format!("ALTER DATABASE {template} ALLOW_CONNECTIONS true"))?
+                .status
+                .success()
+            {
+                return Err("case can modify its frozen template".into());
+            }
+            println!("isolated seed and writable clone verified");
+            if let Some(socket_path) = std::env::args().nth(2) {
+                let mut socket = std::os::unix::net::UnixStream::connect(socket_path)
+                    .map_err(|e| e.to_string())?;
+                socket.write_all(b"ready").map_err(|e| e.to_string())?;
+                let mut release = [0];
+                socket.read_exact(&mut release).map_err(|e| e.to_string())?;
+            }
+            Ok(0)
+        }
+        "postgres-query-gate" => {
+            let query = Command::new("/usr/bin/psql")
+                .args([
+                    "--no-psqlrc",
+                    "--set=ON_ERROR_STOP=1",
+                    "-tA",
+                    "-c",
+                    &argument(2, "SQL")?,
+                ])
+                .output()
+                .map_err(|e| e.to_string())?;
+            io::stdout()
+                .write_all(&query.stdout)
+                .map_err(|e| e.to_string())?;
+            io::stderr()
+                .write_all(&query.stderr)
+                .map_err(|e| e.to_string())?;
+            if !query.status.success() {
+                return Ok(query.status.code().unwrap_or(1));
+            }
+            let mut socket = std::os::unix::net::UnixStream::connect(argument(3, "gate")?)
+                .map_err(|e| e.to_string())?;
+            socket.write_all(b"ready").map_err(|e| e.to_string())?;
+            let mut release = [0];
+            socket.read_exact(&mut release).map_err(|e| e.to_string())?;
             Ok(0)
         }
         "sleep-ignore-term" => {
@@ -313,6 +406,31 @@ fn run() -> Result<i32, String> {
                 .map_err(|error| error.to_string())?;
             Ok(0)
         }
+        "counted-build" | "counted-compile" => {
+            let input = fs::read(argument(2, "input")?).map_err(|error| error.to_string())?;
+            let counter = PathBuf::from(argument(4, "counter")?);
+            let count = fs::read_to_string(&counter)
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(0)
+                + 1;
+            fs::write(&counter, count.to_string()).map_err(|error| error.to_string())?;
+            if std::env::args().nth(1).as_deref() == Some("counted-compile") {
+                let compiled = Command::new(argument(5, "compiler")?)
+                    .args([
+                        "-O2",
+                        "-S",
+                        &argument(2, "input")?,
+                        "-o",
+                        &argument(3, "output")?,
+                    ])
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                return Ok(compiled.code().unwrap_or(1));
+            }
+            fs::write(argument(3, "output")?, input).map_err(|error| error.to_string())?;
+            Ok(0)
+        }
         "write-scratch" => {
             let path = PathBuf::from(environment("DEVCOORDINATOR_CHECK_SCRATCH")?)
                 .join(argument(2, "scratch filename")?);
@@ -393,6 +511,13 @@ fn run() -> Result<i32, String> {
             let path = diagnostics_path("junit.xml")?;
             match kind.as_str() {
                 "valid" => write_valid_junit(&path)?,
+                "valid-then-crash" => {
+                    write_valid_junit(&path)?;
+                    return Ok(71);
+                }
+                "unrelated-failure" => {
+                    fs::write(&path, "<testsuite><testcase name=\"rejects\" classname=\"Parser\"><failure file=\"src/parser.rs\" line=\"17\" column=\"3\" expected=\"ready\" actual=\"pending\"/></testcase><testcase name=\"infrastructure\"><error file=\"src/server.rs\" line=\"1\"/></testcase></testsuite>").map_err(|e|e.to_string())?;
+                }
                 "oversized" => {
                     OpenOptions::new()
                         .write(true)

@@ -643,6 +643,7 @@ mod tests {
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let registry = Registry::new(database.clone());
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -661,6 +662,7 @@ mod tests {
         }}).unwrap();
         let config = Config {
             socket_path: temporary.path().join("run/daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "fixture".into(),
             slice_name: "fixture.slice".into(),

@@ -24,7 +24,7 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET))
 }
 
-fn parse_env(path: &Path) -> HashMap<String, String> {
+pub(crate) fn parse_env(path: &Path) -> HashMap<String, String> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return HashMap::new();
     };

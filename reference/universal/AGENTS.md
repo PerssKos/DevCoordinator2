@@ -55,8 +55,7 @@ earlier model messages or reload unchanged instructions.
   user waiting or intentional required release revalidation as waste.
 - Submit dependency-ready work concurrently, preserve ownership boundaries,
   track every asynchronous operation, and verify completion. Prefer events;
-  if unavailable, use one service-owned bounded-backoff watcher, not agent
-  polling or a universal 100 ms interval. Do not add a competing scheduler.
+  if unavailable, use one service-owned bounded-backoff watcher. Do not add a competing scheduler.
 - Preserve canonical sources, valuable dirty work, shared services, credentials,
   and recoverable data. Mutate derived/install copies only by reviewed source
   workflows. Keep user-visible behavior real and verify the original affected
@@ -70,3 +69,10 @@ earlier model messages or reload unchanged instructions.
   requirements. Record confirmed repeatable mistakes as durable corrections.
   Finish only when the intended outcome and verification are complete, the
   user explicitly stops it, or a genuine blocker prevents authorized progress.
+- Write progress updates and completion reports for a capable non-specialist.
+  Start with the user-visible result and why it matters. Use ordinary verbs
+  and direct sentences. Describe user-visible results rather than internal
+  milestones or workflow state, and explain any necessary technical term in
+  the same sentence. State what is complete, what happens next, and any
+  blocker plainly. Before sending, rewrite dense or bureaucratic wording into
+  clear everyday language without losing material technical facts.

@@ -393,13 +393,13 @@ struct FileIdentity {
 impl FileIdentity {
     fn from_stat(stat: &unix_fs::Stat) -> Self {
         Self {
-            device: stat.st_dev,
+            device: stat.st_dev as _,
             inode: stat.st_ino,
             size: stat.st_size as u64,
             modified_seconds: stat.st_mtime,
-            modified_nanoseconds: stat.st_mtime_nsec,
+            modified_nanoseconds: stat.st_mtime_nsec as _,
             changed_seconds: stat.st_ctime,
-            changed_nanoseconds: stat.st_ctime_nsec,
+            changed_nanoseconds: stat.st_ctime_nsec as _,
         }
     }
 }
@@ -499,7 +499,7 @@ pub fn create_directory_all_nofollow(path: &Path, mode: u32) -> Result<PathBuf, 
         ) {
             Ok(next) => next,
             Err(rustix::io::Errno::NOENT) => {
-                unix_fs::mkdirat(&directory, &component, Mode::from_raw_mode(mode)).map_err(
+                unix_fs::mkdirat(&directory, &component, Mode::from_raw_mode(mode as _)).map_err(
                     |error| {
                         LedgerError(format!(
                             "cannot create non-symlinked directory {}: {error}",
@@ -552,7 +552,7 @@ pub fn write_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<(), 
             | OFlags::CLOEXEC
             | OFlags::NOFOLLOW
             | OFlags::NONBLOCK,
-        Mode::from_raw_mode(mode),
+        Mode::from_raw_mode(mode as _),
     )
     .map_err(|error| {
         LedgerError(format!(
@@ -612,7 +612,7 @@ pub fn write_new_bytes_nofollow(path: &Path, bytes: &[u8], mode: u32) -> Result<
             | OFlags::CLOEXEC
             | OFlags::NOFOLLOW
             | OFlags::NONBLOCK,
-        Mode::from_raw_mode(mode),
+        Mode::from_raw_mode(mode as _),
     )
     .map_err(|error| {
         LedgerError(format!(
@@ -865,14 +865,15 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(write_bytes_nofollow(&link, b"bad", 0o600).is_err());
         let fifo = directory.path().join("fifo");
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &fifo,
-            rustix::fs::FileType::Fifo,
-            Mode::from_raw_mode(0o600),
+        let fifo_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // The owned fixture path is NUL-terminated and remains alive for mkfifo.
+        // POSIX mkfifo is available on Linux and macOS; rustix mknodat is not.
+        assert_eq!(
+            unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) },
             0,
-        )
-        .unwrap();
+            "{}",
+            std::io::Error::last_os_error()
+        );
         assert!(write_bytes_nofollow(&fifo, b"bad", 0o600).is_err());
     }
 

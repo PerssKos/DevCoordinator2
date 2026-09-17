@@ -94,6 +94,7 @@ impl OperationExecutor for PingExecutor {
 pub struct App {
     edge_uid: Option<u32>,
     executor: Arc<dyn OperationExecutor>,
+    installation_endpoint: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -102,11 +103,35 @@ impl App {
         Self {
             edge_uid: None,
             executor: Arc::new(PingExecutor { socket_display }),
+            installation_endpoint: None,
         }
     }
 
     pub fn with_executor(edge_uid: Option<u32>, executor: Arc<dyn OperationExecutor>) -> Self {
-        Self { edge_uid, executor }
+        Self {
+            edge_uid,
+            executor,
+            installation_endpoint: None,
+        }
+    }
+
+    pub fn with_installation_fence(mut self, socket_path: std::path::PathBuf) -> Self {
+        self.installation_endpoint = Some(socket_path);
+        self
+    }
+
+    pub(crate) async fn wait_for_installation_fence(&self) -> std::io::Result<()> {
+        let Some(endpoint) = &self.installation_endpoint else {
+            return std::future::pending().await;
+        };
+        let parent = endpoint.parent().unwrap_or_else(|| Path::new("."));
+        let mut events = crate::socket_endpoint::SocketEvents::new(parent)?;
+        loop {
+            if endpoint.with_file_name("daemon.pre-cutover.sock").exists() {
+                return Ok(());
+            }
+            events.changed().await?;
+        }
     }
 
     pub async fn dispatch(
@@ -115,6 +140,21 @@ impl App {
         peer: PeerCredentials,
     ) -> ResponseEnvelope {
         let id = request.id.clone();
+        if self.installation_endpoint.as_ref().is_some_and(|path| {
+            // The replacement answers readiness while rollback remains
+            // possible, but must not accept user writes that rollback could
+            // discard. Removing the retained socket commits normal admission.
+            path.with_file_name("daemon.pre-cutover.sock").exists()
+                && (!path.exists() || request.operation != "ping")
+        }) {
+            return ResponseEnvelope::failure(
+                id,
+                ProtocolError::new(
+                    ErrorCode::DaemonUnavailable,
+                    "installation in progress; re-query after recovery",
+                ),
+            );
+        }
         let caller = match Caller::from_client(
             peer.pid,
             peer.uid,
@@ -618,6 +658,52 @@ mod tests {
         shutdown_tx.send(true).unwrap();
         server.await.unwrap().unwrap();
         assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn installation_fence_accepts_the_replacement_endpoint() {
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("custom.sock");
+        let fence = temporary.path().join("daemon.pre-cutover.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let app = App::new(&socket).with_installation_fence(socket.clone());
+        let ping = || {
+            serde_json::from_value(serde_json::json!({
+                "protocol":2,"id":"fence-proof","operation":"ping","params":{},"client":{}
+            }))
+            .unwrap()
+        };
+        let peer = PeerCredentials {
+            pid: 1,
+            uid: 1000,
+            gid: 1000,
+        };
+        assert!(matches!(
+            app.dispatch(ping(), peer).await,
+            ResponseEnvelope::Success { .. }
+        ));
+        std::fs::rename(&socket, &fence).unwrap();
+        assert!(
+            matches!(app.dispatch(ping(), peer).await, ResponseEnvelope::Failure {error,..} if error.code == ErrorCode::DaemonUnavailable)
+        );
+        drop(listener);
+        let _replacement = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let replacement = App::new(&socket).with_installation_fence(socket.clone());
+        assert!(fence.exists());
+        assert!(matches!(
+            replacement.dispatch(ping(), peer).await,
+            ResponseEnvelope::Success { .. }
+        ));
+        let mut mutation = ping();
+        mutation.operation = "repository.register".into();
+        assert!(
+            matches!(replacement.dispatch(mutation, peer).await, ResponseEnvelope::Failure {error,..} if error.code == ErrorCode::DaemonUnavailable)
+        );
+        std::fs::remove_file(&fence).unwrap();
+        std::fs::rename(&socket, &fence).unwrap();
+        assert!(
+            matches!(replacement.dispatch(ping(), peer).await, ResponseEnvelope::Failure {error,..} if error.code == ErrorCode::DaemonUnavailable)
+        );
     }
 
     #[tokio::test]

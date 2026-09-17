@@ -887,14 +887,22 @@ async function waitForReadback(page, readback, timeoutMs) {
   throw new Error(`server readback did not reach the declared state (last status ${lastStatus ?? "unavailable"})`);
 }
 
-async function waitForRenderFrames(page, count) {
-  await page.evaluate((frames) => new Promise((resolve) => {
+async function waitForRenderFrames(page, count, timeoutMs = 10000) {
+  await page.evaluate(({ frames, timeout }) => new Promise((resolve, reject) => {
+    let frame = 0;
+    let finished = false;
+    const deadline = setTimeout(() => {
+      finished = true;
+      cancelAnimationFrame(frame);
+      reject(new Error("render-frame readiness deadline reached"));
+    }, timeout);
     const advance = (remaining) => {
-      if (remaining <= 0) resolve();
-      else requestAnimationFrame(() => advance(remaining - 1));
+      if (finished) return;
+      if (remaining <= 0) { finished = true; clearTimeout(deadline); resolve(); }
+      else frame = requestAnimationFrame(() => advance(remaining - 1));
     };
     advance(frames);
-  }), count);
+  }), { frames: count, timeout: timeoutMs });
 }
 
 async function applyWaitFor(page, waitFor, armed = null) {
@@ -965,11 +973,11 @@ async function applyWaitFor(page, waitFor, armed = null) {
     evidence[evidence.length - 1].attempts = readback.attempts;
   }
   if (waitFor.renderFrames) {
-    await record("render-frames", () => waitForRenderFrames(page, waitFor.renderFrames), {
+    await record("render-frames", () => waitForRenderFrames(page, waitFor.renderFrames, timeout), {
       frames: waitFor.renderFrames,
     });
   } else if (!Object.keys(waitFor).length) {
-    await record("render-frames", () => waitForRenderFrames(page, 2), { frames: 2 });
+    await record("render-frames", () => waitForRenderFrames(page, 2, timeout), { frames: 2 });
   }
   if (waitFor.settleMs) {
     await record("bounded-delay", () => page.waitForTimeout(waitFor.settleMs), { delayMs: waitFor.settleMs });
@@ -4746,7 +4754,7 @@ async function installRenderedPerformanceObserver(page) {
 }
 
 async function waitForLcpObserverDelivery(page) {
-  await page.evaluate(async () => {
+  return page.evaluate(async () => {
     const images = [...document.images].filter((image) => {
       const rect = image.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0;
@@ -4764,20 +4772,31 @@ async function waitForLcpObserverDelivery(page) {
       decodeVisibleImages,
       new Promise((resolve) => setTimeout(resolve, 100)),
     ]);
-    await new Promise((resolve) => {
+    return new Promise((resolve) => {
       let frames = 0;
       let stableFrames = 0;
       let lastCount = -1;
+      let frame = 0;
+      let finished = false;
+      const finish = (delivered) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(deadline);
+        cancelAnimationFrame(frame);
+        resolve(delivered);
+      };
+      const deadline = setTimeout(() => finish(false), 1000);
       const check = () => {
+        if (finished) return;
         frames += 1;
         const count = globalThis.__FORMAL_WEB_UI_PERFORMANCE__?.entryCount || 0;
         if (count === lastCount) stableFrames += 1;
         else stableFrames = 0;
         lastCount = count;
-        if (frames >= 3 && stableFrames >= 2) resolve();
-        else requestAnimationFrame(check);
+        if (frames >= 3 && stableFrames >= 2) finish(true);
+        else frame = requestAnimationFrame(check);
       };
-      requestAnimationFrame(check);
+      frame = requestAnimationFrame(check);
     });
   });
 }
@@ -4789,7 +4808,7 @@ async function assessRenderedPerformance(page, thresholds) {
   } catch {
     loadState = "deadline";
   }
-  await waitForLcpObserverDelivery(page).catch(() => {});
+  const lcpDelivered = await waitForLcpObserverDelivery(page).catch(() => false);
   let observed = null;
   try {
     observed = await page.evaluate(() => {
@@ -4813,7 +4832,7 @@ async function assessRenderedPerformance(page, thresholds) {
   const localServer = isLocalServerUrl(page.url());
   const ttfbAssessed = !thresholds.ttfbLocalOnly || localServer;
   const ttfbValue = roundMetric(observed?.ttfb);
-  const lcpValue = roundMetric(observed?.lcp?.startTime);
+  const lcpValue = lcpDelivered ? roundMetric(observed?.lcp?.startTime) : null;
   const ttfbStatus = performanceThresholdStatus(ttfbValue, thresholds.ttfbMs, ttfbAssessed);
   const lcpStatus = performanceThresholdStatus(lcpValue, thresholds.lcpMs);
   const metrics = {
@@ -4838,7 +4857,8 @@ async function assessRenderedPerformance(page, thresholds) {
       status: lcpStatus,
       source: "LargestContentfulPaint.startTime",
       supported: Boolean(observed?.lcpSupported),
-      size: roundMetric(observed?.lcp?.size),
+      size: lcpDelivered ? roundMetric(observed?.lcp?.size) : null,
+      ...(lcpDelivered ? {} : { reason: "observer delivery did not complete" }),
     },
   };
   const findings = [];

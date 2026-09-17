@@ -263,7 +263,8 @@ struct InventoryRun {
     metadata: RunLogMetadata,
     active: bool,
     leaves: Vec<InventoryLeaf>,
-    directory: File,
+    directory: Option<File>,
+    directory_identity: (u64, u64),
     executor_streams: BTreeMap<LogStream, UnindexedStream>,
 }
 
@@ -332,7 +333,21 @@ pub fn execute_log_query(
         None => current_run_id(worktree)?,
     };
     validate_run_id(&run_id)?;
-    let inventory = scan_store(worktree, None, Some(&run_id))?;
+    let inventory = if request.operation == LogQueryOperation::Catalog {
+        scan_store(worktree, None, Some(&run_id))?
+    } else {
+        let root = open_directory_path(worktree)?;
+        let devcoordinator = open_dir(&root, ".devcoordinator")?;
+        let test = open_dir(&devcoordinator, "test")?;
+        let logs_dir = open_dir(&test, "logs")?;
+        let runs_dir = open_dir(&logs_dir, "runs")?;
+        let run = scan_inventory_run(&runs_dir, &run_id, None, true)?;
+        StoreInventory {
+            logs_dir,
+            runs_dir,
+            runs: vec![run],
+        }
+    };
     let run = inventory
         .runs
         .iter()
@@ -400,7 +415,11 @@ pub fn prune_logs(
     let mut entries = Vec::new();
     let mut locations = BTreeMap::<PathBuf, RetentionLocation>::new();
     for run in &inventory.runs {
-        let run_identity = file_identity(&run.directory)?;
+        let run_directory = open_dir(&inventory.runs_dir, &run.metadata.run_id)?;
+        let run_identity = file_identity(&run_directory)?;
+        if run_identity != run.directory_identity {
+            return Err(LogQueryError::StoreMalformed);
+        }
         if let Some(finished) = run.metadata.finished_at_epoch_ms
             && finished > now_ms
         {
@@ -414,7 +433,7 @@ pub fn prune_logs(
             };
             let components = vec![run.metadata.run_id.clone(), "executor".into()];
             let directory = relative_leaf_path(&run.metadata.run_id, &components);
-            let executor = required_store_entry(open_dir(&run.directory, "executor"))?;
+            let executor = required_store_entry(open_dir(&run_directory, "executor"))?;
             locations.insert(
                 directory.clone(),
                 RetentionLocation {
@@ -671,7 +690,7 @@ fn validate_selector_filter(
         {
             return Err(LogQueryError::ArgsInvalid);
         }
-        Some(LogPhase::Case)
+        Some(LogPhase::Case | LogPhase::Fixture | LogPhase::Cleanup)
             if selector.check.is_none()
                 || (selector.case_id.is_none() && operation != LogQueryOperation::Catalog) =>
         {
@@ -728,8 +747,18 @@ fn scan_store(
             }
             return Err(LogQueryError::StoreMalformed);
         }
-        match scan_inventory_run(&runs_dir, &run_id, active_run_id) {
-            Ok(run) => runs.push(run),
+        match scan_inventory_run(
+            &runs_dir,
+            &run_id,
+            active_run_id,
+            selected_run_id.is_none_or(|id| id == run_id),
+        ) {
+            Ok(mut run) => {
+                if selected_run_id != Some(run_id.as_str()) {
+                    run.directory = None;
+                }
+                runs.push(run);
+            }
             // An exact query must fail closed for its selected run, but an
             // unrelated malformed or half-published run cannot deny access to
             // otherwise valid evidence. Retention passes remain store-strict.
@@ -749,6 +778,7 @@ fn scan_inventory_run(
     runs_dir: &File,
     run_id: &str,
     active_run_id: Option<&str>,
+    verify_streams: bool,
 ) -> Result<InventoryRun, LogQueryError> {
     let run_dir = required_store_entry(open_dir(runs_dir, run_id))?;
     let metadata: RunLogMetadata =
@@ -759,17 +789,31 @@ fn scan_inventory_run(
     if metadata.run_id != run_id {
         return Err(LogQueryError::StoreMalformed);
     }
-    let active = active_run_id == Some(run_id) || required_store_entry(run_is_locked(&run_dir))?;
-    let executor_streams = scan_executor_streams(&run_dir)?;
+    let pending =
+        unix_fs::statat(&run_dir, "finalization.pending", AtFlags::SYMLINK_NOFOLLOW).is_ok();
+    let active =
+        active_run_id == Some(run_id) || pending || required_store_entry(run_is_locked(&run_dir))?;
+    let executor_streams = if verify_streams {
+        scan_executor_streams(&run_dir)?
+    } else {
+        BTreeMap::new()
+    };
     // A valid incomplete run can be crash residue after its lease is gone.
     // Missing unsealed metadata is recoverable from a bounded file snapshot;
     // present-but-invalid metadata and unsafe filesystem objects still fail.
-    let leaves = scan_run_leaves(&run_dir, &metadata, active, active || !metadata.complete)?;
+    let leaves = scan_run_leaves(
+        &run_dir,
+        &metadata,
+        active,
+        active || !metadata.complete,
+        verify_streams,
+    )?;
     Ok(InventoryRun {
         metadata,
         active,
         leaves,
-        directory: run_dir,
+        directory_identity: file_identity(&run_dir)?,
+        directory: Some(run_dir),
         executor_streams,
     })
 }
@@ -789,12 +833,13 @@ fn scan_run_leaves(
     run: &RunLogMetadata,
     active: bool,
     allow_unsealed: bool,
+    verify_streams: bool,
 ) -> Result<Vec<InventoryLeaf>, LogQueryError> {
     let names = directory_names(run_dir)?;
     if names.iter().any(|name| {
         !matches!(
             name.as_str(),
-            "active.lock" | "run.json" | "executor" | "checks"
+            "active.lock" | "run.json" | "executor" | "checks" | "finalization.pending"
         )
     }) {
         return Err(LogQueryError::StoreMalformed);
@@ -829,11 +874,17 @@ fn scan_run_leaves(
                             ],
                             active,
                             allow_unsealed,
+                            verify_streams,
                             &mut leaves,
                         )?;
                     }
-                    "cases" => {
-                        let cases = required_store_entry(open_dir(&check_dir, "cases"))?;
+                    "cases" | "fixtures" | "cleanup" => {
+                        let phase = match child.as_str() {
+                            "fixtures" => LogPhase::Fixture,
+                            "cleanup" => LogPhase::Cleanup,
+                            _ => LogPhase::Case,
+                        };
+                        let cases = required_store_entry(open_dir(&check_dir, &child))?;
                         for case_id in directory_names(&cases)? {
                             if !valid_case(&case_id) {
                                 return Err(LogQueryError::StoreMalformed);
@@ -844,7 +895,7 @@ fn scan_run_leaves(
                                 run,
                                 LeafSelector::new(
                                     Some(check_name.clone()),
-                                    LogPhase::Case,
+                                    phase,
                                     Some(case_id.clone()),
                                 )
                                 .map_err(|_| LogQueryError::StoreMalformed)?,
@@ -852,11 +903,12 @@ fn scan_run_leaves(
                                     run.run_id.clone(),
                                     "checks".into(),
                                     check_name.clone(),
-                                    "cases".into(),
+                                    child.clone(),
                                     case_id,
                                 ],
                                 active,
                                 allow_unsealed,
+                                verify_streams,
                                 &mut leaves,
                             )?;
                         }
@@ -942,6 +994,7 @@ fn inspect_complete_file(file: &File, snapshot_bytes: u64) -> Result<(u64, Strin
     Ok((lines, lower_hex(&hasher.finalize())))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_leaf(
     leaf_dir: &File,
     run: &RunLogMetadata,
@@ -949,6 +1002,7 @@ fn scan_leaf(
     relative_components: Vec<String>,
     active: bool,
     allow_unsealed: bool,
+    verify_streams: bool,
     leaves: &mut Vec<InventoryLeaf>,
 ) -> Result<(), LogQueryError> {
     let names = directory_names(leaf_dir)?;
@@ -1007,7 +1061,7 @@ fn scan_leaf(
                 | "stderr.meta.json"
         )
     });
-    if !active && !metadata.process_started && !has_any_stream_entry {
+    if !verify_streams || (!active && !metadata.process_started && !has_any_stream_entry) {
         leaves.push(InventoryLeaf {
             run_id: run.run_id.clone(),
             test: run.test.clone(),
@@ -1303,7 +1357,7 @@ fn query_catalog(
         }
     }
     entries.sort_by(|left, right| left.log_ref.cmp(&right.log_ref));
-    let run_identity = file_identity(&run.directory)?;
+    let run_identity = file_identity(run.directory.as_ref().ok_or(LogQueryError::Unavailable)?)?;
     let digest = query_digest(request, &run.metadata.run_id)?;
     let mut start = 0usize;
     if let Some(encoded) = request.options.cursor.as_deref() {
@@ -1984,7 +2038,10 @@ fn select_stream(
             .executor_streams
             .get(&stream)
             .ok_or(LogQueryError::LogNotFound)?;
-        let directory = open_dir(&run.directory, "executor")?;
+        let directory = open_dir(
+            run.directory.as_ref().ok_or(LogQueryError::Unavailable)?,
+            "executor",
+        )?;
         let file = open_file(&directory, &format!("{}.log", stream_name(stream)))?;
         return Ok(SelectedStream {
             log_ref: log_ref(&run.metadata.run_id, &selector, stream),
@@ -2029,7 +2086,10 @@ fn open_selected_stream(
         .get(&stream)
         .cloned()
         .ok_or(LogQueryError::LogNotFound)?;
-    let leaf_dir = open_leaf_components(&run.directory, &leaf.relative_components[1..])?;
+    let leaf_dir = open_leaf_components(
+        run.directory.as_ref().ok_or(LogQueryError::Unavailable)?,
+        &leaf.relative_components[1..],
+    )?;
     let file = open_file(&leaf_dir, &format!("{}.log", stream_name(stream)))?;
     let index = if metadata.line_index_format == "computed-active-v1" {
         None
@@ -2069,7 +2129,10 @@ fn load_structured_failures(
         {
             continue;
         }
-        let leaf_dir = open_leaf_components(&run.directory, &leaf.relative_components[1..])?;
+        let leaf_dir = open_leaf_components(
+            run.directory.as_ref().ok_or(LogQueryError::Unavailable)?,
+            &leaf.relative_components[1..],
+        )?;
         let stored: StoredDiagnostics =
             read_json(&leaf_dir, "diagnostics.json", MAX_DIAGNOSTICS_BYTES).map_err(|error| {
                 if error == LogQueryError::LogNotFound {
@@ -3144,6 +3207,9 @@ fn lock_and_revalidate_victim(
         return Ok(None);
     }
     let run = required_store_entry(open_dir(runs, &location.run_id))?;
+    if unix_fs::statat(&run, "finalization.pending", AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+        return Ok(None);
+    }
     if file_identity(&run)? != location.run_identity {
         return Err(LogQueryError::StoreMalformed);
     }
@@ -3630,6 +3696,29 @@ mod tests {
         assert_eq!(second.entries.len(), 1);
         assert_eq!(second.entries[0].log_ref.stream, LogStream::Stderr);
         assert!(second.next_cursor.is_none());
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn exact_catalogue_does_not_exhaust_descriptors_on_large_history() {
+        let root = temporary("catalog-large-history");
+        let selected = create_run(&root, 1, "case-1", b"selected\n", epoch_ms(), false).0;
+        for index in 2..=1100 {
+            let _ = create_run(&root, index, "case-1", b"history\n", epoch_ms(), false);
+        }
+        let result = execute_log_query(
+            &root,
+            request(
+                LogQueryOperation::Catalog,
+                &selected,
+                LogQueryOptions::default(),
+            ),
+        )
+        .expect("catalogue large history");
+        let LogQueryResult::Catalog(catalogue) = result else {
+            panic!("catalogue result")
+        };
+        assert_eq!(catalogue.entries.len(), 1);
         fs::remove_dir_all(root).expect("cleanup");
     }
 

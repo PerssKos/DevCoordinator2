@@ -332,7 +332,7 @@ fn atomic_write_json(
             .map_err(|error| filesystem("write temporary test admission document", error))?;
         file.sync_all()
             .map_err(|error| filesystem("sync temporary test admission document", error))?;
-        unix_fs::fchmod(&file, Mode::from_raw_mode(mode))
+        unix_fs::fchmod(&file, Mode::from_raw_mode(mode as _))
             .map_err(|error| filesystem("set test admission document mode", error))?;
         renameat(
             &runtime.descriptor,
@@ -476,6 +476,23 @@ impl TestAdmission {
         }))
     }
 
+    pub(crate) fn try_worktree_guard(
+        &self,
+        worktree_id: &str,
+    ) -> Result<Option<WorktreeStartPermit<'_>>, AdmissionError> {
+        let mut active = self
+            .worktree_starts
+            .lock()
+            .map_err(|_| AdmissionError::StatePoisoned)?;
+        if !active.insert(worktree_id.to_owned()) {
+            return Ok(None);
+        }
+        Ok(Some(WorktreeStartPermit {
+            admission: self,
+            worktree_id: worktree_id.to_owned(),
+        }))
+    }
+
     fn with_critical<T>(
         &self,
         operation: impl FnOnce(&mut AdmissionState) -> Result<T, AdmissionError>,
@@ -564,7 +581,7 @@ pub struct StartGuard<'a> {
     worktree: Option<WorktreeStartPermit<'a>>,
 }
 
-struct WorktreeStartPermit<'a> {
+pub(crate) struct WorktreeStartPermit<'a> {
     admission: &'a TestAdmission,
     worktree_id: String,
 }
@@ -582,7 +599,18 @@ impl Drop for WorktreeStartPermit<'_> {
     }
 }
 
-impl StartGuard<'_> {
+impl<'a> StartGuard<'a> {
+    pub(crate) fn release_global(self) -> Option<WorktreeStartPermit<'a>> {
+        let Self {
+            worktree,
+            state,
+            file_lock,
+            ..
+        } = self;
+        drop(file_lock);
+        drop(state);
+        worktree
+    }
     pub fn started(&mut self, run_id: &str, unit: &str) -> Result<(), AdmissionError> {
         self.admission.started_locked(&mut self.state, run_id, unit)
     }

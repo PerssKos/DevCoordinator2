@@ -45,19 +45,21 @@ impl Clock for FixtureClock {
 
 struct FixtureMonotonic {
     started: Instant,
+    advance: AtomicU64,
 }
 
 impl FixtureMonotonic {
     fn new() -> Self {
         Self {
             started: Instant::now(),
+            advance: AtomicU64::new(0),
         }
     }
 }
 
 impl MonotonicClock for FixtureMonotonic {
     fn seconds(&self) -> f64 {
-        self.started.elapsed().as_secs_f64() * 100.0
+        self.started.elapsed().as_secs_f64() * 100.0 + self.advance.load(Ordering::SeqCst) as f64
     }
 }
 
@@ -210,6 +212,22 @@ impl DockerControl for PostgresDocker {
         Ok(())
     }
 
+    fn wait_postgres_ready_cancellable(
+        &self,
+        container: &ExactContainerId,
+        user: &str,
+        database: &str,
+        timeout: Duration,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<(), DockerError> {
+        assert!(
+            !cancellation
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        );
+        self.wait_postgres_ready(container, user, database, timeout)
+    }
+
     fn list_ids_by_labels(
         &self,
         _labels: &BTreeMap<String, String>,
@@ -286,6 +304,7 @@ struct FixtureSystemd {
     memory: Mutex<HashMap<String, String>>,
     fail_stop: AtomicBool,
     timed_out: AtomicBool,
+    report_inactive: AtomicBool,
 }
 
 impl FixtureSystemd {
@@ -301,6 +320,7 @@ impl FixtureSystemd {
             memory: Mutex::new(HashMap::new()),
             fail_stop: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),
+            report_inactive: AtomicBool::new(false),
         }
     }
 
@@ -349,12 +369,22 @@ impl FixtureSystemd {
             "cancelled",
             "unsafe",
         ] {
-            counts.insert(name.into(), u32::from(name == selected_status));
+            counts.insert(
+                name.into(),
+                if name == selected_status {
+                    plan.checks.len() as u32
+                } else {
+                    0
+                },
+            );
         }
         let checks = plan
             .checks
             .iter()
             .map(|check| CheckReport {
+                phase_durations: Vec::new(),
+                resource_waiting: false,
+                display_name: check.display_name.clone(),
                 execution: None,
                 name: check.name.clone(),
                 tier: check.tier,
@@ -479,6 +509,7 @@ impl SystemdControl for FixtureSystemd {
             let state = state.0.lock().unwrap();
             (!state.done, state.exit)
         });
+        let running = running && !self.report_inactive.load(Ordering::SeqCst);
         Ok(properties
             .iter()
             .map(|name| {
@@ -574,12 +605,55 @@ impl SystemdControl for FixtureSystemd {
 }
 
 struct LifecycleWorld {
+    capacity: CapacityBroker,
     _temporary: tempfile::TempDir,
     worktree: PathBuf,
     lifecycle: TestLifecycle,
     systemd: Arc<FixtureSystemd>,
     events: Arc<Mutex<Vec<TestLifecycleEvent>>>,
+    events_changed: Arc<Condvar>,
     caller: Caller,
+    monotonic: Arc<FixtureMonotonic>,
+}
+
+fn execute_admitted_database_setup(
+    capacity: &CapacityBroker,
+    started: &TestStarted,
+    worktree: &Path,
+) {
+    use devcoordinator2_executor_core::{PermitProvider, PermitRequest, UnixPermitProvider};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let plan = ExecutionPlan::from_json(
+        &std::fs::read(worktree.join(".devcoordinator/test/current/check-plan.json")).unwrap(),
+    )
+    .unwrap();
+    let setup = plan
+        .checks
+        .iter()
+        .find(|check| check.phase == devcoordinator2_executor_protocol::CheckPhase::Setup)
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let (shutdown,receive)=tokio::sync::watch::channel(false);
+        let (ready,ready_wait)=tokio::sync::oneshot::channel();
+        let broker=capacity.clone();
+        let server=tokio::spawn(async move {broker.serve_with_readiness(receive,Some(ready)).await});
+        tokio::time::timeout(Duration::from_secs(5),ready_wait).await.unwrap().unwrap();
+        let provider=UnixPermitProvider::new(capacity.socket_path().to_owned()).unwrap();
+        let permit=provider.acquire(PermitRequest{run_id:started.run_id.clone(),leaf_id:setup.name.clone()}).await.unwrap();
+        let mut stream=tokio::net::UnixStream::connect(capacity.socket_path()).await.unwrap();
+        let mut payload=serde_json::to_vec(&serde_json::json!({"schema":1,"action":"fixture","run_id":started.run_id,"leaf_id":setup.name})).unwrap();payload.push(b'\n');
+        stream.write_all(&payload).await.unwrap();
+        let mut response=String::new();
+        BufReader::new(stream).read_line(&mut response).await.unwrap();
+        let result:serde_json::Value=serde_json::from_str(&response).unwrap();
+        assert_eq!(result["ok"],true);
+        drop(permit);shutdown.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    });
 }
 
 impl LifecycleWorld {
@@ -621,6 +695,7 @@ command=["true"]
         let database = Database::open(state.join("authority.sqlite3")).unwrap();
         let config = Config {
             socket_path: runtime.join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
             state_dir: state,
             unit_prefix: "devcoordinator2-test".into(),
             slice_name: "devcoordinator2-tests.slice".into(),
@@ -642,26 +717,33 @@ command=["true"]
             CapacityBroker::new(database.clone(), config.capacity_socket_path()).unwrap();
         let logs = TestLogService::new(database.clone(), registry.clone());
         let systemd = Arc::new(FixtureSystemd::new());
+        let monotonic = Arc::new(FixtureMonotonic::new());
         let lifecycle = TestLifecycle::with_adapters(
             config,
             database,
             registry,
-            capacity,
+            capacity.clone(),
             logs,
             systemd.clone(),
             docker,
             Arc::new(FixtureCommand),
             TestRunStore,
             Arc::new(FixtureClock),
-            Arc::new(FixtureMonotonic::new()),
+            monotonic.clone(),
             Arc::new(SequenceRandom(AtomicU64::new(0))),
             PathBuf::from("/fixture/devcoordinator2-executor"),
         )
         .unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&events);
-        lifecycle.set_event_sink(Arc::new(move |event| captured.lock().unwrap().push(event)));
+        let events_changed = Arc::new(Condvar::new());
+        let changed = Arc::clone(&events_changed);
+        lifecycle.set_event_sink(Arc::new(move |event| {
+            captured.lock().unwrap().push(event);
+            changed.notify_all();
+        }));
         let caller = Caller {
+            via_edge: false,
             pid: 1,
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
@@ -672,12 +754,15 @@ command=["true"]
         };
         assert_ne!(caller.uid, 0, "lifecycle fixture requires non-root caller");
         Self {
+            capacity,
             _temporary: temporary,
             worktree,
             lifecycle,
             systemd,
             events,
+            events_changed,
             caller,
+            monotonic,
         }
     }
 
@@ -685,6 +770,8 @@ command=["true"]
         self.lifecycle
             .start(
                 StartTest {
+                    targets: Vec::new(),
+                    cases: Default::default(),
                     path: self.worktree.to_string_lossy().into_owned(),
                     test: Some("all".into()),
                     checks: Vec::new(),
@@ -719,6 +806,8 @@ command=["true"]
             .lifecycle
             .start(
                 StartTest {
+                    targets: Vec::new(),
+                    cases: Default::default(),
                     path: path.to_string_lossy().into_owned(),
                     test: Some("all".into()),
                     checks: Vec::new(),
@@ -731,11 +820,20 @@ command=["true"]
     }
 
     fn wait_status(&self, expected: TestStatus) -> devcoordinator2_api::results::TestSummary {
+        self.wait_status_at(&self.worktree, expected)
+    }
+
+    fn wait_status_at(
+        &self,
+        path: &Path,
+        expected: TestStatus,
+    ) -> devcoordinator2_api::results::TestSummary {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
+            let observed = self.events.lock().unwrap().len();
             let status = self
                 .lifecycle
-                .status(self.worktree.to_str().unwrap(), &self.caller)
+                .status(path.to_str().unwrap(), &self.caller)
                 .unwrap();
             if status.status == expected {
                 return status;
@@ -744,9 +842,147 @@ command=["true"]
                 Instant::now() < deadline,
                 "status did not become {expected:?}"
             );
-            thread::sleep(Duration::from_millis(20));
+            let events = self.events.lock().unwrap();
+            if events.len() == observed {
+                let _ = self
+                    .events_changed
+                    .wait_timeout(events, deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+            }
         }
     }
+}
+
+#[test]
+fn composed_targets_preserve_names_case_closure_and_latest_start_ownership() {
+    use devcoordinator2_executor_protocol::CheckPhase;
+    let world = LifecycleWorld::new();
+    let mut config = String::from("schema=2\n");
+    for target in ["alpha", "beta"] {
+        config.push_str(&format!(
+            r#"
+[test.{target}]
+[[test.{target}.check]]
+name="setup"
+tier="development"
+phase="setup"
+command=["true"]
+[[test.{target}.check]]
+name="cases"
+tier="development"
+phase="case"
+requires=["setup"]
+case_command=["true"]
+cases=[{{id="first",args=[]}},{{id="second",args=[]}}]
+[[test.{target}.check]]
+name="cleanup"
+tier="release"
+phase="cleanup"
+after=["cases"]
+command=["true"]
+"#
+        ));
+    }
+    std::fs::write(world.worktree.join(".devcoordinator.toml"), config).unwrap();
+    let request = StartTest {
+        path: world.worktree.to_string_lossy().into_owned(),
+        test: None,
+        targets: vec!["beta".into(), "alpha".into()],
+        checks: Vec::new(),
+        cases: BTreeMap::new(),
+        tier: ApiValidationTier::Development,
+    };
+    let first = world
+        .lifecycle
+        .start(request.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(first.targets, vec!["alpha", "beta"]);
+    let read_plan = || {
+        ExecutionPlan::from_json(
+            &std::fs::read(
+                world
+                    .worktree
+                    .join(".devcoordinator/test/current/check-plan.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let composed = read_plan();
+    assert_eq!(composed.checks.len(), 6);
+    assert_eq!(
+        composed
+            .checks
+            .iter()
+            .map(|check| &check.name)
+            .collect::<HashSet<_>>()
+            .len(),
+        6
+    );
+    assert!(
+        composed
+            .checks
+            .iter()
+            .any(|check| check.display_name.as_deref() == Some("alpha / cases"))
+    );
+
+    let mut focused = request.clone();
+    focused
+        .cases
+        .insert("alpha/cases".into(), vec!["second".into()]);
+    let second = world.lifecycle.start(focused, &world.caller).unwrap();
+    assert_eq!(
+        second.superseded_run_id.as_deref(),
+        Some(first.run_id.as_str())
+    );
+    let selected = read_plan();
+    assert_eq!(selected.checks.len(), 3);
+    assert!(selected.checks.iter().all(|check| {
+        check
+            .display_name
+            .as_deref()
+            .unwrap()
+            .starts_with("alpha / ")
+    }));
+    assert_eq!(
+        selected
+            .checks
+            .iter()
+            .filter(|check| check.phase == CheckPhase::Cleanup)
+            .count(),
+        1
+    );
+    assert_eq!(
+        selected.case_selection.values().next().unwrap(),
+        &vec!["second".to_owned()]
+    );
+
+    let mut invalid = request;
+    invalid
+        .cases
+        .insert("alpha/cases".into(), vec!["missing".into()]);
+    assert_eq!(
+        world
+            .lifecycle
+            .start(invalid, &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .run_id,
+        second.run_id
+    );
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), 2);
+    world.systemd.finish(&second.unit);
+    let summary = world.wait_status(TestStatus::Passed);
+    assert_eq!(summary.targets, vec!["alpha", "beta"]);
+    assert_eq!(summary.case_selection, selected.case_selection);
 }
 
 #[test]
@@ -765,6 +1001,7 @@ fn public_run_history_uses_exact_registration_without_edge_git_access() {
     completion.recv_timeout(Duration::from_secs(10)).unwrap();
     let current = world.wait_status(TestStatus::Passed);
     let public = Caller {
+        via_edge: false,
         uid: 999,
         gid: 999,
         client_kind: devcoordinator2_api::ClientKind::Edge,
@@ -831,6 +1068,7 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
     let mut check = summary.checks.as_ref().unwrap()[0].clone();
     check.cases = (0..32)
         .map(|index| devcoordinator2_api::results::CaseProjection {
+            phases: Vec::new(),
             execution: None,
             id: format!("case-{index}-{}", "x".repeat(96)),
             status: devcoordinator2_api::results::LeafStatus::Passed,
@@ -868,17 +1106,7 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
     .unwrap();
     let (other, second) = world.start_named("other-page");
     world.systemd.finish(&second.unit);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while world
-        .lifecycle
-        .status(other.to_str().unwrap(), &world.caller)
-        .unwrap()
-        .status
-        == TestStatus::Running
-    {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    world.wait_status_at(&other, TestStatus::Passed);
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
     loop {
@@ -1221,6 +1449,8 @@ fn postgres_18_tag_uses_explicit_disposable_data_directory() {
     );
     std::fs::write(path, config).unwrap();
     let started = world.start();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 0);
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
     assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
     world.systemd.finish(&started.unit);
     world.wait_status(TestStatus::Passed);
@@ -1542,6 +1772,7 @@ fn memory_emergency_counts_and_cleans_up_owned_database_containers() {
     text.push_str(&format!("\n[test.all.postgres]\nimage=\"postgres@sha256:{}\"\nuser=\"app\"\ndatabase=\"app_test\"\n", "a".repeat(64)));
     std::fs::write(configuration, text).unwrap();
     let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
     let gib = 1024_u64.pow(3);
     world.systemd.memory.lock().unwrap().extend([
         (started.unit.clone(), "1024".into()),
@@ -1926,6 +2157,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     world.systemd.fail_spawn.store(true, Ordering::SeqCst);
     let failed_launch = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -1951,6 +2184,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     let stops_before = world.systemd.stops.load(Ordering::SeqCst);
     let capture_start = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -1974,6 +2209,8 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     world.systemd.mismatch_uid.store(true, Ordering::SeqCst);
     let mismatch = world.lifecycle.start(
         StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
             path: world.worktree.to_string_lossy().into_owned(),
             test: Some("all".into()),
             checks: Vec::new(),
@@ -2032,6 +2269,7 @@ database="app_test"
     let database = Database::open(state.join("authority.sqlite3")).unwrap();
     let config = Config {
         socket_path: runtime.join("daemon.sock"),
+        sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
         state_dir: state,
         unit_prefix: "devcoordinator2-test".into(),
         slice_name: "devcoordinator2-tests.slice".into(),
@@ -2057,7 +2295,7 @@ database="app_test"
         config,
         database,
         registry,
-        capacity,
+        capacity.clone(),
         logs,
         systemd.clone(),
         docker.clone(),
@@ -2070,6 +2308,7 @@ database="app_test"
     )
     .unwrap();
     let caller = Caller {
+        via_edge: false,
         pid: 1,
         uid: rustix::process::getuid().as_raw(),
         gid: rustix::process::getgid().as_raw(),
@@ -2079,9 +2318,17 @@ database="app_test"
         identity: None,
     };
     assert_ne!(caller.uid, 0, "PostgreSQL lifecycle fixture needs non-root");
+    let (finished, completion) = std::sync::mpsc::channel();
+    lifecycle.set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+        if event.kind == "test.finished" {
+            finished.send(event.status).unwrap();
+        }
+    }));
     let started = lifecycle
         .start(
             StartTest {
+                targets: Vec::new(),
+                cases: Default::default(),
                 path: worktree.to_string_lossy().into_owned(),
                 test: Some("database".into()),
                 checks: Vec::new(),
@@ -2090,8 +2337,21 @@ database="app_test"
             &caller,
         )
         .unwrap();
+    assert_eq!(docker.provisioned.load(Ordering::SeqCst), 0);
+    execute_admitted_database_setup(&capacity, &started, &worktree);
     assert_eq!(docker.provisioned.load(Ordering::SeqCst), 1);
-    let environment = worktree.join(".devcoordinator/test/current/env");
+    let plan = ExecutionPlan::from_json(
+        &std::fs::read(worktree.join(".devcoordinator/test/current/check-plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        plan.checks
+            .iter()
+            .any(|check| check.phase == devcoordinator2_executor_protocol::CheckPhase::Cleanup)
+    );
+    let environment = worktree
+        .join(".devcoordinator/test/current")
+        .join(&plan.environment_files["unit"]);
     assert_eq!(
         std::fs::metadata(&environment)
             .unwrap()
@@ -2101,7 +2361,12 @@ database="app_test"
         0o600
     );
     let private_environment = std::fs::read_to_string(&environment).unwrap();
-    assert!(private_environment.contains("PGPASSWORD="));
+    assert!(private_environment.contains("PGPASSWORD"));
+    assert!(
+        !std::fs::read_to_string(worktree.join(".devcoordinator/test/current/env"))
+            .unwrap()
+            .contains("PGPASSWORD")
+    );
     let summary = lifecycle
         .status(worktree.to_str().unwrap(), &caller)
         .unwrap();
@@ -2110,17 +2375,17 @@ database="app_test"
     assert!(!public.contains("postgresql://"));
 
     systemd.finish(&started.unit);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        let status = lifecycle
+    assert_eq!(
+        completion.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Some(TestStatus::Passed)
+    );
+    assert_eq!(
+        lifecycle
             .status(worktree.to_str().unwrap(), &caller)
-            .unwrap();
-        if status.status == TestStatus::Passed {
-            break;
-        }
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(20));
-    }
+            .unwrap()
+            .status,
+        TestStatus::Passed
+    );
     assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
 }
 
@@ -2147,6 +2412,7 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
     let database = Database::open(state.join("authority.sqlite3")).unwrap();
     let config = Config {
         socket_path: runtime.join("daemon.sock"),
+        sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
         state_dir: state,
         unit_prefix: "devcoordinator2-test".into(),
         slice_name: "devcoordinator2-tests.slice".into(),
@@ -2164,6 +2430,7 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
         codex_usage_sources: Vec::new(),
     };
     let caller = Caller {
+        via_edge: false,
         pid: 1,
         uid: rustix::process::getuid().as_raw(),
         gid: rustix::process::getgid().as_raw(),
@@ -2263,4 +2530,98 @@ fn work_context_recovery_skips_unavailable_worktree_and_records_interrupted_summ
         expected_work
     );
     assert!(systemd.stops.load(Ordering::SeqCst) >= 1);
+}
+
+#[test]
+fn collected_unit_allows_its_live_reaper_to_finish_successfully() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    // Model systemd collecting the unit before systemd-run's wait completes.
+    world.systemd.report_inactive.store(true, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    world.systemd.finish(&run.unit);
+    let summary = world.wait_status(TestStatus::Passed);
+    assert_eq!(summary.exit_code, Some(0));
+    assert_eq!(summary.termination_reason, None);
+}
+
+#[test]
+fn stalled_reaper_is_interrupted_after_the_completion_window() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.systemd.report_inactive.store(true, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    world.monotonic.advance.fetch_add(11, Ordering::SeqCst);
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.wait_status(TestStatus::Interrupted);
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 1);
+    assert_eq!(TestRunStore.read_history(&world.worktree).unwrap().len(), 1);
+    world.systemd.report_inactive.store(false, Ordering::SeqCst);
+    let next = world.start();
+    assert!(next.superseded_run_id.is_none());
+    assert_ne!(next.run_id, run.run_id);
+    world.systemd.finish(&next.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
+fn reconciler_preserves_a_live_supervised_test() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.lifecycle.reconcile_orphans().unwrap();
+    assert_eq!(world.systemd.stops.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        world
+            .lifecycle
+            .status(world.worktree.to_str().unwrap(), &world.caller)
+            .unwrap()
+            .status,
+        TestStatus::Running
+    );
+    world.systemd.finish(&run.unit);
+}
+
+#[test]
+fn reconciler_interrupts_unsupervised_state_once_and_preserves_history() {
+    let world = LifecycleWorld::new();
+    let run = world.start();
+    world.systemd.finish(&run.unit);
+    // Wait for the actual fixture completion, then simulate a lost durable
+    // terminal write. Reconciliation must not resurrect or repeat the run.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap()
+        .status
+        == TestStatus::Running
+    {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    let store = TestRunStore;
+    let current = store.open_current(&world.worktree).unwrap().unwrap();
+    let mut summary = store
+        .read_current_summary(&world.worktree)
+        .unwrap()
+        .unwrap();
+    summary.status = TestStatus::Running;
+    summary.finished_at = None;
+    store
+        .write_summary(&current, &summary, world.caller.uid, world.caller.gid)
+        .unwrap();
+    // Reaper map removal follows event delivery; its stale handle must also be
+    // treated as terminal, without rewriting a passing run to running.
+    world.lifecycle.reconcile_orphans().unwrap();
+    world.lifecycle.reconcile_orphans().unwrap();
+    let status = world
+        .lifecycle
+        .status(world.worktree.to_str().unwrap(), &world.caller)
+        .unwrap();
+    assert_ne!(status.status, TestStatus::Running);
+    assert_eq!(store.read_history(&world.worktree).unwrap().len(), 1);
 }

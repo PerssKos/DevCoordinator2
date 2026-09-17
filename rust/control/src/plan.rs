@@ -110,6 +110,7 @@ struct ReleaseOverviewRow {
     delivered_at: Option<String>,
     url: Option<String>,
     port: Option<u16>,
+    historical: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -340,8 +341,8 @@ impl PlanService {
                     let releases = read_release_overviews(connection, &repository_id_for_query)?;
                     let current_release = releases
                         .iter()
-                        .find(|release| matches!(release.status.as_str(), "planned" | "requested"))
-                        .or_else(|| releases.last())
+                        .find(|release| !release.historical && matches!(release.status.as_str(), "planned" | "requested"))
+                        .or_else(|| releases.iter().rev().find(|release| !release.historical))
                         .map(|release| -> Result<CurrentReleaseSummary, DatabaseError> {
                             Ok(CurrentReleaseSummary {
                                 name: release.name.clone(),
@@ -356,7 +357,7 @@ impl PlanService {
                         |row| row.get::<_, u32>(0),
                     )?;
                     let preview_requested = connection.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested')",
+                        "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                         [&repository_id_for_query],
                         |row| row.get::<_, i64>(0),
                     )? != 0;
@@ -1719,7 +1720,7 @@ impl PlanService {
         self.database
             .call(move |connection| {
                 Ok(connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested')",
+                    "SELECT EXISTS(SELECT 1 FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases'))",
                     [&repository_id],
                     |row| row.get::<_, i64>(0),
                 )? != 0)
@@ -1732,7 +1733,7 @@ impl PlanService {
         self.database
             .call(move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' ORDER BY seq",
+                    "SELECT release_id,name,requested_at,note FROM releases WHERE repository_id=?1 AND status='requested' AND release_id NOT IN (SELECT record_id FROM planning_recovery_records WHERE record_kind='releases') ORDER BY seq",
                 )?;
                 Ok(statement
                     .query_map([repository_id], |row| {
@@ -1883,7 +1884,7 @@ fn read_release_overviews(
     repository_id: &str,
 ) -> Result<Vec<ReleaseOverviewRow>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
+        "SELECT release_id,seq,name,kind,status,note,requested_at,delivered_at,url,port,EXISTS(SELECT 1 FROM planning_recovery_records WHERE record_kind='releases' AND record_id=releases.release_id) FROM releases WHERE repository_id=?1 AND status!='dropped' ORDER BY seq",
     )?;
     Ok(statement
         .query_map([repository_id], |row| {
@@ -1898,6 +1899,7 @@ fn read_release_overviews(
                 delivered_at: row.get(7)?,
                 url: row.get(8)?,
                 port: row.get(9)?,
+                historical: row.get(10)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
@@ -2368,8 +2370,8 @@ mod tests {
                     [spec_json],
                 )?;
                 transaction.execute("INSERT INTO generations VALUES('d1111111111111111',1,'0123456789abcdef',0,'/fixture/generation','fingerprint','t','current')", [])?;
-                transaction.execute("INSERT INTO port_assignments VALUES(24001,'d1111111111111111','api',1,'t')", [])?;
-                transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,'t')", [])?;
+                transaction.execute("INSERT INTO port_assignments VALUES(24001,'d1111111111111111','api',1,'t','lapi')", [])?;
+                transaction.execute("INSERT INTO port_assignments VALUES(24002,'d1111111111111111','web',1,'t','lweb')", [])?;
                 transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('v1111111111111111','r1111111111111111',1,'Fixture release','release','planned','t','uid:1000','t')", [])?;
                 Ok(())
             })
@@ -2446,6 +2448,49 @@ mod tests {
             })
             .expect("stored port");
         assert_eq!(stored, 24002);
+    }
+
+    #[test]
+    fn domain_delivery_preserves_the_published_route_and_url() {
+        let (_temporary, database, service) = world();
+        seed(
+            &database,
+            serde_json::json!({"components":[
+                {"name":"api","type":"process","wants_port":true,"route":false},
+                {"name":"web","type":"process","wants_port":true,"route":true}
+            ]})
+            .to_string(),
+        );
+        database.transaction(|transaction| {
+            transaction.execute("INSERT INTO domain_routes(domain,deployment_id,component,port,generation,published_at,lease_id) VALUES('preview','d1111111111111111','web',24002,1,'t','lweb')", [])?;
+            Ok(())
+        }).unwrap();
+        let delivered = service
+            .deliver_release(
+                ReleaseDeliver {
+                    release_id: "v1111111111111111".into(),
+                    deployment_id: "d1111111111111111".into(),
+                    note: None,
+                },
+                "uid:1000",
+                "2026-09-15T12:00:00Z",
+            )
+            .unwrap();
+        assert_eq!(delivered.port, Some(24002));
+        assert_eq!(
+            delivered.url.as_deref(),
+            Some("https://preview.example.test")
+        );
+        let retained = database
+            .call(|connection| {
+                Ok(connection.query_row(
+                    "SELECT port,url FROM releases WHERE release_id='v1111111111111111'",
+                    [],
+                    |row| Ok((row.get::<_, u16>(0)?, row.get::<_, String>(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(retained, (24002, "https://preview.example.test".into()));
     }
 
     #[test]
