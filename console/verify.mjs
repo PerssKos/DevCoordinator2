@@ -1652,7 +1652,7 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.capacity.set');
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
-  await revealTestSettings(page); await page.waitForSelector('#test-capacity-open');
+  await page.waitForSelector('dialog#test-capacity-dialog[open]', { state: 'hidden' });
   check('interaction: saving capacity returns focus to the Capacity action',
     await page.locator('#nav-toggle:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
@@ -2469,6 +2469,7 @@ async function main() {
     feedbackCall && feedbackCall.params.title === 'The export button fails for me'
     && feedbackCall.params.kind === 'user_feedback' && feedbackCall.params.repository_id === REPO,
     JSON.stringify(feedbackCall?.params));
+  await page.locator('main [data-task-row]').filter({ hasText: 'The export button fails for me' }).first().waitFor();
   check('interaction: submitted owner feedback appears in the plan', /The export button fails for me/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click(`[data-task-row="${P_G1}"] .plan-task-select`);
