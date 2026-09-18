@@ -82,6 +82,16 @@ operation. Identical overlaps are retained separately as provenance without
 turning existing releases into historical releases. A repeat of a completed import returns its permanent receipt without
 replaying it.
 
+For reviewed task conflicts limited to status, update timestamp and list position,
+`--preserve-live-tasks <json-file>` accepts at most 64 objects with `task_id`,
+`saved_sha256`, and `live_sha256` from the current conflict plan. Supply that
+plan's `--expected-live-sha256` when preparing and applying this choice. Every
+live task field stays untouched; both complete versions are retained as recovery
+provenance. Other conflicts remain blocking. Counts and sequence mappings include
+only missing records. `conflict_count` includes resolved conflicts, whose exact
+choices are returned in `preserved_live_tasks`. The flag never selects a saved
+status or discards the saved history.
+
 Recovery preserves existing records, original saved identities, dates and
 relationships. Historical releases remain visible but cannot select the current
 release or replay an old preview request. Saved decision summaries are retained

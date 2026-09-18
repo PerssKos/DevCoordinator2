@@ -986,6 +986,8 @@ enum PlanCommand {
         #[arg(long)]
         expected_live_sha256: Option<String>,
         #[arg(long)]
+        preserve_live_tasks: Option<PathBuf>,
+        #[arg(long)]
         apply: bool,
     },
     Overview {
@@ -1918,11 +1920,29 @@ impl PlanCommand {
                 transaction_dir,
                 backup_sha256,
                 expected_live_sha256,
+                preserve_live_tasks,
                 apply,
-            } => remote(
-                "plan.recovery",
-                json!({"repository_id":repository_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply}),
-            ),
+            } => {
+                let choices = match preserve_live_tasks {
+                    Some(path) => {
+                        use std::io::Read;
+                        let mut bytes = Vec::new();
+                        std::fs::File::open(path)
+                            .and_then(|file| file.take(32769).read_to_end(&mut bytes))
+                            .map_err(|_| invalid("Cannot read task conflict choices"))?;
+                        if bytes.len() > 32768 {
+                            return Err(invalid("Task conflict choices exceed 32 KiB"));
+                        }
+                        serde_json::from_slice::<Vec<devcoordinator2_api::recovery::PreserveLiveTask>>(&bytes)
+                            .map_err(|_| invalid("Invalid task conflict choices"))?
+                    }
+                    None => vec![],
+                };
+                remote(
+                    "plan.recovery",
+                    json!({"repository_id":repository_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply,"preserve_live_tasks":choices}),
+                )
+            }
             Self::Overview {
                 path,
                 all_repositories,

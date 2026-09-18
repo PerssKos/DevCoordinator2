@@ -44,6 +44,11 @@ snapshot, using read-only immutable SQLite without migrations or WAL/SHM creatio
 The result contains repository-scoped planning counts and the repository identity
 of each explicitly requested task, not private record text or installation
 contents. It checks file identity and hashes before and after inspection.
+For requested tasks in the selected repository, it also reports the saved
+status, update timestamp and list position when those columns are available.
+Statuses and timestamps are validated before disclosure; unrelated tasks expose
+only their repository identity. These observations do not choose a conflicting
+version or authorize a live write.
 Optional `--identities` adds up to 4,096 IDs and ordering numbers per planning
 family, plus hashes of decision references, for collision analysis. It does not
 export titles, outcomes, reference text or private installation values.

@@ -93,6 +93,7 @@ impl Fixture {
             backup_sha256: digest(fs::read(backup).unwrap()),
             expected_live_sha256: None,
             apply: false,
+            preserve_live_tasks: vec![],
         };
         Self {
             _root: root,
@@ -208,6 +209,11 @@ fn differing_overlap_reports_private_conflicts_and_blocks_application() {
     let preview = fixture.prepare();
     let encoded = serde_json::to_value(&preview).unwrap();
     assert_eq!(preview.status, "conflicted");
+    assert_eq!(
+        preview.counts["tasks"], 0,
+        "conflicts are not missing records"
+    );
+    assert!(preview.mappings.iter().all(|mapping| mapping.id != OLD));
     assert_eq!(encoded["conflict_count"], 1);
     assert_eq!(encoded["conflicts"][0]["id"], OLD);
     assert_eq!(
@@ -277,6 +283,141 @@ fn missing_child_is_restored_without_reimporting_its_existing_parent_or_events()
             .as_deref(),
         Some(OLD)
     );
+}
+
+fn reviewed_task_request(fixture: &Fixture) -> Request {
+    let plan = fixture.prepare();
+    let mut request = fixture.request.clone();
+    request.expected_live_sha256 = Some(plan.live_sha256);
+    request.preserve_live_tasks = plan
+        .conflicts
+        .iter()
+        .map(|conflict| devcoordinator2_api::recovery::PreserveLiveTask {
+            task_id: conflict.id.clone(),
+            saved_sha256: conflict.saved_sha256.clone(),
+            live_sha256: conflict.live_sha256.clone(),
+        })
+        .collect();
+    request
+}
+
+fn task_conflict_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    fixture.live.call(|connection| {
+        connection.execute("UPDATE tasks SET status='planned',updated_at='2026-09-14T00:00:00Z',position=7 WHERE task_id=?1", [OLD])?;
+        connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+        Ok(())
+    }).unwrap();
+    fixture
+}
+
+#[test]
+fn explicit_task_conflict_review_preserves_both_versions_and_restores_missing_child() {
+    let fixture = task_conflict_fixture();
+    let original = fixture.plan().task_history(OLD).unwrap();
+    let mut request = reviewed_task_request(&fixture);
+    let prepared = recover(&fixture.live, request.clone(), "owner", DATE).unwrap();
+    assert_eq!(prepared.status, "prepared");
+    assert_eq!(prepared.counts["tasks"], 1);
+    assert_eq!(prepared.conflict_count, 1);
+    assert_eq!(prepared.preserved_live_tasks.len(), 1);
+    request.apply = true;
+    let receipt = recover(&fixture.live, request.clone(), "owner", DATE).unwrap();
+    assert_eq!(receipt.status, "applied");
+    assert_eq!(fixture.plan().task_history(OLD).unwrap(), original);
+    assert_eq!(
+        fixture
+            .plan()
+            .task_history(CHILD)
+            .unwrap()
+            .task
+            .parent_task_id
+            .as_deref(),
+        Some(OLD)
+    );
+    fixture.live.call(|connection| {
+        let saved: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_saved:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
+        let prior: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_live:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
+        assert_ne!(saved, prior);
+        assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["status"], "planned");
+        assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["position"], 7);
+        Ok(())
+    }).unwrap();
+    let fingerprint_after = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    assert_eq!(
+        recover(&fixture.live, request, "owner", DATE)
+            .unwrap()
+            .status,
+        "already_applied"
+    );
+    assert_eq!(
+        fixture.live.call(|c| fingerprint(c, REPO)).unwrap(),
+        fingerprint_after
+    );
+}
+
+#[test]
+fn task_conflict_review_rejects_stale_hashes_missing_choices_and_unreviewed_content() {
+    let fixture = task_conflict_fixture();
+    let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    for mode in 0..5 {
+        let mut request = reviewed_task_request(&fixture);
+        request.apply = true;
+        match mode {
+            0 => request.preserve_live_tasks[0].live_sha256 = "0".repeat(64),
+            1 => request.preserve_live_tasks[0].saved_sha256 = "0".repeat(64),
+            2 => request.expected_live_sha256 = None,
+            3 => request
+                .preserve_live_tasks
+                .push(request.preserve_live_tasks[0].clone()),
+            _ => request.preserve_live_tasks.clear(),
+        }
+        assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+        assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
+    }
+    fixture
+        .live
+        .call(|c| {
+            c.execute(
+                "UPDATE tasks SET title='PRIVATE_NEW_TEXT' WHERE task_id=?1",
+                [OLD],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut request = reviewed_task_request(&fixture);
+    request.apply = true;
+    assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+    assert!(fixture.plan().task_history(CHILD).is_err());
+}
+
+#[test]
+fn reviewed_conflict_provenance_and_import_roll_back_together_on_failure() {
+    let fixture = task_conflict_fixture();
+    let mut request = reviewed_task_request(&fixture);
+    request.apply = true;
+    fixture.live.call(|c| {c.execute_batch("CREATE TRIGGER fail_provenance BEFORE INSERT ON planning_recovery_records WHEN new.record_kind='conflict_live:tasks' BEGIN SELECT RAISE(ABORT,'fixture provenance failure'); END;")?;Ok(())}).unwrap();
+    let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+    assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
+    fixture
+        .live
+        .call(|c| {
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM planning_recoveries", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM planning_recovery_records", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
 }
 
 #[test]
@@ -542,7 +683,12 @@ fn stored_receipts_without_overlap_fields_remain_readable() {
     let fixture = Fixture::new();
     let preview = fixture.prepare();
     let mut legacy = serde_json::to_value(&preview).unwrap();
-    for field in ["existing_counts", "conflict_count", "conflicts"] {
+    for field in [
+        "existing_counts",
+        "conflict_count",
+        "conflicts",
+        "preserved_live_tasks",
+    ] {
         legacy.as_object_mut().unwrap().remove(field);
     }
     let parsed: Receipt = serde_json::from_value(legacy).unwrap();
@@ -550,6 +696,12 @@ fn stored_receipts_without_overlap_fields_remain_readable() {
     assert!(parsed.existing_counts.is_empty());
     assert_eq!(parsed.conflict_count, 0);
     assert!(parsed.conflicts.is_empty());
+    assert!(parsed.preserved_live_tasks.is_empty());
+}
+
+#[test]
+fn normal_protocol_dispatch_preserves_reviewed_task_conflicts() {
+    check_normal_protocol(task_conflict_fixture());
 }
 
 fn check_normal_protocol(fixture: Fixture) {
@@ -585,6 +737,16 @@ fn check_normal_protocol(fixture: Fixture) {
         .unwrap();
     let mut request = fixture.request.clone();
     request.expected_live_sha256 = Some(prepared["live_sha256"].as_str().unwrap().to_owned());
+    request.preserve_live_tasks = prepared["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|conflict| devcoordinator2_api::recovery::PreserveLiveTask {
+            task_id: conflict["id"].as_str().unwrap().into(),
+            saved_sha256: conflict["saved_sha256"].as_str().unwrap().into(),
+            live_sha256: conflict["live_sha256"].as_str().unwrap().into(),
+        })
+        .collect();
     request.apply = true;
     let applied = plane
         .execute(

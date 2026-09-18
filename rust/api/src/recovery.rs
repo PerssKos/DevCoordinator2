@@ -13,6 +13,17 @@ pub struct Request {
     pub expected_live_sha256: Option<String>,
     #[serde(default)]
     pub apply: bool,
+    #[serde(default)]
+    #[schemars(length(max = 64))]
+    pub preserve_live_tasks: Vec<PreserveLiveTask>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreserveLiveTask {
+    pub task_id: String,
+    pub saved_sha256: String,
+    pub live_sha256: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -51,4 +62,6 @@ pub struct Receipt {
     pub conflict_count: u64,
     #[serde(default)]
     pub conflicts: Vec<Conflict>,
+    #[serde(default)]
+    pub preserved_live_tasks: Vec<PreserveLiveTask>,
 }
