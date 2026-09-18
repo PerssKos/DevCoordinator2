@@ -70,9 +70,16 @@ and runtime files are preserved.
 explicit activation snapshot. Supply `--repository-id`, `--transaction-dir`,
 and the inspected `--backup-sha256`. The response contains counts, original-to-new
 display-number mappings, and a `live_sha256`; it contains no saved record text.
+`existing_counts` identifies matching records that will remain untouched;
+`counts` excludes those duplicates. Events are matched by content and occurrence
+count, not their database-local IDs. Different saved/live versions return
+`status: conflicted`, a total `conflict_count`, and at most 64 `conflicts` naming
+record IDs, changed fields and hashes without their values. Conflicts still
+block application; a preview is not permission to overwrite either version.
 Repeat the same command with `--apply --expected-live-sha256 <live_sha256>` only
 for the reviewed result. Changed inputs and identity conflicts reject the entire
-operation. A repeat of a completed import returns its permanent receipt without
+operation. Identical overlaps are retained separately as provenance without
+turning existing releases into historical releases. A repeat of a completed import returns its permanent receipt without
 replaying it.
 
 Recovery preserves existing records, original saved identities, dates and

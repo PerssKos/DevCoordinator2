@@ -26,6 +26,16 @@ pub struct Mapping {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Conflict {
+    pub kind: String,
+    pub id: String,
+    pub fields: Vec<String>,
+    pub saved_sha256: String,
+    pub live_sha256: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub recovery_id: String,
     pub repository_id: String,
@@ -35,4 +45,10 @@ pub struct Receipt {
     pub status: String,
     pub counts: BTreeMap<String, u64>,
     pub mappings: Vec<Mapping>,
+    #[serde(default)]
+    pub existing_counts: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub conflict_count: u64,
+    #[serde(default)]
+    pub conflicts: Vec<Conflict>,
 }
