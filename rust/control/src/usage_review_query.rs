@@ -55,17 +55,17 @@ pub(super) fn selection(
 
 const TOKEN_FACTS: &str = r#", owned_tokens AS MATERIALIZED (
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN token_observations token ON token.model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN token_observations token ON token.model_request_id = request.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN model_requests request ON request.operation_id = owner.id
-    JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
+    CROSS JOIN model_requests request ON request.operation_id = owner.id
+    CROSS JOIN tool_invocations tool ON tool.covering_model_request_id = request.id
     CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
     UNION ALL
     SELECT token.*, owner.id AS operation_id FROM scoped owner
-    JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
-    JOIN token_observations token ON token.tool_invocation_id = tool.id
+    CROSS JOIN tool_invocations tool ON tool.operation_id = owner.id AND tool.covering_model_request_id IS NULL
+    CROSS JOIN token_observations token ON token.tool_invocation_id = tool.id
 ), token_facts AS MATERIALIZED (
     SELECT token.operation_id,
            token.source_event_id, token.category_path, token.measurement_provenance,
@@ -74,8 +74,7 @@ const TOKEN_FACTS: &str = r#", owned_tokens AS MATERIALIZED (
            MAX(token.coverage_state <> 'complete') incomplete,
            (MIN(token.token_count) <> MAX(token.token_count) OR
             (COUNT(token.token_count) > 0 AND COUNT(token.token_count) < COUNT(*))) conflict
-    FROM owned_tokens token
-    CROSS JOIN bounds
+    FROM bounds CROSS JOIN owned_tokens token
     WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
       AND token.category_path NOT GLOB 'attribution.items.*'
     GROUP BY token.operation_id, token.source_event_id, token.category_path, token.measurement_provenance

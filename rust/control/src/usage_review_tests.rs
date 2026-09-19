@@ -52,7 +52,17 @@ fn isolated_coordinator_daily_window_scale_probe() {
         match result {
             Ok(report) => {
                 assert_eq!(report.totals.provider_total_tokens.measured, baseline[index]["provider_tokens"].as_u64().unwrap());
-                assert_eq!(report.attributed.operations, 0);
+                if let Some(expected) = baseline[index].get("outcomes") {
+                    let mut actual = serde_json::to_value(&report).unwrap();
+                    for row in actual["rows"].as_array_mut().unwrap() {
+                        row.as_object_mut().unwrap().remove("title");
+                    }
+                    for key in ["coverage", "totals", "attributed", "unattributed", "unattributedReasons", "rows"] {
+                        assert_eq!(actual[key], expected[key], "{}: {key}", scope["name"]);
+                    }
+                } else {
+                    assert_eq!(report.attributed.operations, 0);
+                }
                 evidence.push(json!({"repository":scope["name"],"elapsed_ms":began.elapsed().as_millis(),
                     "operations":report.totals.operations,"provider_tokens":report.totals.provider_total_tokens.measured,"coverage":report.coverage}));
             }

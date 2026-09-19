@@ -40,23 +40,35 @@ pub(super) fn read(
     let (selection, cached) = query::selection(connection, query::OperationScope::Initial)?;
     let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
     let params = rusqlite::params![repositories, i64_value(start)?, i64_value(end)?];
-    let open_operations = if cached {
-        "SELECT operation_id FROM _usage_report_operations CROSS JOIN bounds WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms"
+    let indexed: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='operation_events_terminal_observed_idx')",
+        [], |row| row.get(0),
+    ).map_err(|_| "source_unavailable")?;
+    // Prefer the retained time index over an expensive transient index on the
+    // low-cardinality terminal flag. Older collectors may not have this index.
+    let terminal_index = if indexed {
+        "INDEXED BY operation_events_terminal_observed_idx"
     } else {
-        "SELECT operation.id FROM operations operation CROSS JOIN bounds WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)"
+        ""
+    };
+    // The bounds must precede each fact table to enable indexed time-range seeks.
+    let open_operations = if cached {
+        "SELECT operation_id FROM bounds CROSS JOIN _usage_report_operations WHERE ended_at_ms IS NULL AND started_at_ms < upper_ms"
+    } else {
+        "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)"
     };
     let candidates = format!("{selection}, candidates(id) AS (
-        SELECT id FROM operations CROSS JOIN bounds WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
-        UNION SELECT operation_id FROM operation_events CROSS JOIN bounds WHERE terminal = 1 AND occurred_at_ms > lower_ms
+        SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
+        UNION SELECT operation_id FROM bounds CROSS JOIN operation_events {terminal_index} WHERE terminal = 1 AND occurred_at_ms > lower_ms
         UNION {open_operations}
         UNION SELECT COALESCE(request.operation_id, covered.operation_id, tool.operation_id)
-          FROM token_observations token CROSS JOIN bounds
+          FROM bounds CROSS JOIN token_observations token
           LEFT JOIN model_requests request ON request.id = token.model_request_id
           LEFT JOIN tool_invocations tool ON tool.id = token.tool_invocation_id
           LEFT JOIN model_requests covered ON covered.id = tool.covering_model_request_id
           WHERE token.observed_at_ms >= lower_ms AND token.observed_at_ms < upper_ms
             AND token.category_path NOT GLOB 'attribution.items.*'
-        UNION SELECT operation_id FROM coverage_events CROSS JOIN bounds
+        UNION SELECT operation_id FROM bounds CROSS JOIN coverage_events
           WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
         SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001");
     let ids = connection
