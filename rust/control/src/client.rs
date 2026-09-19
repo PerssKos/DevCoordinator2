@@ -30,6 +30,7 @@ pub async fn call(
             | "deployment.stop"
             | "deployment.restart"
             | "deployment.remove"
+            | "deployment.recovery"
             | "plan.recovery"
     );
     let request = RequestEnvelope {
@@ -345,36 +346,38 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn recovery_waits_for_verified_large_snapshot_results() {
-        let temporary = tempfile::tempdir().unwrap();
-        let socket = temporary.path().join("daemon.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut stream = BufReader::new(stream);
-            let mut encoded = String::new();
-            stream.read_line(&mut encoded).await.unwrap();
-            let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
-            let mut finished = Vec::new();
-            stream.read_to_end(&mut finished).await.unwrap();
-            tokio::time::advance(Duration::from_secs(11)).await;
-            let response =
-                ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
+        for operation in ["plan.recovery", "deployment.recovery"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let socket = temporary.path().join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut encoded = String::new();
+                stream.read_line(&mut encoded).await.unwrap();
+                let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
+                let mut finished = Vec::new();
+                stream.read_to_end(&mut finished).await.unwrap();
+                tokio::time::advance(Duration::from_secs(11)).await;
+                let response =
+                    ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
+                        .unwrap();
+                stream
+                    .get_mut()
+                    .write_all(&serde_json::to_vec(&response).unwrap())
+                    .await
                     .unwrap();
-            stream
-                .get_mut()
-                .write_all(&serde_json::to_vec(&response).unwrap())
-                .await
-                .unwrap();
-        });
-        let result = call(
-            &socket,
-            "plan.recovery",
-            serde_json::json!({}),
-            ClientContext::default(),
-        )
-        .await;
-        server.await.unwrap();
-        assert!(result.unwrap().is_ok());
+            });
+            let result = call(
+                &socket,
+                operation,
+                serde_json::json!({}),
+                ClientContext::default(),
+            )
+            .await;
+            server.await.unwrap();
+            assert!(result.unwrap().is_ok());
+        }
     }
 
     #[tokio::test]
@@ -387,7 +390,7 @@ mod tests {
         let request = RequestEnvelope {
             protocol: PROTOCOL_VERSION,
             id: "recovery1234".into(),
-            operation: "plan.recovery".into(),
+            operation: "deployment.recovery".into(),
             params: serde_json::json!({}),
             client: ClientContext::default(),
         };
