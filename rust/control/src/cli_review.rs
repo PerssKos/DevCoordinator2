@@ -18,6 +18,10 @@ pub(super) enum ReviewCommand {
         limit: u8,
         #[arg(long)]
         before_decision_seq: Option<u32>,
+        #[arg(long)]
+        outcome_cursor: Option<String>,
+        #[arg(long)]
+        outcome_limit: Option<u32>,
     },
     Record {
         #[arg(long)]
@@ -53,10 +57,18 @@ impl ReviewCommand {
                 offset,
                 limit,
                 before_decision_seq,
-            } => remote(
-                "review.prepare",
-                json!({"repository_id":repository_id,"workstream_id":workstream_id,"window_start_ms":window_start_ms,"window_end_ms":window_end_ms,"offset":offset,"limit":limit,"before_decision_seq":before_decision_seq}),
-            ),
+                outcome_cursor,
+                outcome_limit,
+            } => {
+                let mut params = json!({"repository_id":repository_id,"workstream_id":workstream_id,"window_start_ms":window_start_ms,"window_end_ms":window_end_ms,"offset":offset,"limit":limit,"before_decision_seq":before_decision_seq});
+                if let Some(cursor) = outcome_cursor {
+                    params["outcome_cursor"] = json!(cursor);
+                }
+                if let Some(limit) = outcome_limit {
+                    params["outcome_limit"] = json!(limit);
+                }
+                remote("review.prepare", params)
+            }
             Self::Record {
                 record_id,
                 expected_revision,

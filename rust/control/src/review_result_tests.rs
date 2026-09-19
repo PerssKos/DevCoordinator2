@@ -108,6 +108,7 @@ fn measured_fixture() -> (Fixture, Record, u64) {
         .usage
         .review_window(
             &fixture.service.repository("project-alpha").unwrap(),
+            None,
             now - 49_999,
             now,
             Instant::now() + QUERY_TIMEOUT,
@@ -137,6 +138,8 @@ fn prepare(record: &ReviewRecord) -> Prepare {
         offset: 0,
         limit: 10,
         before_decision_seq: None,
+        outcome_cursor: None,
+        outcome_limit: None,
     }
 }
 

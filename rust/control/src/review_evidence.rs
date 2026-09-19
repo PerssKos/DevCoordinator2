@@ -81,9 +81,13 @@ impl ReviewService {
                 if !seen_usage.insert(reference.reference.clone()) {
                     continue;
                 }
-                let usage = self
-                    .usage
-                    .review_window(&repository, start, end, deadline)?;
+                let usage = self.usage.review_window(
+                    &repository,
+                    record.workstream_id.as_deref(),
+                    start,
+                    end,
+                    deadline,
+                )?;
                 measured_result |= measured(&usage.coverage);
                 if usage.coverage.has_gaps {
                     require_gap(record, "result_usage_partial_or_unavailable")?;

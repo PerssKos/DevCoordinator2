@@ -17,6 +17,8 @@ pub struct Prepare {
     #[serde(default = "page_limit")]
     pub limit: u8,
     pub before_decision_seq: Option<u32>,
+    pub outcome_cursor: Option<String>,
+    pub outcome_limit: Option<u32>,
 }
 
 pub fn page_limit() -> u8 {
@@ -198,4 +200,5 @@ pub struct ReviewUsage {
     pub time: UsageTime,
     pub tools: UsageTools,
     pub semantics: UsageSemantics,
+    pub outcomes: crate::outcomes::OutcomeReport,
 }

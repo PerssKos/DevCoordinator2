@@ -10,6 +10,7 @@ use thiserror::Error;
 pub mod configuration;
 pub mod delivery;
 pub mod glossary;
+pub mod outcomes;
 pub mod params;
 pub mod recovery;
 pub mod results;

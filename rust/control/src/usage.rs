@@ -35,8 +35,21 @@ use crate::repository::Registry;
 
 #[path = "usage_cache.rs"]
 mod cache;
+#[path = "usage_review.rs"]
+mod review;
+#[path = "usage_review_aggregate.rs"]
+mod review_aggregate;
+#[path = "usage_review_facts.rs"]
+mod review_facts;
+#[path = "usage_review_math.rs"]
+mod review_math;
+#[path = "usage_review_query.rs"]
+mod review_query;
+#[cfg(test)]
+#[path = "usage_review_tests.rs"]
+mod review_tests;
 
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6];
+const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6, 7];
 const SUPPORTED_TAXONOMY: u32 = 1;
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -96,6 +109,20 @@ pub trait RepositoryProbe: Send + Sync + 'static {
         repository: &Path,
         now_ms: u64,
     ) -> Result<(String, u32, u32), String>;
+
+    /// Immediate probes may use this default; blocking implementations must honor the deadline.
+    fn probe_until(
+        &self,
+        source: &CodexUsageSource,
+        repository: &Path,
+        now_ms: u64,
+        deadline: Instant,
+    ) -> Result<(String, u32, u32), String> {
+        if Instant::now() >= deadline {
+            return Err("query_budget_exhausted".into());
+        }
+        self.probe(source, repository, now_ms)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -211,21 +238,13 @@ impl UsageService {
     pub(crate) fn review_window(
         &self,
         repository: &RepositoryRecord,
+        workstream: Option<&str>,
         start_ms: u64,
         end_ms: u64,
         deadline: Instant,
-    ) -> Result<UsageRepository, ProtocolError> {
-        self.usage.repository_window(
-            repository,
-            UsageRange::Hours24,
-            self.usage.now_ms()?,
-            start_ms,
-            end_ms,
-            end_ms - start_ms,
-            1,
-            false,
-            Some(deadline),
-        )
+    ) -> Result<devcoordinator2_api::review::ReviewUsage, ProtocolError> {
+        self.usage
+            .review_measurements(repository, workstream, start_ms, end_ms, deadline)
     }
 
     fn records(&self) -> Result<Vec<RepositoryRecord>, ProtocolError> {
@@ -481,6 +500,23 @@ impl CodexUsage {
         now_ms: u64,
         resolve_missing: bool,
     ) -> Result<String, ProtocolError> {
+        self.repository_key_until(
+            source,
+            repository,
+            now_ms,
+            resolve_missing,
+            Instant::now() + SOURCE_TIMEOUT,
+        )
+    }
+
+    fn repository_key_until(
+        &self,
+        source: &CodexUsageSource,
+        repository: &RepositoryRecord,
+        now_ms: u64,
+        resolve_missing: bool,
+        deadline: Instant,
+    ) -> Result<String, ProtocolError> {
         let uid = source.uid;
         let repository_id = repository.repository_id.clone();
         let cached = self
@@ -499,9 +535,12 @@ impl CodexUsage {
         if !resolve_missing {
             return cached.ok_or_else(|| source_error("mapping_pending"));
         }
+        if Instant::now() >= deadline {
+            return Err(source_error("query_budget_exhausted"));
+        }
         let (key, schema, taxonomy) = self
             .probe
-            .probe(source, &repository.root_path, now_ms)
+            .probe_until(source, &repository.root_path, now_ms, deadline)
             .map_err(source_error)?;
         if !valid_repository_key(&key) {
             return Err(source_error("source_unavailable"));
@@ -1467,9 +1506,19 @@ impl RepositoryProbe for HostRepositoryProbe {
         repository: &Path,
         now_ms: u64,
     ) -> Result<(String, u32, u32), String> {
-        match self.probe_format(source, repository, now_ms, true) {
+        self.probe_until(source, repository, now_ms, Instant::now() + SOURCE_TIMEOUT)
+    }
+
+    fn probe_until(
+        &self,
+        source: &CodexUsageSource,
+        repository: &Path,
+        now_ms: u64,
+        deadline: Instant,
+    ) -> Result<(String, u32, u32), String> {
+        match self.probe_format(source, repository, now_ms, true, deadline) {
             Err(reason) if reason == "identity_unsupported" => {
-                self.probe_format(source, repository, now_ms, false)
+                self.probe_format(source, repository, now_ms, false, deadline)
             }
             result => result,
         }
@@ -1483,6 +1532,7 @@ impl HostRepositoryProbe {
         repository: &Path,
         now_ms: u64,
         identity_only: bool,
+        deadline: Instant,
     ) -> Result<(String, u32, u32), String> {
         if !source.executable.is_absolute()
             || !source.executable.is_file()
@@ -1539,7 +1589,7 @@ impl HostRepositoryProbe {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = run_probe(command)?;
+        let output = run_probe(command, deadline)?;
         if !output.status.success() || output.stdout_truncated {
             if !output.stderr_truncated {
                 if serde_json::from_slice::<serde_json::Value>(&output.stderr)
@@ -1654,13 +1704,15 @@ struct ProbeOutput {
     stderr_truncated: bool,
 }
 
-fn run_probe(mut command: Command) -> Result<ProbeOutput, String> {
+fn run_probe(mut command: Command, deadline: Instant) -> Result<ProbeOutput, String> {
+    if Instant::now() >= deadline {
+        return Err("query_budget_exhausted".into());
+    }
     let mut child = command.spawn().map_err(|_| "source_unavailable")?;
     let stdout = child.stdout.take().ok_or("source_unavailable")?;
     let stderr = child.stderr.take().ok_or("source_unavailable")?;
     let stdout = thread::spawn(move || read_capture(stdout, SOURCE_OUTPUT_BYTES));
     let stderr = thread::spawn(move || read_capture(stderr, SOURCE_OUTPUT_BYTES));
-    let deadline = Instant::now() + SOURCE_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|_| "source_unavailable")? {
             break status;
@@ -1671,7 +1723,7 @@ fn run_probe(mut command: Command) -> Result<ProbeOutput, String> {
             let _ = child.wait();
             let _ = stdout.join();
             let _ = stderr.join();
-            return Err("source_unavailable".into());
+            return Err("query_budget_exhausted".into());
         }
         thread::sleep(PROCESS_POLL.min(deadline.saturating_duration_since(now)));
     };
@@ -2185,6 +2237,7 @@ pub(crate) mod tests {
         let included = service
             .review_window(
                 &repository,
+                None,
                 now_ms - 60_000,
                 now_ms - 49_999,
                 Instant::now() + QUERY_TIMEOUT,
@@ -2193,13 +2246,14 @@ pub(crate) mod tests {
         let excluded = service
             .review_window(
                 &repository,
+                None,
                 now_ms - 49_999,
                 now_ms,
                 Instant::now() + QUERY_TIMEOUT,
             )
             .unwrap();
         let broad = service
-            .review_window(&repository, 0, now_ms, Instant::now() + QUERY_TIMEOUT)
+            .review_window(&repository, None, 0, now_ms, Instant::now() + QUERY_TIMEOUT)
             .unwrap();
         assert_eq!(broad.totals, included.totals);
         assert_eq!(included.totals.total_tokens, Some(100));
@@ -2485,7 +2539,7 @@ pub(crate) mod tests {
     fn unsupported_and_unconfigured_collectors_are_unavailable_not_zero() {
         let temporary = tempdir().unwrap();
         let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 7);
+        let (canonical, now_ms) = source_database(&codex_home, 8);
         let mut config = config(temporary.path(), codex_home);
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let authority = Database::open(config.database_path()).unwrap();
@@ -2499,7 +2553,7 @@ pub(crate) mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,7,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,8,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(

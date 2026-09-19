@@ -11,11 +11,14 @@ use crate::usage::{QUERY_TIMEOUT, RepositoryRecord, UsageService};
 
 #[path = "review_evidence.rs"]
 mod evidence;
+#[path = "review_pages.rs"]
+mod pages;
 
 #[derive(Clone)]
 pub(crate) struct ReviewService {
     database: Database,
     usage: UsageService,
+    snapshots: pages::Snapshots,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -27,7 +30,11 @@ enum EvidenceUse {
 
 impl ReviewService {
     pub(crate) fn new(database: Database, usage: UsageService) -> Self {
-        Self { database, usage }
+        Self {
+            database,
+            usage,
+            snapshots: pages::Snapshots::default(),
+        }
     }
 
     fn repository(&self, repository_id: &str) -> Result<RepositoryRecord, ProtocolError> {
@@ -62,18 +69,22 @@ impl ReviewService {
             text(workstream, 1, 100)?;
         }
         let repository = self.repository(&params.repository_id)?;
-        let usage = self.usage.review_window(
-            &repository,
-            params.window_start_ms,
-            params.window_end_ms,
-            deadline,
-        )?;
-        let mut gaps = vec![
-            "task_usage_attribution_unavailable".to_owned(),
-            "user_wait_measurement_unavailable".to_owned(),
-        ];
-        if params.workstream_id.is_some() {
-            gaps.push("workstream_usage_attribution_unavailable".into());
+        let usage = self.outcome_usage(&repository, &params, deadline)?;
+        let mut gaps = Vec::new();
+        if usage.outcomes.coverage != "complete" {
+            gaps.push(format!(
+                "task_usage_attribution_{}",
+                usage.outcomes.coverage
+            ));
+            if params.workstream_id.is_some() {
+                gaps.push(format!(
+                    "workstream_usage_attribution_{}",
+                    usage.outcomes.coverage
+                ));
+            }
+        }
+        if usage.outcomes.totals.recorded_wait_ms.unknown > 0 || usage.coverage.has_gaps {
+            gaps.push("recorded_wait_measurement_partial_or_unavailable".into());
         }
         if usage.coverage.has_gaps {
             gaps.push("canonical_usage_partial_or_unavailable".into());
@@ -207,8 +218,7 @@ impl ReviewService {
             window_start_ms: params.window_start_ms, window_end_ms: params.window_end_ms, generated_at_ms: now_ms,
             source_refs: vec![usage_ref(&params.repository_id, params.window_start_ms, params.window_end_ms)],
             coverage_gaps: gaps,
-            usage: ReviewUsage { coverage: usage.coverage, totals: usage.totals, activities: usage.activities,
-                time: usage.time, tools: usage.tools, semantics: usage.semantics },
+            usage,
             evidence: evidence[start..end].to_vec(), next_offset,
             standing_decisions: decisions, next_before_decision_seq: next_decision,
             interpretation_rules: vec![
@@ -243,6 +253,8 @@ impl ReviewService {
                 offset: 0,
                 limit: 1,
                 before_decision_seq: None,
+                outcome_cursor: None,
+                outcome_limit: None,
             },
             now_ms,
             deadline,
