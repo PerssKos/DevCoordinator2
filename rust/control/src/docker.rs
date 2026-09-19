@@ -231,6 +231,7 @@ pub struct DockerInvocation {
     output_log: Option<Arc<Mutex<File>>>,
     cancellation: Option<Arc<AtomicBool>>,
     input: Option<File>,
+    private_stdout: Option<Arc<Mutex<File>>>,
 }
 
 impl DockerInvocation {
@@ -248,6 +249,7 @@ impl DockerInvocation {
             output_log: None,
             cancellation: None,
             input: None,
+            private_stdout: None,
         })
     }
 
@@ -258,6 +260,12 @@ impl DockerInvocation {
 
     pub fn with_input(mut self, input: File) -> Self {
         self.input = Some(input);
+        self
+    }
+
+    /// Stream binary/private output only into the already-open service-owned file.
+    pub fn with_private_stdout(mut self, file: File) -> Self {
+        self.private_stdout = Some(Arc::new(Mutex::new(file)));
         self
     }
 
@@ -315,6 +323,7 @@ struct CapturedStream {
 fn capture_stream(
     mut source: impl Read,
     output_log: Option<Arc<Mutex<File>>>,
+    private: bool,
 ) -> io::Result<CapturedStream> {
     let mut retained = Vec::new();
     let mut truncated = false;
@@ -328,6 +337,9 @@ fn capture_stream(
             log.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .write_all(&chunk[..read])?;
+        }
+        if private {
+            continue;
         }
         retained.extend_from_slice(&chunk[..read]);
         if retained.len() > MAX_CAPTURE_BYTES {
@@ -400,10 +412,13 @@ fn execute_process(
         operation: "capture docker stderr",
         source: io::Error::other("stderr pipe was not created"),
     })?;
-    let stdout_log = invocation.output_log.clone();
+    let private_stdout = invocation.private_stdout.is_some();
+    let stdout_log = invocation
+        .private_stdout
+        .or_else(|| invocation.output_log.clone());
     let stderr_log = invocation.output_log;
-    let stdout_reader = thread::spawn(move || capture_stream(stdout, stdout_log));
-    let stderr_reader = thread::spawn(move || capture_stream(stderr, stderr_log));
+    let stdout_reader = thread::spawn(move || capture_stream(stdout, stdout_log, private_stdout));
+    let stderr_reader = thread::spawn(move || capture_stream(stderr, stderr_log, false));
     let pid = child.id();
     let (sender, receiver) = mpsc::sync_channel(1);
     let waiter = thread::spawn(move || {
@@ -2290,6 +2305,31 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn private_binary_stdout_is_separate_from_results_and_diagnostics() {
+        let temporary = tempfile::tempdir().unwrap();
+        let script = temporary.path().join("private-output");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '\\377PRIVATE_ARCHIVE\\000'\nprintf 'safe diagnostic' >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = temporary.path().join("archive");
+        let archive = File::create(&path).unwrap();
+        let output = DockerCli::new(script)
+            .invoke(
+                DockerInvocation::new(vec!["inspect".into()], Duration::from_secs(5))
+                    .unwrap()
+                    .with_private_stdout(archive),
+            )
+            .unwrap();
+        assert!(output.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "safe diagnostic");
+        assert_eq!(std::fs::read(path).unwrap(), b"\xffPRIVATE_ARCHIVE\0");
+    }
     use std::sync::Mutex;
     use tempfile::tempdir;
 
@@ -2385,6 +2425,7 @@ mod tests {
         let captured = capture_stream(
             std::io::Cursor::new(text.as_bytes()),
             Some(Arc::clone(&log)),
+            false,
         )
         .unwrap();
         assert!(captured.truncated);

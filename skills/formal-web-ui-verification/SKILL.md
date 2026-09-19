@@ -34,6 +34,9 @@ Native modal dialogs exclude their browser-inert background from active-content
 defects. Fixed descendants count as reachable only when an actual inner scroll
 range on the cut axis can expose them within the viewport. Locked scroll regions,
 unscrollable fixed controls and occlusion inside the active dialog still fail.
+Partially visible content at an inner scroll edge is scrolled into view before
+occlusion sampling. Fractional edge pixels must not turn a neighboring footer
+into a false blocker; actual covers remain checked and scroll positions are restored.
 Deliberately temporary,
 positioned dialog/menu/listbox/tooltip/popover surfaces may declare
 `data-ui-contextual-overlay="reason"` so their coverage of outside content is

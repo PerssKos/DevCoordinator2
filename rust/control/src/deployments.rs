@@ -1,4 +1,5 @@
 //! Deployment resolution, truthful status, observed control, and route changes.
+mod recovery;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;

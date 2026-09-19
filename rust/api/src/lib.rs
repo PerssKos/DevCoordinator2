@@ -15,10 +15,11 @@ pub mod params;
 pub mod recovery;
 pub mod results;
 pub mod review;
+pub mod runtime_recovery;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 22;
+pub const DATABASE_SCHEMA_VERSION: u32 = 23;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1219,6 +1220,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         glossary::Impact
     ),
     operation!(
+        "deployment.recovery",
+        "Prepare or recover one saved deployment with exact ownership checks and a private database backup.",
+        IDEMPOTENT_APPEND_SERVER_ADMIN,
+        Protocol["deployment recovery"],
+        ["deployment_recovery"],
+        runtime_recovery::Request,
+        runtime_recovery::Receipt
+    ),
+    operation!(
         "plan.recovery",
         "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
         IDEMPOTENT_APPEND_SERVER_ADMIN,
@@ -1809,9 +1819,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 101);
-        assert_eq!(tools.len(), 78);
-        assert_eq!(cli_routes.len(), 90);
+        assert_eq!(OPERATIONS.len(), 102);
+        assert_eq!(tools.len(), 79);
+        assert_eq!(cli_routes.len(), 91);
     }
 
     #[test]
