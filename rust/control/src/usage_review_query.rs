@@ -1,14 +1,6 @@
 use rusqlite::Connection;
 
-pub(super) enum OperationScope {
-    Initial,
-    Selected,
-}
-
-pub(super) fn selection(
-    connection: &Connection,
-    scope: OperationScope,
-) -> Result<(String, bool), String> {
+pub(super) fn selection(connection: &Connection) -> Result<(String, bool), String> {
     let exists: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = '_usage_report_cache_meta')",
@@ -22,15 +14,11 @@ pub(super) fn selection(
     } else {
         ("effective_classification_events", "provenance")
     };
-    let selected = match scope {
-        OperationScope::Initial => "",
-        OperationScope::Selected => " AND operation.id IN (SELECT value FROM json_each(?4))",
-    };
     Ok((
         format!(
             r#"WITH scoped AS MATERIALIZED (
-        SELECT operation.* FROM operations operation WHERE operation.id IN (
-            SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(?1))) {selected}
+        SELECT operation.* FROM operations operation
+        WHERE operation.id IN (SELECT value FROM json_each(?4))
     ), bounds AS (SELECT ?2 AS lower_ms, ?3 AS upper_ms), selected AS MATERIALIZED (
         SELECT operation.*, terminal.occurred_at_ms ended_at_ms, terminal.event_kind terminal_status,
             COALESCE(effective.phase, operation.phase) effective_phase,
@@ -98,7 +86,8 @@ pub(super) const TOKENS: &str =
     FROM token_facts WHERE measurement_provenance = 'provider_reported' LIMIT 200001";
 
 pub(super) const WAITS: &str = "SELECT span.operation_id, span.started_at_ms, ended.occurred_at_ms
-    FROM activity_spans span JOIN effective ON effective.id = span.operation_id CROSS JOIN bounds
+    FROM activity_spans span CROSS JOIN bounds
     LEFT JOIN activity_span_events ended ON ended.activity_span_id = span.id AND ended.event_kind = 'ended'
-    WHERE span.activity_state IN ('user_wait', 'external_wait', 'blocked_wait')
+    WHERE span.operation_id IN (SELECT id FROM effective)
+    AND span.activity_state IN ('user_wait', 'external_wait', 'blocked_wait')
     AND span.started_at_ms < upper_ms AND (ended.occurred_at_ms IS NULL OR ended.occurred_at_ms > lower_ms) LIMIT 200001";

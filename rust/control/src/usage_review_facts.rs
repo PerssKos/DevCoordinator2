@@ -37,7 +37,7 @@ pub(super) fn read(
     end: u64,
 ) -> Result<Facts, String> {
     let began = Instant::now();
-    let (selection, cached) = query::selection(connection, query::OperationScope::Initial)?;
+    let (selection, cached) = query::selection(connection)?;
     let repositories = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
     let params = rusqlite::params![repositories, i64_value(start)?, i64_value(end)?];
     let indexed: bool = connection.query_row(
@@ -57,7 +57,9 @@ pub(super) fn read(
     } else {
         "SELECT operation.id FROM bounds CROSS JOIN operations operation WHERE started_at_ms < upper_ms AND NOT EXISTS (SELECT 1 FROM operation_events terminal WHERE terminal.operation_id = operation.id AND terminal.terminal = 1)"
     };
-    let candidates = format!("{selection}, candidates(id) AS (
+    // Materialize only bounded identifiers before repository filtering, so the
+    // planner cannot push that filter into repeated scans of historical facts.
+    let candidates = format!("WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), candidates(id) AS MATERIALIZED (
         SELECT id FROM bounds CROSS JOIN operations WHERE started_at_ms >= lower_ms AND started_at_ms < upper_ms
         UNION SELECT operation_id FROM bounds CROSS JOIN operation_events {terminal_index} WHERE terminal = 1 AND occurred_at_ms > lower_ms
         UNION {open_operations}
@@ -70,7 +72,10 @@ pub(super) fn read(
             AND token.category_path NOT GLOB 'attribution.items.*'
         UNION SELECT operation_id FROM bounds CROSS JOIN coverage_events
           WHERE occurred_at_ms >= lower_ms AND occurred_at_ms < upper_ms)
-        SELECT id FROM scoped WHERE id IN (SELECT id FROM candidates) ORDER BY id LIMIT 200001");
+        SELECT id FROM candidates WHERE id IN (
+            SELECT operation_id FROM repository_attributions
+            WHERE repository_id IN (SELECT value FROM json_each(?1)))
+        ORDER BY id LIMIT 200001");
     let ids = connection
         .prepare(&candidates)
         .map_err(|_| "source_unavailable")?
@@ -87,7 +92,6 @@ pub(super) fn read(
         elapsed_ms = began.elapsed().as_millis(),
         "outcome query stage completed"
     );
-    let (selection, _) = query::selection(connection, query::OperationScope::Selected)?;
     let params = rusqlite::params![repositories, i64_value(start)?, i64_value(end)?, ids];
     let mut statement = connection
         .prepare(&(selection.clone() + query::OPERATIONS))

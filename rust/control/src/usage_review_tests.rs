@@ -2,6 +2,49 @@ use super::*;
 use serde_json::{Value, json};
 
 #[test]
+#[ignore = "requires an explicitly authorized read-only live collector probe"]
+fn live_readonly_review_probe() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .try_init();
+    let input =
+        std::path::PathBuf::from(std::env::var("CXM_LIVE_REVIEW_PROBE").expect("probe input"));
+    let scope: Value = serde_json::from_slice(&std::fs::read(&input).unwrap()).unwrap();
+    let source = CodexUsageSource {
+        uid: rustix::process::getuid().as_raw(),
+        codex_home: scope["home"].as_str().unwrap().into(),
+        executable: input.clone(),
+    };
+    let began = Instant::now();
+    let deadline = began + QUERY_TIMEOUT;
+    let result = (|| {
+        let connection = open_source_until(&source, deadline)?;
+        connection
+            .execute_batch("BEGIN")
+            .map_err(|_| "source_unavailable")?;
+        let canonical =
+            canonical_repository(&connection, scope["repository_id"].as_str().unwrap())?;
+        let family = repository_family(&connection, &canonical)?;
+        let start = scope["start"].as_u64().unwrap();
+        let end = scope["end"].as_u64().unwrap();
+        let facts = review_facts::read(&connection, &family, start, end)?;
+        let (_, groups) = review_aggregate::aggregate(&connection, facts, None, start, end)?;
+        groups.finish(false)
+    })();
+    let evidence = match &result {
+        Ok(report) => json!({"elapsed_ms":began.elapsed().as_millis(),"outcomes":report}),
+        Err(reason) => json!({"elapsed_ms":began.elapsed().as_millis(),"error":reason}),
+    };
+    std::fs::write(
+        input.with_extension("result.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    assert!(result.is_ok(), "{evidence}");
+}
+
+#[test]
 #[ignore = "requires an explicitly prepared isolated collector snapshot"]
 fn isolated_coordinator_daily_window_scale_probe() {
     let _ = tracing_subscriber::fmt()
