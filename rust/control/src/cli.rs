@@ -696,6 +696,20 @@ enum CapacityCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeploymentCommand {
+    Recovery {
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        deployment_id: String,
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        backup_sha256: String,
+        #[arg(long)]
+        expected_live_sha256: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
     List {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
@@ -1705,6 +1719,17 @@ impl ArtifactCommand {
 impl DeploymentCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::Recovery {
+                repository_id,
+                deployment_id,
+                transaction_dir,
+                backup_sha256,
+                expected_live_sha256,
+                apply,
+            } => remote(
+                "deployment.recovery",
+                json!({"repository_id":repository_id,"deployment_id":deployment_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply}),
+            ),
             Self::List { path } => {
                 if let Some(path) = path {
                     let path = absolute_path(path)?;
@@ -2910,6 +2935,21 @@ mod tests {
                 "repository.unarchive",
             ),
             (&["plan", "overview", "/tmp/repo"], "plan.overview"),
+            (
+                &[
+                    "deployment",
+                    "recovery",
+                    "--repository-id",
+                    "r1111111111111111",
+                    "--deployment-id",
+                    "d1111111111111111",
+                    "--transaction-dir",
+                    "/private/snapshot",
+                    "--backup-sha256",
+                    "abc",
+                ],
+                "deployment.recovery",
+            ),
             (
                 &[
                     "plan",

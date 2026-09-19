@@ -5721,6 +5721,284 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
     Ok(())
 }
 
+fn case_scoped_preview_recovery_preserves_database_and_routes(
+    world: &mut World,
+) -> Result<(), String> {
+    world.write_owned("marker.txt", "recovered\n")?;
+    let command = command_json(&fixture_command(world, &["http-server-file", "marker.txt"]))?;
+    world.write_config(&format!(
+        r#"schema=2
+[deployment.web]
+source="worktree"
+domain="app-dev"
+components=["db","api"]
+public=false
+[deployment.web.component.db]
+type="postgres"
+image="postgres:16-alpine"
+database="app"
+user="app"
+[deployment.web.component.api]
+type="process"
+command={command}
+port=true
+route=true
+depends_on=["db"]
+health={{path="/healthz",timeout_seconds=30}}
+"#
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "recovery fixture"])?;
+    let original =
+        data(&world.call("deployment.apply", json!({"path":world.repo,"name":"web"}))?)?.clone();
+    let deployment = original["deployment_id"]
+        .as_str()
+        .ok_or("missing deployment")?
+        .to_owned();
+    let repository = original["repository_id"]
+        .as_str()
+        .ok_or("missing repository")?
+        .to_owned();
+    let container = component(&original, "db")?
+        .pointer("/binding/identity")
+        .and_then(Value::as_str)
+        .ok_or("missing database")?
+        .to_owned();
+    let port = component(&original, "api")?["port"].clone();
+    world.track_volume(format!("devcoordinator2-{deployment}-db-pgdata"));
+    command_stdout(
+        "/usr/bin/docker",
+        &[
+            "exec",
+            &container,
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "app",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE TABLE preserved_recovery(value text); INSERT INTO preserved_recovery VALUES('PRIVATE_RECOVERY_SENTINEL')",
+        ],
+    )?;
+    world.stop_daemon(false)?;
+    let saved = world.base.join("saved");
+    fs::create_dir(&saved).map_err(|e| e.to_string())?;
+    fs::set_permissions(&saved, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    let authority =
+        devcoordinator2_control::database::Database::open(world.state.join("authority.sqlite3"))
+            .map_err(|e| e.to_string())?;
+    let snapshot = saved.join("authority-before.sqlite3");
+    authority
+        .backup(snapshot.clone())
+        .map_err(|e| e.to_string())?;
+    let key = deployment.clone();
+    authority
+        .transaction(move |c| {
+            c.execute(
+                "UPDATE deployments SET current_generation=0 WHERE deployment_id=?1",
+                [&key],
+            )?;
+            c.execute(
+                "DELETE FROM components WHERE deployment_id=?1 AND name='db'",
+                [&key],
+            )?;
+            c.execute(
+                "DELETE FROM port_assignments WHERE deployment_id=?1 AND component='db'",
+                [&key],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+    authority.close().map_err(|e| e.to_string())?;
+    let header = saved.join("installation-snapshot.json");
+    fs::write(
+        &header,
+        serde_json::to_vec(&json!({"schema":1,"status":"committed","transaction_dir":saved}))
+            .map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    fs::set_permissions(&header, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+    let hash = sha256_hex(&fs::read(&snapshot).map_err(|e| e.to_string())?);
+    world.start_daemon(None, None, None)?;
+    let mut params = json!({"repository_id":repository,"deployment_id":deployment,"transaction_dir":saved,"backup_sha256":hash});
+    let credentials = world
+        .state
+        .join("secrets")
+        .join(&deployment)
+        .join("db.json");
+    let retained = credentials.with_extension("withheld");
+    fs::rename(&credentials, &retained).map_err(|e| e.to_string())?;
+    let missing_credential_result = world.call("deployment.recovery", params.clone());
+    fs::rename(&retained, &credentials).map_err(|e| e.to_string())?;
+    ensure!(
+        error_code(&missing_credential_result?) == Some("params_invalid"),
+        "recovery accepted missing original credentials"
+    );
+    let original_credentials = fs::read(&credentials).map_err(|e| e.to_string())?;
+    let mut changed_credentials: Value =
+        serde_json::from_slice(&original_credentials).map_err(|e| e.to_string())?;
+    changed_credentials["password"] = json!("PRIVATE_CHANGED_CREDENTIAL");
+    fs::write(
+        &credentials,
+        serde_json::to_vec(&changed_credentials).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let changed_credential_result = world.call("deployment.recovery", params.clone());
+    fs::write(&credentials, original_credentials).map_err(|e| e.to_string())?;
+    let changed_credential_result = changed_credential_result?;
+    ensure!(
+        error_code(&changed_credential_result) == Some("params_invalid"),
+        "recovery accepted changed credentials"
+    );
+    ensure!(
+        !changed_credential_result
+            .to_string()
+            .contains("PRIVATE_CHANGED_CREDENTIAL"),
+        "changed credential escaped in an error"
+    );
+    let prepared = data(&world.call("deployment.recovery", params.clone())?)?.clone();
+    ensure!(
+        prepared["status"] == "prepared" && prepared["saved_generation"] == 1,
+        "runtime recovery did not prepare saved ownership"
+    );
+    params["expected_live_sha256"] = json!("0".repeat(64));
+    params["apply"] = json!(true);
+    ensure!(
+        error_code(&world.call("deployment.recovery", params.clone())?) == Some("params_invalid"),
+        "stale runtime recovery was accepted"
+    );
+    ensure!(
+        !world.state.join("recovery").exists(),
+        "stale recovery created a database backup"
+    );
+    params["expected_live_sha256"] = prepared["live_sha256"].clone();
+    let applied = data(&world.call("deployment.recovery", params.clone())?)?.clone();
+    ensure!(
+        applied["status"] == "applied",
+        "scoped runtime recovery failed"
+    );
+    ensure!(
+        !applied.to_string().contains("PRIVATE_RECOVERY_SENTINEL"),
+        "database contents escaped recovery receipt"
+    );
+    let recovery = applied["recovery_id"]
+        .as_str()
+        .ok_or("missing runtime receipt")?;
+    let archive = world
+        .state
+        .join("recovery")
+        .join(recovery)
+        .join("postgres.dump");
+    let archive_bytes = fs::read(&archive).map_err(|e| e.to_string())?;
+    ensure!(
+        archive_bytes.starts_with(b"PGDMP")
+            && sha256_hex(&archive_bytes) == applied["database_backup_sha256"],
+        "database backup was not retained with its exact hash"
+    );
+    ensure!(
+        fs::metadata(&archive)
+            .map_err(|e| e.to_string())?
+            .permissions()
+            .mode()
+            & 0o777
+            == 0o600,
+        "database backup is not private"
+    );
+    command_stdout(
+        "/usr/bin/docker",
+        &[
+            "exec",
+            &container,
+            "createdb",
+            "-U",
+            "app",
+            "recovery_restore_fixture",
+        ],
+    )?;
+    let restored = Command::new("/usr/bin/docker")
+        .args([
+            "exec",
+            "-i",
+            &container,
+            "pg_restore",
+            "--exit-on-error",
+            "--username",
+            "app",
+            "--dbname",
+            "recovery_restore_fixture",
+        ])
+        .stdin(File::open(&archive).map_err(|e| e.to_string())?)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        restored.success(),
+        "private archive could not restore an isolated database"
+    );
+    let restored_value = command_stdout(
+        "/usr/bin/docker",
+        &[
+            "exec",
+            &container,
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "recovery_restore_fixture",
+            "-tAc",
+            "SELECT value FROM preserved_recovery",
+        ],
+    )?;
+    ensure!(
+        restored_value.trim() == "PRIVATE_RECOVERY_SENTINEL",
+        "private archive did not restore the fixture data"
+    );
+    ensure!(
+        data(&world.call("deployment.recovery", params)?)?["status"] == "already_applied",
+        "runtime recovery replay was not idempotent"
+    );
+    let updated =
+        data(&world.call("deployment.apply", json!({"path":world.repo,"name":"web"}))?)?.clone();
+    ensure!(
+        updated["state"] == "running" && updated["public"] == false,
+        "recovered preview did not become privately runnable"
+    );
+    ensure!(
+        component(&updated, "db")?.pointer("/binding/identity") == Some(&json!(container)),
+        "recovery or apply replaced the original database"
+    );
+    ensure!(
+        component(&updated, "api")?["port"] == port,
+        "recovered route changed its stable port"
+    );
+    let value = command_stdout(
+        "/usr/bin/docker",
+        &[
+            "exec",
+            &container,
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "app",
+            "-tAc",
+            "SELECT value FROM preserved_recovery",
+        ],
+    )?;
+    ensure!(
+        value.trim() == "PRIVATE_RECOVERY_SENTINEL",
+        "application data did not survive recovery"
+    );
+    ensure!(
+        http_get_json(port.as_u64().ok_or("missing route port")? as u16)?["version"] == "recovered",
+        "recovered application route did not respond"
+    );
+    Ok(())
+}
+
 fn case_replacement_daemon_accepts_requests_with_prior_socket_fenced(
     world: &mut World,
 ) -> Result<(), String> {
@@ -6060,6 +6338,10 @@ fn cases() -> Vec<Case> {
         (
             "replacement_daemon_accepts_requests_with_prior_socket_fenced",
             case_replacement_daemon_accepts_requests_with_prior_socket_fenced,
+        ),
+        (
+            "scoped_preview_recovery_preserves_database_and_routes",
+            case_scoped_preview_recovery_preserves_database_and_routes,
         ),
         (
             "live_configuration_in_service_sandbox",

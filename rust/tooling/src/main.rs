@@ -51,9 +51,26 @@ enum Command {
         #[command(subcommand)]
         command: PlanningCommand,
     },
+    Deployment {
+        #[command(subcommand)]
+        command: DeploymentCommand,
+    },
     Install {
         #[command(subcommand)]
         command: InstallCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DeploymentCommand {
+    /// Inspect one repository-owned saved deployment without restoring any state.
+    InspectBackup {
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        deployment_id: String,
     },
 }
 
@@ -922,6 +939,21 @@ fn main() -> ExitCode {
         Command::Legacy { command } => run_legacy(command),
         Command::Decision { command } => run_decision(command),
         Command::Planning { command } => run_planning(command),
+        Command::Deployment { command } => {
+            let DeploymentCommand::InspectBackup {
+                transaction_dir,
+                repository_id,
+                deployment_id,
+            } = command;
+            match devcoordinator2_tooling::deployment_backup::inspect(
+                transaction_dir,
+                repository_id,
+                deployment_id,
+            ) {
+                Ok(result) => emit_report(result, true, 0),
+                Err(error) => tooling_error(&error, 2),
+            }
+        }
         Command::Install { command } => run_install(command),
     }
 }

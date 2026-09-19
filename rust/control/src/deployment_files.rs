@@ -684,7 +684,7 @@ fn safe_relative_parts(relative: &str) -> Result<Vec<OsString>, DeploymentFileEr
     Ok(parts)
 }
 
-fn open_directory_path(
+pub(crate) fn open_directory_path(
     path: &Path,
     create: bool,
     mode: u32,
@@ -736,7 +736,7 @@ fn open_directory_path(
     Ok(Some(directory))
 }
 
-fn open_child_directory(
+pub(crate) fn open_child_directory(
     parent: &File,
     name: &str,
     create: bool,
