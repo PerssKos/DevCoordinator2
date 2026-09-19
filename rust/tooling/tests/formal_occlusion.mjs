@@ -63,6 +63,35 @@ function occlusions(report) {
   return report.findings.filter((finding) => ["occluded", "partially-occluded"].includes(finding.rule));
 }
 
+for (const covered of [false, true]) {
+  test(`fractional modal scroll edge checks reachable content: covered ${covered}`, async () => {
+    const page = await browser.newPage({ viewport: { width: 927, height: 873 } });
+    try {
+      await page.setContent(`<!doctype html><style>
+        body{margin:0;background:white;color:#111;font:13px sans-serif}
+        dialog{padding:0;border:0;width:400px;overflow:hidden}
+        dialog[open]{display:flex;flex-direction:column}
+        header,footer{height:50px;flex:none;background:white}
+        .body{height:120.5px;overflow:auto;flex:none;padding:0 20px}
+        .spacer{height:117.25px}.links{height:40px;position:relative}
+        #reachable-link{display:inline-flex;line-height:15px;height:15px;color:#0645ad}
+        .cover{position:absolute;left:0;top:0;width:180px;height:15px;background:#222;z-index:2}
+      </style><dialog><header>Venue details</header><div class="body"><div class="spacer"></div><div class="links"><a id="reachable-link" href="#community">Community board</a>${covered ? '<div class="cover"></div>' : ''}</div></div><footer>Previous and next</footer></dialog>`);
+      await page.locator('dialog').evaluate(element => element.showModal());
+      const before = await scrollCoordinates(page);
+      const report = await measure(page);
+      const findings = occlusions(report).filter(finding => finding.selector.includes('reachable-link'));
+      assert.deepEqual(await scrollCoordinates(page), before, 'detector must restore modal scroll position');
+      if (covered) assert.ok(findings.some(finding => finding.severity === 'critical'));
+      else {
+        assert.deepEqual(findings, []);
+        await page.locator('#reachable-link').click();
+        assert.equal(new URL(page.url()).hash, '#community');
+      }
+    } finally { await page.close(); }
+  });
+}
+
 function contextualOverlayFixture({ declared = true, reason = "User-opened preview", innerCover = false, positioned = true } = {}) {
   return `<!doctype html><style>
     body{margin:0;background:white;color:#111}

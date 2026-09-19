@@ -4038,14 +4038,14 @@ function pageVerifier() {
     }
     let rect = nowRect(el);
     if (rect.width <= 1 || rect.height <= 1) return;
-    // Scroll-container reachability: an element scrolled out of an inner
-    // overflow container can still sit inside the window viewport. Scroll it
-    // into view within its container first (mirroring the window case above);
-    // hit-testing where it is clipped away would report a false occlusion.
+    // Inner scrollports can clip part of an element while it remains inside the
+    // window. Probe the whole element before sampling; integer client sizes and
+    // fractional text positions can otherwise leave only edge points that hit
+    // an adjacent footer. Real covers still occlude the element after this probe.
     let clip = scrollAncestorClipBox(el);
     if (
-      Math.min(rect.right, clip.right) - Math.max(rect.left, clip.left) <= 2 ||
-      Math.min(rect.bottom, clip.bottom) - Math.max(rect.top, clip.top) <= 2
+      rect.left < clip.left || rect.top < clip.top ||
+      rect.right > clip.right || rect.bottom > clip.bottom
     ) {
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       measuredAfterScroll = true;
