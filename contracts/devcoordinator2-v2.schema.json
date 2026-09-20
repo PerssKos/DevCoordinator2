@@ -14940,9 +14940,38 @@
       },
       "description": "Apply a declared deployment.",
       "inputSchema": {
+        "$defs": {
+          "DeploymentCandidateSource": {
+            "additionalProperties": false,
+            "properties": {
+              "commit": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "commit"
+            ],
+            "type": "object"
+          }
+        },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DeploymentCandidateSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "deployment_id": {
             "default": null,
             "type": [
@@ -14965,16 +14994,45 @@
             ]
           }
         },
-        "title": "DeploymentReference",
+        "title": "DeploymentApply",
         "type": "object"
       },
       "mcpExcludedReason": null,
       "mcpTools": [
         {
           "inputSchema": {
+            "$defs": {
+              "DeploymentCandidateSource": {
+                "additionalProperties": false,
+                "properties": {
+                  "commit": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "commit"
+                ],
+                "type": "object"
+              }
+            },
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "candidate": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DeploymentCandidateSource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
               "deployment_id": {
                 "default": null,
                 "type": [
@@ -14997,7 +15055,7 @@
                 ]
               }
             },
-            "title": "DeploymentReference",
+            "title": "DeploymentApply",
             "type": "object"
           },
           "name": "deployment_apply",
@@ -22515,11 +22573,11 @@
         "routes": [
           {
             "dispatch": "protocol",
-            "route": "plan recovery"
+            "route": "deployment recovery"
           }
         ]
       },
-      "description": "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
+      "description": "Prepare or recover one saved deployment with exact ownership checks and a private database backup.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -22529,6 +22587,9 @@
             "type": "boolean"
           },
           "backup_sha256": {
+            "type": "string"
+          },
+          "deployment_id": {
             "type": "string"
           },
           "expected_live_sha256": {
@@ -22547,6 +22608,7 @@
         },
         "required": [
           "repository_id",
+          "deployment_id",
           "transaction_dir",
           "backup_sha256"
         ],
@@ -22567,12 +22629,278 @@
               "backup_sha256": {
                 "type": "string"
               },
+              "deployment_id": {
+                "type": "string"
+              },
               "expected_live_sha256": {
                 "default": null,
                 "type": [
                   "string",
                   "null"
                 ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "transaction_dir": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "deployment_id",
+              "transaction_dir",
+              "backup_sha256"
+            ],
+            "title": "Request",
+            "type": "object"
+          },
+          "name": "deployment_recovery",
+          "transform": "identity"
+        }
+      ],
+      "name": "deployment.recovery",
+      "outputSchema": {
+        "$defs": {
+          "Port": {
+            "additionalProperties": false,
+            "properties": {
+              "component": {
+                "type": "string"
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "component",
+              "port",
+              "generation"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "backup_sha256": {
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_generation": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "database_backup_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deployment_id": {
+            "type": "string"
+          },
+          "live_sha256": {
+            "type": "string"
+          },
+          "observed_components": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "ports": {
+            "items": {
+              "$ref": "#/$defs/Port"
+            },
+            "type": "array"
+          },
+          "preserved_database_identity": {
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "recovery_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "saved_generation": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "deployment_id",
+          "backup_sha256",
+          "live_sha256",
+          "provenance",
+          "status",
+          "current_generation",
+          "saved_generation",
+          "preserved_database_identity",
+          "ports",
+          "blockers",
+          "observed_components"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "plan recovery"
+          }
+        ]
+      },
+      "description": "Prepare or atomically recover one repository's saved planning history without replacing live authority.",
+      "inputSchema": {
+        "$defs": {
+          "PreserveLiveTask": {
+            "additionalProperties": false,
+            "properties": {
+              "live_sha256": {
+                "type": "string"
+              },
+              "saved_sha256": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "saved_sha256",
+              "live_sha256"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "backup_sha256": {
+            "type": "string"
+          },
+          "expected_live_sha256": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "preserve_live_tasks": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/PreserveLiveTask"
+            },
+            "maxItems": 64,
+            "type": "array"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "transaction_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "transaction_dir",
+          "backup_sha256"
+        ],
+        "title": "Request",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "PreserveLiveTask": {
+                "additionalProperties": false,
+                "properties": {
+                  "live_sha256": {
+                    "type": "string"
+                  },
+                  "saved_sha256": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "task_id",
+                  "saved_sha256",
+                  "live_sha256"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "apply": {
+                "default": false,
+                "type": "boolean"
+              },
+              "backup_sha256": {
+                "type": "string"
+              },
+              "expected_live_sha256": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "preserve_live_tasks": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/PreserveLiveTask"
+                },
+                "maxItems": 64,
+                "type": "array"
               },
               "repository_id": {
                 "type": "string"
@@ -22596,6 +22924,37 @@
       "name": "plan.recovery",
       "outputSchema": {
         "$defs": {
+          "Conflict": {
+            "additionalProperties": false,
+            "properties": {
+              "fields": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "live_sha256": {
+                "type": "string"
+              },
+              "saved_sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "fields",
+              "saved_sha256",
+              "live_sha256"
+            ],
+            "type": "object"
+          },
           "Mapping": {
             "additionalProperties": false,
             "properties": {
@@ -22621,6 +22980,26 @@
               "assigned_sequence"
             ],
             "type": "object"
+          },
+          "PreserveLiveTask": {
+            "additionalProperties": false,
+            "properties": {
+              "live_sha256": {
+                "type": "string"
+              },
+              "saved_sha256": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "task_id",
+              "saved_sha256",
+              "live_sha256"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22628,6 +23007,19 @@
         "properties": {
           "backup_sha256": {
             "type": "string"
+          },
+          "conflict_count": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conflicts": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Conflict"
+            },
+            "type": "array"
           },
           "counts": {
             "additionalProperties": {
@@ -22637,12 +23029,28 @@
             },
             "type": "object"
           },
+          "existing_counts": {
+            "additionalProperties": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "default": {},
+            "type": "object"
+          },
           "live_sha256": {
             "type": "string"
           },
           "mappings": {
             "items": {
               "$ref": "#/$defs/Mapping"
+            },
+            "type": "array"
+          },
+          "preserved_live_tasks": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/PreserveLiveTask"
             },
             "type": "array"
           },
@@ -25617,6 +26025,20 @@
             "minimum": 0,
             "type": "integer"
           },
+          "outcome_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "repository_id": {
             "type": "string"
           },
@@ -25672,6 +26094,20 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "outcome_cursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_limit": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "repository_id": {
                 "type": "string"
@@ -25809,6 +26245,163 @@
             ],
             "type": "object"
           },
+          "OutcomeEffort": {
+            "properties": {
+              "activeAgentMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "elapsedExecutionMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "providerTotalTokens": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "recordedWaitMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "retryOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reworkOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "operations",
+              "retryOperations",
+              "reworkOperations",
+              "providerTotalTokens",
+              "activeAgentMs",
+              "elapsedExecutionMs",
+              "recordedWaitMs"
+            ],
+            "type": "object"
+          },
+          "OutcomeMeasurement": {
+            "description": "A measured token or millisecond quantity. `unknown` counts missing/incomplete\nobservations or intervals, not an estimate of the missing quantity.",
+            "properties": {
+              "exact": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured",
+              "unknown"
+            ],
+            "type": "object"
+          },
+          "OutcomeReport": {
+            "properties": {
+              "attributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "basis": {
+                "type": "string"
+              },
+              "coverage": {
+                "type": "string"
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rows": {
+                "items": {
+                  "$ref": "#/$defs/OutcomeRow"
+                },
+                "type": "array"
+              },
+              "schemaVersion": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totalRows": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totals": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributedReasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "coverage",
+              "totals",
+              "attributed",
+              "unattributed",
+              "unattributedReasons",
+              "rows",
+              "totalRows",
+              "basis"
+            ],
+            "type": "object"
+          },
+          "OutcomeRow": {
+            "properties": {
+              "effort": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "outcomeId": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "outcomeId",
+              "effort"
+            ],
+            "type": "object"
+          },
           "PhaseTime": {
             "additionalProperties": false,
             "properties": {
@@ -25845,6 +26438,9 @@
               "coverage": {
                 "$ref": "#/$defs/UsageCoverage"
               },
+              "outcomes": {
+                "$ref": "#/$defs/OutcomeReport"
+              },
               "semantics": {
                 "$ref": "#/$defs/UsageSemantics"
               },
@@ -25864,7 +26460,8 @@
               "activities",
               "time",
               "tools",
-              "semantics"
+              "semantics",
+              "outcomes"
             ],
             "type": "object"
           },
@@ -32241,6 +32838,2801 @@
         "idempotent": true,
         "role": "self",
         "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Retain a project-scoped batch of generated sketches and its generation record.",
+      "inputSchema": {
+        "$defs": {
+          "SketchImageInput": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "generation_record_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "images": {
+            "items": {
+              "$ref": "#/$defs/SketchImageInput"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_set": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "source_skill": {
+            "maxLength": 80,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_set",
+          "source_skill",
+          "generation_record_path",
+          "images",
+          "idempotency_key"
+        ],
+        "title": "SketchPublish",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "SketchImageInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "title": {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "title",
+                  "path"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "generation_record_path": {
+                "maxLength": 4096,
+                "minLength": 1,
+                "type": "string"
+              },
+              "idempotency_key": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "images": {
+                "items": {
+                  "$ref": "#/$defs/SketchImageInput"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_set": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "source_skill": {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "generation_record_path",
+              "images",
+              "idempotency_key"
+            ],
+            "title": "SketchPublish",
+            "type": "object"
+          },
+          "name": "design_sketch_publish",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.publish",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "generation_record_sha256": {
+            "type": "string"
+          },
+          "generation_record_size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "sketch_set": {
+            "type": "string"
+          },
+          "sketches": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          },
+          "source_skill": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "batch_id",
+          "repository_id",
+          "sketch_set",
+          "source_skill",
+          "generation_record_size",
+          "generation_record_sha256",
+          "created_at",
+          "sketches"
+        ],
+        "title": "SketchBatch",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "List retained project sketches and their current decisions.",
+      "inputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_set": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_skill": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "SketchList",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "SketchDecision": {
+                "enum": [
+                  "keep",
+                  "reject",
+                  "undecided"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "decision": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SketchDecision"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_set": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source_skill": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "title": "SketchList",
+            "type": "object"
+          },
+          "name": "design_sketch_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.list",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "sketches": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketches",
+          "has_more"
+        ],
+        "title": "SketchListResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Open one retained project sketch with decision history and annotations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "max_bytes": {
+            "default": 184320,
+            "format": "uint32",
+            "maximum": 184320,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 33554432,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id"
+        ],
+        "title": "SketchReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "default": 184320,
+                "format": "uint32",
+                "maximum": 184320,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 33554432,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id"
+            ],
+            "title": "SketchReference",
+            "type": "object"
+          },
+          "name": "design_sketch_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.get",
+      "outputSchema": {
+        "$defs": {
+          "Mark": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "pin",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "height": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "rectangle",
+                    "type": "string"
+                  },
+                  "width": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "width",
+                  "height"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "arrow",
+                    "type": "string"
+                  },
+                  "x1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x2": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y2": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x1",
+                  "y1",
+                  "x2",
+                  "y2"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "freehand",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "highlight",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "x": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchAnnotation": {
+            "additionalProperties": false,
+            "properties": {
+              "annotation_id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "can_delete": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/Mark"
+                },
+                "type": "array"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "annotation_id",
+              "sketch_id",
+              "body",
+              "marks",
+              "state",
+              "author",
+              "created_at",
+              "updated_at",
+              "can_delete"
+            ],
+            "type": "object"
+          },
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchDecisionEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "decision",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "annotations": {
+            "items": {
+              "$ref": "#/$defs/SketchAnnotation"
+            },
+            "type": "array"
+          },
+          "generation_record_sha256": {
+            "type": "string"
+          },
+          "generation_record_size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/$defs/SketchDecisionEvent"
+            },
+            "type": "array"
+          },
+          "sketch": {
+            "$ref": "#/$defs/SketchImageSummary"
+          }
+        },
+        "required": [
+          "sketch",
+          "generation_record_size",
+          "generation_record_sha256",
+          "history",
+          "annotations"
+        ],
+        "title": "SketchDetail",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read one verified retained sketch image chunk.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "max_bytes": {
+            "default": 184320,
+            "format": "uint32",
+            "maximum": 184320,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 16777216,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id"
+        ],
+        "title": "SketchImage",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "default": 184320,
+                "format": "uint32",
+                "maximum": 184320,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 16777216,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id"
+            ],
+            "title": "SketchImage",
+            "type": "object"
+          },
+          "name": "design_sketch_image",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.image",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "base64": {
+            "type": "string"
+          },
+          "bytes": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "sketch_id": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sketch_id",
+          "sha256",
+          "total_bytes",
+          "offset",
+          "bytes",
+          "base64"
+        ],
+        "title": "SketchChunk",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read one verified retained generation record chunk.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "max_bytes": {
+            "default": 184320,
+            "format": "uint32",
+            "maximum": 184320,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 33554432,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id"
+        ],
+        "title": "SketchReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "max_bytes": {
+                "default": 184320,
+                "format": "uint32",
+                "maximum": 184320,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 33554432,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id"
+            ],
+            "title": "SketchReference",
+            "type": "object"
+          },
+          "name": "design_sketch_record",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.record",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "base64": {
+            "type": "string"
+          },
+          "bytes": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "sketch_id": {
+            "type": "string"
+          },
+          "total_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sketch_id",
+          "sha256",
+          "total_bytes",
+          "offset",
+          "bytes",
+          "base64"
+        ],
+        "title": "SketchRecordChunk",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Change a sketch decision with an expected revision and rationale.",
+      "inputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "$ref": "#/$defs/SketchDecision"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id",
+          "expected_revision",
+          "decision",
+          "rationale"
+        ],
+        "title": "SketchDecisionChange",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "SketchDecision": {
+                "enum": [
+                  "keep",
+                  "reject",
+                  "undecided"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rationale": {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id",
+              "expected_revision",
+              "decision",
+              "rationale"
+            ],
+            "title": "SketchDecisionChange",
+            "type": "object"
+          },
+          "name": "design_sketch_decision",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.decision",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchDecisionEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "decision",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "event": {
+            "$ref": "#/$defs/SketchDecisionEvent"
+          },
+          "sketch": {
+            "$ref": "#/$defs/SketchImageSummary"
+          }
+        },
+        "required": [
+          "sketch",
+          "event"
+        ],
+        "title": "SketchDecisionResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Save a marked-up sketch annotation.",
+      "inputSchema": {
+        "$defs": {
+          "Mark": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "pin",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "height": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "rectangle",
+                    "type": "string"
+                  },
+                  "width": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "width",
+                  "height"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "arrow",
+                    "type": "string"
+                  },
+                  "x1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x2": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y2": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x1",
+                  "y1",
+                  "x2",
+                  "y2"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "freehand",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "highlight",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "x": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "maxLength": 2000,
+            "minLength": 3,
+            "type": "string"
+          },
+          "marks": {
+            "items": {
+              "$ref": "#/$defs/Mark"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id",
+          "body",
+          "marks"
+        ],
+        "title": "SketchAnnotationCreate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Mark": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "pin",
+                        "type": "string"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "text": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "text",
+                        "type": "string"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "height": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "rectangle",
+                        "type": "string"
+                      },
+                      "width": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "x": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "arrow",
+                        "type": "string"
+                      },
+                      "x1": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "x2": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y1": {
+                        "format": "double",
+                        "type": "number"
+                      },
+                      "y2": {
+                        "format": "double",
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "x1",
+                      "y1",
+                      "x2",
+                      "y2"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "points": {
+                        "items": {
+                          "$ref": "#/$defs/Point"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "const": "freehand",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "points"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "color": {
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "points": {
+                        "items": {
+                          "$ref": "#/$defs/Point"
+                        },
+                        "type": "array"
+                      },
+                      "type": {
+                        "const": "highlight",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "color",
+                      "points"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "Point": {
+                "additionalProperties": false,
+                "properties": {
+                  "x": {
+                    "format": "double",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "maxLength": 2000,
+                "minLength": 3,
+                "type": "string"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/Mark"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id",
+              "body",
+              "marks"
+            ],
+            "title": "SketchAnnotationCreate",
+            "type": "object"
+          },
+          "name": "design_sketch_annotation_create",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.annotation.create",
+      "outputSchema": {
+        "$defs": {
+          "Mark": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "pin",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "text"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "height": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "rectangle",
+                    "type": "string"
+                  },
+                  "width": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x",
+                  "y",
+                  "width",
+                  "height"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "arrow",
+                    "type": "string"
+                  },
+                  "x1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "x2": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y1": {
+                    "format": "double",
+                    "type": "number"
+                  },
+                  "y2": {
+                    "format": "double",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "x1",
+                  "y1",
+                  "x2",
+                  "y2"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "freehand",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "color": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "points": {
+                    "items": {
+                      "$ref": "#/$defs/Point"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "highlight",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "color",
+                  "points"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Point": {
+            "additionalProperties": false,
+            "properties": {
+              "x": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "y": {
+                "format": "double",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchAnnotation": {
+            "additionalProperties": false,
+            "properties": {
+              "annotation_id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "body": {
+                "type": "string"
+              },
+              "can_delete": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "marks": {
+                "items": {
+                  "$ref": "#/$defs/Mark"
+                },
+                "type": "array"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "annotation_id",
+              "sketch_id",
+              "body",
+              "marks",
+              "state",
+              "author",
+              "created_at",
+              "updated_at",
+              "can_delete"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "annotation": {
+            "$ref": "#/$defs/SketchAnnotation"
+          }
+        },
+        "required": [
+          "annotation"
+        ],
+        "title": "SketchAnnotationMutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read pending repository messages for an agent.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "AgentMessagePoll",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "title": "AgentMessagePoll",
+            "type": "object"
+          },
+          "name": "agent_message_poll",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.message.poll",
+      "outputSchema": {
+        "$defs": {
+          "AgentMessage": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "claimed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "repository_id",
+              "kind",
+              "subject_id",
+              "summary",
+              "created_at",
+              "acknowledged"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/$defs/AgentMessage"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages",
+          "has_more"
+        ],
+        "title": "AgentMessageList",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Claim one repository message for the current agent.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "pattern": "^q[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "message_id"
+        ],
+        "title": "AgentMessageClaim",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "pattern": "^q[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "message_id"
+            ],
+            "title": "AgentMessageClaim",
+            "type": "object"
+          },
+          "name": "agent_message_claim",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.message.claim",
+      "outputSchema": {
+        "$defs": {
+          "AgentMessage": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "claimed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "repository_id",
+              "kind",
+              "subject_id",
+              "summary",
+              "created_at",
+              "acknowledged"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "$ref": "#/$defs/AgentMessage"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "AgentMessageMutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Acknowledge one claimed repository message.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "pattern": "^q[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "message_id"
+        ],
+        "title": "AgentMessageAck",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "pattern": "^q[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "message_id"
+            ],
+            "title": "AgentMessageAck",
+            "type": "object"
+          },
+          "name": "agent_message_ack",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.message.ack",
+      "outputSchema": {
+        "$defs": {
+          "AgentMessage": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "claimed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "subject_id": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id",
+              "repository_id",
+              "kind",
+              "subject_id",
+              "summary",
+              "created_at",
+              "acknowledged"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "$ref": "#/$defs/AgentMessage"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "AgentMessageMutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
       }
     },
     {

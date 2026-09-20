@@ -1102,6 +1102,157 @@ pub struct BugClose {
     pub bug_id: String,
 }
 
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchDecision {
+    Keep,
+    Reject,
+    Undecided,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchImageInput {
+    #[schemars(length(min = 1, max = 120))]
+    pub title: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub path: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchPublish {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 160))]
+    pub sketch_set: String,
+    #[schemars(length(min = 1, max = 80))]
+    pub source_skill: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub generation_record_path: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub images: Vec<SketchImageInput>,
+    #[schemars(length(min = 1, max = 256))]
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchList {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[serde(default)]
+    pub source_skill: Option<String>,
+    #[serde(default)]
+    pub decision: Option<SketchDecision>,
+    #[serde(default)]
+    pub sketch_set: Option<String>,
+    #[serde(default = "default_sketch_limit")]
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: u16,
+}
+
+fn default_sketch_limit() -> u16 {
+    50
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchReference {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    #[serde(default)]
+    #[schemars(range(max = 33554432))]
+    pub offset: u32,
+    #[serde(default = "default_image_bytes")]
+    #[schemars(range(min = 1, max = 184320))]
+    pub max_bytes: u32,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchImage {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    #[serde(default)]
+    #[schemars(range(max = 16777216))]
+    pub offset: u32,
+    #[serde(default = "default_image_bytes")]
+    #[schemars(range(min = 1, max = 184320))]
+    pub max_bytes: u32,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDecisionChange {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    pub expected_revision: u32,
+    pub decision: SketchDecision,
+    #[schemars(length(min = 1, max = 2000))]
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAnnotationCreate {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    #[schemars(length(min = 3, max = 2000))]
+    pub body: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub marks: Vec<Mark>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAnnotationReference {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    #[schemars(regex(pattern = r"^a[0-9a-f]{16}$"))]
+    pub annotation_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessagePoll {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[serde(default)]
+    pub after_id: Option<String>,
+    #[serde(default = "default_sketch_limit")]
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: u16,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageClaim {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^q[0-9a-f]{16}$"))]
+    pub message_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageAck {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^q[0-9a-f]{16}$"))]
+    pub message_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventCategory {

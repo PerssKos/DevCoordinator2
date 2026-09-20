@@ -78,6 +78,19 @@ pub fn comment_id() -> Result<String, IdError> {
     random_id('m')
 }
 
+pub fn sketch_id() -> Result<String, IdError> {
+    random_id('s')
+}
+pub fn sketch_batch_id() -> Result<String, IdError> {
+    random_id('k')
+}
+pub fn sketch_annotation_id() -> Result<String, IdError> {
+    random_id('a')
+}
+pub fn agent_message_id() -> Result<String, IdError> {
+    random_id('q')
+}
+
 pub fn bug_id() -> Result<String, IdError> {
     Ok(format!("b{}", random_hex(6)?))
 }

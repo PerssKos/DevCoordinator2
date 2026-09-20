@@ -33,6 +33,7 @@ use crate::platform::{Clock, HostClock};
 use crate::progress::ProgressService;
 use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
+use crate::sketches::SketchService;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
 use crate::test_evidence::TestEvidenceService;
@@ -117,6 +118,16 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "telegram.unsubscribe",
     "telegram.list",
     "event.wait",
+    "design.sketch.publish",
+    "design.sketch.list",
+    "design.sketch.get",
+    "design.sketch.image",
+    "design.sketch.record",
+    "design.sketch.decision",
+    "design.sketch.annotation.create",
+    "agent.message.poll",
+    "agent.message.claim",
+    "agent.message.ack",
     "plan.overview",
     "plan.recovery",
     "deployment.recovery",
@@ -167,6 +178,7 @@ pub struct ControlPlane {
     tests: TestLifecycle,
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
+    sketches: SketchService,
     deployments: Deployments,
     events: EventService,
     capacity: CapacityBroker,
@@ -216,6 +228,7 @@ impl ControlPlane {
         let artifacts = TestArtifactService::new(database.clone(), registry.clone());
         let test_evidence =
             TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
+        let sketches = SketchService::with_clock(&config, database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         let health = HealthService::with_clock(
             config.clone(),
@@ -317,6 +330,7 @@ impl ControlPlane {
             tests,
             artifacts,
             test_evidence,
+            sketches,
             deployments,
             events,
             capacity,
@@ -824,6 +838,61 @@ impl ControlPlane {
                 );
                 encode(result)
             }
+            "design.sketch.publish" => {
+                let params: params::SketchPublish = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.publish(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "sketch.published".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_batch".to_owned(),
+                        subject_id: result.batch_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.list" => encode(self.sketches.list(decode(params)?)?),
+            "design.sketch.get" => encode(self.sketches.get(decode(params)?, &caller.actor())?),
+            "design.sketch.image" => encode(self.sketches.image(decode(params)?)?),
+            "design.sketch.record" => encode(self.sketches.record(decode(params)?)?),
+            "design.sketch.decision" => {
+                let params: params::SketchDecisionChange = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.decision(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "sketch.decision.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch".to_owned(),
+                        subject_id: result.sketch.sketch_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.annotation.create" => {
+                let params: params::SketchAnnotationCreate = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.annotation_create(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "sketch.annotation.created".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_annotation".to_owned(),
+                        subject_id: result.annotation.annotation_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "agent.message.poll" => encode(self.sketches.message_poll(decode(params)?)?),
+            "agent.message.claim" => encode(self.sketches.message_claim(decode(params)?, caller)?),
+            "agent.message.ack" => encode(self.sketches.message_ack(decode(params)?, caller)?),
             "test.log.catalog" => {
                 let params: params::LogCatalog = decode(params)?;
                 self.logs.query(

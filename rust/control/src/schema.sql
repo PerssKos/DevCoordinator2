@@ -472,6 +472,73 @@ CREATE TABLE IF NOT EXISTS visual_feedback_events (
   at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS visual_feedback_events_thread ON visual_feedback_events(feedback_id,event_id);
+
+CREATE TABLE IF NOT EXISTS sketch_batches (
+  batch_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  sketch_set TEXT NOT NULL,
+  source_skill TEXT NOT NULL,
+  generation_record_path TEXT NOT NULL,
+  generation_record_size INTEGER NOT NULL,
+  generation_record_sha256 TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  UNIQUE(repository_id,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS sketch_batches_repository ON sketch_batches(repository_id,created_at);
+CREATE TABLE IF NOT EXISTS sketches (
+  sketch_id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL REFERENCES sketch_batches(batch_id),
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  title TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  decision TEXT NOT NULL CHECK(decision IN ('keep','reject','undecided')),
+  decision_revision INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sketches_repository ON sketches(repository_id,created_at);
+CREATE INDEX IF NOT EXISTS sketches_decision ON sketches(repository_id,decision);
+CREATE TABLE IF NOT EXISTS sketch_decision_history (
+  sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
+  revision INTEGER NOT NULL,
+  decision TEXT NOT NULL CHECK(decision IN ('keep','reject','undecided')),
+  rationale TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(sketch_id,revision)
+);
+CREATE TABLE IF NOT EXISTS sketch_annotations (
+  annotation_id TEXT PRIMARY KEY,
+  sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  body TEXT NOT NULL,
+  marks_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('open','resolved','deleted')),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sketch_annotations_sketch ON sketch_annotations(sketch_id,created_at);
+CREATE TABLE IF NOT EXISTS agent_messages (
+  message_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  claimed_by TEXT,
+  claimed_until TEXT,
+  acknowledged_at TEXT,
+  acknowledged_by TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_messages_repository ON agent_messages(repository_id,created_at);
 CREATE TABLE IF NOT EXISTS owned_events (
   cursor INTEGER PRIMARY KEY AUTOINCREMENT,
   occurred_at TEXT NOT NULL,
