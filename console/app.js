@@ -4203,11 +4203,12 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
-  main.classList.toggle('test-evidence-page', view === 'tests' && !!arg);
+  const sketchDetailRoute = view === 'sketches' && new URLSearchParams(location.hash.split('?')[1] || '').has('sketch');
+  main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
-  document.body.classList.toggle('evidence-shell', view === 'tests' && !!arg);
+  document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute);
   if (!(view === 'tests' && arg) && !(view === 'sketches' && new URLSearchParams(location.hash.split('?')[1] || '').has('sketch')) && state.evidenceRunId) {
     evidenceCanvasSession?.observer?.disconnect(); evidenceCanvasSession = null;
     resetEvidenceImages(); state.evidenceRunId = null; state.evidenceData = null;
