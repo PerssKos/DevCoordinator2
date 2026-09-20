@@ -23,6 +23,15 @@
       ]
     },
     {
+      "id": "ui-design-gate",
+      "relativePath": "modules/ui-design-gate.md",
+      "applicability": [
+        "ui",
+        "web",
+        "desktop"
+      ]
+    },
+    {
       "id": "ledger-decisions",
       "relativePath": "modules/ledger-decisions.md",
       "applicability": [
