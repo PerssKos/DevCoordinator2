@@ -10,6 +10,8 @@ fn prepare() -> Prepare {
         offset: 0,
         limit: 10,
         before_decision_seq: None,
+        outcome_cursor: None,
+        outcome_limit: None,
     }
 }
 

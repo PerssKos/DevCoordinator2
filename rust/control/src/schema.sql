@@ -535,3 +535,23 @@ END;
 CREATE TRIGGER IF NOT EXISTS planning_recovery_records_no_delete BEFORE DELETE ON planning_recovery_records BEGIN
   SELECT RAISE(ABORT, 'recovery provenance is permanent');
 END;
+
+CREATE TABLE IF NOT EXISTS deployment_recoveries (
+  recovery_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  deployment_id TEXT NOT NULL REFERENCES deployments(deployment_id),
+  backup_sha256 TEXT NOT NULL,
+  before_sha256 TEXT NOT NULL,
+  at TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  before_json TEXT NOT NULL,
+  saved_json TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  UNIQUE(deployment_id, backup_sha256)
+);
+CREATE TRIGGER IF NOT EXISTS deployment_recoveries_no_update BEFORE UPDATE ON deployment_recoveries BEGIN
+  SELECT RAISE(ABORT, 'deployment recovery provenance is immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS deployment_recoveries_no_delete BEFORE DELETE ON deployment_recoveries BEGIN
+  SELECT RAISE(ABORT, 'deployment recovery provenance is permanent');
+END;

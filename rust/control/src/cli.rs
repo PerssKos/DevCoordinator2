@@ -696,11 +696,25 @@ enum CapacityCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeploymentCommand {
+    Recovery {
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        deployment_id: String,
+        #[arg(long)]
+        transaction_dir: PathBuf,
+        #[arg(long)]
+        backup_sha256: String,
+        #[arg(long)]
+        expected_live_sha256: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
     List {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
-    Apply(DeploymentReferenceArgs),
+    Apply(DeploymentApplyArgs),
     Preflight(DeploymentReferenceArgs),
     Status(DeploymentReferenceArgs),
     Rollback(DeploymentReferenceArgs),
@@ -736,6 +750,16 @@ impl DeploymentSelector {
 struct DeploymentReferenceArgs {
     #[command(flatten)]
     selector: DeploymentSelector,
+}
+
+#[derive(Debug, Args)]
+struct DeploymentApplyArgs {
+    #[command(flatten)]
+    selector: DeploymentSelector,
+    #[arg(long, requires = "candidate_commit", requires = "deployment_id")]
+    candidate_path: Option<PathBuf>,
+    #[arg(long, requires = "candidate_path")]
+    candidate_commit: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -985,6 +1009,8 @@ enum PlanCommand {
         backup_sha256: String,
         #[arg(long)]
         expected_live_sha256: Option<String>,
+        #[arg(long)]
+        preserve_live_tasks: Option<PathBuf>,
         #[arg(long)]
         apply: bool,
     },
@@ -1703,6 +1729,17 @@ impl ArtifactCommand {
 impl DeploymentCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::Recovery {
+                repository_id,
+                deployment_id,
+                transaction_dir,
+                backup_sha256,
+                expected_live_sha256,
+                apply,
+            } => remote(
+                "deployment.recovery",
+                json!({"repository_id":repository_id,"deployment_id":deployment_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply}),
+            ),
             Self::List { path } => {
                 if let Some(path) = path {
                     let path = absolute_path(path)?;
@@ -1711,7 +1748,16 @@ impl DeploymentCommand {
                     remote("deployment.list", json!({}))
                 }
             }
-            Self::Apply(args) => remote("deployment.apply", Value::Object(args.selector.params()?)),
+            Self::Apply(args) => {
+                let mut params = args.selector.params()?;
+                if let Some(path) = args.candidate_path {
+                    params.insert(
+                        "candidate".to_owned(),
+                        json!({"path":absolute_path(path)?,"commit":args.candidate_commit}),
+                    );
+                }
+                remote("deployment.apply", Value::Object(params))
+            }
             Self::Preflight(args) => remote(
                 "deployment.preflight",
                 Value::Object(args.selector.params()?),
@@ -1918,11 +1964,29 @@ impl PlanCommand {
                 transaction_dir,
                 backup_sha256,
                 expected_live_sha256,
+                preserve_live_tasks,
                 apply,
-            } => remote(
-                "plan.recovery",
-                json!({"repository_id":repository_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply}),
-            ),
+            } => {
+                let choices = match preserve_live_tasks {
+                    Some(path) => {
+                        use std::io::Read;
+                        let mut bytes = Vec::new();
+                        std::fs::File::open(path)
+                            .and_then(|file| file.take(32769).read_to_end(&mut bytes))
+                            .map_err(|_| invalid("Cannot read task conflict choices"))?;
+                        if bytes.len() > 32768 {
+                            return Err(invalid("Task conflict choices exceed 32 KiB"));
+                        }
+                        serde_json::from_slice::<Vec<devcoordinator2_api::recovery::PreserveLiveTask>>(&bytes)
+                            .map_err(|_| invalid("Invalid task conflict choices"))?
+                    }
+                    None => vec![],
+                };
+                remote(
+                    "plan.recovery",
+                    json!({"repository_id":repository_id,"transaction_dir":transaction_dir,"backup_sha256":backup_sha256,"expected_live_sha256":expected_live_sha256,"apply":apply,"preserve_live_tasks":choices}),
+                )
+            }
             Self::Overview {
                 path,
                 all_repositories,
@@ -2890,6 +2954,21 @@ mod tests {
                 "repository.unarchive",
             ),
             (&["plan", "overview", "/tmp/repo"], "plan.overview"),
+            (
+                &[
+                    "deployment",
+                    "recovery",
+                    "--repository-id",
+                    "r1111111111111111",
+                    "--deployment-id",
+                    "d1111111111111111",
+                    "--transaction-dir",
+                    "/private/snapshot",
+                    "--backup-sha256",
+                    "abc",
+                ],
+                "deployment.recovery",
+            ),
             (
                 &[
                     "plan",

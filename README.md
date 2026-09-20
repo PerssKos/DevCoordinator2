@@ -70,10 +70,27 @@ and runtime files are preserved.
 explicit activation snapshot. Supply `--repository-id`, `--transaction-dir`,
 and the inspected `--backup-sha256`. The response contains counts, original-to-new
 display-number mappings, and a `live_sha256`; it contains no saved record text.
+`existing_counts` identifies matching records that will remain untouched;
+`counts` excludes those duplicates. Events are matched by content and occurrence
+count, not their database-local IDs. Different saved/live versions return
+`status: conflicted`, a total `conflict_count`, and at most 64 `conflicts` naming
+record IDs, changed fields and hashes without their values. Conflicts still
+block application; a preview is not permission to overwrite either version.
 Repeat the same command with `--apply --expected-live-sha256 <live_sha256>` only
 for the reviewed result. Changed inputs and identity conflicts reject the entire
-operation. A repeat of a completed import returns its permanent receipt without
+operation. Identical overlaps are retained separately as provenance without
+turning existing releases into historical releases. A repeat of a completed import returns its permanent receipt without
 replaying it.
+
+For reviewed task conflicts limited to status, update timestamp and list position,
+`--preserve-live-tasks <json-file>` accepts at most 64 objects with `task_id`,
+`saved_sha256`, and `live_sha256` from the current conflict plan. Supply that
+plan's `--expected-live-sha256` when preparing and applying this choice. Every
+live task field stays untouched; both complete versions are retained as recovery
+provenance. Other conflicts remain blocking. Counts and sequence mappings include
+only missing records. `conflict_count` includes resolved conflicts, whose exact
+choices are returned in `preserved_live_tasks`. The flag never selects a saved
+status or discards the saved history.
 
 Recovery preserves existing records, original saved identities, dates and
 relationships. Historical releases remain visible but cannot select the current
@@ -84,7 +101,37 @@ combined decision summary. A legacy snapshot without a recorded activation hash
 remains explicitly labelled as such. This operation never performs an installation
 rollback or restores unrelated runtime, account, route or credential data.
 
+## Recovering a saved preview
+
+`devcoordinator2-tooling deployment inspect-backup` reports the saved generation,
+component bindings and ports for one explicit repository/deployment pair. It uses
+the same immutable, hash-verified activation backup reader as planning recovery.
+
+`devcoordinator2 deployment recovery --repository-id <id> --deployment-id <id>
+--transaction-dir <saved-activation> --backup-sha256 <hash>` prepares recovery of
+a private worktree preview containing processes and one owned PostgreSQL database.
+It checks the exact running database, volume, private credential binding, original
+ports and current ownership. Newer deployment generations and competing ports or
+routes block recovery. Apply only the reviewed plan with `--apply
+--expected-live-sha256 <hash>`.
+
+Application data is streamed to a private PostgreSQL archive, validated and hashed
+before ownership changes. Recovery keeps complete prior and saved metadata in an
+immutable receipt, preserves the existing container and access grants, restores
+the saved component ownership, and converts its routed port to a stable lease.
+It withdraws the stale route until normal deployment apply proves the current
+application and listener. It does not start application code, overwrite the
+application database, clear another route owner, or constitute delivery evidence.
+The retained archive is `recovery/<recovery_id>/postgres.dump` in private service
+state. An interrupted or failed archive stays `postgres.pending` and is not
+represented as verified. Repeating a successful recovery returns its receipt.
+
 ## Development and validation
+
+If the system temporary filesystem is exhausted, use a short, private,
+per-command `TMPDIR`. First verify free file entries, new-file user/group
+ownership, and local socket creation. Inherited setgid directories and long
+socket paths can invalidate fixtures. Do not change global temporary settings.
 
 Product checks:
 
@@ -125,17 +172,25 @@ the installed daemon:
 cargo build --locked --release \
   --package devcoordinator2-control \
   --features root-acceptance \
+  --bin devcoordinator2 \
   --bin devcoordinator2-root-acceptance \
+  --package devcoordinator2-executor \
+  --bin devcoordinator2-executor \
   --package devcoordinator2-executor-core \
   --bin devcoordinator2-executor-test-fixture
 
 sudo -n env DEVCOORDINATOR2_ROOT_ACCEPTANCE=1 \
   target/release/devcoordinator2-root-acceptance run \
   --daemon target/release/devcoordinator2 \
+  --executor target/release/devcoordinator2-executor \
   --fixture target/release/devcoordinator2-executor-test-fixture \
   --work-root /absolute/private/empty-root-acceptance-directory \
   --report /absolute/private/root-acceptance-report.json
 ```
+
+Build this feature-gated daemon after ordinary workspace tests, which can replace
+the same output path with a daemon that ignores fixture executor overrides. Keep
+these binaries unchanged while root acceptance runs.
 
 The harness owns a unique socket, database, port range, systemd unit prefix,
 Docker label namespace, and marker-bound filesystem root. It runs all 30

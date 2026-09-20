@@ -302,6 +302,8 @@ impl DeploymentFiles {
             rustix::process::getegid().as_raw(),
         )?;
         let values = BTreeMap::from([
+            // Bind image-independent PGDATA to the stable owned volume destination.
+            ("PGDATA".into(), "/var/lib/postgresql/data".into()),
             ("POSTGRES_USER".into(), credentials.user.clone()),
             ("POSTGRES_PASSWORD".into(), credentials.password.clone()),
             ("POSTGRES_DB".into(), credentials.database.clone()),
@@ -684,7 +686,7 @@ fn safe_relative_parts(relative: &str) -> Result<Vec<OsString>, DeploymentFileEr
     Ok(parts)
 }
 
-fn open_directory_path(
+pub(crate) fn open_directory_path(
     path: &Path,
     create: bool,
     mode: u32,
@@ -736,7 +738,7 @@ fn open_directory_path(
     Ok(Some(directory))
 }
 
-fn open_child_directory(
+pub(crate) fn open_child_directory(
     parent: &File,
     name: &str,
     create: bool,
@@ -1006,6 +1008,47 @@ mod tests {
         assert_eq!(
             fs::metadata(secret).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn postgres_data_directory_is_bound_to_the_persistent_mount() {
+        let temporary = tempdir().unwrap();
+        let files = files(temporary.path());
+        let deployment = "d3333333333333333";
+        let credentials = files
+            .postgres_credentials(deployment, "db", "app", "app")
+            .unwrap();
+        for generation in [1, 2] {
+            let environment = files
+                .write_postgres_environment(deployment, "db", generation, &credentials)
+                .unwrap();
+            let values = fs::read_to_string(&environment).unwrap();
+            // PostgreSQL 18 changed its default. Both new and existing images must
+            // still write to the exact volume destination used by deployment/recovery.
+            assert!(
+                values
+                    .lines()
+                    .any(|line| line == "PGDATA=/var/lib/postgresql/data")
+            );
+            assert!(values.lines().any(|line| line == "POSTGRES_USER=app"));
+            assert!(values.lines().any(|line| line == "POSTGRES_DB=app"));
+            assert!(
+                values
+                    .lines()
+                    .any(|line| line == format!("POSTGRES_PASSWORD={}", credentials.password))
+            );
+            assert_eq!(
+                fs::metadata(environment).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            files
+                .postgres_credentials(deployment, "db", "app", "app")
+                .unwrap()
+                .password,
+            credentials.password
         );
     }
 

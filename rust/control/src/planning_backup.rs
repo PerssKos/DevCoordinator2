@@ -62,6 +62,15 @@ pub struct RecordIdentity {
 pub struct TaskPresence {
     pub task_id: String,
     pub repository_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<TaskState>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TaskState {
+    pub status: devcoordinator2_api::params::TaskStatus,
+    pub updated_at: String,
+    pub position: i64,
 }
 
 // Unknown fields include private installation contents. Do not retain or emit them.
@@ -214,7 +223,7 @@ fn inspect_with_inner<T>(
     };
     let mut requested_tasks = Vec::new();
     for id in &request.task_ids {
-        let repository_id = connection
+        let repository_id: Option<String> = connection
             .query_row(
                 "SELECT repository_id FROM tasks WHERE task_id=?1",
                 [id],
@@ -224,6 +233,11 @@ fn inspect_with_inner<T>(
             .map_err(|_| "cannot inspect a requested task ID")?;
         requested_tasks.push(TaskPresence {
             task_id: id.clone(),
+            state: if repository_id.as_deref() == Some(request.repository_id.as_str()) {
+                read_task_state(&connection, id)?
+            } else {
+                None
+            },
             repository_id,
         });
     }
@@ -283,6 +297,43 @@ fn inspect_with_inner<T>(
         return Err("activation backup changed during inspection; discard the observation".into());
     }
     Ok((result, payload))
+}
+
+fn read_task_state(connection: &Connection, id: &str) -> Result<Option<TaskState>, String> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(tasks)")
+        .map_err(|_| "cannot inspect task metadata columns")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|_| "cannot inspect task metadata columns")?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "cannot inspect task metadata columns")?;
+    if ["status", "updated_at", "position"]
+        .iter()
+        .any(|column| !columns.iter().any(|value| value == column))
+    {
+        return Ok(None);
+    }
+    let (status, updated_at, position): (String, String, i64) = connection
+        .query_row(
+            "SELECT status,updated_at,position FROM tasks WHERE task_id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| "cannot inspect requested task state")?;
+    let status = serde_json::from_value(serde_json::Value::String(status))
+        .map_err(|_| "requested task has an invalid status")?;
+    if updated_at.len() > 64
+        || time::OffsetDateTime::parse(&updated_at, &time::format_description::well_known::Rfc3339)
+            .is_err()
+    {
+        return Err("requested task has an invalid update timestamp".into());
+    }
+    Ok(Some(TaskState {
+        status,
+        updated_at,
+        position,
+    }))
 }
 
 fn valid_id(value: &str, prefix: u8) -> bool {
@@ -487,6 +538,46 @@ mod tests {
                 !output.contains(secret),
                 "private record text must not escape"
             );
+        }
+    }
+
+    #[test]
+    fn requested_task_states_are_bounded_and_repository_scoped() {
+        let (directory, request) = fixture(1);
+        let db = Connection::open(directory.path().join("authority-before.sqlite3")).unwrap();
+        db.execute_batch("ALTER TABLE tasks ADD COLUMN status TEXT; ALTER TABLE tasks ADD COLUMN updated_at TEXT; ALTER TABLE tasks ADD COLUMN position INTEGER;
+            UPDATE tasks SET status='dropped',updated_at='2026-09-06T12:30:00Z',position=7 WHERE repository_id='r946ed77e45b31d74';
+            UPDATE tasks SET status='PRIVATE_STATUS',updated_at='PRIVATE_TIMESTAMP',position=8 WHERE repository_id='r0000000000000001';").unwrap();
+        drop(db);
+        let result = serde_json::to_value(inspect(&request).unwrap()).unwrap();
+        assert_eq!(result["requested_tasks"][0]["state"]["status"], "dropped");
+        assert_eq!(
+            result["requested_tasks"][0]["state"]["updated_at"],
+            "2026-09-06T12:30:00Z"
+        );
+        assert_eq!(result["requested_tasks"][0]["state"]["position"], 7);
+        assert!(result["requested_tasks"][1].get("state").is_none());
+        assert!(!result.to_string().contains("PRIVATE_"));
+    }
+
+    #[test]
+    fn requested_task_state_rejects_private_values_in_metadata_fields() {
+        for (status, timestamp) in [
+            ("PRIVATE_STATUS", "2026-09-06T12:30:00Z"),
+            ("dropped", "PRIVATE_TIMESTAMP"),
+        ] {
+            let (directory, request) = fixture(1);
+            let db = Connection::open(directory.path().join("authority-before.sqlite3")).unwrap();
+            db.execute_batch("ALTER TABLE tasks ADD COLUMN status TEXT; ALTER TABLE tasks ADD COLUMN updated_at TEXT; ALTER TABLE tasks ADD COLUMN position INTEGER;").unwrap();
+            db.execute(
+                "UPDATE tasks SET status=?1,updated_at=?2,position=7 WHERE repository_id=?3",
+                rusqlite::params![status, timestamp, REPO],
+            )
+            .unwrap();
+            drop(db);
+            let error = inspect(&request).unwrap_err();
+            assert!(error.contains("invalid"));
+            assert!(!error.contains("PRIVATE_"));
         }
     }
 

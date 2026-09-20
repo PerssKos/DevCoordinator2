@@ -10,6 +10,7 @@ pub mod audit_verify;
 pub mod ci_evidence;
 pub mod cutover;
 pub mod decision_import;
+pub mod deployment_backup;
 pub mod formal_review;
 pub mod formal_selftest;
 pub mod install;

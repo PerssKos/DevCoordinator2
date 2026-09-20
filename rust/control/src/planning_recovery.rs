@@ -13,6 +13,7 @@ use crate::planning_backup::{InspectRequest, Inspection};
 
 type Row = BTreeMap<String, Value>;
 type Tables = BTreeMap<String, Vec<Row>>;
+mod overlap;
 const TABLES: &[(&str, &str)] = &[
     ("releases", "release_id"),
     ("tasks", "task_id"),
@@ -208,6 +209,7 @@ fn verify_reference(
 fn validate(
     connection: &Connection,
     source: &Tables,
+    live: &Tables,
     repository: &str,
 ) -> Result<(), DatabaseError> {
     let mut parents = BTreeMap::new();
@@ -216,6 +218,10 @@ fn validate(
         let columns = statement
             .query_map([], |r| r.get::<_, String>(1))?
             .collect::<Result<BTreeSet<_>, _>>()?;
+        let live_ids: BTreeSet<&str> = live[table]
+            .iter()
+            .filter_map(|row| row.get(key).and_then(Value::as_str))
+            .collect();
         for row in &source[table] {
             if (row.contains_key("repository_id") && text(row, "repository_id")? != repository)
                 || row.keys().any(|k| !columns.contains(k))
@@ -236,9 +242,9 @@ fn validate(
                 [id],
                 |r| r.get(0),
             )?;
-            if exists {
+            if exists && !live_ids.contains(id) {
                 return Err(invalid(
-                    "a saved record identity already exists; recovery never overwrites live records",
+                    "a saved record identity belongs to another repository; recovery never reassigns records",
                 ));
             }
         }
@@ -284,8 +290,8 @@ fn validate(
         }
         if let Some(reference) = row.get("ref").and_then(Value::as_str) {
             let exists: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=?1 AND ref=?2)",
-                params![repository, reference],
+                "SELECT EXISTS(SELECT 1 FROM decisions WHERE repository_id=?1 AND ref=?2 AND decision_id<>?3)",
+                params![repository, reference, text(row, "decision_id")?],
                 |r| r.get(0),
             )?;
             if exists {
@@ -394,6 +400,20 @@ fn apply(
                 ));
             }
         }
+        for choice in &receipt.preserved_live_tasks {
+            let owner: Option<String> = connection
+                .query_row(
+                    "SELECT repository_id FROM tasks WHERE task_id=?1",
+                    [&choice.task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if owner.as_deref() != Some(&request.repository_id) {
+                return Err(invalid(
+                    "a previously preserved task identity is missing; inspect recovery history",
+                ));
+            }
+        }
         receipt.status = "already_applied".to_owned();
         return Ok(receipt);
     }
@@ -407,11 +427,20 @@ fn apply(
             "the recovery target is not a registered repository",
         ));
     }
-    validate(connection, source, &request.repository_id)?;
+    let live = read_tables(connection, &request.repository_id)?;
+    validate(connection, source, &live, &request.repository_id)?;
+    let overlap = overlap::classify(source, &live)?;
     let live_sha256 = fingerprint(connection, &request.repository_id)?;
+    let preserved = overlap::preserve_live_tasks(request, &overlap, &live_sha256)?;
+    let unresolved = overlap.conflict_count - preserved.len() as u64;
     if request.apply && request.expected_live_sha256.as_deref() != Some(&live_sha256) {
         return Err(invalid(
             "live planning state changed or no dry-run fingerprint was supplied; prepare recovery again",
+        ));
+    }
+    if request.apply && unresolved > 0 {
+        return Err(invalid(
+            "saved and live records differ; review the conflicts before recovery",
         ));
     }
     let recovery_id = format!(
@@ -432,6 +461,11 @@ fn apply(
         let rows = prepared.get_mut(table).expect("known table");
         rows.sort_by_key(|r| r.get("seq").and_then(Value::as_i64).unwrap_or(0));
         for row in rows {
+            if overlap.existing[table].contains(text(row, key)?)
+                || overlap.conflicting[table].contains(text(row, key)?)
+            {
+                continue;
+            }
             let original_sequence = number(row, "seq")?;
             next = next
                 .checked_add(1)
@@ -452,12 +486,33 @@ fn apply(
         backup_sha256: snapshot.backup_sha256.clone(),
         live_sha256,
         provenance: snapshot.provenance.to_owned(),
-        status: if request.apply { "applied" } else { "prepared" }.to_owned(),
+        status: if unresolved > 0 {
+            "conflicted"
+        } else if request.apply {
+            "applied"
+        } else {
+            "prepared"
+        }
+        .to_owned(),
         counts: source
             .iter()
-            .map(|(k, v)| (k.clone(), v.len() as u64))
+            .map(|(kind, rows)| {
+                (
+                    kind.clone(),
+                    (rows.len() - overlap.existing[kind].len() - overlap.conflicting[kind].len())
+                        as u64,
+                )
+            })
             .collect(),
         mappings,
+        existing_counts: overlap
+            .existing
+            .iter()
+            .map(|(kind, ids)| (kind.clone(), ids.len() as u64))
+            .collect(),
+        conflict_count: overlap.conflict_count,
+        conflicts: overlap.conflicts,
+        preserved_live_tasks: request.preserve_live_tasks.clone(),
     };
     if !request.apply {
         return Ok(receipt);
@@ -479,6 +534,8 @@ fn apply(
                 text(&row, key)?.to_owned()
             };
             let original_sequence = original.get("seq").and_then(Value::as_i64);
+            let existing = overlap.existing[table].contains(&id);
+            let conflict_preserved = table == "tasks" && preserved.contains(&id);
             let mapping = receipt
                 .mappings
                 .iter()
@@ -488,7 +545,7 @@ fn apply(
             }
             // Saved summaries are retained verbatim as provenance, never made the
             // active summary of a different combined sequence range.
-            if table != "decision_summaries" {
+            if table != "decision_summaries" && !existing && !conflict_preserved {
                 if matches!(table, "plan_events" | "visual_feedback_events") {
                     row.remove("event_id");
                 }
@@ -496,8 +553,18 @@ fn apply(
             }
             connection.execute(
                 "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![recovery_id, table, id, original_sequence, mapping.map(|m| m.assigned_sequence), serde_json::to_string(original).map_err(|_| invalid("cannot encode recovery provenance"))?],
+                params![recovery_id, if conflict_preserved { format!("conflict_saved:{table}") } else if existing { format!("existing:{table}") } else { table.to_owned() }, id, original_sequence, mapping.map(|m| m.assigned_sequence), serde_json::to_string(original).map_err(|_| invalid("cannot encode recovery provenance"))?],
             )?;
+            if conflict_preserved {
+                let prior = live[table]
+                    .iter()
+                    .find(|row| row.get(key).and_then(Value::as_str) == Some(&id))
+                    .ok_or_else(|| invalid("preserved live task is unavailable"))?;
+                connection.execute(
+                    "INSERT INTO planning_recovery_records(recovery_id,record_kind,record_id,original_sequence,assigned_sequence,original_json) VALUES(?1,?2,?3,?4,NULL,?5)",
+                    params![recovery_id, format!("conflict_live:{table}"), id, prior.get("seq").and_then(Value::as_i64), serde_json::to_string(prior).map_err(|_| invalid("cannot encode live conflict provenance"))?],
+                )?;
+            }
         }
     }
     // Decisions' FTS triggers run with their original text; no fabricated task

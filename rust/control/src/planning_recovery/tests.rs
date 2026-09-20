@@ -93,6 +93,7 @@ impl Fixture {
             backup_sha256: digest(fs::read(backup).unwrap()),
             expected_live_sha256: None,
             apply: false,
+            preserve_live_tasks: vec![],
         };
         Self {
             _root: root,
@@ -130,6 +131,338 @@ impl Fixture {
         drop(connection);
         self.request.backup_sha256 = digest(fs::read(path).unwrap());
     }
+
+    fn copy_saved_into_live(&self) {
+        let path = PathBuf::from(&self.request.transaction_dir).join("authority-before.sqlite3");
+        let source =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let tables = read_tables(&source, REPO).unwrap();
+        self.live.transaction(move |connection| {
+            connection.execute_batch("PRAGMA defer_foreign_keys=ON; UPDATE tasks SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE releases SET seq=100 WHERE repository_id='r1111111111111111'; UPDATE decisions SET seq=100 WHERE repository_id='r1111111111111111';")?;
+            for &(table, _) in TABLES {
+                if table == "decision_summaries" {
+                    continue;
+                }
+                for row in &tables[table] {
+                    insert_row(connection, table, row)?;
+                }
+            }
+            Ok(())
+        }).unwrap();
+    }
+}
+
+#[test]
+fn identical_overlap_keeps_live_rows_and_current_release_eligible() {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    let before = fixture
+        .live
+        .call(|connection| read_tables(connection, REPO))
+        .unwrap();
+    let preview = fixture.prepare();
+    let encoded = serde_json::to_value(&preview).unwrap();
+    assert_eq!(preview.counts["tasks"], 0);
+    assert_eq!(encoded["existing_counts"]["tasks"], 3);
+    assert_eq!(encoded["existing_counts"]["plan_events"], 2);
+    let request = fixture.application();
+    let applied = recover(&fixture.live, request.clone(), "owner", DATE).unwrap();
+    assert_eq!(applied.status, "applied");
+    assert_eq!(
+        fixture
+            .live
+            .call(|connection| read_tables(connection, REPO))
+            .unwrap(),
+        before
+    );
+    fixture.live.call(|connection| {
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM planning_recovery_records WHERE record_kind='releases'", [], |row| row.get::<_,i64>(0))?, 0);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM planning_recovery_records WHERE record_kind='existing:releases'", [], |row| row.get::<_,i64>(0))?, 1);
+        Ok(())
+    }).unwrap();
+    assert_eq!(
+        recover(&fixture.live, request, "owner", DATE)
+            .unwrap()
+            .status,
+        "already_applied"
+    );
+}
+
+#[test]
+fn differing_overlap_reports_private_conflicts_and_blocks_application() {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    fixture
+        .live
+        .call(|connection| {
+            connection.execute(
+                "UPDATE tasks SET title='PRIVATE_LIVE_VALUE',status='planned' WHERE task_id=?1",
+                [OLD],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = fixture
+        .live
+        .call(|connection| fingerprint(connection, REPO))
+        .unwrap();
+    let preview = fixture.prepare();
+    let encoded = serde_json::to_value(&preview).unwrap();
+    assert_eq!(preview.status, "conflicted");
+    assert_eq!(
+        preview.counts["tasks"], 0,
+        "conflicts are not missing records"
+    );
+    assert!(preview.mappings.iter().all(|mapping| mapping.id != OLD));
+    assert_eq!(encoded["conflict_count"], 1);
+    assert_eq!(encoded["conflicts"][0]["id"], OLD);
+    assert_eq!(
+        encoded["conflicts"][0]["fields"],
+        serde_json::json!(["status", "title"])
+    );
+    assert!(!encoded.to_string().contains("PRIVATE_LIVE_VALUE"));
+    assert!(!encoded.to_string().contains("Original goal"));
+    let mut request = fixture.request.clone();
+    request.apply = true;
+    request.expected_live_sha256 = Some(preview.live_sha256);
+    assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+    assert_eq!(
+        fixture
+            .live
+            .call(|connection| fingerprint(connection, REPO))
+            .unwrap(),
+        before
+    );
+    fixture
+        .live
+        .call(|connection| {
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM planning_recoveries", [], |row| row
+                        .get::<_, i64>(0))?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn missing_child_is_restored_without_reimporting_its_existing_parent_or_events() {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    fixture
+        .live
+        .call(|connection| {
+            connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+            Ok(())
+        })
+        .unwrap();
+    let parent = fixture.plan().task_history(OLD).unwrap();
+    let preview = fixture.prepare();
+    assert_eq!(preview.counts["tasks"], 1);
+    assert_eq!(preview.counts["plan_events"], 0);
+    assert_eq!(preview.existing_counts["tasks"], 2);
+    let applied = recover(&fixture.live, fixture.application(), "owner", DATE).unwrap();
+    assert_eq!(
+        applied
+            .mappings
+            .iter()
+            .filter(|mapping| mapping.kind == "tasks")
+            .count(),
+        1
+    );
+    assert_eq!(fixture.plan().task_history(OLD).unwrap(), parent);
+    assert_eq!(
+        fixture
+            .plan()
+            .task_history(CHILD)
+            .unwrap()
+            .task
+            .parent_task_id
+            .as_deref(),
+        Some(OLD)
+    );
+}
+
+fn reviewed_task_request(fixture: &Fixture) -> Request {
+    let plan = fixture.prepare();
+    let mut request = fixture.request.clone();
+    request.expected_live_sha256 = Some(plan.live_sha256);
+    request.preserve_live_tasks = plan
+        .conflicts
+        .iter()
+        .map(|conflict| devcoordinator2_api::recovery::PreserveLiveTask {
+            task_id: conflict.id.clone(),
+            saved_sha256: conflict.saved_sha256.clone(),
+            live_sha256: conflict.live_sha256.clone(),
+        })
+        .collect();
+    request
+}
+
+fn task_conflict_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    fixture.live.call(|connection| {
+        connection.execute("UPDATE tasks SET status='planned',updated_at='2026-09-14T00:00:00Z',position=7 WHERE task_id=?1", [OLD])?;
+        connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+        Ok(())
+    }).unwrap();
+    fixture
+}
+
+#[test]
+fn explicit_task_conflict_review_preserves_both_versions_and_restores_missing_child() {
+    let fixture = task_conflict_fixture();
+    let original = fixture.plan().task_history(OLD).unwrap();
+    let mut request = reviewed_task_request(&fixture);
+    let prepared = recover(&fixture.live, request.clone(), "owner", DATE).unwrap();
+    assert_eq!(prepared.status, "prepared");
+    assert_eq!(prepared.counts["tasks"], 1);
+    assert_eq!(prepared.conflict_count, 1);
+    assert_eq!(prepared.preserved_live_tasks.len(), 1);
+    request.apply = true;
+    let receipt = recover(&fixture.live, request.clone(), "owner", DATE).unwrap();
+    assert_eq!(receipt.status, "applied");
+    assert_eq!(fixture.plan().task_history(OLD).unwrap(), original);
+    assert_eq!(
+        fixture
+            .plan()
+            .task_history(CHILD)
+            .unwrap()
+            .task
+            .parent_task_id
+            .as_deref(),
+        Some(OLD)
+    );
+    fixture.live.call(|connection| {
+        let saved: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_saved:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
+        let prior: String = connection.query_row("SELECT original_json FROM planning_recovery_records WHERE record_kind='conflict_live:tasks' AND record_id=?1", [OLD], |r| r.get(0))?;
+        assert_ne!(saved, prior);
+        assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["status"], "planned");
+        assert_eq!(serde_json::from_str::<Value>(&prior).unwrap()["position"], 7);
+        Ok(())
+    }).unwrap();
+    let fingerprint_after = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    assert_eq!(
+        recover(&fixture.live, request, "owner", DATE)
+            .unwrap()
+            .status,
+        "already_applied"
+    );
+    assert_eq!(
+        fixture.live.call(|c| fingerprint(c, REPO)).unwrap(),
+        fingerprint_after
+    );
+}
+
+#[test]
+fn task_conflict_review_rejects_stale_hashes_missing_choices_and_unreviewed_content() {
+    let fixture = task_conflict_fixture();
+    let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    for mode in 0..5 {
+        let mut request = reviewed_task_request(&fixture);
+        request.apply = true;
+        match mode {
+            0 => request.preserve_live_tasks[0].live_sha256 = "0".repeat(64),
+            1 => request.preserve_live_tasks[0].saved_sha256 = "0".repeat(64),
+            2 => request.expected_live_sha256 = None,
+            3 => request
+                .preserve_live_tasks
+                .push(request.preserve_live_tasks[0].clone()),
+            _ => request.preserve_live_tasks.clear(),
+        }
+        assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+        assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
+    }
+    fixture
+        .live
+        .call(|c| {
+            c.execute(
+                "UPDATE tasks SET title='PRIVATE_NEW_TEXT' WHERE task_id=?1",
+                [OLD],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let mut request = reviewed_task_request(&fixture);
+    request.apply = true;
+    assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+    assert!(fixture.plan().task_history(CHILD).is_err());
+}
+
+#[test]
+fn reviewed_conflict_provenance_and_import_roll_back_together_on_failure() {
+    let fixture = task_conflict_fixture();
+    let mut request = reviewed_task_request(&fixture);
+    request.apply = true;
+    fixture.live.call(|c| {c.execute_batch("CREATE TRIGGER fail_provenance BEFORE INSERT ON planning_recovery_records WHEN new.record_kind='conflict_live:tasks' BEGIN SELECT RAISE(ABORT,'fixture provenance failure'); END;")?;Ok(())}).unwrap();
+    let before = fixture.live.call(|c| fingerprint(c, REPO)).unwrap();
+    assert!(recover(&fixture.live, request, "owner", DATE).is_err());
+    assert_eq!(fixture.live.call(|c| fingerprint(c, REPO)).unwrap(), before);
+    fixture
+        .live
+        .call(|c| {
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM planning_recoveries", [], |r| r
+                    .get::<_, i64>(0))?,
+                0
+            );
+            assert_eq!(
+                c.query_row("SELECT COUNT(*) FROM planning_recovery_records", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+                0
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn event_overlap_preserves_distinct_occurrences_with_the_same_payload() {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    let mut source = fixture
+        .live
+        .call(|connection| read_tables(connection, REPO))
+        .unwrap();
+    let live = source.clone();
+    let mut repeated = source["plan_events"][0].clone();
+    repeated.insert("event_id".into(), Value::from(100));
+    source.get_mut("plan_events").unwrap().push(repeated);
+    let overlap = overlap::classify(&source, &live).unwrap();
+    assert_eq!(overlap.existing["plan_events"].len(), 2);
+    assert!(!overlap.existing["plan_events"].contains("100"));
+}
+
+#[test]
+fn conflict_samples_are_bounded_without_losing_the_total() {
+    let fixture = Fixture::new();
+    let mut source = fixture
+        .live
+        .call(|connection| read_tables(connection, REPO))
+        .unwrap();
+    let template = source["tasks"][0].clone();
+    let mut live = source.clone();
+    source.get_mut("tasks").unwrap().clear();
+    live.get_mut("tasks").unwrap().clear();
+    for index in 0..80 {
+        let mut row = template.clone();
+        row.insert("task_id".into(), Value::from(format!("p{index:016x}")));
+        source.get_mut("tasks").unwrap().push(row.clone());
+        row.insert("title".into(), Value::from("PRIVATE_CHANGED_TITLE"));
+        live.get_mut("tasks").unwrap().push(row);
+    }
+    let overlap = overlap::classify(&source, &live).unwrap();
+    assert_eq!(overlap.conflict_count, 80);
+    assert_eq!(overlap.conflicts.len(), 64);
+    assert!(
+        !serde_json::to_string(&overlap.conflicts)
+            .unwrap()
+            .contains("PRIVATE_CHANGED_TITLE")
+    );
 }
 
 #[test]
@@ -328,10 +661,53 @@ fn colliding_decision_reference_is_rejected_before_import() {
 
 #[test]
 fn normal_protocol_dispatch_authorizes_and_returns_recovered_task_history() {
+    check_normal_protocol(Fixture::new());
+}
+
+#[test]
+fn normal_protocol_dispatch_handles_identical_overlap_and_missing_child() {
+    let fixture = Fixture::new();
+    fixture.copy_saved_into_live();
+    fixture
+        .live
+        .call(|connection| {
+            connection.execute("DELETE FROM tasks WHERE task_id=?1", [CHILD])?;
+            Ok(())
+        })
+        .unwrap();
+    check_normal_protocol(fixture);
+}
+
+#[test]
+fn stored_receipts_without_overlap_fields_remain_readable() {
+    let fixture = Fixture::new();
+    let preview = fixture.prepare();
+    let mut legacy = serde_json::to_value(&preview).unwrap();
+    for field in [
+        "existing_counts",
+        "conflict_count",
+        "conflicts",
+        "preserved_live_tasks",
+    ] {
+        legacy.as_object_mut().unwrap().remove(field);
+    }
+    let parsed: Receipt = serde_json::from_value(legacy).unwrap();
+    assert_eq!(parsed.mappings, preview.mappings);
+    assert!(parsed.existing_counts.is_empty());
+    assert_eq!(parsed.conflict_count, 0);
+    assert!(parsed.conflicts.is_empty());
+    assert!(parsed.preserved_live_tasks.is_empty());
+}
+
+#[test]
+fn normal_protocol_dispatch_preserves_reviewed_task_conflicts() {
+    check_normal_protocol(task_conflict_fixture());
+}
+
+fn check_normal_protocol(fixture: Fixture) {
     use crate::access::Caller;
     use crate::control_plane::ControlPlane;
     use crate::daemon::OperationExecutor;
-    let fixture = Fixture::new();
     let configuration = crate::automation_test_support::Fixture::new();
     let plane = ControlPlane::with_adapters(
         configuration.config.clone(),
@@ -361,6 +737,16 @@ fn normal_protocol_dispatch_authorizes_and_returns_recovered_task_history() {
         .unwrap();
     let mut request = fixture.request.clone();
     request.expected_live_sha256 = Some(prepared["live_sha256"].as_str().unwrap().to_owned());
+    request.preserve_live_tasks = prepared["conflicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|conflict| devcoordinator2_api::recovery::PreserveLiveTask {
+            task_id: conflict["id"].as_str().unwrap().into(),
+            saved_sha256: conflict["saved_sha256"].as_str().unwrap().into(),
+            live_sha256: conflict["live_sha256"].as_str().unwrap().into(),
+        })
+        .collect();
     request.apply = true;
     let applied = plane
         .execute(

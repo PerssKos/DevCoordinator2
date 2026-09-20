@@ -3,6 +3,7 @@ use crate::automation_test_support::Fixture;
 use crate::config::CodexUsageSource;
 use crate::repository::Registry;
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 const BEFORE: &str = "t20260903T120718Z-57067c";
@@ -20,6 +21,10 @@ fn measured_fixture() -> (Fixture, Record, u64) {
     let mut request = super::tests::record(&fixture);
     let home = fixture.repository.parent().unwrap().join("usage-source");
     let (canonical, now) = crate::usage::tests::source_database(&home, 5);
+    let probe = home.join("identity-probe");
+    let identity = json!({"schemaVersion":1,"kind":"usageRepositoryIdentity","scope":{"type":"repository","id":canonical},"databaseSchemaVersion":5,"taxonomyVersion":1});
+    std::fs::write(&probe, format!("#!/bin/sh\nprintf '%s\\n' '{identity}'\n")).unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
     let uid = rustix::process::getuid().as_raw();
     let source = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
     source.execute("INSERT INTO operations VALUES('result-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')", [(now-40_000) as i64]).unwrap();
@@ -56,7 +61,7 @@ fn measured_fixture() -> (Fixture, Record, u64) {
     fixture.config.codex_usage_sources = vec![CodexUsageSource {
         uid,
         codex_home: home,
-        executable: fixture.repository.join("unused-probe"),
+        executable: probe,
     }];
     fixture.service = ReviewService::new(
         fixture.database.clone(),
@@ -108,6 +113,7 @@ fn measured_fixture() -> (Fixture, Record, u64) {
         .usage
         .review_window(
             &fixture.service.repository("project-alpha").unwrap(),
+            None,
             now - 49_999,
             now,
             Instant::now() + QUERY_TIMEOUT,
@@ -137,6 +143,8 @@ fn prepare(record: &ReviewRecord) -> Prepare {
         offset: 0,
         limit: 10,
         before_decision_seq: None,
+        outcome_cursor: None,
+        outcome_limit: None,
     }
 }
 

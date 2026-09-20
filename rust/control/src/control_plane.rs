@@ -119,6 +119,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "event.wait",
     "plan.overview",
     "plan.recovery",
+    "deployment.recovery",
     "glossary.list",
     "glossary.resolve",
     "glossary.get",
@@ -618,11 +619,12 @@ impl ControlPlane {
                 )?)
             }
             "deployment.apply" => {
-                let params: params::DeploymentReference = decode(params)?;
-                let result = self.deployments.apply(
+                let params: params::DeploymentApply = decode(params)?;
+                let result = self.deployments.apply_with_candidate(
                     params.path.as_deref(),
                     params.name.as_deref(),
                     params.deployment_id.as_deref(),
+                    params.candidate.as_ref(),
                     caller,
                 )?;
                 self.health.sampler().request_storage();
@@ -958,6 +960,14 @@ impl ControlPlane {
                     .then_some(principal.identity)
                     .flatten();
                 encode(self.telegram.list(email.as_deref())?)
+            }
+            "deployment.recovery" => {
+                let request: devcoordinator2_api::runtime_recovery::Request = decode(params)?;
+                self.resolve_repository(None, Some(&request.repository_id), caller, false)?;
+                encode(
+                    self.deployments
+                        .recover_saved_preview(request, caller, &actor, &now)?,
+                )
             }
             "plan.recovery" => {
                 let request: devcoordinator2_api::recovery::Request = decode(params)?;
