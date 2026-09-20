@@ -1027,7 +1027,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         REVERSIBLE_DEPLOYMENT_ADMIN,
         Protocol["deployment apply"],
         ["deployment_apply"],
-        params::DeploymentReference,
+        params::DeploymentApply,
         results::DeploymentStatus
     ),
     operation!(

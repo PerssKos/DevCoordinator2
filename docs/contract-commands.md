@@ -392,6 +392,14 @@ Reference args on every command except `list`: `path` (required) plus
   log_path | container_id}`.
 - `deployment.rollback` → status with `rolled_back_from`/`rolled_back_to`;
   checkout source only (`rollback_unavailable` otherwise).
+- `deployment.apply` accepts an optional `candidate: {path, commit}` with an
+  existing `deployment_id`. Trusted local callers can promote a clean linked
+  worktree at the full expected commit into the same versioned deployment.
+  Different repositories, changed/dirty candidates and live-source targets
+  are refused before runtime mutation. The deployment keeps its identity,
+  domain override, data ownership and generation history. The CLI exposes
+  `--candidate-path` and `--candidate-commit` together with `--deployment-id`.
+  Omitting `candidate` preserves the existing declared-source behavior.
 - `deployment.remove {delete_data=false}` → `{removed, data_deleted,
   deleted_volumes}`. Stops everything, removes containers/units/generation
   checkouts and records; named volumes and PostgreSQL data survive unless

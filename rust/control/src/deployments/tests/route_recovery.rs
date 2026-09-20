@@ -1,5 +1,102 @@
 use super::*;
 
+#[test]
+fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    fixture.change();
+    let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+        path: fixture.world.worktree.to_string_lossy().into_owned(),
+        commit: "b".repeat(40),
+    };
+    let applied = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(applied.deployment_id, first.deployment_id);
+    assert_eq!(applied.current_generation, Some(2));
+    assert_eq!(applied.previous_generation, Some(1));
+    assert_eq!(applied.domain, first.domain);
+    let repeated = fixture
+        .deployments
+        .apply_with_candidate(
+            None,
+            None,
+            Some(&first.deployment_id),
+            Some(&candidate),
+            &fixture.caller,
+        )
+        .unwrap();
+    assert_eq!(repeated.current_generation, Some(2));
+}
+
+#[test]
+fn invalid_candidate_source_never_changes_the_running_deployment() {
+    for failure in [
+        "dirty",
+        "commit",
+        "repository",
+        "worktree",
+        "missing-target",
+    ] {
+        let fixture = RouteWorld::new(if failure == "worktree" {
+            "worktree"
+        } else {
+            "checkout"
+        });
+        let first = fixture.apply().unwrap();
+        let foreign = RouteWorld::new("checkout");
+        fixture.change();
+        if failure == "dirty" {
+            fixture.git.snapshot.lock().unwrap().dirty = true;
+        }
+        let candidate = devcoordinator2_api::params::DeploymentCandidateSource {
+            path: (if failure == "repository" {
+                &foreign.world.worktree
+            } else {
+                &fixture.world.worktree
+            })
+            .to_string_lossy()
+            .into_owned(),
+            commit: if failure == "commit" {
+                "c".repeat(40)
+            } else {
+                "b".repeat(40)
+            },
+        };
+        let before = fixture.git.actions.lock().unwrap().len();
+        let target = if failure == "missing-target" {
+            None
+        } else {
+            Some(first.deployment_id.as_str())
+        };
+        assert!(
+            fixture
+                .deployments
+                .apply_with_candidate(None, None, target, Some(&candidate), &fixture.caller)
+                .is_err(),
+            "{failure}"
+        );
+        assert_eq!(
+            fixture.git.actions.lock().unwrap().len(),
+            before,
+            "{failure}"
+        );
+        let after = fixture.status(&first.deployment_id);
+        assert_eq!(
+            after.current_generation, first.current_generation,
+            "{failure}"
+        );
+        assert_eq!(after.route_port, first.route_port, "{failure}");
+    }
+}
+
 struct RouteWorld {
     world: World,
     deployments: Deployments,
