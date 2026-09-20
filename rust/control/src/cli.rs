@@ -714,7 +714,7 @@ enum DeploymentCommand {
         #[arg(value_name = "PATH")]
         path: Option<PathBuf>,
     },
-    Apply(DeploymentReferenceArgs),
+    Apply(DeploymentApplyArgs),
     Preflight(DeploymentReferenceArgs),
     Status(DeploymentReferenceArgs),
     Rollback(DeploymentReferenceArgs),
@@ -750,6 +750,16 @@ impl DeploymentSelector {
 struct DeploymentReferenceArgs {
     #[command(flatten)]
     selector: DeploymentSelector,
+}
+
+#[derive(Debug, Args)]
+struct DeploymentApplyArgs {
+    #[command(flatten)]
+    selector: DeploymentSelector,
+    #[arg(long, requires = "candidate_commit", requires = "deployment_id")]
+    candidate_path: Option<PathBuf>,
+    #[arg(long, requires = "candidate_path")]
+    candidate_commit: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1738,7 +1748,16 @@ impl DeploymentCommand {
                     remote("deployment.list", json!({}))
                 }
             }
-            Self::Apply(args) => remote("deployment.apply", Value::Object(args.selector.params()?)),
+            Self::Apply(args) => {
+                let mut params = args.selector.params()?;
+                if let Some(path) = args.candidate_path {
+                    params.insert(
+                        "candidate".to_owned(),
+                        json!({"path":absolute_path(path)?,"commit":args.candidate_commit}),
+                    );
+                }
+                remote("deployment.apply", Value::Object(params))
+            }
             Self::Preflight(args) => remote(
                 "deployment.preflight",
                 Value::Object(args.selector.params()?),

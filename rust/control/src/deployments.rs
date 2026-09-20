@@ -527,7 +527,82 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        self.apply_with_candidate(path, name, deployment_id, None, caller)
+    }
+
+    pub fn apply_with_candidate(
+        &self,
+        path: Option<&str>,
+        name: Option<&str>,
+        deployment_id: Option<&str>,
+        candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
+        caller: &Caller,
+    ) -> Result<DeploymentStatus, ProtocolError> {
+        if candidate.is_some() && deployment_id.is_none() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "candidate source requires an existing deployment_id",
+            ));
+        }
+        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
+        if let Some(candidate) = candidate {
+            if caller.identity.is_some() || caller.via_edge {
+                return Err(ProtocolError::new(
+                    ErrorCode::PermissionDenied,
+                    "candidate source selection requires a trusted local caller",
+                ));
+            }
+            if target.source != "checkout" {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source requires a versioned checkout deployment",
+                ));
+            }
+            if !matches!(candidate.commit.len(), 40 | 64)
+                || !candidate.commit.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate commit must be one full hexadecimal object ID",
+                ));
+            }
+            let resolved = crate::repository::resolve_worktree(
+                Path::new(&candidate.path),
+                Some((target.caller_uid, target.caller_gid)),
+            )?;
+            let repository_id =
+                crate::ids::repository_id(&resolved.repository_root).map_err(|_| {
+                    ProtocolError::new(
+                        ErrorCode::RepositoryNotFound,
+                        "cannot resolve candidate repository identity",
+                    )
+                })?;
+            if repository_id != target.repository_id {
+                return Err(ProtocolError::new(
+                    ErrorCode::ParamsInvalid,
+                    "candidate source must belong to the deployment repository",
+                ));
+            }
+            let specification = load_deployment_spec(
+                &resolved.worktree_root,
+                &target.row.as_ref().expect("existing candidate target").name,
+            )
+            .map_err(config_error)?;
+            if !specification
+                .sources
+                .iter()
+                .any(|source| source == "checkout")
+            {
+                return Err(ProtocolError::new(
+                    ErrorCode::RepositoryConfigInvalid,
+                    "candidate no longer declares the versioned deployment",
+                ));
+            }
+            // Keep the target identity, owner, leases and generation history. Only
+            // the immutable generation's source/configuration comes from the candidate.
+            target.worktree = resolved.worktree_root;
+            target.specification = specification;
+        }
         if target.caller_uid == 0 {
             return Err(ProtocolError::new(
                 ErrorCode::DeploymentApplyFailed,
@@ -539,6 +614,14 @@ impl Deployments {
             .git
             .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
             .map_err(git_apply_error)?;
+        if let Some(candidate) = candidate
+            && (snapshot.dirty || snapshot.commit.as_deref() != Some(candidate.commit.as_str()))
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "candidate source is dirty or no longer matches the expected commit",
+            ));
+        }
         let prerequisites = self.prerequisites(&target);
         if !prerequisites.ready {
             let code = prerequisites.blockers[0].code;

@@ -4066,6 +4066,177 @@ fn case_checkout_generations_and_rollback(world: &mut World) -> Result<(), Strin
     Ok(())
 }
 
+fn case_exact_candidate_keeps_data_route_and_rollback(world: &mut World) -> Result<(), String> {
+    setup_web(world, "v1", true)?;
+    let first = data(&world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"web@checkout"}),
+    )?)?
+    .clone();
+    let id = first["deployment_id"]
+        .as_str()
+        .ok_or("missing deployment")?
+        .to_owned();
+    let volume = format!("devcoordinator2-{id}-db-pgdata");
+    world.track_volume(&volume);
+    let database = component(&first, "db")?["binding"]["identity"]
+        .as_str()
+        .ok_or("missing database")?
+        .to_owned();
+    docker_exec(
+        &database,
+        &[
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "app",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE TABLE candidate_keep(x int); INSERT INTO candidate_keep VALUES(7)",
+        ],
+    )?;
+    let candidate_parent = world.base.join("candidate-worktrees");
+    fs::create_dir(&candidate_parent).map_err(|e| e.to_string())?;
+    chown_path(
+        &candidate_parent,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let candidate = candidate_parent.join("reviewed-candidate");
+    fs::create_dir(&candidate).map_err(|e| e.to_string())?;
+    chown_path(
+        &candidate,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    world.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        candidate.to_str().ok_or("invalid candidate path")?,
+        "HEAD",
+    ])?;
+    fs::write(candidate.join("marker.txt"), "v2\n").map_err(|e| e.to_string())?;
+    chown_path(
+        &candidate.join("marker.txt"),
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    for args in [
+        &["add", "marker.txt"][..],
+        &["commit", "-qm", "reviewed candidate"],
+    ] {
+        run_as(
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+            &candidate,
+            "/usr/bin/git",
+            args,
+            &world.base,
+        )?;
+    }
+    let commit = command_stdout_as(
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+        &candidate,
+        "/usr/bin/git",
+        &["rev-parse", "HEAD"],
+        &world.base,
+    )?;
+    let commit = commit.trim();
+    let wrong = world.call(
+        "deployment.apply",
+        json!({"deployment_id":id,"candidate":{"path":candidate,"commit":"0".repeat(40)}}),
+    )?;
+    ensure!(
+        error_code(&wrong) == Some("deployment_apply_failed"),
+        "changed candidate was accepted"
+    );
+    fs::write(candidate.join("marker.txt"), "unreviewed\n").map_err(|e| e.to_string())?;
+    let dirty = world.call(
+        "deployment.apply",
+        json!({"deployment_id":id,"candidate":{"path":candidate,"commit":commit}}),
+    )?;
+    ensure!(
+        error_code(&dirty) == Some("deployment_apply_failed"),
+        "dirty candidate was accepted"
+    );
+    fs::write(candidate.join("marker.txt"), "v2\n").map_err(|e| e.to_string())?;
+    let unchanged = data(&world.call("deployment.status", json!({"deployment_id":id}))?)?.clone();
+    ensure!(
+        unchanged["current_generation"] == 1,
+        "refused candidates changed generation"
+    );
+    let request = json!({"deployment_id":id,"candidate":{"path":candidate,"commit":commit}});
+    let second = data(&world.call("deployment.apply", request.clone())?)?.clone();
+    ensure!(
+        second["deployment_id"] == id
+            && second["current_generation"] == 2
+            && second["previous_generation"] == 1,
+        "candidate changed the deployment identity or history"
+    );
+    ensure!(
+        second["domain"] == first["domain"]
+            && component(&second, "db")?["binding"]["identity"] == database,
+        "candidate replaced the domain or persistent database"
+    );
+    let port = component(&second, "api")?["port"]
+        .as_u64()
+        .ok_or("missing candidate port")? as u16;
+    ensure!(
+        http_get_json(port)?["version"] == "v2",
+        "candidate did not serve its exact source"
+    );
+    ensure!(
+        fs::read_to_string(world.repo.join("marker.txt")).map_err(|e| e.to_string())? == "v1\n",
+        "candidate changed shared source"
+    );
+    let repeated = data(&world.call("deployment.apply", request)?)?.clone();
+    ensure!(
+        repeated["current_generation"] == 2,
+        "repeated candidate created another generation"
+    );
+    let rollback = data(&world.call("deployment.rollback", json!({"deployment_id":id}))?)?.clone();
+    let port = component(&rollback, "api")?["port"]
+        .as_u64()
+        .ok_or("missing rollback port")? as u16;
+    ensure!(
+        http_get_json(port)?["version"] == "v1",
+        "rollback lost the healthy source"
+    );
+    ensure!(
+        docker_exec(
+            &database,
+            &[
+                "psql",
+                "-U",
+                "app",
+                "-d",
+                "app",
+                "-At",
+                "-c",
+                "SELECT x FROM candidate_keep"
+            ]
+        )?
+        .trim()
+            == "7",
+        "candidate or rollback lost persistent data"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"deployment_id":id,"delete_data":true}),
+    )?)?;
+    world.forget_volume(&volume);
+    world.git(&[
+        "worktree",
+        "remove",
+        candidate.to_str().ok_or("invalid candidate path")?,
+    ])?;
+    Ok(())
+}
+
 fn case_failed_component_is_degraded_and_busy_is_immediate(
     world: &mut World,
 ) -> Result<(), String> {
@@ -6424,6 +6595,10 @@ fn cases() -> Vec<Case> {
         (
             "checkout_generations_and_rollback",
             case_checkout_generations_and_rollback,
+        ),
+        (
+            "exact_candidate_keeps_data_route_and_rollback",
+            case_exact_candidate_keeps_data_route_and_rollback,
         ),
         (
             "failed_component_is_degraded_and_busy_is_immediate",

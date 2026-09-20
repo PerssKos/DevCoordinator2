@@ -710,6 +710,17 @@ macro_rules! deployment_params {
 }
 
 deployment_params!(DeploymentReference {});
+deployment_params!(DeploymentApply {
+    #[serde(default)]
+    pub candidate: Option<DeploymentCandidateSource>,
+});
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentCandidateSource {
+    pub path: String,
+    pub commit: String,
+}
 deployment_params!(SetComposeEnvAuthorization {
     pub file: String,
     pub authorized: bool,
