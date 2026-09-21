@@ -11,7 +11,15 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.waitForSelector('.plan-context');
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
-  verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 5 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
+  const expectedAspects = [
+    ['Plan & progress', `#/plan/${repositoryId}`],
+    ['Deployments', `#/deployments?repository=${repositoryId}`],
+    ['Tests', `#/tests?repository=${repositoryId}`],
+    ['Sketches', `#/sketches/${repositoryId}`],
+    ['Decisions', `#/decisions/${repositoryId}`],
+    ['Glossary', `#/glossary/${repositoryId}`],
+  ];
+  verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute('href')])).then((links) => JSON.stringify(links) === JSON.stringify(expectedAspects)));
   verify('plan and progress are one destination with three views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage'));
   verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
   if (viewport.width > 760) {
@@ -147,6 +155,14 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('#nav a[data-view="plan"]').click();
   await page.locator('.plan-context').waitFor();
   verify('returning from host tools remembers the repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
+  await page.locator(`#workspace-aspects a[href="#/sketches/${repositoryId}"]`).click();
+  await page.locator('.sketch-gallery-page').waitFor();
+  verify('Sketches navigation reads the selected repository archive', page.url().endsWith(`#/sketches/${repositoryId}`)
+    && await page.locator('#workspace-heading').innerText() === 'repo-one'
+    && await page.locator('#workspace-aspects a[aria-current]').innerText() === 'Sketches'
+    && daemon.calls.some(call => call.operation === 'design.sketch.list' && call.params.repository_id === repositoryId && call.params.limit === 100));
+  verify('an unpublished sketch archive has a truthful empty state', await page.locator('.sketch-gallery-page').innerText().then(text => text.includes('0 sketches') && text.includes('No sketches have been published for this project yet.'))
+    && await page.locator('.sketch-card').count() === 0);
   await page.goto(`${baseUrl}#/glossary/${repositoryId}`);
   await page.locator('#workspace-aspects a[aria-current]').waitFor();
   await page.evaluate(() => new Promise(requestAnimationFrame));

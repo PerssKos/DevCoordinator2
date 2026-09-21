@@ -834,7 +834,10 @@ fn scan_neutrality_file(collector: &mut FindingCollector, text: &str, path: &str
                 || contains_word_case_insensitive(line, "Claude")
                 || contains_word_case_insensitive(line, "Claude Code")
         };
-        if runtime_name {
+        let prohibited_source_scan = !prompt
+            && path == "skills/dev-coordinator/SKILL.md"
+            && line.trim() == "never scan Codex folders or infer project ownership from a path.";
+        if runtime_name && !prohibited_source_scan {
             collector.push(finding(
                 "runtime-name",
                 path,
@@ -2558,6 +2561,57 @@ fn fold_policy(text: &str) -> String {
         .to_lowercase()
 }
 
+const DESIGN_GATE_TERMS: &[&str] = &[
+    "every new shipped product ui element or visual asset",
+    "documentation-only layouts and developer-only tooling",
+    "`$imagegen`",
+    "`$product-design:index`",
+    "`$product-design:ideate`",
+    "product design `get-context` skill",
+    "generate exactly three independent visual options",
+    "color-only variants do not count",
+    "record the actual model/effort capability",
+    "order the results are actually displayed",
+    "submission order, completion order, retries, and array indexes do not define",
+    "pause all implementation while the design gate is pending",
+    "read-only discovery and preparation",
+    "user selects one displayed option",
+    "user explicitly authorizes autonomous selection",
+    "configured coordinator's existing sketch/evidence and decision records",
+    "do not create a markdown approval ledger",
+    "leave the gate pending and report the concrete blocker",
+    "repair that changes no visible element and does not introduce a new visual decision",
+];
+
+fn policy_named_skill_scan(text: &str) -> String {
+    let core_end = text.find("\n## ").unwrap_or(text.len());
+    let core = fold_policy(&text[..core_end]).replace(
+        "`ui-design-gate` module: load the named imagegen and product design index/ideate contracts",
+        "required named skill reference",
+    );
+    let mut scan = format!("{core}{}", &text[core_end..]);
+    // These are exact skill references within their owning policy sections,
+    // not an exemption for runtime-specific instructions elsewhere.
+    for (heading, reference) in [
+        (
+            REQUIRED_POLICY_SECTIONS[8],
+            "the gate requires the named imagegen and product design workflows",
+        ),
+        (
+            "UI design admission gate",
+            "`$imagegen` (resolve its installed `skill.md` through the active skill catalog)",
+        ),
+    ] {
+        let body = policy_section(&scan, heading);
+        if !body.is_empty() {
+            let replacement =
+                fold_policy(body).replace(reference, "required named skill reference");
+            scan = scan.replacen(body, &format!("{replacement}\n"), 1);
+        }
+    }
+    scan
+}
+
 fn require_policy_terms(violations: &mut Vec<String>, body: &str, label: &str, terms: &[&str]) {
     let folded = fold_policy(body);
     let missing = terms
@@ -3125,11 +3179,13 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "wide and narrow layouts",
             "loading, empty, error, populated, and long-content states",
             "functional defect",
-            "new interface or substantial redesign",
-            "routine fixes do not require three new proposals",
-            "options, selection or approval state",
-            "exact outstanding response request",
-            "when no follow-up can appear",
+            "apply the `ui-design-gate` module",
+            "every new shipped product ui element or visual asset",
+            "exactly three independent visual options",
+            "actual display-order binding",
+            "retained coordinator evidence",
+            "user selection or explicit autonomous-selection authorization before implementation",
+            "repairs that introduce no visible element or new visual decision remain ordinary work",
         ],
     ),
     (
@@ -4026,8 +4082,15 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             violations.push(label.to_owned());
         }
     }
+    require_policy_terms(
+        &mut violations,
+        policy_section(text, "UI design admission gate"),
+        "UI design admission gate",
+        DESIGN_GATE_TERMS,
+    );
+    let named_skill_scan = policy_named_skill_scan(text);
     for name in FORBIDDEN_POLICY_NAMES {
-        if contains_word_case_insensitive(text, name) {
+        if contains_word_case_insensitive(&named_skill_scan, name) {
             violations.push(format!(
                 "universal policy must not name runtime/project-specific term: {name}"
             ));
@@ -4833,6 +4896,55 @@ mod tests {
                 .to_path_buf()
         } else {
             std::env::current_dir().expect("current repository directory")
+        }
+    }
+
+    #[test]
+    fn design_gate_contract_and_named_skill_exceptions_are_scoped() {
+        let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
+            .unwrap()
+            .contract_text;
+        assert!(find_app_wide_policy_violations(&policy).is_empty());
+        let gate = fold_policy(policy_section(&policy, "UI design admission gate"));
+        for term in DESIGN_GATE_TERMS {
+            assert!(gate.contains(term), "missing design fixture {term}");
+            let changed = gate.replace(term, "removed design requirement");
+            assert_policy_violation(
+                &replace_policy_section(&policy, "UI design admission gate", &changed),
+                "UI design admission gate",
+            );
+        }
+        for extra in [
+            "ImageGen must execute all work.",
+            "`$imagegen` (resolve its installed `SKILL.md` through the active skill catalog)",
+        ] {
+            assert_policy_violation(
+                &format!("{policy}\n## Unrelated guidance\n{extra}\n"),
+                "runtime/project-specific term: ImageGen",
+            );
+        }
+        let allowed = "never scan Codex folders or infer project ownership from a path.";
+        for (path, text, clean) in [
+            ("skills/dev-coordinator/SKILL.md", allowed.to_owned(), true),
+            ("skills/sample/SKILL.md", allowed.to_owned(), false),
+            (
+                "skills/dev-coordinator/SKILL.md",
+                allowed.replace("never scan", "scan"),
+                false,
+            ),
+            (
+                "skills/dev-coordinator/SKILL.md",
+                format!("{allowed} Use Codex workers."),
+                false,
+            ),
+        ] {
+            let mut collector = FindingCollector::default();
+            scan_neutrality_file(&mut collector, &text, path, false);
+            assert_eq!(
+                collector.finish("neutrality").is_clean(),
+                clean,
+                "{path}: {text}"
+            );
         }
     }
 

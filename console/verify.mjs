@@ -735,6 +735,7 @@ async function startFakeDaemon(dir) {
       if (cmd === 'decision.tail' && req.params.repository_id === 'r9999999999999999') {
         return reply({ ok: true, data: { repository_id: req.params.repository_id, display_name: 'legacy-repo', summary: null, decisions: [], has_more: false, unsummarized_count: 0, summary_due: false } });
       }
+      if (cmd === 'design.sketch.list') return reply({ ok: true, data: { repository_id: req.params.repository_id, sketches: [], has_more: false } });
       const data = fixtures({ ...scenario, stopped: mutable.stopped, serviceStopped: mutable.serviceStopped })[cmd];
       if (data === undefined) return reply({ ok: false, error: { code: 'operation_unknown', message: cmd, detail: '' } });
       return reply({ ok: true, data: data });
