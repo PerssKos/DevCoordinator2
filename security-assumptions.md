@@ -1,6 +1,6 @@
 # Security Assumptions
 
-Last reviewed: 2026-09-15 (trusted local Console access and preserved execution attribution)
+Last reviewed: 2026-09-21 (trusted local agent access to authenticated deployments)
 
 Installation-specific values (the concrete accounts, groups, domain, and
 owner identity) are deliberately not in this file. They live in the
@@ -40,7 +40,8 @@ untracked `instance/` directory and in the installed instance configuration
   because its fix belongs to the Coordinator repository. Use canonical source,
   linked worktrees, direct self-validation, and the reviewed installer; preserve
   active work and verify the original affected surface. This authority does not
-  extend to unrelated infrastructure, production changes, new public access,
+  extend to unrelated infrastructure, production changes, or new public access
+  outside an explicit owner decision,
   secret disclosure, or destructive persistent-data operations. Mandatory host
   and tool approvals remain binding. Re-review when ownership, environment, or
   these boundaries change (DC2-2026-09-07-TRUSTED-AGENT-REPAIR-AUTHORITY).
@@ -55,6 +56,17 @@ untracked `instance/` directory and in the installed instance configuration
   requests, so existing local authority and actor attribution apply. No public
   user is impersonated and deployment-route grants remain unchanged. Review
   this exception if a local reverse proxy is introduced or host ownership changes.
+- The owner explicitly allows trusted local agents to test authenticated
+  deployment routes without an OIDC session when the instance enables
+  `EDGE_TRUST_LOCAL_AGENT=1` and the request carries the exact
+  `X-DevCoordinator2-Agent: 1` marker. The edge accepts this only from a
+  kernel-reported loopback peer, rejects forwarded and cross-origin browser
+  requests, and keeps the Console API on its existing local/session paths.
+  The marker is not a secret and is not public identity evidence: the edge
+  strips it, does not fabricate an e-mail, and leaves the deployment's own
+  application authentication in place. Review this exception if local
+  accounts become mutually distrusting, a local reverse proxy is introduced,
+  or the edge's host trust boundary changes (DC2-20260921-LOCAL-AGENT-DEPLOYMENT-AUTH).
 - The owner explicitly confirms that an authenticated Console administrator
   has authority to execute every administrator command exposed by the
   Console. DevCoordinator does not add a second confirmation dialog or chat
@@ -303,7 +315,9 @@ untracked `instance/` directory and in the installed instance configuration
   and no network listener or public access is added. If local accounts become
   mutually distrusting, this bridge must be redesigned and reviewed.
 - The public edge authenticates users and enforces per-deployment grants.
-  Public authority never derives from the local trust boundary.
+  Public authority never derives from an arbitrary request flag; the explicit
+  local-agent exception above is a configured extension of the existing
+  same-owner loopback trust boundary.
 - Decision summarization is an append-only maintenance write over existing
   repository decisions. An authorized local caller or Console administrator
   may store a due summary directly without a separate user-approval step; the
@@ -366,6 +380,8 @@ Review this file before: adding an account not controlled by the same
 owner; making local accounts mutually distrusting; changing the repository
 or client group model; placing credentials or private runtime state in the
 checkout; exposing the daemon socket beyond the local trust boundary;
+changing the local-agent marker or accepting it from a non-loopback or
+forwarded request;
 re-granting any account direct Docker access (reversing the authoritative
 cutover); or exposing the repository through any network service.
 Also review it before allowing another writer to `/home/DevCoordinator2`,

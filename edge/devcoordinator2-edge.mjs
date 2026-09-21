@@ -27,6 +27,8 @@ import { createStaticServer } from './lib/static.mjs';
 const SESSION_COOKIE = 'dc2_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const ROLE_RANK = { access: 0, viewer: 1, operator: 2, administrator: 3 };
+export const LOCAL_AGENT_HEADER = 'x-devcoordinator2-agent';
+export const LOCAL_AGENT_HEADER_VALUE = '1';
 
 function env(name, fallback = '') {
   const value = process.env[name];
@@ -64,6 +66,7 @@ export function loadConfig(e = process.env) {
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
     trustLocalConsole: e.EDGE_TRUST_LOCAL_CONSOLE === '1',
+    trustLocalAgent: e.EDGE_TRUST_LOCAL_AGENT === '1',
   };
 }
 
@@ -92,8 +95,9 @@ function redirect(res, location, headers = {}) {
   res.end();
 }
 
-export function authorize(doc, route, identity) {
+export function authorize(doc, route, identity, localAgent = false) {
   if (route.auth === 'public') return { allowed: true, role: 'public' };
+  if (localAgent) return { allowed: true, role: 'agent' };
   if (!identity) return { allowed: false, reason: 'sign-in required' };
   if (doc.access.owners.includes(identity)) return { allowed: true, role: 'administrator' };
   const grant = doc.access.grants.find((g) => g.identity === identity && g.deployment_id === route.deployment_id);
@@ -101,17 +105,36 @@ export function authorize(doc, route, identity) {
   return { allowed: true, role: grant.role };
 }
 
-export function trustedLoopbackConsole(req, consoleOrigin, enabled) {
-  if (!enabled) return false;
+function hasForwardingHeaders(req) {
+  return Object.keys(req.headers || {}).some((name) => {
+    const lower = name.toLowerCase();
+    return lower === 'forwarded' || lower.startsWith('x-forwarded-');
+  });
+}
+
+function isLoopbackPeer(req) {
   const peer = req.socket?.remoteAddress || '';
   const ipv4 = peer.startsWith('::ffff:') ? peer.slice(7) : peer;
-  if (peer !== '::1' && !(net.isIP(ipv4) === 4 && ipv4.startsWith('127.'))) return false;
+  return peer === '::1' || (net.isIP(ipv4) === 4 && ipv4.startsWith('127.'));
+}
+
+export function trustedLoopbackConsole(req, consoleOrigin, enabled) {
+  if (!enabled) return false;
+  if (!isLoopbackPeer(req)) return false;
   // This mode is for a direct host connection. A local reverse proxy must
   // retain ordinary public authentication rather than inherit host authority.
-  if (Object.keys(req.headers).some(name => name === 'forwarded' || name.startsWith('x-forwarded-'))) return false;
+  if (hasForwardingHeaders(req)) return false;
   if (req.headers.origin && req.headers.origin !== consoleOrigin) return false;
   if (['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) return false;
   return true;
+}
+
+export function trustedLoopbackAgent(req, expectedOrigin, enabled) {
+  if (!enabled || !isLoopbackPeer(req)) return false;
+  if (hasForwardingHeaders(req)) return false;
+  if (req.headers.origin && req.headers.origin !== expectedOrigin) return false;
+  if (['cross-site', 'same-site'].includes(req.headers['sec-fetch-site'])) return false;
+  return req.headers[LOCAL_AGENT_HEADER] === LOCAL_AGENT_HEADER_VALUE;
 }
 
 async function readJsonBody(req, limit = 65536) {
@@ -271,18 +294,21 @@ export async function createEdge(config, { log = console } = {}) {
     const route = doc.routes.find((r) => r.domain === host);
     if (!route) return writePage(res, pages.renderNotFound({ host }));
     const identity = identityOf(req);
-    const decision = authorize(doc, route, identity?.email || null);
+    const expectedOrigin = `${scheme}://${String(req.headers.host || host).toLowerCase()}`;
+    const localAgent = trustedLoopbackAgent(req, expectedOrigin, config.trustLocalAgent);
+    const decision = authorize(doc, route, identity?.email || null, localAgent);
     if (!decision.allowed) {
       if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname + url.search)}`);
       return writePage(res, pages.renderDenied({ email: identity.email, resource: host, sessionSet: true }));
     }
-    return proxy.forward(req, res, target(route, host, identity));
+    return proxy.forward(req, res, target(route, host, identity, localAgent));
   }
 
   // Authenticated routes tell the upstream who signed in (verified identity)
   // and which route it came through; public routes stay attribution-free.
-  function target(route, host, identity) {
+  function target(route, host, identity, localAgent = false) {
     return { port: route.port, publicHost: host, slug: route.label, route,
+      localAgent,
       localAttribution: { routeId: `${route.deployment_id}/${route.component}`, email: identity?.email ?? null } };
   }
 
@@ -291,11 +317,13 @@ export async function createEdge(config, { log = console } = {}) {
     const doc = store.current();
     const route = doc.routes.find((r) => r.domain === host);
     const identity = identityOf(req);
-    if (!route || !authorize(doc, route, identity?.email || null).allowed) {
+    const expectedOrigin = `${scheme}://${String(req.headers.host || host).toLowerCase()}`;
+    const localAgent = trustedLoopbackAgent(req, expectedOrigin, config.trustLocalAgent);
+    if (!route || !authorize(doc, route, identity?.email || null, localAgent).allowed) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
       return socket.destroy();
     }
-    return proxy.forwardUpgrade(req, socket, head, target(route, host, identity));
+    return proxy.forwardUpgrade(req, socket, head, target(route, host, identity, localAgent));
   }
 
   const servers = [];

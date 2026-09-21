@@ -185,7 +185,13 @@ preserves its owner, group, permissions and other settings. The next reviewed
 activation enables Console access without an OIDC session for direct loopback
 requests. Disable it with the same command and `--trusted-loopback disabled`.
 Forwarded or cross-origin browser requests and deployment routes keep ordinary
-authentication. The option defaults to disabled; it is not a trusted LAN range.
+authentication under this Console-only setting. To let trusted local agents
+test authenticated deployment routes, set `EDGE_TRUST_LOCAL_AGENT=1` in the
+private edge environment. Agents must connect directly from loopback and send
+`X-DevCoordinator2-Agent: 1`; forwarded, cross-origin, and marker-free requests
+still require the normal OIDC session and deployment grant. This marker is a
+local-trust signal rather than a secret, defaults to disabled, and is stripped
+before the request reaches the deployment.
 
 `devcoordinator2-tooling check no-instance-data` scans committed content against the
 untracked pattern list `instance/forbidden-strings.txt` and fails on any
