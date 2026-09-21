@@ -1,5 +1,19 @@
 ## 5. Coordinate tools, delegated work, and asynchronous execution
 
+### UI implementation admission
+
+- Before any implementation batch that introduces or materially recomposes a
+  shipped product UI element, verify that `ui-design-gate` has completed.
+- While the gate is pending, discovery and preparation of the three design
+  artifacts may continue, but product edits, scaffolding, preview startup,
+  implementation tests, and delivery work are paused for that UI scope.
+- A displayed user selection or an explicitly recorded autonomous-selection
+  authorization is the admission evidence. A proposed option, generated image,
+  implementation plan, or agent preference is not selection evidence.
+- If the design skill, Image Gen capability, or Coordinator evidence path is
+  unavailable, preserve the pending gate and report the blocker; do not bypass
+  it with a code-first implementation.
+
 - Partition tool calls into dependency layers. Execute safe independent
   calls in the same layer concurrently; serialize only real dependencies,
   semantic decisions, approvals, or conflicting mutations.

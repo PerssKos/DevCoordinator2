@@ -10,6 +10,143 @@ use serde::{Deserialize, Serialize};
 use crate::params::{AccessRole, DecisionAspect, ReleaseKind, ReleaseStatus, TaskKind, TaskStatus};
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchImageSummary {
+    pub sketch_id: String,
+    pub repository_id: String,
+    pub sketch_set: String,
+    pub source_skill: String,
+    pub title: String,
+    pub image_id: String,
+    pub mime: String,
+    pub byte_size: u64,
+    pub sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub created_at: String,
+    pub decision: crate::params::SketchDecision,
+    pub decision_revision: u32,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchBatch {
+    pub batch_id: String,
+    pub repository_id: String,
+    pub sketch_set: String,
+    pub source_skill: String,
+    pub generation_record_size: u64,
+    pub generation_record_sha256: String,
+    pub created_at: String,
+    pub sketches: Vec<SketchImageSummary>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchListResult {
+    pub repository_id: String,
+    pub sketches: Vec<SketchImageSummary>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDecisionEvent {
+    pub revision: u32,
+    pub decision: crate::params::SketchDecision,
+    pub rationale: String,
+    pub actor: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDetail {
+    pub sketch: SketchImageSummary,
+    pub generation_record_size: u64,
+    pub generation_record_sha256: String,
+    pub history: Vec<SketchDecisionEvent>,
+    pub annotations: Vec<SketchAnnotation>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchChunk {
+    pub sketch_id: String,
+    pub sha256: String,
+    pub total_bytes: u64,
+    pub offset: u64,
+    pub bytes: u32,
+    pub base64: String,
+    pub next_offset: Option<u64>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchRecordChunk {
+    pub sketch_id: String,
+    pub sha256: String,
+    pub total_bytes: u64,
+    pub offset: u64,
+    pub bytes: u32,
+    pub base64: String,
+    pub next_offset: Option<u64>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAnnotation {
+    pub annotation_id: String,
+    pub sketch_id: String,
+    pub body: String,
+    pub marks: Vec<crate::params::Mark>,
+    pub state: String,
+    pub author: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub can_delete: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessage {
+    pub message_id: String,
+    pub repository_id: String,
+    pub kind: String,
+    pub subject_id: String,
+    pub summary: String,
+    pub created_at: String,
+    pub claimed_by: Option<String>,
+    pub acknowledged: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageList {
+    pub messages: Vec<AgentMessage>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageMutation {
+    pub message: AgentMessage,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDecisionResult {
+    pub sketch: SketchImageSummary,
+    pub event: SketchDecisionEvent,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchAnnotationMutation {
+    pub annotation: SketchAnnotation,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TestStatus {
     Running,

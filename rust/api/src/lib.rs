@@ -19,7 +19,7 @@ pub mod runtime_recovery;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 23;
+pub const DATABASE_SCHEMA_VERSION: u32 = 24;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1499,6 +1499,96 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::EventWaitResult
     ),
     operation!(
+        "design.sketch.publish",
+        "Retain a project-scoped batch of generated sketches and its generation record.",
+        APPEND_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_publish"],
+        params::SketchPublish,
+        results::SketchBatch
+    ),
+    operation!(
+        "design.sketch.list",
+        "List retained project sketches and their current decisions.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_list"],
+        params::SketchList,
+        results::SketchListResult
+    ),
+    operation!(
+        "design.sketch.get",
+        "Open one retained project sketch with decision history and annotations.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_get"],
+        params::SketchReference,
+        results::SketchDetail
+    ),
+    operation!(
+        "design.sketch.image",
+        "Read one verified retained sketch image chunk.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_image"],
+        params::SketchImage,
+        results::SketchChunk
+    ),
+    operation!(
+        "design.sketch.record",
+        "Read one verified retained generation record chunk.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_record"],
+        params::SketchReference,
+        results::SketchRecordChunk
+    ),
+    operation!(
+        "design.sketch.decision",
+        "Change a sketch decision with an expected revision and rationale.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_decision"],
+        params::SketchDecisionChange,
+        results::SketchDecisionResult
+    ),
+    operation!(
+        "design.sketch.annotation.create",
+        "Save a marked-up sketch annotation.",
+        APPEND_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_annotation_create"],
+        params::SketchAnnotationCreate,
+        results::SketchAnnotationMutation
+    ),
+    operation!(
+        "agent.message.poll",
+        "Read pending repository messages for an agent.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["agent_message_poll"],
+        params::AgentMessagePoll,
+        results::AgentMessageList
+    ),
+    operation!(
+        "agent.message.claim",
+        "Claim one repository message for the current agent.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["agent_message_claim"],
+        params::AgentMessageClaim,
+        results::AgentMessageMutation
+    ),
+    operation!(
+        "agent.message.ack",
+        "Acknowledge one claimed repository message.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["agent_message_ack"],
+        params::AgentMessageAck,
+        results::AgentMessageMutation
+    ),
+    operation!(
         "bug.report",
         "Report or count a Coordinator defect while the daemon may be unavailable.",
         APPEND_SELF,
@@ -1819,8 +1909,8 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 102);
-        assert_eq!(tools.len(), 79);
+        assert_eq!(OPERATIONS.len(), 112);
+        assert_eq!(tools.len(), 89);
         assert_eq!(cli_routes.len(), 91);
     }
 

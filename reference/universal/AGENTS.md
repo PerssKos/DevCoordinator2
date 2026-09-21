@@ -66,7 +66,15 @@ earlier model messages or reload unchanged instructions.
   consistency, and diff; do not run tests or policy-validation suites.
 - Explain outcomes through the user's task and keep requested content first.
   UI work loads its journey, design, terminology, and rendered-interaction
-  requirements. Record confirmed repeatable mistakes as durable corrections.
+  requirements. Every new shipped product UI element also enters the
+  `ui-design-gate` module: load the named imagegen and Product Design
+  index/ideate contracts, use Product Design `get-context`, generate exactly
+  three independent visual options with the highest capability the runtime
+  provides, present them in actual display order, and pause implementation
+  until the user selects one unless the user explicitly authorizes autonomous
+  selection. Retain the options and selection in Coordinator sketch/evidence
+  and decision records. Record confirmed repeatable mistakes as durable
+  corrections.
   Finish only when the intended outcome and verification are complete, the
   user explicitly stops it, or a genuine blocker prevents authorized progress.
 - Write progress updates and completion reports for a capable non-specialist.

@@ -325,7 +325,7 @@ export function createProxy({
       }
       settled = true;
       clearTimeout(connectTimer);
-      if (target.route?.auth !== 'public' && r.statusCode === 401) {
+      if (target.route?.auth !== 'public' && r.statusCode === 401 && r.headers['www-authenticate']) {
         try {
           renderUpstreamAuthFailure(req, res, { target });
         } catch (err) {
@@ -340,10 +340,10 @@ export function createProxy({
             res.destroy();
           }
         }
-        // The Console has already authenticated and authorized the browser.
-        // A protected upstream 401 therefore means the private server-held
-        // credential is missing or stale; its body may contain API JSON and
-        // must never become the user-facing page.
+        // An HTTP-auth challenge must not open another browser credential
+        // prompt after Console sign-in. A challenge-free401 may instead be
+        // an application's own missing/expired cookie session; relay that
+        // status and body so its normal sign-in flow can recover.
         r.resume();
         return;
       }

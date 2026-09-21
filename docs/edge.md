@@ -44,6 +44,12 @@ authenticated routes only), and a static file server for the Console.
   created the deployment.
 - The former `/api/<operation>` route returns a bounded protocol-2
   `protocol_unsupported` error and never forwards the request.
+- Protected deployment routes preserve challenge-free upstream `401` responses,
+  including empty session-check responses and JSON sign-in errors. Applications
+  may keep their own cookie sessions behind edge sign-in. A `401` carrying a
+  `WWW-Authenticate` challenge still becomes a bounded gateway error, preventing
+  another browser HTTP-auth prompt. Edge authorization and cookie isolation apply
+  on both response paths; an application cookie cannot grant edge access.
 
 ## Configuration (instance data, never in the repository)
 

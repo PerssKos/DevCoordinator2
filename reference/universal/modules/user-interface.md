@@ -21,20 +21,16 @@
 
 ### Design alternatives and contextual interfaces
 
-- Generate exactly three materially different visual options before
-  implementing a new interface or substantial redesign. Change layout,
-  information hierarchy, or interaction, not merely colors. Ground all three
-  in the user's journey and the existing design system.
-- Normally, present all three and recommend one, then obtain the user's
-  selection before implementing. If the user explicitly asks the agent to
-  choose the best option or proceed autonomously, select the strongest of the
-  three, briefly explain the choice, and implement without another approval
-  round. Preserve previously approved designs; routine fixes do not require
-  three new proposals.
-- Persist the options, selection or approval state, and exact outstanding
-  response request, if any. Include that state with the visual artifacts when
-  no follow-up can appear. Do not invent a pending approval when the user has
-  authorized autonomous selection or reopen an already approved design.
+- Apply the `ui-design-gate` module before implementing every new shipped
+  product UI element or visual asset, including admin and operational UI.
+  The gate requires the named imagegen and Product Design workflows, exactly
+  three independent visual options, actual display-order binding, retained
+  Coordinator evidence, and a user selection or explicit autonomous-selection
+  authorization before implementation.
+- Existing approved visuals remain valid source targets for faithful work, but
+  they do not waive the gate for a newly introduced element or material visual
+  recomposition. Repairs that introduce no visible element or new visual
+  decision remain ordinary work.
 - Minimize effort and preserve context. Inherit known project, parent, and
   other values. Show infrequently changed context as clickable text rather
   than permanent full-size selectors. Keep actions beside the object they
