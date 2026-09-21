@@ -1612,12 +1612,15 @@ function setupEvidenceLayout() {
   const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || page.clientWidth >= 1050);
   const paint = () => {
     if (!page.isConnected) return;
-    page.classList.toggle('evidence-layout-narrow', page.clientWidth < 1050);
+    const narrow = page.clientWidth < 1050;
+    page.classList.toggle('evidence-layout-narrow', narrow);
     page.classList.toggle('evidence-is-fullscreen', fullscreen);
     page.style.height = `${fullscreen ? innerHeight : Math.max(520, innerHeight - Math.max(0, page.getBoundingClientRect().top) - 1)}px`;
     for (const [panel, selector, label] of [['journey', '#evidence-journey', 'journey panel'], ['details', '#evidence-inspector', 'capture details']]) {
       const visible = expanded(panel);
-      $(selector, page).hidden = !visible;
+      // Keep the narrow details bar mounted while its body is closed so the
+      // user still has a control to reopen postmortem review.
+      $(selector, page).hidden = !visible && !(panel === 'details' && narrow);
       page.style.setProperty(`--evidence-${panel}-width`, visible ? (panel === 'journey' ? '230px' : '280px') : '0px');
       page.querySelectorAll(`[data-evidence-panel="${panel}"]`).forEach(button => {
         button.setAttribute('aria-expanded', String(visible));
@@ -1660,7 +1663,9 @@ function setupEvidenceLayout() {
       try { localStorage.setItem('dc2-evidence-panels', JSON.stringify(preferences)); } catch {}
     }
     paint();
-    if (focus) (visible && panel === 'details' ? $('.evidence-panel-close', page) : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
+    if (focus) (visible && panel === 'details'
+      ? (page.clientWidth < 1050 ? $('.evidence-mobile-inspector-toggle', page) : $('.evidence-panel-close', page))
+      : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
   };
   const finishFullscreen = () => {
     fullscreen = false;
@@ -2230,7 +2235,7 @@ function bindEvidenceInspector() {
 function refreshEvidenceInspector() {
   const inspector = $('#evidence-inspector', main); if (!inspector) return;
   const { step, cell, screenshot } = currentEvidenceSelection();
-  inspector.innerHTML = `<button type="button" class="evidence-tool evidence-panel-close" data-evidence-panel="details" aria-label="Hide capture details" title="Hide capture details">${planIcon('x')}</button><div class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
+  inspector.innerHTML = `<button type="button" class="evidence-mobile-inspector-toggle" data-evidence-panel="details" aria-controls="evidence-inspector-body" aria-expanded="false"><span>Capture details and feedback</span>${planIcon('chevron-up')}</button><button type="button" class="evidence-tool evidence-panel-close" data-evidence-panel="details" aria-label="Hide capture details" title="Hide capture details">${planIcon('x')}</button><div id="evidence-inspector-body" class="evidence-inspector-body">${renderEvidenceInspector(state.evidenceRun, step, cell, screenshot)}</div>`;
   $('h2', inspector)?.setAttribute('id', 'evidence-details-heading');
   bindEvidenceInspector();
 }
@@ -2550,8 +2555,8 @@ function renderSketchDrawer(repositoryId, group) {
   const comments = annotations.length ? annotations.map((annotation) => `<article class="sketch-drawer-comment"><header><strong>${esc(annotation.author || 'Reviewer')}</strong><small>${esc(ago(annotation.created_at))}</small></header><p>${esc(annotation.body)}</p></article>`).join('') : '<p class="muted">No comments on this option yet.</p>';
   const commentTargets = summary.selected.length || current?.decision === 'keep' ? summary.selected.length || 1 : 1;
   const commentLabel = commentTargets > 1 ? `Comment on ${commentTargets} selected options` : 'Comment on this option';
-  return `<div class="sketch-set-drawer-backdrop" data-sketch-drawer-backdrop>
-    <section class="sketch-set-drawer" role="dialog" aria-modal="true" aria-labelledby="sketch-drawer-title">
+  return `<div class="sketch-set-drawer-backdrop" data-sketch-drawer-backdrop data-ui-contextual-overlay="Sketch set comparison drawer" role="dialog" aria-modal="true" aria-labelledby="sketch-drawer-title" tabindex="-1">
+    <section class="sketch-set-drawer" data-ui-allow-overlap="Sketch set comparison drawer is intentionally positioned above the gallery surface">
       <header class="sketch-set-drawer-head"><div><p class="eyebrow">Sketch set review</p><h2 id="sketch-drawer-title">${esc(group.key)}</h2><p class="muted">${summary.selected.length} selected · ${group.sketches.length} options</p></div><button type="button" class="btn btn-small" data-sketch-drawer-close aria-label="Close set review">Close</button></header>
       <div class="sketch-drawer-mode" role="group" aria-label="Selection mode"><span>Selection mode</span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}">Single choice</button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}">Choose multiple</button></div>
       <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options">${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${sketch.decision === 'keep' ? 'Selected' : sketch.decision === 'reject' ? 'Rejected' : 'Undecided'}</small></button>`).join('')}</div></div>
@@ -2570,8 +2575,10 @@ function renderSketchGalleryPage(repositoryId, sketches, activeSet = null, activ
   const groups = sketchSetGroups(sketches);
   const selectedCount = sketches.filter((sketch) => sketch.decision === 'keep').length;
   const activeGroup = groups.find((group) => group.key === state.sketchDrawerSet);
-  main.innerHTML = `<section class="sketch-gallery-page"><header class="sketch-gallery-heading"><div><h1>Sketches</h1><p class="muted">Review generated options by set, then select one or several to carry forward.</p></div><div class="sketch-selection-mode" role="group" aria-label="Selection mode"><span>Selection mode</span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}">Single choice</button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}">Choose multiple</button></div></header><div class="sketch-toolbar"><strong>${esc(sketches.length)} sketches · ${esc(selectedCount)} selected</strong><span class="muted">${esc(groups.length)} ${groups.length === 1 ? 'set' : 'sets'}</span><button class="btn btn-small" type="button" disabled title="Sketches are published by a registered skill">Publish from a skill</button></div>${groups.length ? `<div class="sketch-set-list">${groups.map((group, index) => { const summary = sketchGroupSummary(group); return `<details class="sketch-set-lane"${index < 2 ? ' open' : ''}><summary><span class="sketch-set-summary"><strong>${esc(group.key)}</strong><small>${group.sketches.length} options · ${summary.selected.length ? `${summary.selected.length} selected` : 'No selection'}</small></span><span class="sketch-set-summary-status">${summary.selected.length ? badge(`${summary.selected.length} selected`, 'ok') : badge('No selection')}</span></summary><div class="sketch-set-lane-actions"><span class="muted">${summary.rejected.length} rejected · ${summary.pending} undecided</span><button type="button" class="btn btn-small" data-sketch-review-set="${esc(group.key)}">Review set</button></div><div class="sketch-set-grid">${group.sketches.map((sketch) => renderSketchCard(repositoryId, group, sketch)).join('')}</div></details>`; }).join('')}</div>` : stateBlock('empty', 'No sketches have been published for this project yet.')}${renderSketchDrawer(repositoryId, activeGroup)}</section>`;
+  document.body.classList.toggle('sketch-drawer-open', Boolean(activeGroup));
+  main.innerHTML = `<section class="sketch-gallery-page" data-ui-region="sketches-primary"><header class="sketch-gallery-heading"><div><h1>Sketches</h1><p class="muted">Review generated options by set, then select one or several to carry forward.</p></div><div class="sketch-selection-mode" role="group" aria-label="Selection mode"><span>Selection mode</span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}">Single choice</button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}">Choose multiple</button></div></header><div class="sketch-toolbar"><strong>${esc(sketches.length)} sketches · ${esc(selectedCount)} selected</strong><span class="muted">${esc(groups.length)} ${groups.length === 1 ? 'set' : 'sets'}</span><button class="btn btn-small" type="button" disabled title="Sketches are published by a registered skill">Publish from a skill</button></div>${groups.length ? `<div class="sketch-set-list">${groups.map((group, index) => { const summary = sketchGroupSummary(group); return `<details class="sketch-set-lane"${index < 2 ? ' open' : ''}><summary><span class="sketch-set-summary"><strong>${esc(group.key)}</strong><small>${group.sketches.length} options · ${summary.selected.length ? `${summary.selected.length} selected` : 'No selection'}</small></span><span class="sketch-set-summary-status">${summary.selected.length ? badge(`${summary.selected.length} selected`, 'ok') : badge('No selection')}</span></summary><div class="sketch-set-lane-actions"><span class="muted">${summary.rejected.length} rejected · ${summary.pending} undecided</span><button type="button" class="btn btn-small" data-sketch-review-set="${esc(group.key)}">Review set</button></div><div class="sketch-set-grid">${group.sketches.map((sketch) => renderSketchCard(repositoryId, group, sketch)).join('')}</div></details>`; }).join('')}</div>` : stateBlock('empty', 'No sketches have been published for this project yet.')}${renderSketchDrawer(repositoryId, activeGroup)}</section>`;
   bindSketchGallery(repositoryId);
+  if (activeGroup) requestAnimationFrame(() => $('[role="dialog"]', main)?.focus({ preventScroll: true }));
   loadSketchGalleryImages(repositoryId);
   if (activeGroup && state.sketchDrawerDetail?.sketch?.sketch_id !== state.sketchDrawerSketchId) loadSketchDrawerDetail(repositoryId, activeGroup, state.sketchDrawerSketchId);
 }
@@ -4416,6 +4423,7 @@ window.addEventListener('resize', () => {
 async function render() {
   closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);
+  document.body.classList.remove('sketch-drawer-open');
   viewAbort?.abort();
   viewAbort = new AbortController();
   const signal = viewAbort.signal;
