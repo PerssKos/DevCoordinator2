@@ -62,6 +62,29 @@
   checks unless assigned the sealed integration pass. Test-plumbing-only
   changes do not trigger another complete release pass until both the
   implementation and test infrastructure are frozen.
+- For changed product or operational behavior, choose test levels in this
+  order:
+
+  1. Exercise the highest realistic end-to-end path first. Drive the accepted
+     user or operator journey through the affected boundary and verify the
+     downstream result, including integration, persistence, authorization,
+     cleanup, and recovery when the acceptance criteria require them.
+  2. Extend the nearest existing end-to-end or integration test, fixture, or
+     journey when it can cover the new behavior without weakening the existing
+     assertion. Reuse its setup and teardown so the new case remains part of
+     the real acceptance surface.
+  3. Add a new end-to-end or integration scenario when no existing higher-level
+     test can express the acceptance path.
+  4. Before creating a unit test, search the existing higher-level and unit
+     suites and fixtures again. Extend an existing test whenever possible.
+     Add a new unit test only for behavior that remains intentionally isolated
+     or cannot be expressed by an existing test, and record why extension or
+     higher-level coverage was insufficient.
+
+  Unit tests are supporting evidence for isolated logic; they cannot close a
+  missing end-to-end acceptance path. If the required end-to-end harness or
+  environment is unavailable, keep that evidence gap explicit and do not
+  claim the behavior is complete.
 - Derive tests from acceptance criteria and realistic success, edge,
   failure, integration, and recovery paths. Reproduce and retest the same
   visible or operational surface when feasible; do not substitute an
