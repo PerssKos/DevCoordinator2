@@ -2431,6 +2431,54 @@ function sketchFeedback(detail) {
 }
 function concatBytes(chunks) { const total = chunks.reduce((n, chunk) => n + chunk.length, 0); const output = new Uint8Array(total); let offset = 0; for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.length; } return output; }
 
+async function sketchImageUrl(repositoryId, sketch) {
+  const sketchId = sketch.image_id || sketch.sketch_id;
+  if (!sketchId) throw new ApiError('design_sketch_not_found', 'Sketch image unavailable');
+  const cacheKey = `sketch:${repositoryId}:${sketchId}`;
+  if (state.evidenceImageUrls.has(cacheKey)) return state.evidenceImageUrls.get(cacheKey);
+  if (state.evidenceImagePromises.has(cacheKey)) return state.evidenceImagePromises.get(cacheKey);
+  const promise = (async () => {
+    const chunks = [];
+    let offset = 0;
+    let total = null;
+    let mime = sketch.mime || 'image/png';
+    for (let guard = 0; guard < 512; guard += 1) {
+      const part = await api('design.sketch.image', {
+        repository_id: repositoryId, sketch_id: sketchId, offset, max_bytes: 184320,
+      });
+      if (Number(part.offset) !== offset) throw new ApiError('design_sketch_invalid_chunk', 'Sketch image returned an unexpected chunk offset');
+      if (total == null) total = Number(part.total_bytes);
+      if (Number(part.total_bytes) !== total) throw new ApiError('design_sketch_invalid_chunk', 'Sketch image changed while it was being read');
+      mime = part.mime || mime;
+      const binary = atob(part.base64 || '');
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+      if (!bytes.length && part.next_offset != null) throw new ApiError('design_sketch_invalid_chunk', 'Sketch image returned an empty intermediate chunk');
+      chunks.push(bytes);
+      const nextOffset = part.next_offset == null ? null : Number(part.next_offset);
+      if (nextOffset == null) {
+        offset += bytes.length;
+        if (offset !== total) throw new ApiError('design_sketch_invalid_chunk', 'Sketch image ended before all bytes were read');
+        break;
+      }
+      if (nextOffset <= offset || nextOffset > total || nextOffset !== offset + bytes.length) {
+        throw new ApiError('design_sketch_invalid_chunk', 'Sketch image returned a non-contiguous chunk');
+      }
+      offset = nextOffset;
+      if (guard === 511) throw new ApiError('design_sketch_invalid_chunk', 'Sketch image has too many chunks');
+    }
+    const url = URL.createObjectURL(new Blob(chunks, { type: mime }));
+    state.evidenceImageUrls.set(cacheKey, url);
+    state.evidenceImagePromises.delete(cacheKey);
+    return url;
+  })().catch((error) => {
+    state.evidenceImagePromises.delete(cacheKey);
+    throw error;
+  });
+  state.evidenceImagePromises.set(cacheKey, promise);
+  return promise;
+}
+
 function sketchEvidence(detail) {
   const s = detail.sketch;
   return {
@@ -2461,7 +2509,12 @@ const viewSketches = guard(async (repositoryId, sketchId = null) => {
   const cards = result.sketches.map((sketch) => `<article class="sketch-card"><a class="sketch-card-image" href="#/sketches/${encodeURIComponent(repositoryId)}?sketch=${encodeURIComponent(sketch.sketch_id)}"><img alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a><div class="sketch-card-body"><h2>${esc(sketch.title)}</h2><p class="muted">${esc(sketch.source_skill)} · ${esc(sketch.sketch_set)}</p><p>${badge(sketch.decision, sketch.decision === 'keep' ? 'ok' : sketch.decision === 'reject' ? 'bad' : '')}</p><a class="btn btn-small" href="#/sketches/${encodeURIComponent(repositoryId)}?sketch=${encodeURIComponent(sketch.sketch_id)}">Open sketch</a></div></article>`).join('');
   main.innerHTML = `<section class="sketch-gallery-page"><div class="repository-context"><h1>${destinationLink('Sketches', '#/sketches')}</h1></div><div class="sketch-toolbar"><strong>${result.sketches.length} sketches</strong><button class="btn btn-small" type="button" disabled title="Sketches are published by a registered skill">Publish from a skill</button></div>${result.sketches.length ? `<div class="sketch-gallery">${cards}</div>` : stateBlock('empty', 'No sketches have been published for this project yet.')}</section>`;
   await Promise.all([...main.querySelectorAll('[data-sketch-thumb]')].map(async (img) => {
-    try { const part = await api('design.sketch.image', { repository_id: repositoryId, sketch_id: img.dataset.sketchThumb, offset: 0, max_bytes: 184320 }); img.src = `data:image/png;base64,${part.base64}`; } catch { img.remove(); }
+    try {
+      const sketch = result.sketches.find((item) => item.sketch_id === img.dataset.sketchThumb);
+      img.src = await sketchImageUrl(repositoryId, sketch || { sketch_id: img.dataset.sketchThumb });
+    } catch {
+      img.alt = 'Sketch image unavailable'; img.classList.add('is-unavailable');
+    }
   }));
 });
 
