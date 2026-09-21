@@ -2635,7 +2635,8 @@ function bindSketchGallery(repositoryId) {
     const current = group?.sketches.find((sketch) => sketch.sketch_id === state.sketchDrawerSketchId);
     const targets = group?.sketches.filter((sketch) => sketch.decision === 'keep') || [];
     const commentTargets = targets.length ? targets : current ? [current] : [];
-    event.submitter.disabled = true;
+    const submitter = event.submitter;
+    if (submitter) submitter.disabled = true;
     try {
       for (const sketch of commentTargets) await api('design.sketch.annotation.create', { repository_id: repositoryId, sketch_id: sketch.sketch_id, body, marks: [] }, false);
       toast(`Comment added to ${commentTargets.length} ${commentTargets.length === 1 ? 'option' : 'selected options'}`, 'ok');
@@ -2644,7 +2645,7 @@ function bindSketchGallery(repositoryId) {
         renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], state.sketchDrawerSet, current.sketch_id);
       }
     } catch (error) { toast(`Comment failed: ${error.message}`, 'bad'); }
-    finally { if (event.submitter) event.submitter.disabled = false; }
+    finally { if (submitter) submitter.disabled = false; }
   });
   document.removeEventListener('keydown', sketchDrawerEscape);
   if (state.sketchDrawerSet) document.addEventListener('keydown', sketchDrawerEscape);
