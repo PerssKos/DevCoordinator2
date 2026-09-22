@@ -28,10 +28,10 @@ window.DevCoordinatorPerformance = (() => {
       return `<section class="performance-distribution"><div class="performance-section-head"><h2>${esc(title)}</h2><span>Total <strong title="${esc(exact(total))}">${esc(amount(total))}</strong></span></div>${mix(values, sum)}<div class="performance-legend">${rows.slice(0, 5).map(([key, value]) => `<span><i style="background:${key === 'unattributed' ? 'var(--muted)' : color(key)}"></i>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}<strong>${esc(amount(value))}</strong></span>`).join('')}${rows.length > 5 ? `<span>${rows.length - 5} more activities</span>` : ''}</div><details class="performance-exact"><summary>Exact values</summary><table><thead><tr><th>${kind ? 'Plan item kind' : 'Activity'}</th><th>Measured tokens</th><th>Share</th></tr></thead><tbody>${rows.map(([key, value]) => `<tr><td>${esc(kind ? labels[key] || activityLabel(key) : activityLabel(key))}</td><td>${Number(value.measured).toLocaleString('en-US')}${value.exact == null ? ' (partial)' : ''}</td><td>${sum ? (value.measured / sum * 100).toFixed(1) + '%' : '—'}</td></tr>`).join('')}</tbody></table></details></section>`;
     }
     async function render(root, repositoryId, signal) {
-      if (!identity()?.administrator) { root.innerHTML = '<h1>Performance</h1><p class="notice">Administrator access is required to read performance reviews.</p>'; return; }
-      if (!repositoryId) { root.innerHTML = '<h1>Performance</h1><p>No repository is selected.</p>'; return; }
+      if (!identity()?.administrator) { root.innerHTML = '<h1><a class="destination-link" href="#/performance">Performance</a></h1><p class="notice">Administrator access is required to read performance reviews.</p>'; return; }
+      if (!repositoryId) { root.innerHTML = '<h1><a class="destination-link" href="#/performance">Performance</a></h1><p>No repository is selected.</p>'; return; }
       let session = sessions.get(repositoryId);
-      if (!session) { session = { end: Date.now(), lifetimeEnd: Date.now(), range: '7d', scroll: 0 }; sessions.set(repositoryId, session); }
+      if (!session) { session = { end: Date.now(), lifetimeEnd: Date.now(), range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
       const query = new URLSearchParams(location.hash.split('?')[1] || '');
       const range = ['7d', '30d', '90d', 'custom'].includes(query.get('range')) ? query.get('range') : session.range;
       const parsedEnd = Number(query.get('to'));
@@ -43,7 +43,7 @@ window.DevCoordinatorPerformance = (() => {
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
       const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 20 };
-      let currentUsage = null; let reviewData = null; let historyBefore = null; let revisionBefore = null;
+      let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       function route(review, overrides = {}) {
         const p = new URLSearchParams({ range, from: String(start), to: String(end), ...overrides });
         if (review) p.set('review', review);
@@ -66,7 +66,7 @@ window.DevCoordinatorPerformance = (() => {
       }
       const previousHeight = root.querySelector("[data-performance-page]") ? root.getBoundingClientRect().height : 0;
       if (previousHeight) root.style.minHeight = previousHeight + "px";
-      root.innerHTML = `<section data-performance-page><header class="performance-heading"><h1>Performance</h1><div class="performance-range" aria-label="Overview period">${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open>Custom</button><dialog class="performance-date-dialog"><form><h2>Custom dates</h2><label>From (UTC)<input type="date" name="from" value="${day(start)}" required></label><label>Through (UTC)<input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit">Apply dates</button><button class="btn" type="button" data-performance-cancel-dates>Cancel</button></form></dialog></div><span class="performance-dates">${esc(period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh>Refresh</button></header>
+      root.innerHTML = `<section data-performance-page><header class="performance-heading"><h1><a class="destination-link" href="#/performance">Performance</a></h1><div class="performance-range" aria-label="Overview period">${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open>Custom</button><dialog class="performance-date-dialog"><form><h2>Custom dates</h2><label>From (UTC)<input type="date" name="from" value="${day(start)}" required></label><label>Through (UTC)<input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit">Apply dates</button><button class="btn" type="button" data-performance-cancel-dates>Cancel</button></form></dialog></div><span class="performance-dates">${esc(period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh>Refresh</button></header>
         <div class="performance-totals" aria-label="Repository totals"><div><span>All recorded tokens</span><strong data-performance-lifetime>Loading…</strong></div><div><span>Overview period tokens</span><strong data-performance-period-total>Loading…</strong></div><div><span>All reviews</span><strong data-performance-count>Loading…</strong></div></div>
         <div class="performance-scope"><div><h2 data-performance-scope-title>${reference ? 'Review usage' : 'Overview usage'}</h2><span data-performance-scope-total></span></div>${reference ? '<button type="button" class="btn btn-small" data-performance-overview>Return to overview</button>' : ''}</div><p class="performance-coverage muted" data-performance-coverage role="status">Loading measurements…</p>
         <div class="performance-distributions" data-performance-charts><p>Loading token breakdowns…</p></div>
@@ -75,7 +75,7 @@ window.DevCoordinatorPerformance = (() => {
         <aside class="performance-reader" data-performance-reader tabindex="-1" aria-label="Selected performance review">${reference ? '<p>Loading review…</p>' : '<h2>Review details</h2><p class="muted">Select a review to see its decisions, measurements and evidence.</p>'}</aside></div></section>`;
       root.querySelectorAll('[data-performance-range]').forEach(button => button.addEventListener('click', () => { const nextEnd = Date.now(); navigate(null, { range: button.dataset.performanceRange, from: String(nextEnd - parseInt(button.dataset.performanceRange, 10) * DAY), to: String(nextEnd) }); }));
       find('overview')?.addEventListener('click', () => navigate(null));
-      find('refresh').addEventListener('click', () => { cache.clear(); session.end = Date.now(); session.lifetimeEnd = Date.now(); window.render(); });
+      find('refresh').addEventListener('click', () => { cache.clear(); session.history = null; session.periodUsage = null; session.end = Date.now(); session.lifetimeEnd = Date.now(); window.render(); });
       const form = root.querySelector('.performance-date-dialog form');
       const custom = root.querySelector('.performance-date-dialog');
       root.append(custom);
@@ -95,7 +95,9 @@ window.DevCoordinatorPerformance = (() => {
       window.addEventListener('resize', placeReader, { signal });
       const showCoverage = usage => { find('coverage').textContent = `${coverageText(usage.coverage)}${usage.outcomes.unattributed.operations ? ' · Some work has no recorded outcome.' : ''}`; };
       function showUsage(usage, append = false) {
-        currentUsage = usage; const outcomes = usage.outcomes; const total = outcomes.totals.providerTotalTokens;
+        const previousUsage = currentUsage; currentUsage = usage;
+        if (!reference) { session.periodUsage = { start, end, usage: append && previousUsage ? { ...usage, outcomes: { ...usage.outcomes, rows: [...previousUsage.outcomes.rows, ...usage.outcomes.rows] } } : usage }; currentUsage = session.periodUsage.usage; }
+        const outcomes = usage.outcomes; const total = outcomes.totals.providerTotalTokens;
         if (!append) {
           showCoverage(usage);
           find('scope-total').textContent = `${reference ? 'Review' : 'Period'} total: ${amount(total)}`;
@@ -151,7 +153,7 @@ window.DevCoordinatorPerformance = (() => {
         } catch (error) { if (active()) errorPanel(find('revision-list'), error.message, () => loadRevisions()); }
       }
       async function loadHistory(more = false) {
-        try { const data = await read('performance.reviews', { repository_id: repositoryId, ...(more ? { before: historyBefore } : {}) }); if (!active()) return; historyBefore = data.next_before; find('count').textContent = String(data.total_reviews);
+        try { const data = !more && session.history ? session.history : await read('performance.reviews', { repository_id: repositoryId, ...(more ? { before: historyBefore } : {}) }); if (!active()) return; historyBefore = data.next_before; session.history = more && session.history ? { ...data, records: [...session.history.records, ...data.records] } : data; find('count').textContent = String(data.total_reviews);
           if (!more) find('history').innerHTML = data.records.length ? '<table><thead><tr><th>Date</th><th>Review decision</th><th>Status</th></tr></thead><tbody></tbody></table>' : '<p class="muted">No performance reviews have been recorded for this repository.</p>';
           find('history').querySelector('tbody')?.insertAdjacentHTML('beforeend', data.records.map(({ review, revision_count }) => `<tr${review.record_id === reference?.split('@')[0] ? ' class="selected"' : ''}><td>${esc(date(review.recorded_at_ms))}</td><td><a data-performance-select="${esc(review.reference)}" href="${esc(route(review.reference))}">${esc(review.record.experiment.chosenAction.length > 140 ? review.record.experiment.chosenAction.slice(0, 137) + "…" : review.record.experiment.chosenAction)}</a>${revision_count > 1 ? `<small>${revision_count} revisions</small>` : ''}</td><td>${badge(review.record.experiment.disposition)}</td></tr>`).join(''));
           placeReader();
@@ -160,7 +162,7 @@ window.DevCoordinatorPerformance = (() => {
       }
       root.addEventListener('click', event => { if (event.target.closest('[data-performance-select]')) { session.focusReview = true; session.activationScroll = window.scrollY; if (!reference) session.scroll = window.scrollY; } }, { signal });
       async function loadPeriod() {
-        try { const data = await read('performance.overview', requests); if (!active()) return; find('period-total').textContent = amount(data.total_tokens); if (!reference) { showUsage(data.usage); if (session.scroll) window.scrollTo({ top: session.scroll }); } }
+        try { const data = await read('performance.overview', requests); if (!active()) return; find('period-total').textContent = amount(data.total_tokens); if (!reference) { showUsage(session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage); if (session.scroll) window.scrollTo({ top: session.scroll }); } }
         catch (error) { if (active()) { find('period-total').textContent = 'Unavailable'; if (!reference) { find('coverage').textContent = 'Measurements could not be loaded.'; find('outcomes').textContent = 'Measurements could not be loaded.'; errorPanel(find('charts'), error.message, loadPeriod); } } }
       }
       async function loadLifetime() {

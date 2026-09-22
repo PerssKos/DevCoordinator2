@@ -1080,7 +1080,7 @@ async function main() {
           check(`${label}: one shared repository selector replaces per-page pickers`, metrics.projectPickerCount === 0 && metrics.sharedRepositoryCount === 1);
         }
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
-        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work)/.test(metrics.text), metrics.text.slice(0, 120));
+        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work|performance reviews|measured outcomes)/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view.startsWith('#/usage')) check(`${label}: usage requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));

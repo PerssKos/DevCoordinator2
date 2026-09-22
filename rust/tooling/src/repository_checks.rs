@@ -3125,11 +3125,12 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "wide and narrow layouts",
             "loading, empty, error, populated, and long-content states",
             "functional defect",
-            "new interface or substantial redesign",
-            "routine fixes do not require three new proposals",
-            "options, selection or approval state",
-            "exact outstanding response request",
-            "when no follow-up can appear",
+            "before implementing every new shipped product ui element",
+            "exactly three independent visual options",
+            "actual display-order binding",
+            "retained coordinator evidence",
+            "user selection or explicit autonomous-selection",
+            "repairs that introduce no visible element or new visual decision",
         ],
     ),
     (
@@ -3972,6 +3973,21 @@ fn standing_tool_prompt_violations(text: &str) -> Vec<String> {
 }
 
 /// Validate the outcome-bearing contracts of the universal agent policy.
+const UI_GATE_TERMS: &[&str] = &[
+    "`$imagegen`",
+    "$product-design:index",
+    "$product-design:ideate",
+    "get-context",
+    "exactly three independent visual options",
+    "highest model or effort capability the current runtime actually provides",
+    "present the three generated options to the user in the order the results are actually displayed",
+    "pause all implementation while the design gate is pending",
+    "the user selects one displayed option",
+    "the user explicitly authorizes autonomous selection",
+    "existing sketch/evidence and decision records",
+    "if the required skill, image gen capability, or coordinator evidence path is unavailable",
+];
+
 pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
     let mut violations = Vec::new();
     if !text.starts_with("# Universal Agent Instructions\n") {
@@ -4026,8 +4042,19 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
             violations.push(label.to_owned());
         }
     }
+    require_policy_terms(
+        &mut violations,
+        policy_section(text, "UI design admission gate"),
+        "UI design admission gate",
+        UI_GATE_TERMS,
+    );
+    // The explicitly required skill identifier is a contract reference, not a runtime name.
+    // Ordinary unqualified ImageGen references remain prohibited.
+    let named_contracts = fold_policy(text)
+        .replace("`$imagegen`", "")
+        .replace("named imagegen and product design", "named design workflows");
     for name in FORBIDDEN_POLICY_NAMES {
-        if contains_word_case_insensitive(text, name) {
+        if contains_word_case_insensitive(&named_contracts, name) {
             violations.push(format!(
                 "universal policy must not name runtime/project-specific term: {name}"
             ));
@@ -4844,6 +4871,21 @@ mod tests {
             .contract_text;
         let violations = find_app_wide_policy_violations(&policy);
         assert!(violations.is_empty(), "{}", violations.join("\n"));
+        let gate = fold_policy(policy_section(&policy, "UI design admission gate"));
+        for term in UI_GATE_TERMS {
+            assert_policy_violation(
+                &replace_policy_section(
+                    &policy,
+                    "UI design admission gate",
+                    &gate.replace(term, "removed requirement"),
+                ),
+                "UI design admission gate",
+            );
+        }
+        assert_policy_violation(
+            &format!("{policy}\nUse ImageGen for every build."),
+            "runtime/project-specific term: ImageGen",
+        );
         let importer = audit_project_policy_importer(&root.join("CLAUDE.md"));
         assert!(importer.is_empty(), "{}", importer.join("\n"));
     }
