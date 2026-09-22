@@ -4,6 +4,14 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   const verify = (name, passed, detail = '') => check(`Evidence layout ${theme} ${viewport.width}: ${name}`, passed, detail);
   const settled = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const panelButton = panel => page.locator(`.evidence-layout-controls [data-evidence-panel="${panel}"]`);
+  const detailsClosed = async () => await panelButton('details').getAttribute('aria-expanded') === 'false'
+    && await page.locator('#evidence-inspector-body').isHidden();
+  const closeDetails = async () => {
+    const mobile = page.locator('.evidence-mobile-inspector-toggle');
+    await (await mobile.isVisible() ? mobile : page.locator('.evidence-panel-close')).click();
+    await settled();
+    verify('the visible details control collapses its content', await detailsClosed());
+  };
   const fullButton = page.locator('[data-evidence-fullscreen]');
   const canvas = page.locator('#evidence-canvas');
   daemon.setScenario(scenario);
@@ -20,17 +28,22 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('hiding the journey expands the screenshot', !await page.locator('#evidence-journey').isVisible() && expanded.width * expanded.height > initial.width * initial.height, JSON.stringify({ initial, expanded }));
   if (await panelButton('details').getAttribute('aria-expanded') === 'true') await panelButton('details').click();
   await panelButton('details').click(); await settled();
-  verify('details can be opened and closed independently', await page.locator('#evidence-inspector').isVisible());
-  await page.locator('.evidence-panel-close').click();
+  verify('details can be opened and closed independently', await page.locator('#evidence-inspector-body').isVisible()
+    && await panelButton('details').getAttribute('aria-expanded') === 'true');
+  await closeDetails();
+  const collapsedPreferences = await page.evaluate(() => localStorage.getItem('dc2-evidence-panels'));
+  verify('closing both panels records both choices', JSON.parse(collapsedPreferences || '{}').journey === false
+    && JSON.parse(collapsedPreferences || '{}').details === false);
   await page.reload(); await page.locator('#evidence-image:not([hidden])').waitFor(); await settled();
-  verify('panel preferences survive reload', !await page.locator('#evidence-journey').isVisible() && !await page.locator('#evidence-inspector').isVisible());
+  verify('panel preferences survive reload', !await page.locator('#evidence-journey').isVisible() && await detailsClosed()
+    && await page.evaluate(() => localStorage.getItem('dc2-evidence-panels')) === collapsedPreferences);
   await page.screenshot({ path: path.join(output, `evidence-collapsed-${theme}-${viewport.width}.png`), fullPage: true, mask: [page.locator('#who-email')] });
   await panelButton('journey').click();
   const originalImage = await page.locator('#evidence-image').getAttribute('src');
   const normalPreferences = await page.evaluate(() => localStorage.getItem('dc2-evidence-panels'));
   await fullButton.click(); await settled();
   const fullBounds = await page.locator('.evidence-page').boundingBox();
-  verify('full screen fills the viewport and initially hides both panels', fullBounds.width >= viewport.width - 2 && fullBounds.height >= viewport.height - 2 && !await page.locator('#evidence-journey').isVisible() && !await page.locator('#evidence-inspector').isVisible(), JSON.stringify(fullBounds));
+  verify('full screen fills the viewport and initially hides both panel contents', fullBounds.width >= viewport.width - 2 && fullBounds.height >= viewport.height - 2 && !await page.locator('#evidence-journey').isVisible() && await detailsClosed(), JSON.stringify(fullBounds));
   verify('full screen preserves the exact screenshot', await page.locator('#evidence-image').getAttribute('src') === originalImage);
   verify('supported browsers use actual fullscreen', await page.evaluate(() => !document.fullscreenEnabled || document.fullscreenElement === document.querySelector('.evidence-page')));
   await page.locator('[data-evidence-tool=pin]').click();
@@ -41,14 +54,14 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('full-screen annotations immediately focus an on-screen editor', await textarea.evaluate(element => document.activeElement === element) && (await textarea.boundingBox()).y < viewport.height);
   await page.screenshot({ path: path.join(output, `evidence-fullscreen-${theme}-${viewport.width}.png`), mask: [page.locator('#who-email:visible')] });
   await fullButton.click(); await settled();
-  verify('leaving full screen preserves the draft and normal panel choices', await canvas.getAttribute('data-draft-count') === '1' && await textarea.inputValue() === 'Keep this full-screen review draft.' && await page.locator('#evidence-journey').isVisible() && !await page.locator('#evidence-inspector').isVisible());
+  verify('leaving full screen preserves the draft and normal panel choices', await canvas.getAttribute('data-draft-count') === '1' && await textarea.inputValue() === 'Keep this full-screen review draft.' && await page.locator('#evidence-journey').isVisible() && await detailsClosed());
   await fullButton.click(); await settled();
   await page.locator('[data-evidence-next]').click(); await settled();
   await page.locator('[data-evidence-prev]').click(); await settled();
   verify('image navigation in full screen keeps each draft on its image', await canvas.getAttribute('data-draft-count') === '1' && await textarea.inputValue() === 'Keep this full-screen review draft.' && await fullButton.getAttribute('aria-pressed') === 'true');
   await panelButton('details').click();
-  verify('details remain usable inside full screen', await page.locator('#evidence-inspector').isVisible() && await page.locator('.evidence-page').evaluate(element => element.contains(document.activeElement)));
-  await page.locator('.evidence-panel-close').click();
+  verify('details remain usable inside full screen', await page.locator('#evidence-inspector-body').isVisible() && await page.locator('.evidence-page').evaluate(element => element.contains(document.activeElement)));
+  await closeDetails();
   const saved = page.waitForResponse(response => response.url().endsWith('/test.evidence.feedback.create'));
   await page.locator('#evidence-feedback-create button[type=submit]').click();
   verify('feedback can be saved without leaving full screen', (await (await saved).json()).ok === true && await fullButton.getAttribute('aria-pressed') === 'true');
@@ -65,7 +78,7 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   verify('a failed full-screen reply can be retried', (await (await replied).json()).ok === true);
   await page.locator('[data-evidence-delete]').click();
   await page.locator('.evidence-thread').waitFor({ state: 'detached' });
-  await page.locator('.evidence-panel-close').click();
+  await closeDetails();
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.fullscreenElement && !document.body.classList.contains('evidence-fullscreen-mode'));
   await settled();
