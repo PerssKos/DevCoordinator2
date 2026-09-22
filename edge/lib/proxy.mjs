@@ -11,6 +11,7 @@ const LOOPBACK = '127.0.0.1';
 const CONNECT_TIMEOUT_MS = 5_000;
 const FLOW_COOKIE_NAME = 'dc_flow';
 const LEGACY_IDENTITY_ASSERTION_HEADER = 'x-devops-console-assertion';
+const LOCAL_AGENT_HEADER = 'x-devcoordinator2-agent';
 const LOCAL_ATTRIBUTION_HEADERS = Object.freeze({
   email: 'x-devcoordinator2-email',
   routeId: 'x-devcoordinator2-route-id',
@@ -177,6 +178,9 @@ function localAttributionHeaders(target) {
     }
   }
   if (email === null) {
+    if (target?.localAgent) {
+      return { [LOCAL_ATTRIBUTION_HEADERS.routeId]: routeId };
+    }
     throw new TypeError('protected project proxy target requires email attribution');
   }
   return {
@@ -228,6 +232,7 @@ export function createProxy({
     // a stale client-supplied token after the local transport cutover.
     delete headers[LEGACY_IDENTITY_ASSERTION_HEADER];
     delete headers[REVIEW_IDENTITY_HEADER];
+    delete headers[LOCAL_AGENT_HEADER];
     for (const name of Object.values(LOCAL_ATTRIBUTION_HEADERS)) delete headers[name];
     if (!consoleTrustDomain) {
       const safeCookie = filterRequestCookieHeader(headers.cookie, protectedCookieNames);

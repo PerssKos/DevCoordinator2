@@ -11,7 +11,7 @@ Reused from the legacy edge after review (`edge/lib/`): HMAC cookie sessions,
 the OIDC authorization-code + PKCE client, self-contained auth pages, the
 proxy (strips session cookies from upstream traffic, forwards the verified
 identity as `x-devcoordinator2-email` / `x-devcoordinator2-route-id` on
-authenticated routes only), and a static file server for the Console.
+session-authenticated routes only), and a static file server for the Console.
 
 ## Behavior
 
@@ -27,7 +27,10 @@ authenticated routes only), and a static file server for the Console.
   authenticated routes require a session whose identity is an owner or
   holds any grant for that exact `deployment_id`. Revocation is effective on
   the next request because the daemon republishes the document on every
-  user/grant change.
+  user/grant change. An explicitly enabled local agent may also reach an
+  authenticated deployment route when the request is a direct loopback
+  request carrying `X-DevCoordinator2-Agent: 1`; this does not apply to the
+  Console API or to requests with forwarding or cross-origin browser headers.
 - Sign-in: `/auth/start` → identity provider → `/auth/callback` on the
   console host; the edge then asks the daemon to admit the identity
   (`user.accept_invitation`, trusted only because the edge's Unix uid is the
@@ -51,6 +54,27 @@ authenticated routes only), and a static file server for the Console.
   another browser HTTP-auth prompt. Edge authorization and cookie isolation apply
   on both response paths; an application cookie cannot grant edge access.
 
+## Local agent access to authenticated deployments
+
+Set `EDGE_TRUST_LOCAL_AGENT=1` in the edge's private instance environment when
+trusted local agents must test a deployment whose route document says
+`auth: authenticated`. An agent sends the exact marker header while connecting
+directly to the edge from the host:
+
+```sh
+curl --resolve app.example.test:443:127.0.0.1 \
+  -H 'X-DevCoordinator2-Agent: 1' \
+  https://app.example.test/health
+```
+
+The marker is a local-trust signal, not an encrypted secret. The edge accepts it
+only from a kernel-reported IPv4/IPv6 loopback peer, with no `Forwarded` or
+`X-Forwarded-*` headers and no cross-origin browser metadata. It strips the
+marker and the edge session cookie before proxying, does not invent a user
+identity, and leaves any authentication implemented by the deployment itself
+in place. The setting defaults to disabled; public and forwarded clients still
+use ordinary OIDC sessions and deployment grants.
+
 ## Configuration (instance data, never in the repository)
 
 | Variable | Meaning |
@@ -72,6 +96,7 @@ authenticated routes only), and a static file server for the Console.
 | `EDGE_STATE_DIR` | last-known-good copy |
 | `EDGE_DAEMON_SOCKET` | daemon socket (world-connectable since DC2-2026-08-24-OPEN-LOCAL-ACCESS; no group membership needed) |
 | `EDGE_CONSOLE_DIR` | Console static assets (`console/` in the release) |
+| `EDGE_TRUST_LOCAL_AGENT` | `0` (default); allow the exact local agent marker to bypass edge sign-in for authenticated deployment routes |
 
 Daemon side: `DEVCOORDINATOR2_EDGE_UID` (the edge service uid) and
 `DEVCOORDINATOR2_ADMIN_EMAILS` (bootstrap administrators).

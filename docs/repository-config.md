@@ -6,6 +6,29 @@ for live assignments, identities, state, users, grants, and observations.
 
 ## Governed-test schema 2
 
+Browser journeys belong in this graph even when their entrypoint is a single
+script that starts a temporary web server and browser internally. Launch the
+declared test with `devcoordinator2 test start PATH --test NAME --tier TIER`
+(using the check's declared minimum tier), not the inner script directly
+from the agent shell. A finite combined script owns cleanup of its temporary
+server and browser; separate server/browser checks use `completion = "event"`
+and `requires` as illustrated below. Ordinary file inspection and static checks
+do not require a runtime declaration.
+
+Declare a build as a required dependency when the journey consumes its output,
+and verify the served source/build identity. An existing managed preview can
+be the target only when its receipt matches the candidate; healthy service
+status alone does not establish freshness. Keep publication instructions in
+force and preserve the current preview while isolated checks run.
+
+If an agent-shell attempt fails to bind loopback with `EPERM`, that is not
+evidence that the governed executor is unavailable. Inspect active runs and
+submit or observe the declared check before reporting a verification blocker.
+The normal client has a [sandbox transport fallback](instance-configuration.md)
+for socket `EPERM`; it preserves the same authorization. Do not work around a
+governed authorization denial or change sandbox permissions to run the script.
+DevCoordinator2 itself uses its repository's separate non-self-hosting workflow.
+
 ```toml
 schema = 2
 

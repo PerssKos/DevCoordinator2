@@ -1,6 +1,6 @@
 ---
 name: dev-coordinator
-description: Coordinate host-visible local development tests and governed check graphs, deployments, services, ports, containers, PostgreSQL components, health, and runtime cleanup through the installed DevCoordinator2 CLI or MCP server, and use its authoritative planning/completion ledger, decision history and shared/project glossaries. Use for shared runtime observation or mutation and for ledger, decision or glossary work; do not use for ordinary source inspection, editing, Git work, formatting, or static checks.
+description: Coordinate host-visible local development tests, including browser/UI journeys and scripts that launch temporary servers, through DevCoordinator2 governed check graphs. Manage deployments, services, ports, containers, PostgreSQL components, health, runtime cleanup, and authoritative planning, decisions and glossaries. Use for shared runtime observation or mutation and ledger work; not ordinary source inspection, editing, Git work, formatting, or static checks.
 ---
 
 # DevCoordinator2
@@ -103,6 +103,45 @@ private cold evidence. Use only the installed instance configuration and
 private credential files.
 
 ## Governed tests
+
+### Route browser checks before launching them
+
+For repositories managed by DevCoordinator, invoke browser/UI and integration
+verification through `test start`, including repository scripts that internally
+start Vite, bind a loopback socket, launch a browser, or create test services.
+Choose by the command's effects, not whether it is named `node`, `npm`,
+Playwright, or an apparently self-contained journey script. Do not first run
+the same runtime check directly from the agent shell to see whether it works.
+Source inspection, editing, formatting, and static checks retain their normal
+direct workflow. DevCoordinator2's own verification follows the non-self-hosting
+exception below.
+
+Inspect the existing declaration and active runs first. Reuse the matching
+check; if none covers the journey, add a focused schema-2 check in the target
+repository. Keep a required build/source check as a `requires` dependency when
+the browser consumes its output. A single finite journey script may own its
+temporary server and browser inside the governed check and clean them up on
+exit; it does not need a permanent deployment. A shared setup server can use
+the documented event-completion dependency contract. Do not add a second
+preview service just to evade a local sandbox restriction.
+
+For verification of an existing managed preview, inspect its deployment
+identity, health, and source/build receipt. Verify the tested source matches
+the intended candidate: a healthy older preview or `pending_apply=true` is not
+proof of current changes. Preserve the running preview while preparing an
+isolated governed check; applying a preview update remains subject to the
+user's publication instructions.
+
+If a direct attempt returns `listen EPERM` or a similar socket restriction,
+retain that failure and use the configured governed path before declaring
+browser verification blocked. The failure establishes only that the direct
+attempt was denied, not that the host executor cannot run the check. The normal
+client supports an automatic sandbox transport fallback for socket `EPERM`;
+use the supported CLI/MCP rather than hand-writing bridge files, changing
+permissions, or starting an unmanaged server. A governed authorization denial
+or host/tool refusal is binding: diagnose its exact result rather than retrying
+through another route. Report a blocker only after identifying the failed or
+unavailable governed operation and the remaining prerequisite.
 
 Before a consequential run, read the current `test --help`, inspect the named
 schema-2 declaration in `.devcoordinator.toml`, and query `test list`. Schema 1,

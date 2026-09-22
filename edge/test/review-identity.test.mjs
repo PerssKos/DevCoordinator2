@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { createEdge, loadConfig } from '../devcoordinator2-edge.mjs';
+import { createEdge, loadConfig, LOCAL_AGENT_HEADER } from '../devcoordinator2-edge.mjs';
 import { loadReviewIdentity, isReviewIdentityTarget, REVIEW_IDENTITY_HEADER } from '../lib/review-identity.mjs';
 import { canonicalJson } from '../lib/routes-store.mjs';
 import { createSessionManager } from '../lib/session.mjs';
@@ -180,7 +180,7 @@ test('real edge signs admitted reviewer requests, replaces spoofed headers and e
   const config = { baseDomain: 'example.test', consoleHost: 'console.example.test', httpOnly: true, httpPort: 0,
     sessionSecret: 'fixture-session-secret-long-enough', oidcIssuer: f.policy.identity_provider_issuer,
     oidcClientId: 'fixture', oidcClientSecret: 'fixture', reviewIdentityFile: f.file, routesFile: routeFile,
-    stateDir: path.join(f.directory, 'edge'), daemonSocket: path.join(f.directory, 'unused.sock') };
+    stateDir: path.join(f.directory, 'edge'), daemonSocket: path.join(f.directory, 'unused.sock'), trustLocalAgent: true };
   const log = Object.fromEntries(['info', 'warn', 'error', 'debug'].map((level) => [level, (...args) => logs.push(args)]));
   const edge = await createEdge(config, { log });
   context.after(() => edge.close());
@@ -188,12 +188,14 @@ test('real edge signs admitted reviewer requests, replaces spoofed headers and e
   const sessions = createSessionManager({ secret: config.sessionSecret, ttlMs: 60000, cookieName: 'dc2_session', secure: false });
   const cookie = sessions.issue(f.identity).cookie.split(';')[0];
   const deniedCookie = sessions.issue({ sub: 'ungranted-subject', email: 'ungranted@example.test' }).cookie.split(';')[0];
-  async function request(label = 'app', target = '/api/help/review-context?lang=uk', { method = 'GET', upgrade = false, nominate = false, sessionCookie = cookie } = {}) {
+  async function request(label = 'app', target = '/api/help/review-context?lang=uk', { method = 'GET', upgrade = false, nominate = false, sessionCookie = cookie, agent = false, forwarded = false } = {}) {
     return new Promise((resolve, reject) => {
       const outgoing = http.request({ host: '127.0.0.1', port, path: target, method, headers: {
         host: `${label}.example.test`, [REVIEW_IDENTITY_HEADER]: ['caller-forged-one', 'caller-forged-two'],
         connection: [upgrade ? 'Upgrade' : 'close', ...(nominate ? ['X-Spectre-Review-Identity'] : [])].join(', '),
         ...(sessionCookie ? { cookie: sessionCookie } : {}), ...(upgrade ? { upgrade: 'websocket' } : {}),
+        ...(agent ? { [LOCAL_AGENT_HEADER]: '1' } : {}),
+        ...(forwarded ? { 'x-forwarded-for': '127.0.0.1' } : {}),
       } }, (response) => { response.resume(); response.on('end', () => resolve(response.statusCode)); });
       outgoing.on('upgrade', (response, socket) => { socket.destroy(); resolve(response.statusCode); });
       outgoing.on('error', reject);
@@ -224,6 +226,20 @@ test('real edge signs admitted reviewer requests, replaces spoofed headers and e
   assert.equal(await request('app', undefined, { sessionCookie: null }), 302);
   assert.equal(await request('app', undefined, { sessionCookie: deniedCookie }), 403);
   assert.equal(seen.length, before);
+  assert.equal(await request('app', undefined, { sessionCookie: null, agent: true, forwarded: true }), 302);
+  assert.equal(seen.length, before, 'forwarded marker cannot bypass edge access');
+  for (const upgrade of [false, true]) {
+    assert.equal(await request('app', undefined, { sessionCookie: null, agent: true, upgrade }), upgrade ? 101 : 200);
+    const latest = seen.at(-1);
+    assert.equal(latest.headers[REVIEW_IDENTITY_HEADER], undefined, 'identity-less agents cannot mint or forward a user assertion');
+    assert.equal(latest.headers['x-devcoordinator2-email'], undefined);
+    assert.equal(latest.headers[LOCAL_AGENT_HEADER], undefined);
+    assert.equal(latest.headers['x-devcoordinator2-route-id'], 'deployment-app/web');
+  }
+  assert.equal(await request('app', undefined, { agent: true, nominate: true }), 200);
+  const signedAgent = decoded(seen.at(-1).headers[REVIEW_IDENTITY_HEADER], f.keys.publicKey);
+  assert.equal(signedAgent.payload.sub, f.identity.sub, 'a real OIDC identity remains signed even with the local marker');
+  assert.equal(signedAgent.payload.email, f.identity.email);
   assert.equal(JSON.stringify(logs).includes('immutable-subject'), false);
   assert.equal(JSON.stringify(edge.store.current()).includes('legacy-instance'), false);
   assert.equal((await fs.readFile(path.join(config.stateDir, 'routes.last-known-good.json'), 'utf8')).includes('fixture-key'), false);

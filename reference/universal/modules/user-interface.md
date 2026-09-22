@@ -145,6 +145,11 @@ Before reporting UI complete, finish one evidence pass over only the agreed
 screens, journeys, states, and responsive variants. This does not authorize a
 broader exhaustive audit.
 
+This rendered interaction pass is the primary end-to-end evidence for the UI
+behavior. Extend the existing journey test when it already covers the affected
+screen or action; add a new unit test only after checking that the journey and
+other existing tests cannot express the behavior.
+
 1. Inventory every visible interactive element, including conditional ones.
 2. Map each to its journey, action, and expected observable result.
 3. Invoke it through the rendered interface and verify the downstream result.

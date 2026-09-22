@@ -9,7 +9,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 
-import { createEdge, trustedLoopbackConsole, loadConfig } from '../devcoordinator2-edge.mjs';
+import {
+  createEdge,
+  trustedLoopbackAgent,
+  trustedLoopbackConsole,
+  loadConfig,
+  LOCAL_AGENT_HEADER,
+  LOCAL_AGENT_HEADER_VALUE,
+} from '../devcoordinator2-edge.mjs';
 import { canonicalJson } from '../lib/routes-store.mjs';
 import { startIssuer } from './fixture-issuer.mjs';
 
@@ -67,7 +74,7 @@ before(async () => {
   issuer = await startIssuer({ claims: { email: 'dev@example.test', sub: 'sub-dev' } });
   upstream = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ host: req.headers.host, path: req.url, forwarded: req.headers['x-forwarded-host'] || null, cookie: req.headers.cookie || null, who: req.headers['x-devcoordinator2-email'] || null, route: req.headers['x-devcoordinator2-route-id'] || null }));
+    res.end(JSON.stringify({ host: req.headers.host, path: req.url, forwarded: req.headers['x-forwarded-host'] || null, cookie: req.headers.cookie || null, who: req.headers['x-devcoordinator2-email'] || null, route: req.headers['x-devcoordinator2-route-id'] || null, agent: req.headers[LOCAL_AGENT_HEADER] || null }));
   });
   await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
   upstreamPort = upstream.address().port;
@@ -261,6 +268,61 @@ test('trusted Console access uses a direct loopback peer and never a forwarded i
     assert.equal((await call('/api/v2/user.whoami', { method: 'POST', body: '{}', headers: { origin: 'http://untrusted.example' } })).status, 401);
     assert.equal((await call('/', { headers: { forwarded: 'for=127.0.0.1' } })).status, 302);
     assert.equal((await call('/', { headers: { host: `app.${BASE}` } })).status, 302);
+  } finally {
+    await localEdge.close();
+  }
+});
+
+test('trusted local agent marker bypasses deployment auth only on direct loopback', async () => {
+  const origin = `http://app.${BASE}`;
+  const request = (remoteAddress, headers = {}) => ({ socket: { remoteAddress }, headers });
+  const marker = { [LOCAL_AGENT_HEADER]: LOCAL_AGENT_HEADER_VALUE };
+  for (const address of ['127.0.0.1', '127.0.0.2', '::1', '::ffff:127.0.0.1']) {
+    assert.equal(trustedLoopbackAgent(request(address, marker), origin, true), true);
+    assert.equal(trustedLoopbackAgent(request(address, marker), origin, false), false);
+    assert.equal(trustedLoopbackAgent(request(address, { [LOCAL_AGENT_HEADER]: 'wrong' }), origin, true), false);
+    assert.equal(trustedLoopbackAgent(request(address), origin, true), false);
+    assert.equal(trustedLoopbackAgent(request(address, { ...marker, 'x-forwarded-for': '127.0.0.1' }), origin, true), false);
+    assert.equal(trustedLoopbackAgent(request(address, { ...marker, origin: 'http://untrusted.example' }), origin, true), false);
+    assert.equal(trustedLoopbackAgent(request(address, { ...marker, 'sec-fetch-site': 'cross-site' }), origin, true), false);
+  }
+  for (const peer of ['192.0.2.1', '10.0.0.2', '::ffff:192.0.2.1', '']) {
+    assert.equal(trustedLoopbackAgent(request(peer, marker), origin, true), false);
+  }
+  assert.equal(loadConfig({ EDGE_BASE_DOMAIN: BASE }).trustLocalAgent, false);
+  assert.equal(loadConfig({ EDGE_BASE_DOMAIN: BASE, EDGE_TRUST_LOCAL_AGENT: '1' }).trustLocalAgent, true);
+
+  await publish([
+    { deployment_id: 'd0123456789abcd01', component: 'api', label: 'app', domain: `app.${BASE}`, port: upstreamPort, scheme: 'http', auth: 'authenticated', generation: 40 },
+  ], { owners: ['owner@example.test'], grants: [] }, 40);
+  const localEdge = await createEdge({ ...edgeConfig, trustLocalAgent: true, stateDir: path.join(tmp, 'agent-edge') },
+    { log: { info() {}, warn() {}, error() {}, debug() {} } });
+  const [localPort] = await localEdge.listen();
+  const call = (headers = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ hostname: '127.0.0.1', port: localPort, path: '/agent-check',
+      headers: { host: `app.${BASE}`, ...headers } }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+  try {
+    const accepted = await call(marker);
+    assert.equal(accepted.status, 200, accepted.body);
+    const seen = JSON.parse(accepted.body);
+    assert.equal(seen.who, null, 'agent access does not fabricate a public identity');
+    assert.equal(seen.route, 'd0123456789abcd01/api');
+    assert.equal(seen.cookie, null, 'edge session cookies remain private');
+    assert.equal(seen.agent, null, 'the agent marker never reaches the deployment');
+    assert.equal((await call()).status, 302, 'the marker is required');
+    assert.equal((await call({ ...marker, 'x-forwarded-for': '127.0.0.1' })).status, 302,
+      'forwarded requests stay behind sign-in');
+    assert.equal((await call({ ...marker, origin: 'http://untrusted.example' })).status, 302,
+      'cross-origin browser requests stay behind sign-in');
+    assert.equal((await call({ ...marker, [LOCAL_AGENT_HEADER]: 'wrong' })).status, 302,
+      'the marker value is exact');
   } finally {
     await localEdge.close();
   }

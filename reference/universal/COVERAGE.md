@@ -14,7 +14,7 @@ decisions, and execution evidence remain in their authoritative services.
 | 4 (190–230) | `modules/ledger-decisions.md` | Database authority; decisions/options/cost/risk/supersession; rolling summaries; unfinished outcomes versus executions; diagnosed tasks; readable outcomes; evidence and readiness |
 | 5 (231–276) | `modules/execution.md` | Dependency concurrency; asynchronous ownership; delegation interfaces and limits; host capacity; failure dependencies; events, cursors, bounded fallback watcher, and observed completion |
 | 6 (277–426) | `modules/delivery.md` | Eligible clocks and defaults; accessible web previews; every desktop target and real updater; concurrent incremental publication; original verification/access boundaries; recovery-only hard stop |
-| 7 (427–469) | `modules/verification.md` | Manual prose review only; focused versus stable/full validation; frozen candidates; safe sealed runs; isolated repairs; one suite owner; realistic journeys, recall, and precision |
+| 7 (427–469) | `modules/verification.md` | Manual prose review only; end-to-end-first test selection; existing-test extension before new unit coverage; focused versus stable/full validation; frozen candidates; safe sealed runs; isolated repairs; one suite owner; realistic journeys, recall, and precision |
 | 8 (470–496) | `modules/truthful-results.md` | Real facts/data/persistence/errors; enabled controls do their work; truthful prototypes/disabled future UI; complete end-to-end results |
 | 9 (497–699) | `modules/user-interface.md` | Journey-led destinations; exactly three design alternatives; approval/autonomy; compact contextual controls; row preservation; no engineering commentary; purposeful text; minimal surfaces; all rendered interactions; glossary and content-first states |
 | 10 (700–753) | `modules/corrections.md` | Confirmed mistakes versus changed intent; original-surface diagnosis; existing outcomes and standing corrections; batched prevention/fix; applicability and provenance; durable discoverability; no writable legacy ledgers |
@@ -48,6 +48,11 @@ decisions, and execution evidence remain in their authoritative services.
   waste. Automatic action stays in the reviewed repository and current scope;
   specification work does not authorize product implementation. Existing
   separately authorized dependency-repair rules still require their own review.
+- Section 7 makes end-to-end acceptance evidence the first test level for a
+  changed behavior. Existing end-to-end or integration tests are extended
+  before new scenarios, and existing tests are searched and extended before
+  any new unit test. Unit coverage remains supporting evidence for isolated
+  logic and cannot replace a missing end-to-end path.
 - All web/desktop delivery, updater, security, UI, preservation, and verification
   requirements remain conditional on their original relevant work. The new
   performance-only gate supersedes the former all-project delivery trigger,

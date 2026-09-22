@@ -107,6 +107,13 @@ single message. Scheduler static context is separate from these slots.
 
 ## Verification ownership
 
+Parent-owned end-to-end and integration tests are the acceptance proof for
+focused-policy loading. Extend the nearest existing context or agent-tool
+journey before adding a new case. Before creating a unit test for an isolated
+helper, search those higher-level tests and their fixtures and extend an
+existing test when possible; record why that path cannot express the behavior
+when a new unit test is still needed.
+
 Focused synthetic tests exercise the actual `WorldState` entrypoint, native
 purpose/action changes, unknown fallback, update-once behavior, retained
 history, ordered chunking, removals, full-AGENTS compatibility, invalid schema,
@@ -117,8 +124,10 @@ positive host-trimmed-core case. Same-path custom content, other/unresolved
 paths, untouched project/internal entries and
 provenance, immutable old history, one-time removal, revision mismatches,
 canonical-equivalent symlinks, and unchanged full-AGENTS behavior remain covered.
-Run `just test -p codex-core --lib -E 'test(focused_policy) or test(context::world_state::agents_md)'`
-for these and the adjacent existing context snapshot. Parent owns integrated agent-tool
-coverage, global formatting/schemas and the scheduler acceptance fixture in
+Run the parent-owned end-to-end and integration paths first. Then run
+`just test -p codex-core --lib -E 'test(focused_policy) or test(context::world_state::agents_md)'`
+for this focused coverage and the adjacent existing context snapshot. Parent
+owns integrated agent-tool coverage, global formatting/schemas and the
+scheduler acceptance fixture in
 `acceptance/project-alpha.json`. No scheduler behavior is claimed by loader
 tests, and no prose-policy suite is required.

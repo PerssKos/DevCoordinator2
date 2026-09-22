@@ -60,6 +60,18 @@ earlier model messages or reload unchanged instructions.
   and recoverable data. Mutate derived/install copies only by reviewed source
   workflows. Keep user-visible behavior real and verify the original affected
   surface; placeholders and run submission are not completion evidence.
+- For changed product or operational behavior, validate at the highest
+  realistic boundary first.
+  Start with an end-to-end test of the accepted user or operational journey,
+  including its real integration, persistence, and visible result when the
+  requirement includes them. Lower-level checks support that evidence; a unit
+  test does not replace missing end-to-end proof.
+- Before creating a unit test for new or changed product or operational code,
+  search the existing end-to-end, integration, and unit suites and their
+  fixtures for the same behavior. Extend the nearest existing test when it can
+  express the acceptance path. Add a new unit test only when no existing test
+  can be extended or the behavior is intentionally isolated, and record that
+  check and the reason in the verification evidence.
 - Run focused checks during coherent implementation and broad validation at
   stable checkpoints. Preserve sealed runs and inspect all safe findings.
   For prose-only instruction changes, manually review wording, mapping, scope,
