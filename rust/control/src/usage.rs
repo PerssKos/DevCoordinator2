@@ -1007,8 +1007,28 @@ fn source_token_report(
     ];
     values.extend(family.iter().cloned().map(SqlValue::Text));
     values.extend(family.iter().cloned().map(SqlValue::Text));
-    let sql = format!(
-        "WITH observed AS MATERIALIZED (
+    let indexed: bool = connection.query_row(
+        "SELECT COUNT(*)=3 FROM sqlite_schema WHERE type='index' AND name IN ('token_observations_repository_total_observed_idx','model_requests_id_operation_idx','tool_invocations_id_operation_idx')",
+        [], |row| row.get(0),
+    ).map_err(|_| "source_unavailable")?;
+    let sql = if indexed {
+        format!(
+            "WITH bounds AS (SELECT ? lower_ms, ? upper_ms), observed AS MATERIALIZED (
+               SELECT token_count,coverage_state,observed_at_ms,model_request_id,tool_invocation_id
+               FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
+               WHERE repository_bucket IN ({}) AND category_path='total_tokens'
+                 AND measurement_provenance='provider_reported'
+                 AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms)
+             SELECT token.token_count,token.coverage_state,token.observed_at_ms FROM observed token
+             WHERE EXISTS (SELECT 1 FROM repository_attributions attribution
+               WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
+                 (SELECT operation_id FROM model_requests INDEXED BY model_requests_id_operation_idx WHERE id=token.model_request_id),
+                 (SELECT operation_id FROM tool_invocations INDEXED BY tool_invocations_id_operation_idx WHERE id=token.tool_invocation_id)))",
+            placeholders(family.len()), placeholders(family.len()),
+        )
+    } else {
+        format!(
+            "WITH observed AS MATERIALIZED (
            SELECT rowid FROM token_observations WHERE category_path='total_tokens'
              AND measurement_provenance='provider_reported'
              AND observed_at_ms>=? AND observed_at_ms<?)
@@ -1019,9 +1039,10 @@ fn source_token_report(
              WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
                (SELECT operation_id FROM model_requests WHERE id=token.model_request_id),
                (SELECT operation_id FROM tool_invocations WHERE id=token.tool_invocation_id)))",
-        placeholders(family.len()),
-        placeholders(family.len()),
-    );
+            placeholders(family.len()),
+            placeholders(family.len()),
+        )
+    };
     let mut statement = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
     let mut rows = statement
         .query(params_from_iter(values))
@@ -2609,45 +2630,54 @@ pub(crate) mod tests {
                 Ok(())
             })
             .unwrap();
-        let usage = CodexUsage::with_probe(
-            config,
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        );
-        let detail = usage
-            .repository_buckets(
-                &repository,
-                UsageRange::Hours24,
-                60_000,
-                2,
-                now_ms,
-                now_ms,
-                true,
-            )
-            .unwrap();
-        assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
-        usage.wait_for_refresh(Some(&repository.repository_id));
-        let detail = usage
-            .repository_buckets(
-                &repository,
-                UsageRange::Hours24,
-                60_000,
-                2,
-                now_ms,
-                now_ms,
-                true,
-            )
-            .unwrap();
-        assert_eq!(detail.totals.total_tokens, Some(117));
-        assert_eq!(
-            detail
-                .series
-                .iter()
-                .map(|point| point.total_tokens)
-                .collect::<Vec<_>>(),
-            vec![None, Some(117)]
-        );
+        for indexed in [false, true] {
+            if indexed {
+                Connection::open(config.codex_usage_sources[0].codex_home.join("usage/usage.sqlite3")).unwrap().execute_batch(
+                "CREATE INDEX token_observations_repository_total_observed_idx ON token_observations(repository_bucket, observed_at_ms, token_count, coverage_state, model_request_id, tool_invocation_id) WHERE category_path='total_tokens' AND measurement_provenance='provider_reported';
+                 CREATE INDEX model_requests_id_operation_idx ON model_requests(id, operation_id);
+                 CREATE INDEX tool_invocations_id_operation_idx ON tool_invocations(id, operation_id);"
+            ).unwrap();
+            }
+            let usage = CodexUsage::with_probe(
+                config.clone(),
+                authority.clone(),
+                Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+                Arc::new(FixtureProbe),
+            );
+            let detail = usage
+                .repository_buckets(
+                    &repository,
+                    UsageRange::Hours24,
+                    60_000,
+                    2,
+                    now_ms,
+                    now_ms,
+                    true,
+                )
+                .unwrap();
+            assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
+            usage.wait_for_refresh(Some(&repository.repository_id));
+            let detail = usage
+                .repository_buckets(
+                    &repository,
+                    UsageRange::Hours24,
+                    60_000,
+                    2,
+                    now_ms,
+                    now_ms,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(detail.totals.total_tokens, Some(117));
+            assert_eq!(
+                detail
+                    .series
+                    .iter()
+                    .map(|point| point.total_tokens)
+                    .collect::<Vec<_>>(),
+                vec![None, Some(117)]
+            );
+        }
     }
 
     #[test]
