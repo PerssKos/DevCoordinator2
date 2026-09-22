@@ -4050,9 +4050,10 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
     );
     // The explicitly required skill identifier is a contract reference, not a runtime name.
     // Ordinary unqualified ImageGen references remain prohibited.
-    let named_contracts = fold_policy(text)
-        .replace("`$imagegen`", "")
-        .replace("named imagegen and product design", "named design workflows");
+    let named_contracts = fold_policy(text).replace("`$imagegen`", "").replace(
+        "named imagegen and product design",
+        "named design workflows",
+    );
     for name in FORBIDDEN_POLICY_NAMES {
         if contains_word_case_insensitive(&named_contracts, name) {
             violations.push(format!(

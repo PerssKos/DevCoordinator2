@@ -42,7 +42,7 @@ window.DevCoordinatorPerformance = (() => {
       const reference = query.get('review');
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
-      const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 20 };
+      const requests = { repository_id: repositoryId, window_start_ms: start, window_end_ms: end, outcome_limit: 5 };
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       function route(review, overrides = {}) {
         const p = new URLSearchParams({ range, from: String(start), to: String(end), ...overrides });
@@ -66,8 +66,8 @@ window.DevCoordinatorPerformance = (() => {
       }
       const previousHeight = root.querySelector("[data-performance-page]") ? root.getBoundingClientRect().height : 0;
       if (previousHeight) root.style.minHeight = previousHeight + "px";
-      root.innerHTML = `<section data-performance-page><header class="performance-heading"><h1><a class="destination-link" href="#/performance">Performance</a></h1><div class="performance-range" aria-label="Overview period">${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open>Custom</button><dialog class="performance-date-dialog"><form><h2>Custom dates</h2><label>From (UTC)<input type="date" name="from" value="${day(start)}" required></label><label>Through (UTC)<input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit">Apply dates</button><button class="btn" type="button" data-performance-cancel-dates>Cancel</button></form></dialog></div><span class="performance-dates">${esc(period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh>Refresh</button></header>
-        <div class="performance-totals" aria-label="Repository totals"><div><span>All recorded tokens</span><strong data-performance-lifetime>Loading…</strong></div><div><span>Overview period tokens</span><strong data-performance-period-total>Loading…</strong></div><div><span>All reviews</span><strong data-performance-count>Loading…</strong></div></div>
+      root.innerHTML = `<section data-performance-page><div class="performance-top"><header class="performance-heading"><h1><a class="destination-link" href="#/performance">Performance</a></h1><div class="performance-range" aria-label="Overview period">${['7d', '30d', '90d'].map(value => `<button type="button" class="btn btn-small" data-performance-range="${value}" aria-pressed="${range === value}">${value}</button>`).join('')}<button type="button" class="btn btn-small" data-performance-custom-open>Custom</button><dialog class="performance-date-dialog"><form><h2>Custom dates</h2><label>From (UTC)<input type="date" name="from" value="${day(start)}" required></label><label>Through (UTC)<input type="date" name="to" value="${day(end - 1)}" max="${day(Date.now())}" required></label><p role="alert"></p><button class="btn btn-primary" type="submit">Apply dates</button><button class="btn" type="button" data-performance-cancel-dates>Cancel</button></form></dialog></div><span class="performance-dates">${esc(period(start, end))}</span><button type="button" class="btn btn-small" data-performance-refresh>Refresh</button></header>
+        <div class="performance-totals" aria-label="Repository totals"><div><span>All recorded tokens</span><strong data-performance-lifetime>Loading…</strong></div><div><span>Overview period tokens</span><strong data-performance-period-total>Loading…</strong></div><div><span>All reviews</span><strong data-performance-count>Loading…</strong></div></div></div>
         <div class="performance-scope"><div><h2 data-performance-scope-title>${reference ? 'Review usage' : 'Overview usage'}</h2><span data-performance-scope-total></span></div>${reference ? '<button type="button" class="btn btn-small" data-performance-overview>Return to overview</button>' : ''}</div><p class="performance-coverage muted" data-performance-coverage role="status">Loading measurements…</p>
         <div class="performance-distributions" data-performance-charts><p>Loading token breakdowns…</p></div>
         <div class="performance-workspace"><div class="performance-primary"><section class="performance-outcomes"><div class="performance-section-head"><h2>Tokens by outcome</h2><span data-performance-outcome-count></span></div><div data-performance-outcomes>Loading outcomes…</div><div data-performance-outcomes-more></div></section>
@@ -100,7 +100,7 @@ window.DevCoordinatorPerformance = (() => {
         const outcomes = usage.outcomes; const total = outcomes.totals.providerTotalTokens;
         if (!append) {
           showCoverage(usage);
-          find('scope-total').textContent = `${reference ? 'Review' : 'Period'} total: ${amount(total)}`;
+          find('scope-total').textContent = `${reference ? 'Review' : 'Period'} total: ${amount(total)}${reference ? '' : ' · ' + period(start, end)}`;
           find('charts').innerHTML = distribution('Tokens by activity', outcomes.totals.activities, total) + distribution('Tokens by Plan item kind', outcomes.kinds, total, true);
           find('outcomes').innerHTML = `<table class="performance-outcome-table"><thead><tr><th>Outcome</th><th>Plan item kind</th><th>Activity mix</th><th>Total tokens</th></tr></thead><tbody></tbody><tfoot><tr><th colspan="3">Total for ${reference ? 'review' : 'period'}</th><td>${esc(amount(total))}</td></tr></tfoot></table>`;
         }
@@ -114,7 +114,7 @@ window.DevCoordinatorPerformance = (() => {
         find('outcomes-more').innerHTML = outcomes.nextCursor ? '<button type="button" class="btn btn-small">Load more outcomes</button>' : '';
         find('outcomes-more').querySelector('button')?.addEventListener('click', async event => {
           event.target.disabled = true;
-          try { const data = reference ? await read('performance.review', { repository_id: repositoryId, reference, outcome_cursor: currentUsage.outcomes.nextCursor, outcome_limit: 20 }, false) : await read('performance.overview', { ...requests, outcome_cursor: currentUsage.outcomes.nextCursor }, false); if (active()) showUsage(data.usage, true); }
+          try { const data = reference ? await read('performance.review', { repository_id: repositoryId, reference, outcome_cursor: currentUsage.outcomes.nextCursor, outcome_limit: 5 }, false) : await read('performance.overview', { ...requests, outcome_cursor: currentUsage.outcomes.nextCursor }, false); if (active()) showUsage(data.usage, true); }
           catch (error) { if (active()) errorPanel(find('outcomes-more'), error.message, () => { cache.clear(); window.render(); }); }
         });
       }
@@ -170,7 +170,7 @@ window.DevCoordinatorPerformance = (() => {
         catch (error) { if (active()) { find('lifetime').textContent = 'Unavailable'; find('lifetime').title = error.message; } }
       }
       async function loadReview() {
-        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 20 }); if (active()) showReview(data); }
+        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }); if (active()) showReview(data); }
         catch (error) { if (active()) { errorPanel(find('reader'), error.message, loadReview); find('coverage').textContent = 'Review measurements are unavailable.'; find('charts').innerHTML = ''; find('outcomes').textContent = 'Review measurements are unavailable.'; } }
       }
       await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);

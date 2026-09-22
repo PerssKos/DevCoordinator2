@@ -1,3 +1,37 @@
+# Performance page design QA
+
+final result: passed
+
+Reviewed September 22, 2026 against displayed option 3, retained sketch sbc120f9c414a685f in batch k611f361cacec5556 (decision DC2-PERFORMANCE-PAGE-OPTION3-20260922).
+
+## Comparison and findings
+
+Source visual truth: console/design-reference/performance-option-3.png, also retained by Coordinator. The source and /var/tmp/dc2-performance-work/selected-reference-comparison-3.png were opened together as a paired comparison at 1487 × 1058 pixels, CSS viewport 1487 × 1058, density 1. Both represent the light theme with a selected review. The fixture numbers differ deliberately from the concept; they are test examples, not live measurements.
+
+The final layout preserves the two token distributions, outcome composition table, review history and adjacent reader. The existing repository sidebar and navigation remain as required by the implementation plan. Overall repository totals remain visible while the selected review changes chart scope. These approved product constraints account for the additional repository context and separate overview/review totals.
+
+- Typography: existing Inter, compact operational weights and sizes, readable hierarchy, and intact wrapping. Exact numerical values are available alongside the infographics.
+- Spacing: aligned wide-screen summary, ruled outcome/history rows, and bounded panels. Narrow outcome rows use the available width; the reader follows its selected history row.
+- Colors: shared light/dark tokens, teal actions, distinct chart colors, and semantic disposition colors; formal contrast and theme checks pass.
+- Assets: existing Console icons and wordmark are retained. Charts are live data graphics, not substitutes for raster artwork. No decorative imagery is required by this design.
+- Copy: labels describe repository totals, scoped measurements, dispositions and evidence. Missing attribution and unavailable measurements remain explicit.
+
+No actionable P0/P1/P2 visual finding remains. Full-view captures and the native-resolution chart, row, reader and dialog regions were readable without a separate cropped comparison.
+
+## Iterations and verification
+
+The first comparison found that a separate summary row displaced history. It was compacted beside the heading on sufficiently wide containers. Manual narrow-screen review then found an anonymous table column squeezing outcome names. The table now lays out full-width rows, and the rendered journey asserts a readable outcome-name column. Both fixes were recaptured and reviewed.
+
+Final formal evidence: /var/tmp/dc2-performance-work/formal-light-complete and formal-dark-complete. Twelve exact route/state/viewport cells (overview, selected review, custom dates; 1440 × 1024 and 390 × 844; both themes) passed with zero critical findings. All 24 viewport/full-page screenshots were inspected. Both manual-review manifests contain six passes and zero gaps. The focused interaction pass at 1440, 1239, 927 and 390 pixels passed 203 checks, including focus, range cancellation, pagination, revisions, navigation, failure recovery and access. No page JavaScript error was observed.
+
+Live verification is retained separately in /var/tmp/dc2-performance-work/live-initial.json and the final live verification receipt. The live source has partial coverage; the interface does not convert the missing environment to zero. Existing unrelated screenshot-review regressions are tracked separately as p6eb962256c0f2445, with a canonical-checkout reproduction.
+
+## Implementation checklist
+
+The selected layout, responsive correction, exact-value access, working controls, theme checks and visual review are complete. Publication and live decision-link verification are recorded in the task's delivery evidence.
+
+---
+
 # Console Option 3 design QA
 
 Final result: passed

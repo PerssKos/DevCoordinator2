@@ -82,6 +82,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('custom range uses UTC boundaries', daemon.calls.some(call => call.operation === 'performance.overview' && call.params.window_start_ms === Date.UTC(2026, 8, 10) && call.params.window_end_ms === Date.UTC(2026, 8, 13)));
   await page.locator('[data-performance-select]').first().click(); await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
   await page.screenshot({ path: path.join(output, `performance-${theme}-${viewport.width}.png`), fullPage: true });
+  if (viewport.width <= 600) verify('outcome names retain a readable column', (await page.locator('.performance-outcome-table tbody tr td:first-child').first().boundingBox()).width >= 160);
   verify('no document horizontal overflow', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   verify('page has no JavaScript errors', errors.length === 0, errors.join('; '));
   await page.locator('[data-performance-reader] summary').filter({ hasText: 'Evidence and measurement' }).click();
