@@ -1845,7 +1845,22 @@ async function main() {
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
-  await page.click('.evidence-panel-close');
+  const mobileDetailsToggle = page.locator('.evidence-mobile-inspector-toggle');
+  await mobileDetailsToggle.waitFor({ state: 'visible' });
+  await mobileDetailsToggle.click();
+  await page.waitForFunction(() => !document.querySelector('.evidence-page')?.classList.contains('inspector-open'));
+  check('visual evidence: narrow feedback details collapse through the visible mobile control',
+    await mobileDetailsToggle.getAttribute('aria-expanded') === 'false'
+    && await page.locator('#evidence-inspector-body').isHidden()
+    && await mobileDetailsToggle.isVisible());
+  await mobileDetailsToggle.click();
+  await page.waitForFunction(() => document.querySelector('.evidence-page')?.classList.contains('inspector-open'));
+  check('visual evidence: the mobile details bar reopens the retained feedback thread',
+    await mobileDetailsToggle.getAttribute('aria-expanded') === 'true'
+    && await page.locator('#evidence-inspector-body').isVisible()
+    && /normal contrast/.test(await page.innerText('.evidence-comment')));
+  await mobileDetailsToggle.click();
+  await page.waitForFunction(() => !document.querySelector('.evidence-page')?.classList.contains('inspector-open'));
   await page.click('.evidence-layout-controls [data-evidence-panel=details]');
   const narrowEvidence = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - innerWidth,
