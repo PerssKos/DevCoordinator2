@@ -1276,7 +1276,9 @@ pub(crate) fn prepare_state_directory(path: &Path, owner: (u32, u32)) -> Result<
             "public" | "deployments" | "secrets" => {
                 open(&entry.path(), true)?;
             }
-            "cutover" | "recovery" => private.push((open(&entry.path(), true)?, 0o700)),
+            "cutover" | "recovery" | "sketches" => {
+                private.push((open(&entry.path(), true)?, 0o700))
+            }
             name if name == "authority.sqlite3"
                 || name.starts_with("authority.sqlite3-")
                 || name.starts_with("authority.sqlite3.") =>
@@ -2596,7 +2598,14 @@ mod tests {
             rustix::process::getuid().as_raw(),
             rustix::process::getgid().as_raw(),
         );
-        for name in ["public", "deployments", "secrets", "cutover", "recovery"] {
+        for name in [
+            "public",
+            "deployments",
+            "secrets",
+            "cutover",
+            "recovery",
+            "sketches",
+        ] {
             std::fs::create_dir(root.join(name)).unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
                 .unwrap();
@@ -2631,10 +2640,17 @@ mod tests {
                     "preserved"
                 );
             }
-            for name in ["public", "deployments", "secrets", "cutover", "recovery"] {
+            for name in [
+                "public",
+                "deployments",
+                "secrets",
+                "cutover",
+                "recovery",
+                "sketches",
+            ] {
                 assert_eq!(
                     std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,
-                    if matches!(name, "cutover" | "recovery") {
+                    if matches!(name, "cutover" | "recovery" | "sketches") {
                         0o700
                     } else {
                         0o755
