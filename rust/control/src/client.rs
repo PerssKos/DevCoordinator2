@@ -20,7 +20,10 @@ pub async fn call(
     client: ClientContext,
 ) -> Result<ResponseEnvelope, ProtocolError> {
     let operation = operation.into();
-    let review_action = matches!(operation.as_str(), "review.prepare" | "review.record");
+    let review_action = matches!(
+        operation.as_str(),
+        "review.prepare" | "review.record" | "performance.overview" | "performance.review"
+    );
     let blocking_wait = operation == "event.wait";
     let long_running_action = matches!(
         operation.as_str(),

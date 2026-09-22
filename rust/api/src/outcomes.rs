@@ -16,6 +16,8 @@ pub struct OutcomeMeasurement {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OutcomeEffort {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub activities: BTreeMap<String, OutcomeMeasurement>,
     pub operations: u64,
     pub retry_operations: u64,
     pub rework_operations: u64,
@@ -28,6 +30,8 @@ pub struct OutcomeEffort {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OutcomeRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub title: Option<String>,
     pub outcome_id: String,
     pub workstream_id: Option<String>,
@@ -37,6 +41,8 @@ pub struct OutcomeRow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct OutcomeReport {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kinds: BTreeMap<String, OutcomeMeasurement>,
     pub schema_version: u32,
     pub coverage: String,
     pub totals: OutcomeEffort,

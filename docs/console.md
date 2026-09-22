@@ -405,3 +405,13 @@ and observed deployments. Switching repositories must replace the collection
 without mixing records, while each lifecycle action and domain editor still
 addresses its original deployment. The responsive pass checks small phones,
 intermediate widths, and desktop layouts with the shared sidebar present.
+
+## Repository Performance
+
+Administrators open **Plan & progress → Performance** for the selected repository. The page keeps all recorded token usage, the chosen overview period (7 days by default, 30/90 days or custom UTC dates), and the total review count visible. The two distribution charts show recorded work activities and current Plan item kinds. Exact values are available without relying on color. The outcome table includes activity composition and explicit unattributed work; missing measurements are not zeroes.
+
+Review history lists the latest revision of each review, newest first, independently of the overview range. Open a review to switch the charts to its exact window and workstream, with repository totals retained above. The reader shows the full hypothesis, alternatives, decision, rationale, observations, quality evidence and before/after measurements. Revision history opens any immutable prior revision. Return to overview restores the original dates. On narrow screens the reader follows the selected row and receives focus.
+
+A retained change is labelled a verified improvement only when the existing evidence validator accepts the before/after workload and passing quality evidence, complete source coverage exists, and an exact token, active-time or execution-time measure improves. Waiting alone is not an improvement. Partial or incomparable results retain their narrative and explicitly lack a verified-gain claim. Percentages use a nonzero exact baseline and are never combined across experiments.
+
+The Console retains no separate accounting database. The lightweight history request is independent of measurement requests, and pagination keeps frozen outcome totals. Refresh discards the bounded display cache.

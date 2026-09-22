@@ -26,6 +26,16 @@ impl Groups {
 
     pub(super) fn legacy(report: &SourceReport) -> Self {
         let effort = Effort {
+            activities: report
+                .activities
+                .iter()
+                .map(|((_, activity), tokens)| (activity.clone(), (*tokens, 0)))
+                .fold(BTreeMap::new(), |mut map, (activity, (tokens, unknown))| {
+                    let value = map.entry(activity).or_insert((0, 0));
+                    value.0 += tokens;
+                    value.1 += unknown;
+                    map
+                }),
             operations: report.operation_count,
             tokens: report.tokens.get("total_tokens").copied().unwrap_or(0),
             unknown_tokens: report
@@ -77,6 +87,7 @@ impl Groups {
             .into_iter()
             .map(|((outcome_id, workstream_id), effort)| {
                 Ok(OutcomeRow {
+                    kind: None,
                     title: None,
                     outcome_id,
                     workstream_id,
@@ -91,6 +102,7 @@ impl Groups {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Ok(OutcomeReport {
+            kinds: BTreeMap::new(),
             schema_version: 1, coverage: coverage.into(), totals, attributed, unattributed,
             unattributed_reasons: self.reasons, total_rows: rows.len(), rows, next_cursor: None,
             basis: "Prospective operation-start declarations only. Provider totals deduplicate by owner and source event; component categories are not added. Time is clipped to the UTC window. Active time sums per-agent unions after recorded waits; elapsed and waiting time are unions, not sums of outcome rows. Unknown capture and unrecorded waits cannot be reconstructed. Repository aggregates retain their repository scope; outcome rows honor the requested workstream, with undeclared work explicit.".into(),
@@ -99,6 +111,9 @@ impl Groups {
 }
 
 fn mark_incomplete(effort: &mut devcoordinator2_api::outcomes::OutcomeEffort) {
+    for metric in effort.activities.values_mut() {
+        metric.exact = None;
+    }
     for metric in [
         &mut effort.provider_total_tokens,
         &mut effort.active_agent_ms,
@@ -260,6 +275,12 @@ pub(super) fn aggregate(
                 );
             }
             for target in targets {
+                let activity = target
+                    .activities
+                    .entry(operation.operation.activity.clone())
+                    .or_default();
+                activity.0 = activity.0.checked_add(tokens).ok_or("usage_overflow")?;
+                activity.1 += unknown;
                 target.add_time(&operation, &waits, unknown_waits)?;
                 target.tokens = target.tokens.checked_add(tokens).ok_or("usage_overflow")?;
                 target.unknown_tokens += unknown;

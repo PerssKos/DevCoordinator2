@@ -134,7 +134,7 @@ impl SketchService {
         self.database.call(move |c| {
             let b=c.query_row("SELECT batch_id,repository_id,sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=?1 AND batch_id=?2",rusqlite::params![repo,bid],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)? as u64,r.get::<_,String>(5)?,r.get::<_,String>(6)?)))?;
             let mut st=c.prepare("SELECT sketches.sketch_id,sketches.repository_id,sketch_batches.sketch_set,sketch_batches.source_skill,sketches.title,sketches.sha256,sketches.byte_size,sketches.width,sketches.height,sketches.created_at,sketches.decision,sketches.decision_revision FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.batch_id=?1 ORDER BY sketches.rowid")?;
-            let sketches=st.query_map([&bid],|r| summary_row(r)).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
+            let sketches=st.query_map([&bid],summary_row).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
             Ok(results::SketchBatch{batch_id:b.0,repository_id:b.1,sketch_set:b.2,source_skill:b.3,generation_record_size:b.4,generation_record_sha256:b.5,created_at:b.6,sketches})
         }).map_err(db_error)
     }

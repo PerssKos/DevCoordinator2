@@ -12,7 +12,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   verify('one shared selector replaces page-specific pickers', await page.locator('#repository-list').count() === 1 && await page.locator('[data-project-picker], .test-repository-list').count() === 0);
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').count() === 5 && await page.locator('#workspace-aspects a[href="#/tests?repository=r0123456789abcdef"]').count() === 1);
-  verify('plan and progress are one destination with three views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage'));
+  verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
   verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);

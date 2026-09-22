@@ -253,6 +253,27 @@ impl UsageService {
             .review_measurements(repository, workstream, start_ms, end_ms, deadline)
     }
 
+    pub(crate) fn performance_tokens(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        now: u64,
+    ) -> Result<UsageRepository, ProtocolError> {
+        self.usage.repository_window(
+            repository,
+            UsageRange::Hours24,
+            now,
+            start,
+            end,
+            end - start,
+            1,
+            true,
+            Some(Instant::now() + QUERY_TIMEOUT),
+            Projection::Tokens,
+        )
+    }
+
     fn records(&self) -> Result<Vec<RepositoryRecord>, ProtocolError> {
         Ok(self
             .registry

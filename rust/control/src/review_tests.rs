@@ -204,12 +204,70 @@ fn review_revisions_are_append_only_concurrent_and_exact() {
         .service
         .show(Show {
             repository_id: "project-alpha".into(),
-            record_id: Some(first.record_id),
+            record_id: Some(first.record_id.clone()),
             offset: 0,
             limit: 1,
         })
         .unwrap();
     assert_eq!((page.records.len(), page.next_offset), (1, Some(1)));
+    let latest = fixture
+        .service
+        .performance_reviews(devcoordinator2_api::performance::Reviews {
+            repository_id: "project-alpha".into(),
+            before: None,
+            limit: 1,
+            record_id: None,
+        })
+        .unwrap();
+    assert_eq!(latest.total_reviews, 1);
+    assert_eq!(latest.records.len(), 1);
+    assert_eq!(latest.records[0].review.revision, 2);
+    assert_eq!(latest.records[0].revision_count, 2);
+    let revisions = fixture
+        .service
+        .performance_reviews(devcoordinator2_api::performance::Reviews {
+            repository_id: "project-alpha".into(),
+            before: None,
+            limit: 1,
+            record_id: Some(first.record_id.clone()),
+        })
+        .unwrap();
+    assert_eq!(revisions.records[0].review.revision, 2);
+    let older = fixture
+        .service
+        .performance_reviews(devcoordinator2_api::performance::Reviews {
+            repository_id: "project-alpha".into(),
+            before: revisions.next_before,
+            limit: 1,
+            record_id: Some(first.record_id),
+        })
+        .unwrap();
+    assert_eq!(older.records[0].review.revision, 1);
+    assert!(older.next_before.is_none());
+    let detail = fixture
+        .service
+        .performance_review(
+            devcoordinator2_api::performance::Review {
+                repository_id: "project-alpha".into(),
+                reference: first.reference,
+                outcome_cursor: None,
+                outcome_limit: None,
+            },
+            START + WEEK,
+        )
+        .unwrap();
+    assert_eq!(detail.review.revision, 1);
+    assert_eq!(
+        detail.usage.outcomes.totals.provider_total_tokens.exact,
+        None
+    );
+    assert!(detail.comparisons.is_empty());
+    assert!(
+        detail
+            .evidence
+            .iter()
+            .any(|item| item.available && item.title == "Keep release proof")
+    );
     assert!(
         fixture
             .database

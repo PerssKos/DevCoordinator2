@@ -382,6 +382,12 @@ window.DevCoordinatorTests = (() => {
 
     main.innerHTML = repository ? `<section class="tests-workspace"><header class="workspace-tests-heading"><h1>Tests</h1><button class="btn" type="button" id="test-run-open">Run tests</button></header><span id="test-live-status" role="status"></span><section id="test-runs-collection" tabindex="-1"></section></section>` : `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link">Tests</a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings"><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open">Log retention</button><button class="btn" type="button" id="test-capacity-open">Capacity</button></div></details></header><nav class="test-repository-list" aria-label="Repositories"></nav><button class="btn" type="button" id="test-run-open">Run tests</button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
     paintNavigation(); paintRows(); bindSettings();
+    const linkedRun = new URLSearchParams(location.hash.split('?')[1] || '').get('run');
+    if (linkedRun) {
+      const row = query('[data-test-run-id="' + CSS.escape(linkedRun) + '"]');
+      if (row) { row.querySelector('details').open = true; row.querySelector('[data-test-logs]').focus({ preventScroll: true }); row.scrollIntoView({ block: 'center' }); }
+      else query('#test-live-status').textContent = 'The linked run is no longer available in retained history.';
+    }
     query('#test-run-open').addEventListener('click', (event) => runForm(event.currentTarget));
     query('#test-capacity-open')?.addEventListener('click', (event) => openCapacity(capacity, event.currentTarget));
     query('#test-log-retention-open')?.addEventListener('click', (event) => openRetention(retention, event.currentTarget));

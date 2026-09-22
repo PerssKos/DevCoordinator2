@@ -1,8 +1,8 @@
 'use strict';
 
 window.DevCoordinatorWorkspace = (() => {
-  const repositoryViews = new Set(['plan', 'progress', 'usage', 'deployments', 'tests', 'decisions', 'sketches', 'glossary']);
-  const workViews = new Set(['plan', 'progress', 'usage']);
+  const repositoryViews = new Set(['plan', 'progress', 'usage', 'performance', 'deployments', 'tests', 'decisions', 'sketches', 'glossary']);
+  const workViews = new Set(['plan', 'progress', 'usage', 'performance']);
   const icons = {
     folder: ['Folder', 'M3 7V5h6l3 3h9v12H3Z'],
     code: ['Code', 'm8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16'],
@@ -187,7 +187,7 @@ window.DevCoordinatorWorkspace = (() => {
       const tabs = [['plan', 'Plan & progress'], ['deployments', 'Deployments'], ['tests', 'Tests'], ['sketches', 'Sketches'], ['decisions', 'Decisions'], ['glossary', 'Glossary']];
       aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
       workNavigation.hidden = !selectedId || !workViews.has(currentView);
-      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? [['plan', 'Plan'], ...(canOperate() ? [['progress', 'Progress'], ['usage', 'Usage']] : [])].map(([view, label]) => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
+      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? [['plan', 'Plan'], ...(canOperate() ? [['progress', 'Progress'], ['usage', 'Usage']] : []), ...(identity()?.administrator ? [['performance', 'Performance']] : [])].map(([view, label]) => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
       paintNavigation();
     }
 
@@ -277,7 +277,7 @@ window.DevCoordinatorWorkspace = (() => {
         data.runs.push({ ...retainedEvidence.context, isEarlierEvidence: true });
         groups = catalogue(data.repositories, data.runs, data.deployments);
       }
-      let requested = ['plan', 'progress', 'usage', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
+      let requested = ['plan', 'progress', 'usage', 'performance', 'decisions', 'sketches', 'glossary'].includes(view) ? argument : query.get('repository');
       if (view === 'tests' && argument) requested = data.runs.find(matchesRun)?.repository_id || requested;
       if (view === 'deployments' && argument) requested = data.deployments.find((deployment) => deployment.deployment_id === argument)?.repository_id || requested;
       if (['tests', 'deployments'].includes(view) && argument && !requested) {

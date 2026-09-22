@@ -234,17 +234,34 @@ fn outcome_reader_matches_canonical_conformance_cases() {
         let (_, groups) =
             review_aggregate::aggregate(&connection, facts, None, start, end).unwrap();
         let report = groups.finish(false).unwrap();
+        assert_eq!(
+            report
+                .totals
+                .activities
+                .values()
+                .map(|value| value.measured)
+                .sum::<u64>(),
+            report.totals.provider_total_tokens.measured
+        );
+        assert!(report.rows.iter().all(|row| {
+            row.effort
+                .activities
+                .values()
+                .map(|value| value.measured)
+                .sum::<u64>()
+                == row.effort.provider_total_tokens.measured
+        }));
         let mut rows = serde_json::to_value(report.rows).unwrap();
         for row in rows.as_array_mut().unwrap() {
             row.as_object_mut().unwrap().remove("title");
+            row["effort"].as_object_mut().unwrap().remove("activities");
         }
-        assert_eq!(
-            json!({"coverage": report.coverage, "totals": report.totals, "attributed": report.attributed,
-            "unattributed": report.unattributed, "unattributedReasons": report.unattributed_reasons, "rows": rows}),
-            case["expected"],
-            "{}",
-            case["name"]
-        );
+        let mut actual = json!({"coverage": report.coverage, "totals": report.totals, "attributed": report.attributed, "unattributed": report.unattributed, "unattributedReasons": report.unattributed_reasons, "rows": rows});
+        // Keep the shared cross-runtime v1 fixture exact; test the additive activity projection above.
+        for key in ["totals", "attributed", "unattributed"] {
+            actual[key].as_object_mut().unwrap().remove("activities");
+        }
+        assert_eq!(actual, case["expected"], "{}", case["name"]);
     }
 }
 
@@ -370,6 +387,20 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
         160
     );
     assert_eq!(first.usage.totals.total_tokens, Some(160));
+    assert_eq!(
+        first.usage.outcomes.rows[0].kind.as_deref(),
+        Some("improvement")
+    );
+    assert_eq!(
+        first
+            .usage
+            .outcomes
+            .kinds
+            .values()
+            .map(|m| m.measured)
+            .sum::<u64>(),
+        160
+    );
     assert_eq!(
         std::fs::read(home.join("identity-probe.calls")).unwrap(),
         b"x"
@@ -531,6 +562,34 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
             .totals
             .provider_total_tokens
             .measured,
+        165
+    );
+    let overview = environment
+        .service
+        .performance_overview(
+            devcoordinator2_api::performance::Overview {
+                repository_id: "project-alpha".into(),
+                window_start_ms: START,
+                window_end_ms: START + 1000,
+                outcome_cursor: None,
+                outcome_limit: Some(1),
+                totals_only: false,
+            },
+            START + WEEK,
+        )
+        .unwrap();
+    assert_eq!(overview.usage.as_ref().unwrap().outcomes.rows.len(), 1);
+    assert_eq!(overview.total_tokens.measured, 165);
+    assert_eq!(
+        overview
+            .usage
+            .as_ref()
+            .unwrap()
+            .outcomes
+            .kinds
+            .values()
+            .map(|m| m.measured)
+            .sum::<u64>(),
         165
     );
     live.execute("UPDATE _sqlx_migrations SET version=9", [])
