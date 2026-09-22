@@ -177,6 +177,14 @@ The installer accepts repeatable `--codex-usage-account UNIX_ACCOUNT` for the
 default `~/.codex` and `~/.local/bin/codex` locations, merges the private policy
 atomically, and preserves previously configured sources.
 
+Keep each policy entry's executable compatible with that environment's current
+usage database. An older executable can reject a database upgraded by the
+running app before repository identity resolution. Verify the replacement's
+identity query as the configured UID, preserve the UID and private home, and
+activate the updated private policy through the reviewed installer. A successful
+`not_found` result means the environment has no history for that repository;
+it is distinct from an unreadable database.
+
 ## Enforcement
 
 For an owner-confirmed trusted host, `devcoordinator2-tooling install console-access

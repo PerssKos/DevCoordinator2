@@ -53,10 +53,13 @@ operation/outcome/experiment ID is a join key, not a fabricated allocation of
 repository-wide tokens or elapsed time. Canonical task-usage gaps remain until
 the accounting source actually supplies that attribution.
 
-The canonical usage reader accepts exactly database versions 4, 5 and 6 with
-taxonomy 1. Reviewed migration `0006_work_bindings.sql` only adds an append-only
-binding table and its indexes; existing measurement tables and their queries
-are unchanged. Unknown later versions remain unavailable, never zero usage.
+The canonical usage reader accepts exactly database versions 4 through 8 with
+taxonomy 1. Migration `0006_work_bindings.sql` adds work bindings; version 7
+adds prospective outcome attribution; version 8 adds activity declarations.
+The version 8 addition leaves existing measurement tables and queries unchanged.
+Unknown later versions remain unavailable, never zero usage. The configured
+Codex executable must also support its collector's database version when it
+resolves repository identities.
 These bindings remain in the canonical collector; Coordinator adds no usage
 mirror, timer or scheduler.
 

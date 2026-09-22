@@ -3368,9 +3368,12 @@ function progressEvidenceLane(data, {
   const observed = observedValues.length > 0;
   const coverage = cls === 'tests' ? data.coverage.tests : data.coverage.tokens;
   const snapshotText = cls === 'tokens' ? usageSnapshotText(coverage) : '';
+  const missingReasons = Object.keys(coverage.unavailable_reasons || {});
+  const noRepositoryHistory = missingReasons.length > 0
+    && missingReasons.every((reason) => reason === 'mapping_unavailable');
   const unavailable = (coverage.snapshot?.refreshing || coverage.snapshot?.refresh_failed ? snapshotText : '') || (cls === 'tests'
     ? 'No test runs recorded for this period.'
-    : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.');
+    : coverage.state === 'unobserved' || noRepositoryHistory ? 'No token data recorded for this period.' : 'Some token data is missing.');
   if (!observed) return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
   const width = Math.max(650, 220 + values.length * 38); const height = 58;
   const left = 168; const right = 92; const top = 8; const bottom = 8;

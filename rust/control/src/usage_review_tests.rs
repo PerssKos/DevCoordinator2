@@ -516,6 +516,25 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
     );
     live.execute("UPDATE _sqlx_migrations SET version=8", [])
         .unwrap();
+    live.execute_batch(include_str!(
+        "../tests/fixtures/codex-usage-0008-activity-declarations.sql"
+    ))
+    .unwrap();
+    let compatible = environment
+        .service
+        .prepare(params.clone(), START + WEEK)
+        .unwrap();
+    assert_eq!(
+        compatible
+            .usage
+            .outcomes
+            .totals
+            .provider_total_tokens
+            .measured,
+        165
+    );
+    live.execute("UPDATE _sqlx_migrations SET version=9", [])
+        .unwrap();
     let unsupported = environment.service.prepare(params, START + WEEK).unwrap();
     assert_eq!(unsupported.usage.outcomes.coverage, "unavailable");
     assert_eq!(

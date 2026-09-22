@@ -109,6 +109,20 @@ export async function verifyProgressCharts({ page, daemon, check, scenario, base
   await page.locator('[data-progress-evidence="tests"] [data-progress-point="2"]').focus();
   check('Progress: test points reveal pass rate and measured run counts', await page.locator('#progress-point-tooltip dd').allTextContents().then(values => values.join() === '75%,3,4'));
   await page.keyboard.press('Escape');
+  for (const [failed, message] of [[false, 'No token data recorded for this period.'], [true, 'Usage unavailable; refresh failed.']]) {
+    daemon.setScenario({ ...scenario, empty: true, progressReference: false, progressTokenCoverage: {
+      state: 'unavailable', available_collectors: 0, contributing_collectors: 0,
+      unavailable_reasons: failed ? { mapping_unavailable: 1, source_unavailable: 1 } : { mapping_unavailable: 2 },
+      snapshot: { refreshing: false, refresh_failed: failed, updated_at_ms: failed ? null : Date.now() },
+    } });
+    await page.reload();
+    await page.locator('[data-progress-evidence="tokens"] p').waitFor();
+    check(`Progress: ${failed ? 'failed source remains an error' : 'confirmed missing repository history is an empty result'}`,
+      await page.locator('[data-progress-evidence="tokens"] p').innerText() === message);
+    check('Progress: missing usage is not displayed as zero', await page.locator('[data-progress-evidence="tokens"] > strong').innerText() === '—');
+    check('Progress: the independent empty test result remains visible',
+      await page.locator('[data-progress-evidence="tests"] p').innerText() === 'No test runs recorded for this period.');
+  }
   check('Progress: no browser runtime errors', failures.length === 0, JSON.stringify(failures));
   page.off('pageerror', onError);
   await page.setViewportSize(originalViewport);
