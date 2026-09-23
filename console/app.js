@@ -60,6 +60,8 @@ const state = {
   sketchDrawerSketchId: null,
   sketchDrawerDetail: null,
   sketchDrawerLoading: false,
+  sketchSetGroup: null,
+  sketchSetDetails: new Map(),
   collapsedDeploymentRepositories: new Set(),
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
@@ -1358,10 +1360,10 @@ function ensureEvidenceComposer() {
       state.evidenceDrafts.delete(key);
       if (state.evidenceDraftKey === key) {
         resetEvidenceDraft(); form.elements.body.value = '';
-        state.evidenceSelectedFeedbackId = result.feedback.feedback_id;
+        state.evidenceSelectedFeedbackId = result.feedback?.feedback_id || result.annotation?.annotation_id || null;
         revealEvidenceDiscussion(); redrawEvidenceCanvas(); updateEvidencePageStatus();
       }
-      toast('Feedback task created', 'ok');
+      toast(result.annotation ? 'Annotation saved' : 'Feedback task created', 'ok');
     } else if (state.evidenceDraftKey === key) {
       const error = $('#evidence-feedback-error', form);
       error.textContent = `Could not confirm the save: ${failure?.message || 'the request failed'}. Your comment and marks are still here.`;
@@ -1461,8 +1463,8 @@ async function evidenceImageUrl(run, image) {
   const promise = (async () => {
     const chunks = []; let offset = 0; let mime = image.mime || 'image/png';
     do {
-      const result = state.evidenceSource === 'sketch'
-        ? await api('design.sketch.image', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, offset, max_bytes: 184320 })
+      const result = ['sketch', 'sketch-set'].includes(state.evidenceSource)
+        ? await api('design.sketch.image', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceSource === 'sketch-set' ? image.image_id : state.evidenceRun.run_id, offset, max_bytes: 184320 })
         : await api('test.evidence.image', { path: run.worktree_path, run_id: run.run_id, image_id: image.image_id, offset, max_bytes: 184320 });
       mime = result.mime || mime;
       const binary = atob(result.base64 || '');
@@ -1504,6 +1506,19 @@ function renderEvidenceRail() {
 }
 
 function renderEvidenceVariants(step, selectedCell) {
+  if (state.evidenceSource === 'sketch-set') {
+    return state.evidenceSteps.map((option) => {
+      const cell = option.variants[0];
+      const sketch = state.sketchGalleryData?.find((item) => item.sketch_id === cell.screenshots?.viewport?.image_id);
+      const image = cell.screenshots?.viewport;
+      const active = option.key === state.evidenceStepKey;
+      const decision = sketch?.decision || 'undecided';
+      return `<button type="button" class="evidence-variant sketch-set-variant${active ? ' active' : ''}${decision === 'keep' ? ' selected' : ''}" data-evidence-step="${esc(option.key)}" aria-pressed="${active}">
+        <span>${image ? `<img alt="${esc(sketch?.title || option.label)}" data-evidence-thumb="${esc(image.image_id)}">` : '<span class="muted">Screenshot unavailable</span>'}</span>
+        <strong>${esc(sketch?.title || option.label)}</strong><small>${badge(decision, decision === 'keep' ? 'ok' : decision === 'reject' ? 'bad' : '')}</small>
+      </button>`;
+    }).join('');
+  }
   return step.variants.map((cell) => {
     const image = cell.screenshots?.viewport?.status === 'available'
       ? cell.screenshots.viewport : cell.screenshots?.full_page;
@@ -1544,7 +1559,13 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
   const threads = evidenceFeedbackForImage(screenshot?.image_id);
   const selected = threads.find((item) => item.feedback_id === state.evidenceSelectedFeedbackId);
   const findings = cell.findings || [];
-  const sketchDecision = state.evidenceSource === 'sketch' ? `<section class="evidence-inspector-section sketch-decision"><h2>Decision</h2><p class="muted">${esc(state.sketchDetail?.sketch?.decision || 'undecided')} · revision ${esc(state.sketchDetail?.sketch?.decision_revision ?? 0)}</p><div class="actions">${['keep','reject','undecided'].map((value) => `<button class="btn btn-small" type="button" data-sketch-decision="${value}">${value === 'keep' ? 'Keep' : value === 'reject' ? 'Reject' : 'Undecided'}</button>`).join('')}</div><button class="btn btn-small" type="button" data-sketch-record>View generation record</button></section>` : '';
+  const sketchDecision = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? `<section class="evidence-inspector-section sketch-decision"><h2>Decision</h2><p class="muted">${esc(state.sketchDetail?.sketch?.decision || 'undecided')} · revision ${esc(state.sketchDetail?.sketch?.decision_revision ?? 0)}</p><div class="actions">${['keep','reject','undecided'].map((value) => `<button class="btn btn-small" type="button" data-sketch-decision="${value}">${value === 'keep' ? 'Keep' : value === 'reject' ? 'Reject' : 'Undecided'}</button>`).join('')}</div><button class="btn btn-small" type="button" data-sketch-record>View generation record</button></section>` : '';
+  const sketchSetComment = state.evidenceSource === 'sketch-set' ? (() => {
+    const group = state.sketchSetGroup;
+    const selectedCount = group?.sketches.filter((item) => item.decision === 'keep').length || 0;
+    const active = group?.sketches.find((item) => item.sketch_id === state.evidenceRun.run_id);
+    return `<section class="evidence-inspector-section sketch-set-comment-compose"><h2>Comment on this review</h2><form id="sketch-set-comment-form"><label class="f">Attach to<select name="scope"><option value="active">${esc(active?.title || 'Active option')}</option><option value="selected"${selectedCount ? '' : ' disabled'}>Selected options (${selectedCount})</option></select></label><label class="f">Comment<textarea name="body" rows="4" minlength="3" maxlength="2000" required placeholder="Add a comment about this option or selected set."></textarea></label><button class="btn btn-primary" type="submit">Post comment</button></form></section>`;
+  })() : '';
   const capture = `${sketchDecision}<section class="evidence-inspector-section"><h2>Capture details</h2><dl class="evidence-capture-facts">
     <div><dt>Viewport</dt><dd>${esc(cell.viewport?.name || '—')} · ${esc(cell.viewport?.width)} × ${esc(cell.viewport?.height)}</dd></div>
     <div><dt>Route</dt><dd>${esc(cell.final_path || cell.requested_path || '—')}</dd></div>
@@ -1556,12 +1577,12 @@ function renderEvidenceInspector(run, step, cell, screenshot) {
   const automatic = `<section class="evidence-inspector-section"><h2>Automated findings <span>${findings.length}</span></h2>${findings.length ? `<ul class="evidence-findings">${findings.map((finding) => `<li class="${esc(finding.severity)}"><button type="button" data-evidence-finding="${esc(finding.rule)}"><i></i><span><strong>${esc(evidenceFindingLabel(finding.rule))}</strong><small>${esc(finding.severity)}</small></span></button></li>`).join('')}</ul><p class="muted evidence-finding-note" id="evidence-finding-note">Choose a finding to return focus to its capture.</p>` : '<p class="muted">No automatic visual findings for this capture.</p>'}</section>`;
   const threadList = `<section class="evidence-inspector-section evidence-annotations"><h2>Annotations <span>${threads.length}</span></h2>${threads.length ? threads.map((thread, index) => `<button type="button" class="evidence-thread-summary${selected?.feedback_id === thread.feedback_id ? ' active' : ''}" data-evidence-feedback="${esc(thread.feedback_id)}"><i>${index + 1}</i><span><strong>${esc(thread.comments[0]?.body || 'Visual feedback')}</strong><small>${esc(thread.state)} · ${esc(thread.author)}</small></span></button>`).join('') : '<p class="muted">No feedback on this screenshot yet.</p>'}</section>`;
   if (!selected) {
-    return `${capture}${automatic}${threadList}`;
+    return `${capture}${sketchSetComment}${automatic}${threadList}`;
   }
   const comments = selected.comments.map((comment) => `<article class="evidence-comment" data-comment="${esc(comment.comment_id)}"><header><strong>${esc(comment.author)}</strong><small>${esc(ago(comment.created_at))}</small></header><p>${esc(comment.body)}</p>${comment.can_edit && !comment.deleted ? `<div class="actions"><button class="btn btn-small" type="button" data-evidence-edit-comment="${esc(comment.comment_id)}">Edit</button></div>` : ''}</article>`).join('');
-  const threadActions = state.evidenceSource === 'sketch' ? '' : `<form id="evidence-feedback-reply"><label class="f">Reply<textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit">Reply</button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${selected.state === 'resolved' ? 'Reopen' : 'Resolve'}</button>${selected.can_delete ? '<button class="btn btn-danger" type="button" data-evidence-delete>Delete annotation</button>' : ''}</div>`;
+  const threadActions = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? '' : `<form id="evidence-feedback-reply"><label class="f">Reply<textarea name="body" rows="3" maxlength="2000" required></textarea></label><button class="btn" type="submit">Reply</button></form><div class="evidence-thread-actions"><button class="btn" type="button" data-evidence-state="${selected.state === 'resolved' ? 'open' : 'resolved'}">${selected.state === 'resolved' ? 'Reopen' : 'Resolve'}</button>${selected.can_delete ? '<button class="btn btn-danger" type="button" data-evidence-delete>Delete annotation</button>' : ''}</div>`;
   const thread = `<section class="evidence-inspector-section evidence-thread"><div class="evidence-thread-head"><h2>Discussion</h2><button class="btn btn-small" type="button" data-evidence-feedback-back>All annotations</button></div><div class="evidence-thread-state">${badge(selected.state, selected.state === 'resolved' ? 'ok' : 'warn')}${selected.task_id ? `<a href="#/plan/${esc(state.evidenceData.repository_id)}" data-evidence-open-task="${esc(selected.task_id)}">Open Plan task →</a>` : ''}</div>${comments}${threadActions}</section>`;
-  return `${capture}${automatic}${threadList}${thread}`;
+  return `${capture}${sketchSetComment}${automatic}${threadList}${thread}`;
 }
 
 async function loadEvidenceThumbnails(run, root = main) {
@@ -1609,7 +1630,7 @@ function setupEvidenceLayout() {
   let toastLocation;
   let frame;
   page.classList.add('evidence-layout');
-  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || page.clientWidth >= 1050);
+  const expanded = (panel) => fullscreen ? fullscreenPanels[panel] : preferences[panel] ?? (panel === 'journey' || panel === 'details' && state.evidenceSource === 'sketch-set' && page.clientWidth >= 760 || page.clientWidth >= 1050);
   const paint = () => {
     if (!page.isConnected) return;
     const narrow = page.clientWidth < 1050;
@@ -2104,20 +2125,24 @@ function renderEvidenceCurrent(step, cell) {
   const current = state.evidenceSteps.indexOf(step);
   const viewportAvailable = cell.screenshots?.viewport?.status === 'available';
   const fullAvailable = cell.screenshots?.full_page?.status === 'available';
-  return `<div class="evidence-current-copy"><strong>Step ${current + 1} of ${state.evidenceSteps.length}</strong><h2>${esc(step.label)}</h2><span>${esc(cell.final_path || cell.requested_path || 'Route unavailable')}</span></div>
+  const route = state.evidenceSource === 'sketch-set' ? '' : `<span>${esc(cell.final_path || cell.requested_path || 'Route unavailable')}</span>`;
+  return `<div class="evidence-current-copy"><strong>Step ${current + 1} of ${state.evidenceSteps.length}</strong><h2>${esc(step.label)}</h2>${route}</div>
     <div class="evidence-current-actions"><div class="seg evidence-capture-kind" role="tablist" aria-label="Screenshot kind"><button type="button" data-evidence-kind="viewport" class="${state.evidenceScreenshotKind === 'viewport' ? 'active' : ''}"${viewportAvailable ? '' : ' disabled'}>Viewport</button><button type="button" data-evidence-kind="full_page" class="${state.evidenceScreenshotKind === 'full_page' ? 'active' : ''}"${fullAvailable ? '' : ' disabled'}>Full page</button></div><button class="btn btn-small" type="button" data-evidence-prev aria-label="Previous journey step"${current <= 0 ? ' disabled' : ''}>${planIcon('chevron-left')}</button><button class="btn btn-small" type="button" data-evidence-next aria-label="Next journey step"${current >= state.evidenceSteps.length - 1 ? ' disabled' : ''}>${planIcon('chevron-right')}</button></div>`;
 }
 
 function evidenceWorkspace(run, data) {
   const openFeedback = (data.feedback || []).filter((item) => item.state === 'open').length;
-  const home = state.evidenceSource === 'sketch' ? '#/sketches' : '#/tests';
-  const label = state.evidenceSource === 'sketch' ? 'Sketches' : 'Tests';
+  const sketchEvidence = ['sketch', 'sketch-set'].includes(state.evidenceSource);
+  const home = sketchEvidence ? '#/sketches' : '#/tests';
+  const label = sketchEvidence ? 'Sketches' : 'Tests';
   const breadcrumb = `<a class="destination-link" href="${home}">${label}</a><span>/</span>${workspace.active ? '' : `<strong>${esc(run.display_name)}</strong><span>/</span>`}`;
-  return `<section class="evidence-page" data-ui-region="test-evidence-primary">
-    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line"><span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span></div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}</div></header>
+  const close = state.evidenceSource === 'sketch-set' ? `<a class="btn btn-small sketch-set-close" href="#/sketches/${esc(state.sketchRepositoryId)}">Close review</a>` : '';
+  const setMeta = state.evidenceSource === 'sketch-set' ? `${state.sketchSetGroup?.sketches.filter((item) => item.decision === 'keep').length || 0} selected · ${state.sketchSetGroup?.sketches.length || 0} options` : `<span class="mono">${esc(run.run_id)}</span>${run.isEarlierEvidence ? badge('Earlier visual run') : `${badge(run.status)}<span class="evidence-run-meta">${esc(testTierLabel(run.requested_tier))}</span><span class="evidence-run-meta">${run.readiness_eligible ? 'Release proof' : 'Diagnostic only'}</span>`}<span class="evidence-run-meta">${esc(ago(run.started_at))}</span>`;
+  return `<section class="evidence-page${state.evidenceSource === 'sketch-set' ? ' sketch-set-evidence-page' : ''}" data-ui-region="test-evidence-primary">
+    <header class="evidence-page-head"><div><h1 class="evidence-breadcrumb">${breadcrumb}<strong>${esc(run.test || 'Test run')}</strong></h1><div class="evidence-run-line">${setMeta}</div></div><div class="evidence-review-state"><span>Review status</span>${openFeedback ? badge(`${openFeedback} changes requested`, 'warn') : badge('No changes requested', 'ok')}${close}</div></header>
     <div class="evidence-board">
       <aside id="evidence-journey" class="evidence-rail" aria-label="Journey steps"><div class="evidence-rail-head"><h2>Journey</h2><span>${state.evidenceSteps.length} steps</span></div><div id="evidence-step-list">${renderEvidenceRail()}</div></aside>
-      <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">Viewport comparison</h2><span>Same journey moment</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
+      <section class="evidence-workspace" data-ui-region="test-evidence-workspace"><header id="evidence-current" class="evidence-current"></header>${evidenceToolbar()}<div id="evidence-scroll" class="evidence-scroll"><div id="evidence-media" class="evidence-media"><img id="evidence-image" alt="Selected user journey screenshot" hidden><canvas id="evidence-canvas" tabindex="0" aria-label="Screenshot annotation canvas"></canvas></div><div id="evidence-image-state" class="evidence-image-state">Loading screenshot…</div></div><section class="evidence-compare" aria-labelledby="evidence-compare-title"><div><h2 id="evidence-compare-title">${state.evidenceSource === 'sketch-set' ? 'All sketch options' : 'Viewport comparison'}</h2><span>${state.evidenceSource === 'sketch-set' ? 'Select an option to annotate' : 'Same journey moment'}</span></div><div id="evidence-variants" class="evidence-variants"></div></section></section>
       <aside id="evidence-inspector" class="evidence-inspector" aria-label="Capture details and feedback"></aside>
     </div>
   </section>`;
@@ -2133,12 +2158,17 @@ async function evidenceMutation(button, command, args, onError = error => toast(
   const runId = state.evidenceRun.run_id;
   button.disabled = true;
   try {
-    const result = state.evidenceSource === 'sketch'
-      ? await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, body: args.body, marks: args.marks }, false)
+    const imageId = currentEvidenceSelection().screenshot?.image_id || state.evidenceRun.run_id;
+    const result = ['sketch', 'sketch-set'].includes(state.evidenceSource)
+      ? await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: imageId, body: args.body, marks: args.marks }, false)
       : await api(command, { path: state.evidenceRun.worktree_path, run_id: state.evidenceRun.run_id, ...args }, false);
-    if (state.evidenceSource === 'sketch' && result.annotation) {
+    if (['sketch', 'sketch-set'].includes(state.evidenceSource) && result.annotation) {
       const annotation = result.annotation;
-      replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: state.evidenceRun.run_id, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
+      if (state.evidenceSource === 'sketch-set') {
+        const detail = state.sketchSetDetails.get(imageId);
+        if (detail) state.sketchSetDetails.set(imageId, { ...detail, annotations: [...(detail.annotations || []), annotation] });
+      }
+      replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: imageId, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
     }
     if (result.feedback && state.evidenceRun?.run_id === runId) replaceEvidenceFeedback(result.feedback);
     return result;
@@ -2148,25 +2178,54 @@ async function evidenceMutation(button, command, args, onError = error => toast(
 }
 
 function bindEvidenceInspector() {
+  $('#sketch-set-comment-form', main)?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const body = String(new FormData(form).get('body') || '').trim();
+    const scope = String(new FormData(form).get('scope') || 'active');
+    if (body.length < 3 || state.evidenceSource !== 'sketch-set') return;
+    const activeId = state.evidenceRun.run_id;
+    const group = state.sketchSetGroup;
+    const targets = scope === 'selected'
+      ? group.sketches.filter((item) => item.decision === 'keep')
+      : group.sketches.filter((item) => item.sketch_id === activeId);
+    const button = form.querySelector('button[type="submit"]');
+    if (!targets.length) return;
+    button.disabled = true;
+    try {
+      for (const target of targets) {
+        const result = await api('design.sketch.annotation.create', { repository_id: state.sketchRepositoryId, sketch_id: target.sketch_id, body, marks: [] }, false);
+        const annotation = result.annotation;
+        if (annotation) replaceEvidenceFeedback({ feedback_id: annotation.annotation_id, task_id: '', task_status: 'planned', state: annotation.state, image_id: target.sketch_id, marks: annotation.marks, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, comments: [{ comment_id: annotation.annotation_id, body: annotation.body, author: annotation.author, created_at: annotation.created_at, updated_at: annotation.updated_at, can_edit: false, deleted: false }], can_delete: annotation.can_delete });
+      }
+      form.reset(); refreshEvidenceInspector(); toast(`Comment added to ${targets.length} ${targets.length === 1 ? 'option' : 'selected options'}`, 'ok');
+    } catch (error) { toast(`Comment failed: ${error.message}`, 'bad'); }
+    finally { button.disabled = false; }
+  });
   $('[data-sketch-record]', main)?.addEventListener('click', async (event) => {
     const button = event.currentTarget; button.disabled = true;
     try {
       const chunks = []; let offset = 0; let total = null;
-      do { const part = await api('design.sketch.record', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, offset, max_bytes: 184320 }); const bytes = Uint8Array.from(atob(part.base64 || ''), (c) => c.charCodeAt(0)); chunks.push(bytes); total = part.total_bytes; offset += bytes.length; if (part.next_offset == null) break; } while (offset < total);
+      const recordSketchId = currentEvidenceSelection().screenshot?.image_id || state.evidenceRun.run_id;
+      do { const part = await api('design.sketch.record', { repository_id: state.sketchRepositoryId, sketch_id: recordSketchId, offset, max_bytes: 184320 }); const bytes = Uint8Array.from(atob(part.base64 || ''), (c) => c.charCodeAt(0)); chunks.push(bytes); total = part.total_bytes; offset += bytes.length; if (part.next_offset == null) break; } while (offset < total);
       const text = new TextDecoder().decode(concatBytes(chunks));
       const details = document.createElement('details'); details.className = 'sketch-record'; details.open = true; details.innerHTML = `<summary>Generation record</summary><pre></pre>`; details.querySelector('pre').textContent = text;
       button.replaceWith(details);
     } catch (error) { toast(`Generation record unavailable: ${error.message}`, 'bad'); } finally { button.disabled = false; }
   });
   main.querySelectorAll('[data-sketch-decision]').forEach((button) => button.addEventListener('click', async () => {
-    if (state.evidenceSource !== 'sketch' || !state.sketchDetail) return;
+    if (!['sketch', 'sketch-set'].includes(state.evidenceSource) || !state.sketchDetail) return;
     const rationale = window.prompt('Why is this sketch being changed?', 'Reviewed in Console')?.trim();
     if (!rationale) return;
     button.disabled = true;
     try {
       const result = await api('design.sketch.decision', { repository_id: state.sketchRepositoryId, sketch_id: state.evidenceRun.run_id, expected_revision: state.sketchDetail.sketch.decision_revision, decision: button.dataset.sketchDecision, rationale }, false);
       state.sketchDetail = { ...state.sketchDetail, sketch: result.sketch, history: [...(state.sketchDetail.history || []), result.event] };
-      refreshEvidenceInspector(); toast('Sketch decision saved', 'ok');
+      if (state.evidenceSource === 'sketch-set') state.sketchSetDetails.set(result.sketch.sketch_id, state.sketchDetail);
+      const summary = state.sketchGalleryData?.find((item) => item.sketch_id === result.sketch.sketch_id);
+      if (summary) Object.assign(summary, { decision: result.sketch.decision, decision_revision: result.sketch.decision_revision });
+      if (state.evidenceSource === 'sketch-set') refreshEvidenceSelection(); else refreshEvidenceInspector();
+      toast('Sketch decision saved', 'ok');
     } catch (error) { toast(`Decision failed: ${error.message}`, 'bad'); } finally { button.disabled = false; }
   }));
   main.querySelectorAll('[data-evidence-feedback]').forEach((button) => button.addEventListener('click', () => {
@@ -2290,6 +2349,7 @@ async function loadMainEvidenceImage(run, screenshot) {
     if (currentEvidenceSelection().screenshot?.image_id !== requested || !image?.isConnected) return;
     image.src = url; image.hidden = false; await image.decode().catch(() => {});
     status.hidden = true; setupEvidenceCanvas(requested);
+    if (state.evidenceSource === 'sketch-set') $('#evidence-canvas', main)?.focus({ preventScroll: true });
     if (state.evidencePendingLabel) evidenceTextEntry(state.evidencePendingLabel.point, false);
   } catch (error) {
     status.textContent = error.message || 'Screenshot unavailable.'; status.hidden = false;
@@ -2324,13 +2384,22 @@ function bindEvidenceSelection() {
 
 function refreshEvidenceSelection() {
   const { step, cell, screenshot } = currentEvidenceSelection(); if (!step) return;
+  if (state.evidenceSource === 'sketch-set' && screenshot?.image_id) {
+    state.evidenceRun.run_id = screenshot.image_id;
+    state.evidenceRunId = screenshot.image_id;
+    state.sketchDetail = state.sketchSetDetails.get(screenshot.image_id) || state.sketchDetail;
+  }
   activateEvidenceDraft(screenshot?.image_id);
   if (screenshot?.image_id) {
     const query = new URLSearchParams(location.hash.split('?')[1] || '');
     query.set('image', screenshot.image_id);
     if (state.evidenceRun.worktree_id) query.set('worktree', state.evidenceRun.worktree_id);
-    const prefix = state.evidenceSource === 'sketch' ? `#/sketches/${state.sketchRepositoryId}` : `#/tests/${state.evidenceRunId}`;
+    const prefix = ['sketch', 'sketch-set'].includes(state.evidenceSource) ? `#/sketches/${state.sketchRepositoryId}` : `#/tests/${state.evidenceRunId}`;
     if (state.evidenceSource === 'sketch') query.set('sketch', state.evidenceRunId);
+    if (state.evidenceSource === 'sketch-set') {
+      query.set('set', state.sketchSetGroup?.key || '');
+      query.set('sketch', state.evidenceRun.run_id);
+    }
     window.history.replaceState(null, '', `${prefix}?${query}`);
   }
   $('#evidence-step-list', main).innerHTML = renderEvidenceRail();
@@ -2666,9 +2735,8 @@ function openSketchDrawer(repositoryId, setName, sketchId = null) {
   const group = sketchSetGroups(state.sketchGalleryData).find((item) => item.key === setName);
   if (!group) return;
   const currentId = sketchId || group.sketches.find((sketch) => sketch.decision === 'keep')?.sketch_id || group.sketches[0]?.sketch_id;
-  state.sketchDrawerSet = setName; state.sketchDrawerSketchId = currentId; state.sketchDrawerDetail = null;
   history.replaceState(null, '', sketchRoute(repositoryId, setName, currentId));
-  renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], setName, currentId);
+  render();
 }
 
 function closeSketchDrawer(repositoryId) {
@@ -2693,7 +2761,50 @@ async function saveSketchDecisions(repositoryId, sketch, decision, rationale) {
   } catch (error) { toast(`Selection failed: ${error.message}`, 'bad'); }
 }
 
+function sketchSetEvidenceData(group, details) {
+  const cells = group.sketches.map((sketch, index) => ({
+    cell_id: sketch.sketch_id, review_cell_key: null, plan_index: index,
+    target_name: sketch.title, primary_journey: group.key, state_name: sketch.title,
+    requested_path: null, final_path: null,
+    viewport: { name: `option-${index + 1}`, width: sketch.width, height: sketch.height, device: null },
+    started_at: sketch.created_at, ended_at: sketch.created_at, duration_ms: null,
+    outcome: 'checked', http_status: null, source_binding_status: 'sketch', actions: [], findings: [], review: null,
+    screenshots: { viewport: { status: 'available', kind: 'viewport', image_id: sketch.sketch_id, mime: sketch.mime, size: sketch.byte_size, sha256: sketch.sha256, width: sketch.width, height: sketch.height, captured_at: sketch.created_at }, full_page: null },
+    formal_run_id: `sketch-set-${group.key}`,
+  }));
+  const feedback = group.sketches.flatMap((sketch) => sketchFeedback(details.get(sketch.sketch_id) || { sketch, annotations: [] }));
+  return {
+    repository_id: group.sketches[0]?.repository_id, feedback, issues: [], image_count: group.sketches.length,
+    status: 'available', run_id: group.sketches[0]?.sketch_id, worktree_id: '',
+    bundles: [{ formal_run_id: `sketch-set-${group.key}`, generated_at: group.sketches[0]?.created_at,
+      browser: group.sketches[0]?.source_skill, check: 'sketch-set', phase: 'design', case: group.key,
+      coverage: { checked_pages: group.sketches.length, planned_pages: group.sketches.length, failed: false, readiness_eligible: false },
+      cells }],
+  };
+}
+
+async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
+  const details = new Map(await Promise.all(group.sketches.map(async (sketch) => [sketch.sketch_id, await api('design.sketch.get', { repository_id: repositoryId, sketch_id: sketch.sketch_id })])));
+  state.evidenceSource = 'sketch-set'; state.sketchRepositoryId = repositoryId; state.sketchSetGroup = group; state.sketchSetDetails = details;
+  state.sketchGalleryData = group.sketches; state.sketchDetail = details.get(activeSketchId) || details.get(group.sketches[0]?.sketch_id);
+  state.evidenceRunId = state.sketchDetail?.sketch?.sketch_id;
+  state.evidenceRun = { run_id: state.evidenceRunId, display_name: group.key, test: group.key, status: 'available', readiness_eligible: false, started_at: group.sketches[0]?.created_at, worktree_path: '' };
+  state.evidenceData = sketchSetEvidenceData(group, details); state.evidenceSteps = evidenceSteps(state.evidenceData);
+  state.evidenceStepKey = state.evidenceSteps.find((step) => step.variants[0]?.cell_id === state.evidenceRunId)?.key || state.evidenceSteps[0]?.key;
+  state.evidenceViewport = null; state.evidenceScreenshotKind = 'viewport'; state.evidenceSelectedFeedbackId = null;
+  main.innerHTML = evidenceWorkspace(state.evidenceRun, state.evidenceData);
+  refreshEvidenceSelection(); setupEvidenceLayout();
+  requestAnimationFrame(() => $('#evidence-canvas', main)?.focus({ preventScroll: true }));
+}
+
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  if (sketchId && setName) {
+    main.innerHTML = `${pageHeading('Sketches', '#/sketches', 'Loading')}<div class="sketch-set-list">${skeleton(6)}</div>`;
+    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100, sketch_set: setName });
+    const group = sketchSetGroups(result.sketches).find((item) => item.key === setName);
+    if (!group) { main.innerHTML = `${pageHeading('Sketches', '#/sketches')}${stateBlock('empty', 'This sketch set is no longer available.')}`; return; }
+    return viewSketchSetEvidence(repositoryId, group, sketchId);
+  }
   if (sketchId && !setName) {
     const detail = await api('design.sketch.get', { repository_id: repositoryId, sketch_id: sketchId });
     state.evidenceSource = 'sketch'; state.sketchRepositoryId = repositoryId; state.sketchDetail = detail;
@@ -4388,12 +4499,13 @@ async function render() {
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
   const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
-  main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute);
+  const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
+  main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
-  document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute);
-  if (!(view === 'tests' && arg) && !sketchDetailRoute && state.evidenceRunId) {
+  document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
+  if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {
     evidenceCanvasSession?.observer?.disconnect(); evidenceCanvasSession = null;
     resetEvidenceImages(); state.evidenceRunId = null; state.evidenceData = null;
     state.evidenceSteps = []; state.evidenceRun = null;
