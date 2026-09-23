@@ -520,7 +520,7 @@ No P0, P1, or P2 visual or interaction difference remains.
 
 - Formal Web UI run: `formal-web-ui-muer939z-f8d6fcca`
 - Formal result: 4/4 required cells passed, 0 critical findings
-- Manual screenshot review: `/tmp/dc2-sketch-annotation-manual-review-final3.json`
+- Manual screenshot review: `/tmp/dc2-sketch-annotation-manual-review-latest.json`
 - Browser journey fixture: `/tmp/dc2-sketch-annotation-e2e.mjs`
 - The audit used a local Coordinator edge/daemon fixture for safe real API and persistence behavior. The public authenticated Console tab was not mutated during verification.
 - Full WCAG conformance is outside a screenshot audit; keyboard and geometry checks were exercised, while assistive-technology output requires a dedicated screen-reader pass.
