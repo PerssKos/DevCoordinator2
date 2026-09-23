@@ -21,7 +21,7 @@
 
 ### Design alternatives and contextual interfaces
 
-- Apply the `ui-design-gate` module before implementing every new shipped
+- Apply the admission portion of `ui-design-gate` before every new shipped
   product UI element or visual asset, including admin and operational UI.
   The gate requires the named imagegen and Product Design workflows, exactly
   three independent visual options, actual display-order binding, retained
@@ -46,6 +46,11 @@
   errors, persistence, keyboard/touch interaction, and responsive layouts in
   every supported theme. Screenshots alone do not establish that the interface
   works.
+- When a confirmed mockup or approved visual target exists, complete the
+  post-implementation mockup audit required by `ui-design-gate` before calling
+  the UI complete. Use its source/rendered comparison for visual fidelity and
+  its step findings for UX and accessibility context, while still completing
+  the rendered interaction pass below for real behavior.
 
 ### Preserve rows and use vertical space efficiently
 
@@ -141,7 +146,7 @@ or instructional copy, apply this internal design check:
 
 ### Interaction completion
 
-Before reporting UI complete, finish one evidence pass over only the agreed
+Before reporting UI complete, finish a passing evidence review over the agreed
 screens, journeys, states, and responsive variants. This does not authorize a
 broader exhaustive audit.
 
@@ -163,6 +168,10 @@ other existing tests cannot express the behavior.
 
 Code inspection, routes, rendering, screenshots, visual comparison, and
 geometry checks support evidence but do not replace interaction verification.
+Reuse compatible evidence in the required mockup audit, retaining its actual
+source and state bindings. A visually faithful screen with a failed save,
+navigation, or recovery path is incomplete; repair and verify that behavior
+before either review can support final handoff.
 
 ### Content and interaction design
 

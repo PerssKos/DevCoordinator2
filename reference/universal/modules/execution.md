@@ -3,8 +3,9 @@
 ### UI implementation admission
 
 - Before any implementation batch that introduces or materially recomposes a
-  shipped product UI element, verify that `ui-design-gate` has completed.
-- While the gate is pending, discovery and preparation of the three design
+  shipped product UI element, verify that the admission portion of
+  `ui-design-gate` has completed.
+- While admission is pending, discovery and preparation of the three design
   artifacts may continue, but product edits, scaffolding, preview startup,
   implementation tests, and delivery work are paused for that UI scope.
 - A displayed user selection or an explicitly recorded autonomous-selection
@@ -13,6 +14,23 @@
 - If the design skill, Image Gen capability, or Coordinator evidence path is
   unavailable, preserve the pending gate and report the blocker; do not bypass
   it with a code-first implementation.
+
+### UI handoff audit
+
+- For UI backed by a confirmed mockup or approved visual target, verify that
+  the post-implementation mockup audit in `ui-design-gate` has passed before
+  reporting completion or handing the surface off.
+- A missing or blocked `$product-design:audit`, unavailable comparison
+  evidence, or any unresolved P0-P2 finding keeps the UI incomplete. Fix the
+  affected surface and repeat the audit under the same comparison conditions.
+- A preliminary preview may remain available for inspection while this gate is
+  open, but it must be described as preliminary and must not be presented as
+  final visual approval.
+- This gate supplements the rendered interaction and end-to-end evidence; a
+  screenshot comparison cannot prove that enabled controls, persistence,
+  recovery, or downstream integrations work.
+
+### Tools and asynchronous work
 
 - Partition tool calls into dependency layers. Execute safe independent
   calls in the same layer concurrently; serialize only real dependencies,

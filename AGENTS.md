@@ -39,6 +39,21 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   does not make persistent data, credentials, authorization controls, or
   root-service state disposable.
 
+## Mockup-backed UI handoff
+
+- Use the shared Console preview as the rendered target for every
+  mockup-backed UI change. After implementation, run the active
+  `$product-design:audit` contract against the confirmed source mockup with
+  matching states, viewports, themes, density, and content.
+- Keep the paired source/rendered captures, findings, comparison history, and
+  final result in project `design-qa.md` and Coordinator evidence, linked to
+  the same audit run. Fix and re-audit every P0-P2 finding before final
+  handoff; documented P3 polish may remain as follow-up work.
+- An unavailable approved mockup, capture, audit, or unresolved P0-P2 finding
+  blocks final handoff. A change without a confirmed target follows the
+  universal gate's applicability rules. Keep the shared server available and
+  describe previews with outstanding audit work as preliminary and incomplete.
+
 ## Authoritative project context
 
 - Read `security-assumptions.md`, relevant requirements, and applicable
@@ -70,6 +85,8 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
 - Shared policies, skill contracts, generated prompts, and generic
   documentation remain runtime-neutral. Runtime names belong only in factual
   installation adapters, provider metadata, product integrations, or history.
+- Product Design audit and design-QA contracts are resolved through the active
+  plugin catalog. Do not edit installed plugin copies.
 
 ## Skill development
 

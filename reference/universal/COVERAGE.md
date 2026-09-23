@@ -16,7 +16,7 @@ decisions, and execution evidence remain in their authoritative services.
 | 6 (277–426) | `modules/delivery.md` | Eligible clocks and defaults; accessible web previews; every desktop target and real updater; concurrent incremental publication; original verification/access boundaries; recovery-only hard stop |
 | 7 (427–469) | `modules/verification.md` | Manual prose review only; end-to-end-first test selection; existing-test extension before new unit coverage; focused versus stable/full validation; frozen candidates; safe sealed runs; isolated repairs; one suite owner; realistic journeys, recall, and precision |
 | 8 (470–496) | `modules/truthful-results.md` | Real facts/data/persistence/errors; enabled controls do their work; truthful prototypes/disabled future UI; complete end-to-end results |
-| 9 (497–699) | `modules/user-interface.md` | Journey-led destinations; exactly three design alternatives; approval/autonomy; compact contextual controls; row preservation; no engineering commentary; purposeful text; minimal surfaces; all rendered interactions; glossary and content-first states |
+| 9 (497–699) | `modules/ui-design-gate.md`, `modules/user-interface.md` | Journey-led destinations; exactly three design alternatives; approval/autonomy; mockup-backed fidelity audit; compact contextual controls; row preservation; no engineering commentary; purposeful text; minimal surfaces; all rendered interactions; glossary and content-first states |
 | 10 (700–753) | `modules/corrections.md` | Confirmed mistakes versus changed intent; original-surface diagnosis; existing outcomes and standing corrections; batched prevention/fix; applicability and provenance; durable discoverability; no writable legacy ledgers |
 | 11 (754–796) | `modules/preservation.md` | Storage placement/capacity; hot versus bulk work; exact cleanup with preservation; canonical sources; verified remote baseline; dirty work; running services; recoverable data; isolated tests; domain ownership |
 | 12 (797–827) | `modules/communication.md` | User goals and observable results; meaningful choices; behavior-based evidence; proportional explanation; preliminary access; truthful gaps and completion |
@@ -53,6 +53,18 @@ decisions, and execution evidence remain in their authoritative services.
   before new scenarios, and existing tests are searched and extended before
   any new unit test. Unit coverage remains supporting evidence for isolated
   logic and cannot replace a missing end-to-end path.
+- Mockup-backed UI completion now requires a combined `$product-design:audit`
+  against the confirmed visual target, paired source/rendered evidence at the
+  same state and viewport, and repeat passes until no P0-P2 finding remains.
+  `ui-design-gate` owns the detail; Section 5 separates admission from handoff
+  and Section 9 preserves rendered interaction proof. P3 polish is documented
+  follow-up. No confirmed target means no fidelity gate; an unavailable approved
+  target blocks it. Approved references remain usable, while new audit runs
+  need fresh implementation captures. `FORMAL-UI-REVIEW-TRIGGER` remains in
+  force: affected UI inputs, intent, targets, or route/state/theme/viewport
+  changes trigger review; dynamic pixels and unrelated backend work do not.
+  The gate supplements interaction and formal-browser evidence and permits
+  clearly incomplete preliminary previews.
 - All web/desktop delivery, updater, security, UI, preservation, and verification
   requirements remain conditional on their original relevant work. The new
   performance-only gate supersedes the former all-project delivery trigger,

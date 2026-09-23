@@ -85,7 +85,11 @@ earlier model messages or reload unchanged instructions.
   provides, present them in actual display order, and pause implementation
   until the user selects one unless the user explicitly authorizes autonomous
   selection. Retain the options and selection in Coordinator sketch/evidence
-  and decision records. Record confirmed repeatable mistakes as durable
+  and decision records. For every confirmed mockup-backed implementation,
+  also run `$product-design:audit` after implementation against the selected
+  target. P0-P2 findings or missing comparison evidence block handoff until
+  the implementation is fixed and the audit passes; retain the report and
+  iteration evidence. Record confirmed repeatable mistakes as durable
   corrections.
   Finish only when the intended outcome and verification are complete, the
   user explicitly stops it, or a genuine blocker prevents authorized progress.
