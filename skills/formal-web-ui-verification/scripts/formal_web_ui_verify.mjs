@@ -4646,7 +4646,7 @@ function screenshotActionValues(target) {
   const values = [];
   for (const action of target.verificationState?.actions || []) {
     if (action.action !== "fill" || typeof action.value !== "string" || !action.value) continue;
-    values.push(action.value);
+    if (action.value.trim()) values.push(action.value);
   }
   return [...new Set(values)];
 }
@@ -6849,7 +6849,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, writeJourneyEvidenceArtifact };
+export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, screenshotActionValues, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {
