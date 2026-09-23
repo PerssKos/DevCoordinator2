@@ -2,6 +2,11 @@ use super::review_aggregate::Groups;
 use super::*;
 use devcoordinator2_api::review::ReviewUsage;
 
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Projection {
+    Full,
+    Tokens,
+}
 impl CodexUsage {
     pub(super) fn review_measurements(
         &self,
@@ -10,6 +15,25 @@ impl CodexUsage {
         start_ms: u64,
         end_ms: u64,
         deadline: Instant,
+    ) -> Result<ReviewUsage, ProtocolError> {
+        self.measurements(
+            repository,
+            workstream,
+            start_ms,
+            end_ms,
+            deadline,
+            Projection::Full,
+        )
+    }
+
+    pub(super) fn measurements(
+        &self,
+        repository: &RepositoryRecord,
+        workstream: Option<&str>,
+        start_ms: u64,
+        end_ms: u64,
+        deadline: Instant,
+        projection: Projection,
     ) -> Result<ReviewUsage, ProtocolError> {
         let now_ms = self.now_ms()?;
         // Independent collectors share the same deadline, not one another's time.
@@ -22,6 +46,7 @@ impl CodexUsage {
                     scope.spawn(move || {
                         let result = self.review_source(
                             source, repository, workstream, now_ms, start_ms, end_ms, deadline,
+                            projection,
                         );
                         (source.uid, result)
                     })
@@ -79,6 +104,7 @@ impl CodexUsage {
         start_ms: u64,
         end_ms: u64,
         deadline: Instant,
+        projection: Projection,
     ) -> Result<(SourceReport, Groups), String> {
         for attempt in 0..2 {
             if Instant::now() >= deadline {
@@ -107,6 +133,24 @@ impl CodexUsage {
                     continue;
                 }
                 return Err("mapping_unavailable".into());
+            }
+            if schema >= 7
+                && projection == Projection::Tokens
+                && let Some(facts) =
+                    super::performance::read(&connection, &family, start_ms, end_ms)?
+            {
+                let result = super::review_aggregate::display(
+                    &connection,
+                    facts,
+                    workstream,
+                    start_ms,
+                    end_ms,
+                );
+                return if Instant::now() >= deadline {
+                    Err("query_budget_exhausted".into())
+                } else {
+                    result
+                };
             }
             let result = if schema >= 7 {
                 super::review_facts::read(&connection, &family, start_ms, end_ms).and_then(

@@ -19,7 +19,7 @@ export function performanceFixture(operation, params, scenario = {}) {
       ['p1111111111111103', 'Console chart improvements', 'user_feedback', 1600000], ['p1111111111111104', 'Verification coverage', 'goal', 640000],
     ].map(([outcomeId, title, kind, tokens]) => ({ outcomeId, title, kind, workstreamId: null, effort: effort(tokens * base) }));
     const totals = effort(total); totals.activities = { coding: metric(3744000 * base), integration_testing: metric(2496000 * base), unknown: metric(160000 * base) };
-    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0 } : coverage,
+    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: { mapping_unavailable: 1, query_budget_exhausted: 1 } } : coverage,
       totals: { total_tokens: scenario.usageUnavailable ? null : total }, activities: [], time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
@@ -104,6 +104,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   daemon.setScenario({...scenario,usageUnavailable:true});
   await page.locator('[data-performance-refresh]').click();
   await page.waitForFunction(()=>document.querySelector('[data-performance-charts]')?.textContent.includes('Token measurements are unavailable'));
+  verify('query failures are not mislabeled as missing setup', (await page.locator('[data-performance-coverage]').innerText()).includes('Usage data unavailable'));
   verify('unavailable measurements do not become zero totals', await page.locator('[data-performance-period-total]').innerText()==='—' && await page.locator('[data-performance-history] tbody tr').count()===2);
   daemon.setScenario({...scenario,empty:true});
   await page.locator('[data-performance-refresh]').click();

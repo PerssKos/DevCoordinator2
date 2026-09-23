@@ -28,8 +28,17 @@ fn live_readonly_review_probe() {
         let family = repository_family(&connection, &canonical)?;
         let start = scope["start"].as_u64().unwrap();
         let end = scope["end"].as_u64().unwrap();
-        let facts = review_facts::read(&connection, &family, start, end)?;
-        let (_, groups) = review_aggregate::aggregate(&connection, facts, None, start, end)?;
+        let facts = if std::env::var("CXM_LIVE_REVIEW_PROJECTION").as_deref() == Ok("tokens") {
+            performance::read(&connection, &family, start, end)?.ok_or("projection_unavailable")?
+        } else {
+            review_facts::read(&connection, &family, start, end)?
+        };
+        let read = if std::env::var("CXM_LIVE_REVIEW_PROJECTION").as_deref() == Ok("tokens") {
+            review_aggregate::display
+        } else {
+            review_aggregate::aggregate
+        };
+        let (_, groups) = read(&connection, facts, None, start, end)?;
         groups.finish(false)
     })();
     let evidence = match &result {
@@ -234,6 +243,44 @@ fn outcome_reader_matches_canonical_conformance_cases() {
         let (_, groups) =
             review_aggregate::aggregate(&connection, facts, None, start, end).unwrap();
         let report = groups.finish(false).unwrap();
+        connection.execute_batch("ALTER TABLE token_observations ADD COLUMN repository_bucket TEXT DEFAULT 'repository'; CREATE INDEX token_observations_repository_total_observed_idx ON token_observations(repository_bucket,observed_at_ms) WHERE category_path='total_tokens' AND measurement_provenance='provider_reported';").unwrap();
+        // Display reads reconcile with the exact owner/event accounting, including covered observations.
+        for bucket in ["repository", "multi_repo", "unknown"] {
+            connection
+                .execute(
+                    "UPDATE token_observations SET repository_bucket=?1",
+                    [bucket],
+                )
+                .unwrap();
+            let facts = performance::read(&connection, &["repository".into()], start, end)
+                .unwrap()
+                .unwrap();
+            let (_, display) =
+                review_aggregate::display(&connection, facts, None, start, end).unwrap();
+            let display = display.finish(false).unwrap();
+            assert_eq!(
+                display.totals.provider_total_tokens, report.totals.provider_total_tokens,
+                "display {}",
+                case["name"]
+            );
+            assert_eq!(
+                display.attributed.provider_total_tokens,
+                report.attributed.provider_total_tokens
+            );
+            assert_eq!(
+                display.unattributed.provider_total_tokens,
+                report.unattributed.provider_total_tokens
+            );
+        }
+        connection.execute("INSERT INTO token_observations(source_event_id,model_request_id,category_path,token_count,measurement_provenance,coverage_state,observed_at_ms,repository_bucket) VALUES('foreign','unowned','total_tokens',99999,'provider_reported','complete',?1,'repository')",[start as i64]).unwrap();
+        let facts = performance::read(&connection, &["repository".into()], start, end)
+            .unwrap()
+            .unwrap();
+        let (_, guarded) = review_aggregate::display(&connection, facts, None, start, end).unwrap();
+        assert_eq!(
+            guarded.finish(false).unwrap().totals.provider_total_tokens,
+            report.totals.provider_total_tokens
+        );
         assert_eq!(
             report
                 .totals

@@ -36,7 +36,7 @@ impl ReviewService {
             };
             (measurement, report.coverage, None)
         } else {
-            let usage = self.outcome_usage(
+            let usage = self.performance_usage(
                 &repository,
                 &Prepare {
                     repository_id: p.repository_id.clone(),
@@ -125,7 +125,7 @@ impl ReviewService {
             outcome_cursor: p.outcome_cursor.clone(),
             outcome_limit: p.outcome_limit,
         };
-        let usage = self.outcome_usage(&repository, &params, deadline)?;
+        let usage = self.performance_usage(&repository, &params, deadline)?;
         // Continuation pages only need the frozen outcome projection.
         let (evidence, comparisons) = if p.outcome_cursor.is_some() {
             (vec![], vec![])
@@ -207,6 +207,23 @@ impl ReviewService {
         let record = &revision.record;
         let e = &record.experiment;
         let repository = self.repository(&record.repository_id)?;
+        let full_before;
+        let before = if e
+            .result_evidence_refs
+            .iter()
+            .any(|r| r.kind == EvidenceKind::Usage)
+        {
+            full_before = self.usage.review_window(
+                &repository,
+                record.workstream_id.as_deref(),
+                record.window_start_ms,
+                record.window_end_ms,
+                deadline,
+            )?;
+            &full_before
+        } else {
+            before
+        };
         let prepared = Prepared {
             repository_id: record.repository_id.clone(),
             workstream_id: record.workstream_id.clone(),

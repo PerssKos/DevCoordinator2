@@ -2301,7 +2301,7 @@ fn render_response_to(
 ) -> io::Result<()> {
     match format {
         OutputFormat::Json => {
-            serde_json::to_writer_pretty(&mut *output, response).map_err(io::Error::other)?;
+            serde_json::to_writer(&mut *output, response).map_err(io::Error::other)?;
             writeln!(output)
         }
         OutputFormat::Human => match response {
@@ -3429,6 +3429,11 @@ mod tests {
         assert_eq!(decoded["protocol"], 2);
         assert_eq!(decoded["data"]["repository_id"], "r1");
         assert!(decoded.get("result").is_none());
+        assert_eq!(json_output.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert_eq!(
+            json_output.len(),
+            serde_json::to_vec(&success).unwrap().len() + 1
+        );
 
         let mut human_output = Vec::new();
         render_response_to(

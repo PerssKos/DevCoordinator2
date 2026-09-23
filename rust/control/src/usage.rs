@@ -35,6 +35,8 @@ use crate::repository::Registry;
 
 #[path = "usage_cache.rs"]
 mod cache;
+#[path = "usage_performance.rs"]
+mod performance;
 #[path = "usage_review.rs"]
 mod review;
 #[path = "usage_review_aggregate.rs"]
@@ -251,6 +253,24 @@ impl UsageService {
     ) -> Result<devcoordinator2_api::review::ReviewUsage, ProtocolError> {
         self.usage
             .review_measurements(repository, workstream, start_ms, end_ms, deadline)
+    }
+
+    pub(crate) fn performance_window(
+        &self,
+        repository: &RepositoryRecord,
+        workstream: Option<&str>,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+    ) -> Result<devcoordinator2_api::review::ReviewUsage, ProtocolError> {
+        self.usage.measurements(
+            repository,
+            workstream,
+            start,
+            end,
+            deadline,
+            review::Projection::Tokens,
+        )
     }
 
     pub(crate) fn performance_tokens(
