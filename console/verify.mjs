@@ -22,6 +22,7 @@ import { canonicalJson } from '../edge/lib/routes-store.mjs';
 import { chooseRepository, revealTestRows, revealTestSettings, verifyTestsDesign } from './verify-tests-pane.mjs';
 import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
+import { performanceFixture, verifyPerformance } from './verify-performance.mjs';
 import { verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
 import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
@@ -158,7 +159,7 @@ const progressFixture = (scenario, period = 'day') => {
     coverage: { state: scenario.empty ? 'unavailable' : (scenario.partial || referenceState || scenario.progressTokenPartial) ? 'partial' : 'complete',
       plan: { state: 'complete', completed_with_estimate: 7, completed_total: 7 },
       tests: { state: evidenceMissing ? 'unobserved' : scenario.partial ? 'partial' : 'complete', recorded_runs: evidenceMissing ? 0 : 26, history_sources: evidenceMissing ? 0 : 1, unavailable_sources: 0, earliest_at: evidenceMissing ? null : '2026-08-01T00:00:00Z' },
-      tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial || scenario.progressTokenPartial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState || scenario.progressTokenPartial), configured_collectors: 2, available_collectors: referenceState || scenario.progressTokenPartial ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : scenario.progressTokenPartial ? 1 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: scenario.progressTokenPartial ? { source_unavailable: 1 } : {} } },
+      tokens: { state: scenario.empty ? 'unobserved' : referenceState || scenario.partial || scenario.progressTokenPartial ? 'partial' : 'complete', has_gaps: !!(scenario.partial || referenceState || scenario.progressTokenPartial), configured_collectors: 2, available_collectors: referenceState || scenario.progressTokenPartial ? 1 : 2, contributing_collectors: evidenceMissing ? 0 : scenario.progressTokenPartial ? 1 : 2, freshest_at_ms: evidenceMissing ? null : Date.UTC(2026, 7, 30, 23, 58), unavailable_reasons: scenario.progressTokenPartial ? { source_unavailable: 1 } : {}, ...scenario.progressTokenCoverage } },
     semantics: { tasks: 'terminal task status events in the permanent plan ledger', lines: 'current planned task estimates completed; not measured Git changes', lines_added: 'initial task estimates and estimate increases; estimate reductions and dropped work are excluded', tests: 'bounded repository-local terminal test summaries', tokens: 'provider total_tokens; missing collector coverage stays missing', forecast: 'deterministic range from recent pace, scope, estimates, and test stability' },
   };
 };
@@ -395,7 +396,7 @@ const SCENARIOS = {
   logPageError: { identity: 'owner@example.test', admin: true, logPageError: true, targetedOnly: true },
   logShortPaged: { identity: 'owner@example.test', admin: true, logShortPaged: true, targetedOnly: true },
 };
-const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
+const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, `#/performance/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
 const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
 const EVIDENCE_WIDE = { width: 1440, height: 1024 };
 const destinationHref = (view) => {
@@ -403,13 +404,14 @@ const destinationHref = (view) => {
   if (view.startsWith('#/plan')) return '#/plan';
   if (view.startsWith('#/progress')) return '#/progress';
   if (view.startsWith('#/usage')) return '#/usage';
+  if (view.startsWith('#/performance')) return '#/performance';
   if (view.startsWith('#/decisions')) return '#/decisions';
   if (view.startsWith('#/tests')) return '#/tests';
   if (view.startsWith('#/health')) return '#/health';
   if (view.startsWith('#/bugs')) return '#/bugs';
   return '#/admin';
 };
-const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/decisions/${REPO}`]);
+const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/performance/${REPO}`, `#/decisions/${REPO}`]);
 const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
@@ -549,6 +551,8 @@ async function startFakeDaemon(dir) {
         return reply({ ok: false, error: { code: 'log_unavailable', message: 'Earlier output is temporarily unavailable.', detail: '' } });
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
+      if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
+      if (cmd.startsWith('performance.')) return reply({ok:true,data:performanceFixture(cmd,req.params,scenario)});
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       if (cmd === 'test.stop') { scenario = { ...scenario, testStopped: true }; return reply({ ok: true, data: { status: 'cancelled' } }); }
       if (cmd === 'test.start' && scenario.supersededRun) return reply({ ok: true, data: { run_id: 't20260101T000300Z-fed123', superseded_run_id: scenario.supersededRun } });
@@ -899,7 +903,7 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
+  if (process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
       for (const viewport of [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
         for (const theme of ['light', 'dark']) {
@@ -908,7 +912,7 @@ async function main() {
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? verifyPerformance : process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -1077,7 +1081,7 @@ async function main() {
           check(`${label}: one shared repository selector replaces per-page pickers`, metrics.projectPickerCount === 0 && metrics.sharedRepositoryCount === 1);
         }
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
-        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work)/.test(metrics.text), metrics.text.slice(0, 120));
+        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work|performance reviews|measured outcomes)/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view.startsWith('#/usage')) check(`${label}: usage requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));

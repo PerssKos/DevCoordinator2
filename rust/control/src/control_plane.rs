@@ -151,6 +151,9 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "release.deliver_evidence",
     "release.evidence_show",
     "release.evidence",
+    "performance.overview",
+    "performance.reviews",
+    "performance.review",
     "review.prepare",
     "review.record",
     "review.show",
@@ -1206,6 +1209,25 @@ impl ControlPlane {
                 )?;
                 encode(self.plan.decision_tail(&repository.repository_id, params)?)
             }
+            "performance.overview" => encode(
+                self.reviews.performance_overview(
+                    decode(params)?,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
+            "performance.reviews" => encode(self.reviews.performance_reviews(decode(params)?)?),
+            "performance.review" => encode(
+                self.reviews.performance_review(
+                    decode(params)?,
+                    self.clock
+                        .now_utc()
+                        .unix_timestamp_nanos()
+                        .div_euclid(1_000_000) as u64,
+                )?,
+            ),
             "review.prepare" => encode(
                 self.reviews.prepare(
                     decode(params)?,

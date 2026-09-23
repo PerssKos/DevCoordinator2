@@ -169,6 +169,52 @@ fn review_result_single_record_compares_real_windows_and_keeps_intentional_repea
         assert!(result.completed);
         assert_eq!(result.revision, 1);
         assert_eq!(result.record, expected);
+        let shown = fixture
+            .service
+            .performance_review(
+                devcoordinator2_api::performance::Review {
+                    repository_id: "project-alpha".into(),
+                    reference: result.reference.clone(),
+                    outcome_cursor: None,
+                    outcome_limit: Some(1),
+                },
+                now,
+            )
+            .unwrap();
+        assert_eq!(shown.comparisons.len(), 1);
+        assert_eq!(shown.comparisons[0].metrics[0].reduction, Some(40.0));
+        assert_eq!(
+            shown.comparisons[0].metrics[0].reduction_percent,
+            Some(40.0)
+        );
+        assert_eq!(
+            shown.comparisons[0].verified_improvement,
+            matches!(expected.experiment.disposition, Disposition::Retained)
+        );
+        assert!(
+            shown
+                .evidence
+                .iter()
+                .any(|item| item.source.kind == EvidenceKind::Decision && item.available)
+        );
+        change_run(&fixture, "history.json", "status", json!("failed"));
+        let failed = fixture
+            .service
+            .performance_review(
+                devcoordinator2_api::performance::Review {
+                    repository_id: "project-alpha".into(),
+                    reference: result.reference.clone(),
+                    outcome_cursor: None,
+                    outcome_limit: None,
+                },
+                now,
+            )
+            .unwrap();
+        assert!(!failed.comparisons[0].verified_improvement);
+        let zero = devcoordinator2_api::outcomes::OutcomeEffort::default();
+        let changes = super::performance::metric_changes(&zero, &zero);
+        assert_eq!(changes[0].reduction_percent, None);
+
         assert_eq!(
             fixture
                 .service

@@ -3,7 +3,7 @@ use devcoordinator2_api::results::TestStatus;
 use devcoordinator2_api::results::UsageCoverage;
 
 #[derive(Clone, Debug, PartialEq)]
-struct InputIdentity {
+pub(super) struct InputIdentity {
     workload: String,
     source: String,
     configuration: String,
@@ -156,7 +156,7 @@ impl ReviewService {
         Ok(())
     }
 
-    fn validate_reference(
+    pub(super) fn validate_reference(
         &self,
         repository_id: &str,
         reference: EvidenceRef,
@@ -224,7 +224,7 @@ fn check_time(purpose: EvidenceUse, observed: Option<u64>) -> Result<(), Protoco
     }
 }
 
-fn result_window(
+pub(super) fn result_window(
     reference: &str,
     record: &ReviewRecord,
     now_ms: u64,

@@ -13,6 +13,8 @@ use crate::usage::{QUERY_TIMEOUT, RepositoryRecord, UsageService};
 mod evidence;
 #[path = "review_pages.rs"]
 mod pages;
+#[path = "performance.rs"]
+mod performance;
 
 #[derive(Clone)]
 pub(crate) struct ReviewService {

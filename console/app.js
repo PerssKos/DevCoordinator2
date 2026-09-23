@@ -285,7 +285,7 @@ function currentDestinationHeading() {
   const [, view, arg] = (location.hash || '#/plan').split('?')[0].slice(1).split('/');
   const destinations = {
     deployments: ['Deployments', '#/deployments'], plan: ['Plan', '#/plan'],
-    progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'],
+    progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'], performance: ['Performance', '#/performance'],
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
@@ -3368,9 +3368,12 @@ function progressEvidenceLane(data, {
   const observed = observedValues.length > 0;
   const coverage = cls === 'tests' ? data.coverage.tests : data.coverage.tokens;
   const snapshotText = cls === 'tokens' ? usageSnapshotText(coverage) : '';
+  const missingReasons = Object.keys(coverage.unavailable_reasons || {});
+  const noRepositoryHistory = missingReasons.length > 0
+    && missingReasons.every((reason) => reason === 'mapping_unavailable');
   const unavailable = (coverage.snapshot?.refreshing || coverage.snapshot?.refresh_failed ? snapshotText : '') || (cls === 'tests'
     ? 'No test runs recorded for this period.'
-    : coverage.state === 'unobserved' ? 'No token data recorded for this period.' : 'Some token data is missing.');
+    : coverage.state === 'unobserved' || noRepositoryHistory ? 'No token data recorded for this period.' : 'Some token data is missing.');
   if (!observed) return `<div class="progress-evidence-lane" data-progress-evidence="${esc(cls)}"><div><strong>${esc(label)}</strong><small>${esc(detail)}</small></div><p>${esc(unavailable)}</p><strong>—</strong></div>`;
   const width = Math.max(650, 220 + values.length * 38); const height = 58;
   const left = 168; const right = 92; const top = 8; const bottom = 8;
@@ -4414,6 +4417,7 @@ const viewDecisions = guard(async (repoId) => {
 });
 
 // --- Router ----------------------------------------------------------------
+const performancePage = window.DevCoordinatorPerformance.create({ api, esc, compactNumber, durationMs, coverageText, identity: () => state.who });
 const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
 window.addEventListener('resize', () => {
   const composer = $('#evidence-composer', main);
@@ -4444,6 +4448,7 @@ async function render() {
   main.classList.toggle('glossary-page', view === 'glossary');
   main.classList.toggle('usage-page', view === 'usage' && !!arg);
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
+  main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -4466,9 +4471,12 @@ async function render() {
     return;
   }
   if (view === 'deployments') return arg ? viewDeployment(arg) : viewDeployments();
+  if (view === 'plan' && new URLSearchParams(location.hash.split('?')[1] || '').has('task')) state.planRequestedTaskId = new URLSearchParams(location.hash.split('?')[1]).get('task');
   if (view === 'plan') return arg ? viewPlan(arg) : viewPlanPicker('plan');
   if (view === 'progress') return arg ? viewProgress(arg) : viewProgressRepositories();
+  if (view === 'performance') return performancePage.render(main, arg, signal);
   if (view === 'usage') return arg ? viewCodexUsage(arg) : viewCodexUsageRepositories();
+  if (view === 'decisions' && new URLSearchParams(location.hash.split('?')[1] || '').has('q')) state.decisionQuery = new URLSearchParams(location.hash.split('?')[1]).get('q');
   if (view === 'decisions') return arg ? viewDecisions(arg) : viewPlanPicker('decisions');
   if (view === 'glossary') return viewGlossary();
   if (view === 'tests') return viewTests(arg || null, route.settings);

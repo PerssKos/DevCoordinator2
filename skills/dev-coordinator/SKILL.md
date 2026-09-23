@@ -30,7 +30,7 @@ devcoordinator2 health --help
   `design_sketch_get`, `design_sketch_image`, `design_sketch_record`, and
   `design_sketch_decision` to retain and review project sketches. A generating
   skill should publish the complete image batch and generation record once;
-  never scan Codex folders or infer project ownership from a path.
+  never scan runtime folders or infer project ownership from a path.
 - Use `agent_message_poll`, `agent_message_claim`, and `agent_message_ack` for
   repository-scoped sketch decisions and annotation notifications. Leave the
   linked Plan task as the durable fallback when an agent cannot acknowledge a

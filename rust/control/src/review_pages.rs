@@ -75,16 +75,44 @@ impl ReviewService {
             .collect::<Vec<_>>();
         let repository_id = params.repository_id.clone();
         let titles = self.database.call(move |connection| {
-            let mut query = connection.prepare("SELECT task_id,title FROM tasks WHERE repository_id = ?1 AND task_id IN (SELECT value FROM json_each(?2))")?;
+            let mut query = connection.prepare("SELECT task_id,title,kind FROM tasks WHERE repository_id = ?1 AND task_id IN (SELECT value FROM json_each(?2))")?;
             let ids = serde_json::to_string(&ids).map_err(|_| crate::database::DatabaseError::ResultType)?;
-            query.query_map(rusqlite::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+            query.query_map(rusqlite::params![repository_id, ids], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, row.get::<_, String>(2)?))))?
                 .collect::<Result<BTreeMap<_, _>, _>>().map_err(Into::into)
         }).map_err(database_error)?;
         for row in &mut usage.outcomes.rows {
             row.title = titles
                 .get(&row.outcome_id)
-                .map(|title| title.chars().take(120).collect());
+                .map(|(title, _)| title.chars().take(120).collect());
+            row.kind = titles.get(&row.outcome_id).map(|(_, kind)| kind.clone());
+            let entry = usage
+                .outcomes
+                .kinds
+                .entry(row.kind.clone().unwrap_or_else(|| "unknown".into()))
+                .or_default();
+            let tokens = &row.effort.provider_total_tokens;
+            entry.measured = entry
+                .measured
+                .checked_add(tokens.measured)
+                .ok_or_else(|| invalid("Usage overflow"))?;
+            entry.unknown += tokens.unknown;
         }
+        for entry in usage.outcomes.kinds.values_mut() {
+            entry.exact =
+                (entry.unknown == 0 && !usage.coverage.has_gaps).then_some(entry.measured);
+        }
+        usage.outcomes.kinds.insert(
+            "unattributed".into(),
+            usage.outcomes.unattributed.provider_total_tokens.clone(),
+        );
+        usage.outcomes.rows.sort_by(|a, b| {
+            b.effort
+                .provider_total_tokens
+                .measured
+                .cmp(&a.effort.provider_total_tokens.measured)
+                .then_with(|| a.outcome_id.cmp(&b.outcome_id))
+                .then_with(|| a.workstream_id.cmp(&b.workstream_id))
+        });
         let bytes = serde_json::to_vec(&usage)
             .map_err(|_| invalid("Cannot encode usage"))?
             .len();

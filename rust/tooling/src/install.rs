@@ -1276,7 +1276,7 @@ pub(crate) fn prepare_state_directory(path: &Path, owner: (u32, u32)) -> Result<
             "public" | "deployments" | "secrets" => {
                 open(&entry.path(), true)?;
             }
-            "cutover" | "recovery" | "install-transactions" => {
+            "cutover" | "recovery" | "install-transactions" | "sketches" => {
                 private.push((open(&entry.path(), true)?, 0o700));
             }
             name if name == "authority.sqlite3"
@@ -2605,6 +2605,7 @@ mod tests {
             "cutover",
             "recovery",
             "install-transactions",
+            "sketches",
         ] {
             std::fs::create_dir(root.join(name)).unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
@@ -2647,10 +2648,14 @@ mod tests {
                 "cutover",
                 "recovery",
                 "install-transactions",
+                "sketches",
             ] {
                 assert_eq!(
                     std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,
-                    if matches!(name, "cutover" | "recovery" | "install-transactions") {
+                    if matches!(
+                        name,
+                        "cutover" | "recovery" | "install-transactions" | "sketches"
+                    ) {
                         0o700
                     } else {
                         0o755

@@ -49,8 +49,14 @@ mod review_query;
 #[path = "usage_review_tests.rs"]
 mod review_tests;
 
-const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6, 7];
+const SUPPORTED_DATABASE_SCHEMAS: &[u32] = &[4, 5, 6, 7, 8];
 const SUPPORTED_TAXONOMY: u32 = 1;
+
+#[derive(Clone, Copy, Debug)]
+enum Projection {
+    Full,
+    Tokens,
+}
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -247,6 +253,27 @@ impl UsageService {
             .review_measurements(repository, workstream, start_ms, end_ms, deadline)
     }
 
+    pub(crate) fn performance_tokens(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        now: u64,
+    ) -> Result<UsageRepository, ProtocolError> {
+        self.usage.repository_window(
+            repository,
+            UsageRange::Hours24,
+            now,
+            start,
+            end,
+            end - start,
+            1,
+            true,
+            Some(Instant::now() + QUERY_TIMEOUT),
+            Projection::Tokens,
+        )
+    }
+
     fn records(&self) -> Result<Vec<RepositoryRecord>, ProtocolError> {
         Ok(self
             .registry
@@ -325,7 +352,17 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let now_ms = self.now_ms()?;
         let (start, end, bucket, count) = usage_window(&range, now_ms);
-        self.cached_window(repository, range, now_ms, start, end, bucket, count, true)
+        self.cached_window(
+            repository,
+            range,
+            now_ms,
+            start,
+            end,
+            bucket,
+            count,
+            true,
+            Projection::Full,
+        )
     }
 
     pub fn repository_at(
@@ -336,7 +373,16 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let (start, end, bucket, count) = usage_window(&range, now_ms);
         self.repository_window(
-            repository, range, now_ms, start, end, bucket, count, true, None,
+            repository,
+            range,
+            now_ms,
+            start,
+            end,
+            bucket,
+            count,
+            true,
+            None,
+            Projection::Full,
         )
     }
 
@@ -373,6 +419,7 @@ impl CodexUsage {
             bucket_ms,
             bucket_count,
             resolve_missing,
+            Projection::Tokens,
         )
     }
 
@@ -387,9 +434,10 @@ impl CodexUsage {
         bucket_ms: u64,
         bucket_count: usize,
         resolve_missing: bool,
+        projection: Projection,
     ) -> Result<UsageRepository, ProtocolError> {
         let key = format!(
-            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}",
+            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}:{projection:?}",
             repository.repository_id,
             repository.root_path,
             range_name(&range)
@@ -418,6 +466,7 @@ impl CodexUsage {
                 bucket_count,
                 resolve_missing,
                 None,
+                projection,
             )
         }))
     }
@@ -434,6 +483,7 @@ impl CodexUsage {
         bucket_count: usize,
         resolve_missing: bool,
         deadline: Option<Instant>,
+        projection: Projection,
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
@@ -452,6 +502,7 @@ impl CodexUsage {
                         bucket_ms,
                         bucket_count,
                         deadline,
+                        projection,
                     ) {
                         Ok(report) => reports.push((source.uid, report)),
                         Err(reason) if reason == "mapping_unavailable" && resolve_missing => {
@@ -467,6 +518,7 @@ impl CodexUsage {
                                         bucket_ms,
                                         bucket_count,
                                         deadline,
+                                        projection,
                                     )
                                     .map_err(source_error)
                                 }) {
@@ -584,6 +636,7 @@ impl CodexUsage {
         bucket_ms: u64,
         bucket_count: usize,
         deadline: Option<Instant>,
+        projection: Projection,
     ) -> Result<SourceReport, String> {
         let inherited_deadline = deadline;
         let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
@@ -605,7 +658,11 @@ impl CodexUsage {
             if !repository_exists(&connection, &family)? {
                 return Err("mapping_unavailable".into());
             }
-            source_report(
+            let read = match projection {
+                Projection::Full => source_report,
+                Projection::Tokens => source_token_report,
+            };
+            read(
                 &connection,
                 &family,
                 schema,
@@ -949,6 +1006,107 @@ fn source_report(
         bucket_count,
     )?;
     add_intervals(connection, &mut report, &by_id, start_ms, end_ms)?;
+    Ok(report)
+}
+
+// Progress needs provider totals by observation time, without loading every
+// operation's timing, tool details and classification from the full history.
+#[allow(clippy::too_many_arguments)]
+fn source_token_report(
+    connection: &Connection,
+    family: &[String],
+    schema: u32,
+    taxonomy: u32,
+    start_ms: u64,
+    end_ms: u64,
+    bucket_ms: u64,
+    bucket_count: usize,
+) -> Result<SourceReport, String> {
+    let mut values = vec![
+        SqlValue::Integer(i64_value(start_ms)?),
+        SqlValue::Integer(i64_value(end_ms)?),
+    ];
+    values.extend(family.iter().cloned().map(SqlValue::Text));
+    values.extend(family.iter().cloned().map(SqlValue::Text));
+    let indexed: bool = connection.query_row(
+        "SELECT COUNT(*)=3 FROM sqlite_schema WHERE type='index' AND name IN ('token_observations_repository_total_observed_idx','model_requests_id_operation_idx','tool_invocations_id_operation_idx')",
+        [], |row| row.get(0),
+    ).map_err(|_| "source_unavailable")?;
+    let sql = if indexed {
+        format!(
+            "WITH bounds AS (SELECT ? lower_ms, ? upper_ms), observed AS MATERIALIZED (
+               SELECT token_count,coverage_state,observed_at_ms,model_request_id,tool_invocation_id
+               FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
+               WHERE repository_bucket IN ({}) AND category_path='total_tokens'
+                 AND measurement_provenance='provider_reported'
+                 AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms)
+             SELECT token.token_count,token.coverage_state,token.observed_at_ms FROM observed token
+             WHERE EXISTS (SELECT 1 FROM repository_attributions attribution
+               WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
+                 (SELECT operation_id FROM model_requests INDEXED BY model_requests_id_operation_idx WHERE id=token.model_request_id),
+                 (SELECT operation_id FROM tool_invocations INDEXED BY tool_invocations_id_operation_idx WHERE id=token.tool_invocation_id)))",
+            placeholders(family.len()), placeholders(family.len()),
+        )
+    } else {
+        format!(
+            "WITH observed AS MATERIALIZED (
+           SELECT rowid FROM token_observations WHERE category_path='total_tokens'
+             AND measurement_provenance='provider_reported'
+             AND observed_at_ms>=? AND observed_at_ms<?)
+         SELECT token.token_count,token.coverage_state,token.observed_at_ms
+         FROM token_observations token
+         WHERE token.rowid IN (SELECT rowid FROM observed) AND token.repository_bucket IN ({})
+           AND EXISTS (SELECT 1 FROM repository_attributions attribution
+             WHERE attribution.repository_id IN ({}) AND attribution.operation_id=COALESCE(
+               (SELECT operation_id FROM model_requests WHERE id=token.model_request_id),
+               (SELECT operation_id FROM tool_invocations WHERE id=token.tool_invocation_id)))",
+            placeholders(family.len()),
+            placeholders(family.len()),
+        )
+    };
+    let mut statement = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
+    let mut rows = statement
+        .query(params_from_iter(values))
+        .map_err(|_| "source_unavailable")?;
+    let mut report = SourceReport {
+        database_schema: schema,
+        taxonomy_version: taxonomy,
+        phase_series: vec![BTreeMap::new(); bucket_count],
+        token_buckets_observed: vec![false; bucket_count],
+        bucket_coverage: vec![CoverageState::Unobserved; bucket_count],
+        ..Default::default()
+    };
+    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
+        let count = row
+            .get::<_, Option<i64>>(0)
+            .map_err(|_| "source_unavailable")?
+            .and_then(|value| u64::try_from(value).ok());
+        let coverage = safe_coverage(&row.get::<_, String>(1).map_err(|_| "source_unavailable")?);
+        let at = u64::try_from(row.get::<_, i64>(2).map_err(|_| "source_unavailable")?)
+            .map_err(|_| "source_unavailable")?;
+        report.evidence = true;
+        increment(&mut report.token_observations, coverage_name(&coverage));
+        report.freshest_at_ms = Some(report.freshest_at_ms.unwrap_or(0).max(at));
+        let Some(count) = count else { continue };
+        let total = report.tokens.entry("total_tokens".into()).or_default();
+        *total = total.saturating_add(count);
+        if let Some(index) = bucket_index(at, start_ms, bucket_ms, bucket_count) {
+            report.token_buckets_observed[index] = true;
+            // This private projection is consumed only by Progress, which does
+            // not expose phases; keep the shared bucket combiner truthful.
+            let total = report.phase_series[index]
+                .entry("unattributed".into())
+                .or_default();
+            *total = total.saturating_add(count);
+            report.bucket_coverage[index] = if coverage == CoverageState::Complete
+                && report.bucket_coverage[index] != CoverageState::Partial
+            {
+                CoverageState::Complete
+            } else {
+                CoverageState::Partial
+            };
+        }
+    }
     Ok(report)
 }
 
@@ -2031,6 +2189,9 @@ pub(crate) mod tests {
              CREATE INDEX token_model_lookup ON token_observations(model_request_id,repository_bucket,category_path,observed_at_ms);
              CREATE INDEX token_tool_lookup ON token_observations(tool_invocation_id,repository_bucket,category_path,observed_at_ms);
              CREATE INDEX coverage_operation_lookup ON coverage_events(operation_id,occurred_at_ms);
+             CREATE INDEX repository_attributions_repository_operation_idx ON repository_attributions(repository_id,operation_id);
+             CREATE UNIQUE INDEX model_requests_operation_idx ON model_requests(operation_id);
+             CREATE UNIQUE INDEX tool_invocations_operation_idx ON tool_invocations(operation_id);
              CREATE INDEX effective_operation_lookup ON effective_classification_events(operation_id);
              CREATE INDEX span_operation_lookup ON activity_spans(operation_id);",
         )
@@ -2135,7 +2296,7 @@ pub(crate) mod tests {
                 [start + 3_000],
             )
             .unwrap();
-        if matches!(schema, 5 | 6) {
+        if (5..=8).contains(&schema) {
             connection.execute_batch(
                 "CREATE TABLE model_request_context_sources (
                     model_request_id TEXT PRIMARY KEY NOT NULL REFERENCES model_requests(id),
@@ -2152,13 +2313,20 @@ pub(crate) mod tests {
                     ('request-private',9000,8000,7000,'approx_model_visible_v1',0);",
             ).unwrap();
         }
-        if schema == 6 {
+        if (6..=8).contains(&schema) {
             connection
                 .execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY);")
                 .unwrap();
             connection
                 .execute_batch(include_str!(
                     "../tests/fixtures/codex-usage-0006-work-bindings.sql"
+                ))
+                .unwrap();
+        }
+        if schema == 8 {
+            connection
+                .execute_batch(include_str!(
+                    "../tests/fixtures/codex-usage-0008-activity-declarations.sql"
                 ))
                 .unwrap();
         }
@@ -2203,8 +2371,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn work_context_schema_six_addition_preserves_measurements_and_privacy() {
-        assert_repository_usage(6);
+    fn additive_usage_schemas_preserve_measurements_and_privacy() {
+        for schema in [6, 7, 8] {
+            assert_repository_usage(schema);
+        }
     }
 
     #[test]
@@ -2305,6 +2475,7 @@ pub(crate) mod tests {
                     1,
                     false,
                     Some(deadline),
+                    Projection::Full,
                 )
                 .unwrap();
             assert!(report.coverage.has_gaps);
@@ -2422,6 +2593,43 @@ pub(crate) mod tests {
                 coverage.execute([at]).unwrap();
             }
         }
+        // Match a mature repository: most attributed operations ended before
+        // the requested period, while a long operation crosses its boundary.
+        transaction.execute_batch(
+            "CREATE INDEX operations_started_id_idx ON operations(started_at_ms,id);
+             CREATE INDEX operation_events_terminal_observed_idx ON operation_events(occurred_at_ms,operation_id) WHERE terminal=1;
+             CREATE UNIQUE INDEX operation_events_one_terminal ON operation_events(operation_id) WHERE terminal=1;
+             WITH RECURSIVE history(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM history WHERE n<50000)
+             INSERT INTO operations SELECT 'history-'||n,'local_tool','old-agent',0,'testing','unit_testing','tool_active','agent_declared' FROM history;
+             INSERT INTO operation_events SELECT id,1,1,'completed' FROM operations WHERE id LIKE 'history-%';"
+        ).unwrap();
+        transaction.execute(
+            "INSERT INTO repository_attributions SELECT id,?1 FROM operations WHERE id LIKE 'history-%'",
+            ["a".repeat(64)],
+        ).unwrap();
+        transaction.execute(
+            "INSERT INTO operations VALUES('crossing-op','model_request','agent-private',?1,'implementation','coding','model_active','agent_declared')",
+            [i64::try_from(now_ms - 180_000).unwrap()],
+        ).unwrap();
+        transaction
+            .execute(
+                "INSERT INTO operation_events VALUES('crossing-op',1,?1,'completed')",
+                [i64::try_from(now_ms - 1000).unwrap()],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO model_requests VALUES('crossing-request','crossing-op')",
+                [],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO repository_attributions VALUES('crossing-op',?1)",
+                ["a".repeat(64)],
+            )
+            .unwrap();
+        transaction.execute("INSERT INTO token_observations VALUES('total_tokens',17,'complete',?1,'crossing-request',NULL,?2,'provider_reported')", rusqlite::params![i64::try_from(now_ms - 1000).unwrap(), "a".repeat(64)]).unwrap();
         transaction.commit().unwrap();
         drop(source);
 
@@ -2443,45 +2651,54 @@ pub(crate) mod tests {
                 Ok(())
             })
             .unwrap();
-        let usage = CodexUsage::with_probe(
-            config,
-            authority,
-            Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
-            Arc::new(FixtureProbe),
-        );
-        let detail = usage
-            .repository_buckets(
-                &repository,
-                UsageRange::Hours24,
-                60_000,
-                2,
-                now_ms,
-                now_ms,
-                true,
-            )
-            .unwrap();
-        assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
-        usage.wait_for_refresh(Some(&repository.repository_id));
-        let detail = usage
-            .repository_buckets(
-                &repository,
-                UsageRange::Hours24,
-                60_000,
-                2,
-                now_ms,
-                now_ms,
-                true,
-            )
-            .unwrap();
-        assert_eq!(detail.totals.total_tokens, Some(100));
-        assert_eq!(
-            detail
-                .series
-                .iter()
-                .map(|point| point.total_tokens)
-                .collect::<Vec<_>>(),
-            vec![None, Some(100)]
-        );
+        for indexed in [false, true] {
+            if indexed {
+                Connection::open(config.codex_usage_sources[0].codex_home.join("usage/usage.sqlite3")).unwrap().execute_batch(
+                "CREATE INDEX token_observations_repository_total_observed_idx ON token_observations(repository_bucket, observed_at_ms, token_count, coverage_state, model_request_id, tool_invocation_id) WHERE category_path='total_tokens' AND measurement_provenance='provider_reported';
+                 CREATE INDEX model_requests_id_operation_idx ON model_requests(id, operation_id);
+                 CREATE INDEX tool_invocations_id_operation_idx ON tool_invocations(id, operation_id);"
+            ).unwrap();
+            }
+            let usage = CodexUsage::with_probe(
+                config.clone(),
+                authority.clone(),
+                Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
+                Arc::new(FixtureProbe),
+            );
+            let detail = usage
+                .repository_buckets(
+                    &repository,
+                    UsageRange::Hours24,
+                    60_000,
+                    2,
+                    now_ms,
+                    now_ms,
+                    true,
+                )
+                .unwrap();
+            assert!(detail.coverage.snapshot.as_ref().unwrap().refreshing);
+            usage.wait_for_refresh(Some(&repository.repository_id));
+            let detail = usage
+                .repository_buckets(
+                    &repository,
+                    UsageRange::Hours24,
+                    60_000,
+                    2,
+                    now_ms,
+                    now_ms,
+                    true,
+                )
+                .unwrap();
+            assert_eq!(detail.totals.total_tokens, Some(117));
+            assert_eq!(
+                detail
+                    .series
+                    .iter()
+                    .map(|point| point.total_tokens)
+                    .collect::<Vec<_>>(),
+                vec![None, Some(117)]
+            );
+        }
     }
 
     #[test]
@@ -2539,7 +2756,7 @@ pub(crate) mod tests {
     fn unsupported_and_unconfigured_collectors_are_unavailable_not_zero() {
         let temporary = tempdir().unwrap();
         let codex_home = temporary.path().join("codex-home");
-        let (canonical, now_ms) = source_database(&codex_home, 8);
+        let (canonical, now_ms) = source_database(&codex_home, 9);
         let mut config = config(temporary.path(), codex_home);
         std::fs::create_dir_all(&config.state_dir).unwrap();
         let authority = Database::open(config.database_path()).unwrap();
@@ -2553,7 +2770,7 @@ pub(crate) mod tests {
         let uid = rustix::process::getuid().as_raw();
         authority.transaction(move |transaction| {
             transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo','Example','t',1,'t')",[&repository_id])?;
-            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,8,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
+            transaction.execute("INSERT INTO codex_usage_repository_links VALUES(?1,?2,?3,9,1,'t')",rusqlite::params![uid,repository_id,canonical])?;
             Ok(())
         }).unwrap();
         let usage = CodexUsage::with_probe(

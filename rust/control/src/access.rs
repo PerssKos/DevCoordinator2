@@ -1888,6 +1888,18 @@ mod tests {
             .expect("admitted self operation");
 
         for (operation, params) in [
+            (
+                "performance.overview",
+                serde_json::json!({"repository_id":"r0123456789abcdef","window_start_ms":0,"window_end_ms":1000}),
+            ),
+            (
+                "performance.reviews",
+                serde_json::json!({"repository_id":"r0123456789abcdef"}),
+            ),
+            (
+                "performance.review",
+                serde_json::json!({"repository_id":"r0123456789abcdef","reference":"review-example@1"}),
+            ),
             ("config.get", serde_json::json!({})),
             (
                 "config.env.set",

@@ -1486,21 +1486,32 @@ impl PlanService {
     ) -> Result<DecisionSearch, ProtocolError> {
         self.repository_identity(repository_id)?;
         validate_plain_text("query", &params.query, 1, 200)?;
-        let query = literal_fts_query(&params.query);
+        let identifier = params.query.trim().strip_prefix('n').is_some_and(|suffix| {
+            suffix.len() == 16 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        let query = if identifier {
+            params.query.trim().to_owned()
+        } else {
+            literal_fts_query(&params.query)
+        };
         let aspect = params.aspect.as_ref().map(enum_string).transpose()?;
         let repository_id_owned = repository_id.to_owned();
         let limit = u32::from(params.n.clamp(1, 50));
         let decisions = self
             .database
             .call(move |connection| {
-                let mut sql = "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions_fts f JOIN decisions d ON d.rowid=f.rowid WHERE decisions_fts MATCH ?1 AND d.repository_id=?2".to_owned();
+                let mut sql = if identifier {
+                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions d WHERE d.decision_id=?1 AND d.repository_id=?2"
+                } else {
+                    "SELECT d.decision_id,d.seq,d.ref,d.aspect,d.title,d.body,d.technical_note,d.superseded_by,d.created_at,d.created_by FROM decisions_fts f JOIN decisions d ON d.rowid=f.rowid WHERE decisions_fts MATCH ?1 AND d.repository_id=?2"
+                }.to_owned();
                 let mut values: Vec<rusqlite::types::Value> =
                     vec![query.into(), repository_id_owned.into()];
                 if let Some(aspect) = aspect {
                     sql.push_str(" AND d.aspect=?3");
                     values.push(aspect.into());
                 }
-                sql.push_str(&format!(" ORDER BY bm25(decisions_fts) LIMIT ?{}", values.len() + 1));
+                sql.push_str(&format!(" ORDER BY {} LIMIT ?{}", if identifier { "d.seq DESC" } else { "bm25(decisions_fts)" }, values.len() + 1));
                 values.push(i64::from(limit + 1).into());
                 let mut statement = connection.prepare(&sql)?;
                 Ok(statement
@@ -2661,6 +2672,20 @@ mod tests {
             .expect("search");
         assert_eq!(search.decisions.len(), 1);
         assert_eq!(search.decisions[0].decision_id, second.decision_id);
+        let linked = service
+            .search_decisions(
+                "r1111111111111111",
+                DecisionSearchParams {
+                    path: None,
+                    repository_id: Some("r1111111111111111".into()),
+                    query: second.decision_id.clone(),
+                    aspect: None,
+                    n: 10,
+                },
+            )
+            .expect("review decision link");
+        assert_eq!(linked.decisions.len(), 1);
+        assert_eq!(linked.decisions[0].decision_id, second.decision_id);
 
         let tail = service
             .decision_tail(

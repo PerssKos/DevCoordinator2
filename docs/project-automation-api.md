@@ -53,10 +53,13 @@ operation/outcome/experiment ID is a join key, not a fabricated allocation of
 repository-wide tokens or elapsed time. Canonical task-usage gaps remain until
 the accounting source actually supplies that attribution.
 
-The canonical usage reader accepts exactly database versions 4, 5 and 6 with
-taxonomy 1. Reviewed migration `0006_work_bindings.sql` only adds an append-only
-binding table and its indexes; existing measurement tables and their queries
-are unchanged. Unknown later versions remain unavailable, never zero usage.
+The canonical usage reader accepts exactly database versions 4 through 8 with
+taxonomy 1. Migration `0006_work_bindings.sql` adds work bindings; version 7
+adds prospective outcome attribution; version 8 adds activity declarations.
+The version 8 addition leaves existing measurement tables and queries unchanged.
+Unknown later versions remain unavailable, never zero usage. The configured
+Codex executable must also support its collector's database version when it
+resolves repository identities.
 These bindings remain in the canonical collector; Coordinator adds no usage
 mirror, timer or scheduler.
 
@@ -315,3 +318,13 @@ Applicable confirmed assumptions: `DC2-2026-08-29-CODEX-USAGE-SOURCE`,
 `DC2-2026-09-03-RETAINED-EVIDENCE-TREES` and
 `DC2-2026-09-05-FAILED-CHECK-EVIDENCE`. No new listener, writer, scheduler,
 cross-account identity disclosure or external verification authority is added.
+
+## Performance Console projections
+
+Three read-only repository-administrator operations expose the existing review/accounting data. They are available through protocol v2 and matching `performance_overview`, `performance_reviews`, and `performance_review` MCP tools.
+
+- `performance.overview`: `{repository_id, window_start_ms, window_end_ms, outcome_cursor?, outcome_limit?, totals_only?}`. Windows are half-open UTC milliseconds. Normal results contain full-scope totals and paginated outcomes; `totals_only:true` uses the narrow provider-total reader (including an all-recorded window starting at zero), without loading outcome details.
+- `performance.reviews`: `{repository_id, before?, limit?, record_id?}`. Lists newest logical reviews, one latest revision each, or immutable revisions of one `record_id`. `total_reviews` counts logical records, not revisions. Pages have at most ten records and 24 KiB of record bodies; `next_before` continues the bounded read.
+- `performance.review`: `{repository_id, reference, outcome_cursor?, outcome_limit?}`. `reference` is an exact `review-id@revision`, validated against the repository. Returns the record, its canonical window/workstream measurements, resolved evidence and before/after comparisons. Outcome continuation reuses the existing five-minute frozen snapshot.
+
+Outcome effort projections add activity token measurements; rows add the current Plan kind; outcome reports add kind totals before pagination. The existing unmodified v1 numerical accounting semantics remain authoritative. Kinds use direct outcome bindings only; unknown/deleted metadata and unattributed work remain explicit. Time unions are never obtained by adding outcome rows. Display caches are memory-only, and source schemas/privacy controls remain unchanged. A receipt is not proof of causality; comparisons preserve the existing validated narrative, input identity, quality and missing-measurement rules.

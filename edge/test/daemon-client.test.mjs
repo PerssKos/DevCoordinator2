@@ -110,6 +110,7 @@ test('deployment mutations wait for the result while ordinary reads retain their
     assert.equal(result.ok, true);
   }
   assert.equal((await fixture(delayed, (client) => client.call('plan.recovery'), { timeoutMs: 10 })).ok, true);
+  for (const operation of ['performance.overview', 'performance.review', 'review.prepare']) assert.equal((await fixture(delayed, client => client.call(operation), { timeoutMs: 10 })).ok, true);
   await assert.rejects(fixture(delayed, (client) => client.call('deployment.status'), { timeoutMs: 10 }), /timeout/);
   const cancellation = new AbortController();
   await assert.rejects(fixture(delayed, (client) => {

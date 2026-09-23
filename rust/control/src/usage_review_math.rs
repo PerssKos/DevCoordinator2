@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
 pub(super) struct Effort {
+    pub(super) activities: BTreeMap<String, (u64, u64)>,
     pub(super) operations: u64,
     pub(super) retries: u64,
     pub(super) rework: u64,
@@ -20,6 +21,11 @@ pub(super) struct Effort {
 
 impl Effort {
     pub(super) fn merge(&mut self, other: Self, source: usize) -> Result<(), String> {
+        for (activity, (tokens, unknown)) in other.activities {
+            let value = self.activities.entry(activity).or_default();
+            value.0 = value.0.checked_add(tokens).ok_or("usage_overflow")?;
+            value.1 += unknown;
+        }
         self.operations += other.operations;
         self.retries += other.retries;
         self.rework += other.rework;
@@ -93,6 +99,11 @@ impl Effort {
                 .ok_or("usage_overflow".to_string())
         })?;
         Ok(OutcomeEffort {
+            activities: self
+                .activities
+                .into_iter()
+                .map(|(key, (tokens, unknown))| (key, measurement(tokens, unknown)))
+                .collect(),
             operations: self.operations,
             retry_operations: self.retries,
             rework_operations: self.rework,

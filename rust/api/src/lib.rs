@@ -12,6 +12,7 @@ pub mod delivery;
 pub mod glossary;
 pub mod outcomes;
 pub mod params;
+pub mod performance;
 pub mod recovery;
 pub mod results;
 pub mod review;
@@ -1328,6 +1329,33 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::DecisionTail
     ),
     operation!(
+        "performance.overview",
+        "Read repository performance overview without changing accounting or reviews.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["performance_overview"],
+        performance::Overview,
+        performance::OverviewResult
+    ),
+    operation!(
+        "performance.reviews",
+        "Read repository performance reviews without changing accounting or reviews.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["performance_reviews"],
+        performance::Reviews,
+        performance::ReviewPage
+    ),
+    operation!(
+        "performance.review",
+        "Read repository performance review without changing accounting or reviews.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["performance_review"],
+        performance::Review,
+        performance::ReviewResult
+    ),
+    operation!(
         "review.prepare",
         "Prepare bounded canonical usage and outcome evidence without scheduling work.",
         READ_REPOSITORY_ADMIN,
@@ -1909,8 +1937,8 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 112);
-        assert_eq!(tools.len(), 89);
+        assert_eq!(OPERATIONS.len(), 115);
+        assert_eq!(tools.len(), 92);
         assert_eq!(cli_routes.len(), 91);
     }
 

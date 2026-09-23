@@ -20,7 +20,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
     ['Glossary', `#/glossary/${repositoryId}`],
   ];
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute('href')])).then((links) => JSON.stringify(links) === JSON.stringify(expectedAspects)));
-  verify('plan and progress are one destination with three views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage'));
+  verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
   verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);
