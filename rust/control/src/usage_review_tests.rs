@@ -627,6 +627,24 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
         .unwrap();
     assert_eq!(overview.usage.as_ref().unwrap().outcomes.rows.len(), 1);
     assert_eq!(overview.total_tokens.measured, 165);
+    let totals = environment
+        .service
+        .performance_overview(
+            devcoordinator2_api::performance::Overview {
+                repository_id: "project-alpha".into(),
+                window_start_ms: START,
+                window_end_ms: START + 1000,
+                outcome_cursor: None,
+                outcome_limit: None,
+                totals_only: true,
+            },
+            START + WEEK,
+        )
+        .unwrap();
+    assert_eq!(
+        totals.total_tokens.measured, overview.total_tokens.measured,
+        "repository totals count covered and repeated provider observations once"
+    );
     assert_eq!(
         overview
             .usage

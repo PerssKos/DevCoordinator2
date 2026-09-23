@@ -9,10 +9,9 @@ pub(super) fn read(
     end: u64,
 ) -> Result<Option<Facts>, String> {
     let began = Instant::now();
-    let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_observations_repository_total_observed_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
-    if !indexed {
+    let Some(prefix) = token_sql(connection)? else {
         return Ok(None);
-    }
+    };
     let (_, cached) = super::review_query::selection(connection)?;
     let classification = if cached {
         "_usage_report_operations"
@@ -24,39 +23,15 @@ pub(super) fn read(
     } else {
         "provenance"
     };
-    let covering: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='model_requests_id_operation_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
-    let model_index = if covering {
-        "INDEXED BY model_requests_id_operation_idx"
-    } else {
-        ""
-    };
     let sql = format!(
-        r#"WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), observations AS MATERIALIZED (
-        SELECT source_event_id, token_count, coverage_state, model_request_id, tool_invocation_id
-        FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
-        WHERE repository_bucket IN (SELECT value FROM json_each(?1) UNION SELECT 'multi_repo' UNION SELECT 'unknown')
-          AND category_path='total_tokens' AND measurement_provenance='provider_reported'
-          AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms
-    ), owned AS MATERIALIZED (
-        SELECT token.*, COALESCE(request.operation_id, covered.operation_id, tool.operation_id) owner
-        FROM observations token
-        LEFT JOIN model_requests request {model_index} ON request.id=token.model_request_id
-        LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id
-        LEFT JOIN model_requests covered {model_index} ON covered.id=tool.covering_model_request_id
-    ), tokens AS MATERIALIZED (
-        SELECT owner,source_event_id,MAX(token_count) token_count,MAX(token_count IS NULL) unknown_count,
-          MAX(coverage_state<>'complete') incomplete,
-          COALESCE(MIN(token_count)<>MAX(token_count),0) OR (COUNT(token_count)>0 AND COUNT(token_count)<COUNT(*)) conflict
-        FROM owned WHERE owner IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(?1)))
-        GROUP BY owner,source_event_id
-    )
-    SELECT owner,token_count,unknown_count,incomplete,conflict FROM tokens LIMIT 200001"#
+        "{prefix} SELECT owner,token_count,unknown_count,incomplete,conflict FROM tokens LIMIT 200001"
     );
+    let family_count = family.len();
     let family = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
     let mut query = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
     tracing::debug!(
         stage = "performance_prepared",
-        family_count = family.len(),
+        family_count,
         elapsed_ms = began.elapsed().as_millis()
     );
     let mut rows = query
@@ -166,4 +141,47 @@ pub(super) fn read(
         elapsed_ms = began.elapsed().as_millis()
     );
     Ok(Some(facts))
+}
+
+/// Shared ownership and duplicate-observation rules for totals and charts.
+pub(super) fn token_sql(connection: &Connection) -> Result<Option<String>, String> {
+    let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_observations_repository_total_observed_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
+    if !indexed {
+        return Ok(None);
+    }
+    let covering: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='model_requests_id_operation_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
+    let model_index = if covering {
+        "INDEXED BY model_requests_id_operation_idx"
+    } else {
+        ""
+    };
+    let owner_attribution_index: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='repository_attributions_owner_repository_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
+    let attribution_index = if owner_attribution_index {
+        "INDEXED BY repository_attributions_owner_repository_idx"
+    } else {
+        ""
+    };
+    Ok(Some(format!(
+        r#"WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), observations AS MATERIALIZED (
+        SELECT source_event_id, token_count, coverage_state, observed_at_ms, model_request_id, tool_invocation_id
+        FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
+        WHERE repository_bucket IN (SELECT value FROM json_each(?1) UNION SELECT 'multi_repo' UNION SELECT 'unknown')
+          AND category_path='total_tokens' AND measurement_provenance='provider_reported'
+          AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms
+    ), owned AS MATERIALIZED (
+        SELECT token.*, COALESCE(request.operation_id, covered.operation_id, tool.operation_id) owner
+        FROM observations token
+        LEFT JOIN model_requests request {model_index} ON request.id=token.model_request_id
+        LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id
+        LEFT JOIN model_requests covered {model_index} ON covered.id=tool.covering_model_request_id
+    ), tokens AS MATERIALIZED (
+        SELECT owner,source_event_id,MAX(token_count) token_count,MAX(token_count IS NULL) unknown_count,
+          MAX(coverage_state<>'complete') incomplete, MAX(observed_at_ms) observed_at_ms,
+          COALESCE(MIN(token_count)<>MAX(token_count),0) OR (COUNT(token_count)>0 AND COUNT(token_count)<COUNT(*)) conflict
+        FROM owned WHERE EXISTS (SELECT 1 FROM repository_attributions {attribution_index}
+          WHERE operation_id=owned.owner AND repository_id IN (SELECT value FROM json_each(?1)))
+        GROUP BY owner,source_event_id
+    )
+    "#
+    )))
 }

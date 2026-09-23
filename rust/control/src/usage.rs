@@ -1042,6 +1042,18 @@ fn source_token_report(
     bucket_ms: u64,
     bucket_count: usize,
 ) -> Result<SourceReport, String> {
+    // Older schemas cannot identify covered observations. Supported review
+    // schemas use the same owner/event deduplication as the Performance charts.
+    let canonical = if schema >= 7 && bucket_count == 1 {
+        performance::token_sql(connection)?
+    } else {
+        None
+    };
+    if schema >= 7 && bucket_count == 1 && canonical.is_none() {
+        let facts = review_facts::read(connection, family, start_ms, end_ms)?;
+        return review_aggregate::display(connection, facts, None, start_ms, end_ms)
+            .map(|(report, _)| report);
+    }
     let mut values = vec![
         SqlValue::Integer(i64_value(start_ms)?),
         SqlValue::Integer(i64_value(end_ms)?),
@@ -1052,7 +1064,18 @@ fn source_token_report(
         "SELECT COUNT(*)=3 FROM sqlite_schema WHERE type='index' AND name IN ('token_observations_repository_total_observed_idx','model_requests_id_operation_idx','tool_invocations_id_operation_idx')",
         [], |row| row.get(0),
     ).map_err(|_| "source_unavailable")?;
-    let sql = if indexed {
+    let sql = if let Some(prefix) = canonical {
+        values = vec![
+            SqlValue::Text(serde_json::to_string(family).map_err(|_| "source_unavailable")?),
+            SqlValue::Integer(i64_value(start_ms)?),
+            SqlValue::Integer(i64_value(end_ms)?),
+        ];
+        format!(
+            "{prefix} SELECT CASE WHEN conflict THEN NULL ELSE token_count END,
+            CASE WHEN incomplete OR unknown_count OR conflict THEN 'partial' ELSE 'complete' END,
+            observed_at_ms FROM tokens"
+        )
+    } else if indexed {
         format!(
             "WITH bounds AS (SELECT ? lower_ms, ? upper_ms), observed AS MATERIALIZED (
                SELECT token_count,coverage_state,observed_at_ms,model_request_id,tool_invocation_id
