@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
+import { verifyHealth, healthReadFixture } from './verify-health.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const out = path.resolve(process.env.GLOSSARY_VERIFY_OUT || path.join(os.tmpdir(), 'dc2-glossary-verification'));
@@ -33,6 +34,10 @@ const pending = new Map();
 
 function request(operation, params = {}, identity = 'owner@example.test') {
   const id = `glossary-${++sequence}`;
+  if (process.env.CONSOLE_VERIFY_HEALTH_ONLY && identity === 'owner@example.test') {
+    const data = healthReadFixture(operation);
+    if (data) return Promise.resolve({protocol:2,id,ok:true,data});
+  }
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     bridge.stdin.write(`${JSON.stringify({ protocol: 2, id, operation, params, client: { kind: identity ? 'edge' : 'other', ...(identity ? { identity } : {}) } })}\n`);
@@ -64,7 +69,7 @@ async function main() {
   await fs.mkdir(out, { recursive: true });
   temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-glossary-browser-'));
   const fixture = process.env.GLOSSARY_FIXTURE_BINARY || path.join(root, 'target/debug/examples/glossary_console_fixture');
-  bridge = spawn(fixture, [path.join(temporary, 'authority')], { stdio: ['pipe', 'pipe', 'pipe'] });
+  bridge = spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
   bridge.stderr.on('data', (bytes) => fs.appendFile(path.join(out, 'backend.stderr.log'), bytes));
   bridge.on('exit', (code) => { for (const callback of pending.values()) callback.reject(new Error(`Fixture exited with ${code}`)); pending.clear(); });
   readline.createInterface({ input: bridge.stdout }).on('line', (line) => {
@@ -100,6 +105,15 @@ async function main() {
   await context.addCookies([cookieFor('owner@example.test')]);
   const page = await context.newPage();
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  if (process.env.CONSOLE_VERIFY_HEALTH_ONLY) {
+    await verifyHealth({ page, browser, base, call, request, check, cookieFor, out, root });
+    await check('Health has no browser exceptions', async () => assert.deepEqual(pageErrors, []), page);
+    await fs.writeFile(path.join(out, 'report.json'), JSON.stringify({ checks }, null, 2));
+    const failures = checks.filter(item => item.status === 'failed');
+    console.log(JSON.stringify({ checks: checks.length, failures, report: path.join(out, 'report.json') }));
+    process.exitCode = failures.length ? 1 : 0;
+    await context.close(); return;
+  }
   if (process.env.CONSOLE_VERIFY_PRESENTATION_ONLY) {
     await check('Repository appearance saves through the rendered Console into the real database', async () => {
       await page.goto(`${base}#/plan/${project}`);

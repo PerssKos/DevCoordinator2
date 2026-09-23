@@ -18570,6 +18570,621 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "health incidents"
+          }
+        ]
+      },
+      "description": "List escalated incidents, dismissed occurrences, or all observations for agent triage.",
+      "inputSchema": {
+        "$defs": {
+          "IncidentView": {
+            "enum": [
+              "attention",
+              "dismissed",
+              "all"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 20,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "view": {
+            "$ref": "#/$defs/IncidentView",
+            "default": "attention"
+          }
+        },
+        "title": "IncidentListParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "IncidentView": {
+                "enum": [
+                  "attention",
+                  "dismissed",
+                  "all"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "before": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 20,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "view": {
+                "$ref": "#/$defs/IncidentView",
+                "default": "attention"
+              }
+            },
+            "title": "IncidentListParams",
+            "type": "object"
+          },
+          "name": "health_incidents",
+          "transform": "identity"
+        }
+      ],
+      "name": "health.incidents",
+      "outputSchema": {
+        "$defs": {
+          "Incident": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_response": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "alert_key": {
+                "type": "string"
+              },
+              "category": {
+                "$ref": "#/$defs/IncidentCategory",
+                "default": "operational"
+              },
+              "component": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "condition_active": {
+                "type": "boolean"
+              },
+              "deployment_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deployment_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "escalation_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "incident_id": {
+                "type": "string"
+              },
+              "last_seen_at": {
+                "type": "string"
+              },
+              "next_step": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "opened_at": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "severity": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/IncidentStatus"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "updated_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "what_happened": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "incident_id",
+              "alert_key",
+              "opened_at",
+              "last_seen_at",
+              "severity",
+              "status",
+              "condition_active",
+              "summary",
+              "what_happened",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "IncidentCategory": {
+            "enum": [
+              "operational",
+              "development"
+            ],
+            "type": "string"
+          },
+          "IncidentStatus": {
+            "enum": [
+              "unreviewed",
+              "handling",
+              "suppressed",
+              "escalated",
+              "dismissed",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attention_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "dismissed_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "incidents": {
+            "items": {
+              "$ref": "#/$defs/Incident"
+            },
+            "type": "array"
+          },
+          "next_before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "incidents",
+          "attention_count",
+          "dismissed_count",
+          "total"
+        ],
+        "title": "IncidentList",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "health incident update"
+          }
+        ]
+      },
+      "description": "Record handling, non-reporting, escalation or dismissal for one exact incident occurrence.",
+      "inputSchema": {
+        "$defs": {
+          "IncidentCategory": {
+            "enum": [
+              "operational",
+              "development"
+            ],
+            "type": "string"
+          },
+          "IncidentStatus": {
+            "enum": [
+              "unreviewed",
+              "handling",
+              "suppressed",
+              "escalated",
+              "dismissed",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_response": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "category": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/IncidentCategory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "escalation_reason": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "incident_id": {
+            "type": "string"
+          },
+          "next_step": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/IncidentStatus"
+          },
+          "summary": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "what_happened": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "incident_id",
+          "expected_revision",
+          "status"
+        ],
+        "title": "IncidentUpdate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "IncidentCategory": {
+                "enum": [
+                  "operational",
+                  "development"
+                ],
+                "type": "string"
+              },
+              "IncidentStatus": {
+                "enum": [
+                  "unreviewed",
+                  "handling",
+                  "suppressed",
+                  "escalated",
+                  "dismissed",
+                  "resolved"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "agent_response": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "category": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/IncidentCategory"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "escalation_reason": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "incident_id": {
+                "type": "string"
+              },
+              "next_step": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/IncidentStatus"
+              },
+              "summary": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "what_happened": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "incident_id",
+              "expected_revision",
+              "status"
+            ],
+            "title": "IncidentUpdate",
+            "type": "object"
+          },
+          "name": "health_incident_update",
+          "transform": "identity"
+        }
+      ],
+      "name": "health.incident.update",
+      "outputSchema": {
+        "$defs": {
+          "IncidentCategory": {
+            "enum": [
+              "operational",
+              "development"
+            ],
+            "type": "string"
+          },
+          "IncidentStatus": {
+            "enum": [
+              "unreviewed",
+              "handling",
+              "suppressed",
+              "escalated",
+              "dismissed",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_response": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "alert_key": {
+            "type": "string"
+          },
+          "category": {
+            "$ref": "#/$defs/IncidentCategory",
+            "default": "operational"
+          },
+          "component": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "condition_active": {
+            "type": "boolean"
+          },
+          "deployment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deployment_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "escalation_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "incident_id": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string"
+          },
+          "next_step": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "opened_at": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/$defs/IncidentStatus"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "what_happened": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "incident_id",
+          "alert_key",
+          "opened_at",
+          "last_seen_at",
+          "severity",
+          "status",
+          "condition_active",
+          "summary",
+          "what_happened",
+          "revision"
+        ],
+        "title": "Incident",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "health repositories"
           }
         ]
@@ -18896,6 +19511,16 @@
               "repository_id": {
                 "type": "string"
               },
+              "repository_source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestRepositorySource"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "root_path": {
                 "type": [
                   "string",
@@ -19088,6 +19713,22 @@
               "cpu_percent",
               "memory_bytes",
               "storage"
+            ],
+            "type": "object"
+          },
+          "TestRepositorySource": {
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name"
             ],
             "type": "object"
           }
@@ -25991,6 +26632,2302 @@
     },
     {
       "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read repository performance overview without changing accounting or reviews.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outcome_cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome_limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "totals_only": {
+            "default": false,
+            "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
+            "type": "boolean"
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repository_id",
+          "window_start_ms",
+          "window_end_ms"
+        ],
+        "title": "Overview",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "outcome_cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_limit": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "totals_only": {
+                "default": false,
+                "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
+                "type": "boolean"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "repository_id",
+              "window_start_ms",
+              "window_end_ms"
+            ],
+            "title": "Overview",
+            "type": "object"
+          },
+          "name": "performance_overview",
+          "transform": "identity"
+        }
+      ],
+      "name": "performance.overview",
+      "outputSchema": {
+        "$defs": {
+          "CoverageState": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable",
+              "unobserved"
+            ],
+            "type": "string"
+          },
+          "MeasuredTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "OutcomeEffort": {
+            "properties": {
+              "activeAgentMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "activities": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
+              "elapsedExecutionMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "providerTotalTokens": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "recordedWaitMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "retryOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reworkOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "operations",
+              "retryOperations",
+              "reworkOperations",
+              "providerTotalTokens",
+              "activeAgentMs",
+              "elapsedExecutionMs",
+              "recordedWaitMs"
+            ],
+            "type": "object"
+          },
+          "OutcomeMeasurement": {
+            "description": "A measured token or millisecond quantity. `unknown` counts missing/incomplete\nobservations or intervals, not an estimate of the missing quantity.",
+            "properties": {
+              "exact": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured",
+              "unknown"
+            ],
+            "type": "object"
+          },
+          "OutcomeReport": {
+            "properties": {
+              "attributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "basis": {
+                "type": "string"
+              },
+              "coverage": {
+                "type": "string"
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rows": {
+                "items": {
+                  "$ref": "#/$defs/OutcomeRow"
+                },
+                "type": "array"
+              },
+              "schemaVersion": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totalRows": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totals": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributedReasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "coverage",
+              "totals",
+              "attributed",
+              "unattributed",
+              "unattributedReasons",
+              "rows",
+              "totalRows",
+              "basis"
+            ],
+            "type": "object"
+          },
+          "OutcomeRow": {
+            "properties": {
+              "effort": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcomeId": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "outcomeId",
+              "effort"
+            ],
+            "type": "object"
+          },
+          "PhaseTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "ReviewUsage": {
+            "additionalProperties": false,
+            "properties": {
+              "activities": {
+                "items": {
+                  "$ref": "#/$defs/UsageActivity"
+                },
+                "type": "array"
+              },
+              "coverage": {
+                "$ref": "#/$defs/UsageCoverage"
+              },
+              "outcomes": {
+                "$ref": "#/$defs/OutcomeReport"
+              },
+              "semantics": {
+                "$ref": "#/$defs/UsageSemantics"
+              },
+              "time": {
+                "$ref": "#/$defs/UsageTime"
+              },
+              "tools": {
+                "$ref": "#/$defs/UsageTools"
+              },
+              "totals": {
+                "$ref": "#/$defs/UsageTotals"
+              }
+            },
+            "required": [
+              "coverage",
+              "totals",
+              "activities",
+              "time",
+              "tools",
+              "semantics",
+              "outcomes"
+            ],
+            "type": "object"
+          },
+          "ToolFamily": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "family": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "family",
+              "count"
+            ],
+            "type": "object"
+          },
+          "ToolOutcome": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "count"
+            ],
+            "type": "object"
+          },
+          "UsageActivity": {
+            "additionalProperties": false,
+            "properties": {
+              "activity": {
+                "type": "string"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "provenance": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "share": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "activity",
+              "total_tokens",
+              "operations",
+              "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "available_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "configured_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "contributing_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "database_schemas": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "events": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "freshest_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "has_gaps": {
+                "type": "boolean"
+              },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/CoverageState"
+              },
+              "taxonomy_versions": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "token_observations": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "state",
+              "has_gaps",
+              "configured_collectors",
+              "available_collectors",
+              "contributing_collectors",
+              "events",
+              "token_observations",
+              "unavailable_reasons",
+              "database_schemas",
+              "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageSemantics": {
+            "additionalProperties": false,
+            "properties": {
+              "coverage": {
+                "type": "string"
+              },
+              "time": {
+                "type": "string"
+              },
+              "tokens": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tokens",
+              "time",
+              "coverage"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageTime": {
+            "additionalProperties": false,
+            "properties": {
+              "execution_wall": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/PhaseTime"
+                },
+                "type": "array"
+              },
+              "request_to_delivery": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "summed_agent_active": {
+                "$ref": "#/$defs/MeasuredTime"
+              }
+            },
+            "required": [
+              "request_to_delivery",
+              "execution_wall",
+              "summed_agent_active",
+              "phases"
+            ],
+            "type": "object"
+          },
+          "UsageTools": {
+            "additionalProperties": false,
+            "properties": {
+              "families": {
+                "items": {
+                  "$ref": "#/$defs/ToolFamily"
+                },
+                "type": "array"
+              },
+              "outcomes": {
+                "items": {
+                  "$ref": "#/$defs/ToolOutcome"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcomes",
+              "families"
+            ],
+            "type": "object"
+          },
+          "UsageTotals": {
+            "additionalProperties": false,
+            "properties": {
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "model_requests": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_calls": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_requests",
+              "tool_calls",
+              "operations"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "coverage": {
+            "$ref": "#/$defs/UsageCoverage"
+          },
+          "generated_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "total_tokens": {
+            "$ref": "#/$defs/OutcomeMeasurement"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ReviewUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "repository_id",
+          "window_start_ms",
+          "window_end_ms",
+          "generated_at_ms",
+          "total_tokens",
+          "coverage"
+        ],
+        "title": "OverviewResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read repository performance reviews without changing accounting or reviews.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "record_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "Reviews",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "before": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "record_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "title": "Reviews",
+            "type": "object"
+          },
+          "name": "performance_reviews",
+          "transform": "identity"
+        }
+      ],
+      "name": "performance.reviews",
+      "outputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          },
+          "ReviewSummary": {
+            "properties": {
+              "review": {
+                "$ref": "#/$defs/Revision"
+              },
+              "revision_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "review",
+              "revision_count"
+            ],
+            "type": "object"
+          },
+          "Revision": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "type": "boolean"
+              },
+              "record": {
+                "$ref": "#/$defs/ReviewRecord"
+              },
+              "record_id": {
+                "type": "string"
+              },
+              "recorded_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "reference",
+              "record_id",
+              "revision",
+              "recorded_at_ms",
+              "completed",
+              "record"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "next_before": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "records": {
+            "items": {
+              "$ref": "#/$defs/ReviewSummary"
+            },
+            "type": "array"
+          },
+          "total_reviews": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "records",
+          "total_reviews"
+        ],
+        "title": "ReviewPage",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read repository performance review without changing accounting or reviews.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "outcome_cursor": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome_limit": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reference": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "reference"
+        ],
+        "title": "Review",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "outcome_cursor": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_limit": {
+                "default": null,
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reference": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "reference"
+            ],
+            "title": "Review",
+            "type": "object"
+          },
+          "name": "performance_review",
+          "transform": "identity"
+        }
+      ],
+      "name": "performance.review",
+      "outputSchema": {
+        "$defs": {
+          "Baseline": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "missingMeasurements": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "evidenceRefs",
+              "interpretation",
+              "missingMeasurements"
+            ],
+            "type": "object"
+          },
+          "Comparison": {
+            "additionalProperties": false,
+            "properties": {
+              "inputChangeReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "narrative": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "narrative"
+            ],
+            "type": "object"
+          },
+          "Comparison2": {
+            "properties": {
+              "explanation": {
+                "type": "string"
+              },
+              "metrics": {
+                "items": {
+                  "$ref": "#/$defs/MetricChange"
+                },
+                "type": "array"
+              },
+              "source": {
+                "$ref": "#/$defs/EvidenceRef"
+              },
+              "verified_improvement": {
+                "type": "boolean"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "window_start_ms",
+              "window_end_ms",
+              "verified_improvement",
+              "explanation",
+              "metrics"
+            ],
+            "type": "object"
+          },
+          "CoverageState": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable",
+              "unobserved"
+            ],
+            "type": "string"
+          },
+          "Disposition": {
+            "enum": [
+              "proposed",
+              "applied",
+              "retained",
+              "reverted",
+              "inconclusive",
+              "unchanged"
+            ],
+            "type": "string"
+          },
+          "Evidence": {
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "body": {
+                "type": "string"
+              },
+              "source": {
+                "$ref": "#/$defs/EvidenceRef"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "title",
+              "body",
+              "available"
+            ],
+            "type": "object"
+          },
+          "EvidenceKind": {
+            "enum": [
+              "usage",
+              "outcome",
+              "decision",
+              "run",
+              "release"
+            ],
+            "type": "string"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/EvidenceKind"
+              },
+              "reference": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "reference"
+            ],
+            "type": "object"
+          },
+          "MeasuredTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "MetricChange": {
+            "properties": {
+              "after": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "before": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "metric": {
+                "type": "string"
+              },
+              "reduction": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reduction_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "metric",
+              "before",
+              "after"
+            ],
+            "type": "object"
+          },
+          "Observation": {
+            "additionalProperties": false,
+            "properties": {
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "interpretation": {
+                "type": "string"
+              },
+              "kind": {
+                "$ref": "#/$defs/ObservationKind"
+              }
+            },
+            "required": [
+              "kind",
+              "interpretation",
+              "evidenceRefs"
+            ],
+            "type": "object"
+          },
+          "ObservationKind": {
+            "enum": [
+              "user_wait",
+              "intentional_validation",
+              "avoidable_work",
+              "other"
+            ],
+            "type": "string"
+          },
+          "OptimizationExperiment": {
+            "additionalProperties": false,
+            "properties": {
+              "alternatives": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "baseline": {
+                "$ref": "#/$defs/Baseline"
+              },
+              "chosenAction": {
+                "type": "string"
+              },
+              "comparison": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Comparison"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "disposition": {
+                "$ref": "#/$defs/Disposition"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "observations": {
+                "items": {
+                  "$ref": "#/$defs/Observation"
+                },
+                "type": "array"
+              },
+              "preservesQuality": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "resultEvidenceRefs": {
+                "items": {
+                  "$ref": "#/$defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "rollbackCondition": {
+                "type": "string"
+              },
+              "scopeRepoId": {
+                "type": "string"
+              },
+              "successCriteria": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "hypothesis",
+              "evidenceRefs",
+              "alternatives",
+              "chosenAction",
+              "baseline",
+              "successCriteria",
+              "rollbackCondition",
+              "disposition",
+              "resultEvidenceRefs",
+              "scopeRepoId",
+              "preservesQuality",
+              "reason",
+              "observations"
+            ],
+            "type": "object"
+          },
+          "OutcomeEffort": {
+            "properties": {
+              "activeAgentMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "activities": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
+              "elapsedExecutionMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "providerTotalTokens": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "recordedWaitMs": {
+                "$ref": "#/$defs/OutcomeMeasurement"
+              },
+              "retryOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reworkOperations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "operations",
+              "retryOperations",
+              "reworkOperations",
+              "providerTotalTokens",
+              "activeAgentMs",
+              "elapsedExecutionMs",
+              "recordedWaitMs"
+            ],
+            "type": "object"
+          },
+          "OutcomeMeasurement": {
+            "description": "A measured token or millisecond quantity. `unknown` counts missing/incomplete\nobservations or intervals, not an estimate of the missing quantity.",
+            "properties": {
+              "exact": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "measured": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "measured",
+              "unknown"
+            ],
+            "type": "object"
+          },
+          "OutcomeReport": {
+            "properties": {
+              "attributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "basis": {
+                "type": "string"
+              },
+              "coverage": {
+                "type": "string"
+              },
+              "kinds": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
+              "nextCursor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rows": {
+                "items": {
+                  "$ref": "#/$defs/OutcomeRow"
+                },
+                "type": "array"
+              },
+              "schemaVersion": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totalRows": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "totals": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributed": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "unattributedReasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "schemaVersion",
+              "coverage",
+              "totals",
+              "attributed",
+              "unattributed",
+              "unattributedReasons",
+              "rows",
+              "totalRows",
+              "basis"
+            ],
+            "type": "object"
+          },
+          "OutcomeRow": {
+            "properties": {
+              "effort": {
+                "$ref": "#/$defs/OutcomeEffort"
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcomeId": {
+                "type": "string"
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "outcomeId",
+              "effort"
+            ],
+            "type": "object"
+          },
+          "PhaseTime": {
+            "additionalProperties": false,
+            "properties": {
+              "measured_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "unknown_intervals": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "measured_ms",
+              "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "ReviewRecord": {
+            "additionalProperties": false,
+            "properties": {
+              "experiment": {
+                "$ref": "#/$defs/OptimizationExperiment"
+              },
+              "outcomeId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "projectId": {
+                "type": "string"
+              },
+              "repositoryId": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowEndMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "windowStartMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstreamId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "repositoryId",
+              "projectId",
+              "windowStartMs",
+              "windowEndMs",
+              "experiment"
+            ],
+            "type": "object"
+          },
+          "ReviewUsage": {
+            "additionalProperties": false,
+            "properties": {
+              "activities": {
+                "items": {
+                  "$ref": "#/$defs/UsageActivity"
+                },
+                "type": "array"
+              },
+              "coverage": {
+                "$ref": "#/$defs/UsageCoverage"
+              },
+              "outcomes": {
+                "$ref": "#/$defs/OutcomeReport"
+              },
+              "semantics": {
+                "$ref": "#/$defs/UsageSemantics"
+              },
+              "time": {
+                "$ref": "#/$defs/UsageTime"
+              },
+              "tools": {
+                "$ref": "#/$defs/UsageTools"
+              },
+              "totals": {
+                "$ref": "#/$defs/UsageTotals"
+              }
+            },
+            "required": [
+              "coverage",
+              "totals",
+              "activities",
+              "time",
+              "tools",
+              "semantics",
+              "outcomes"
+            ],
+            "type": "object"
+          },
+          "Revision": {
+            "additionalProperties": false,
+            "properties": {
+              "completed": {
+                "type": "boolean"
+              },
+              "record": {
+                "$ref": "#/$defs/ReviewRecord"
+              },
+              "record_id": {
+                "type": "string"
+              },
+              "recorded_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "reference",
+              "record_id",
+              "revision",
+              "recorded_at_ms",
+              "completed",
+              "record"
+            ],
+            "type": "object"
+          },
+          "ToolFamily": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "family": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "family",
+              "count"
+            ],
+            "type": "object"
+          },
+          "ToolOutcome": {
+            "additionalProperties": false,
+            "properties": {
+              "count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "count"
+            ],
+            "type": "object"
+          },
+          "UsageActivity": {
+            "additionalProperties": false,
+            "properties": {
+              "activity": {
+                "type": "string"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "type": "string"
+              },
+              "provenance": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "share": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "phase",
+              "activity",
+              "total_tokens",
+              "operations",
+              "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCoverage": {
+            "additionalProperties": false,
+            "properties": {
+              "available_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "configured_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "contributing_collectors": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "database_schemas": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "events": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "freshest_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "has_gaps": {
+                "type": "boolean"
+              },
+              "snapshot": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/UsageSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/CoverageState"
+              },
+              "taxonomy_versions": {
+                "items": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "token_observations": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              }
+            },
+            "required": [
+              "state",
+              "has_gaps",
+              "configured_collectors",
+              "available_collectors",
+              "contributing_collectors",
+              "events",
+              "token_observations",
+              "unavailable_reasons",
+              "database_schemas",
+              "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageSemantics": {
+            "additionalProperties": false,
+            "properties": {
+              "coverage": {
+                "type": "string"
+              },
+              "time": {
+                "type": "string"
+              },
+              "tokens": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tokens",
+              "time",
+              "coverage"
+            ],
+            "type": "object"
+          },
+          "UsageSnapshot": {
+            "additionalProperties": false,
+            "properties": {
+              "refresh_failed": {
+                "type": "boolean"
+              },
+              "refreshing": {
+                "type": "boolean"
+              },
+              "updated_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "refreshing",
+              "refresh_failed"
+            ],
+            "type": "object"
+          },
+          "UsageTime": {
+            "additionalProperties": false,
+            "properties": {
+              "execution_wall": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/PhaseTime"
+                },
+                "type": "array"
+              },
+              "request_to_delivery": {
+                "$ref": "#/$defs/MeasuredTime"
+              },
+              "summed_agent_active": {
+                "$ref": "#/$defs/MeasuredTime"
+              }
+            },
+            "required": [
+              "request_to_delivery",
+              "execution_wall",
+              "summed_agent_active",
+              "phases"
+            ],
+            "type": "object"
+          },
+          "UsageTools": {
+            "additionalProperties": false,
+            "properties": {
+              "families": {
+                "items": {
+                  "$ref": "#/$defs/ToolFamily"
+                },
+                "type": "array"
+              },
+              "outcomes": {
+                "items": {
+                  "$ref": "#/$defs/ToolOutcome"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "outcomes",
+              "families"
+            ],
+            "type": "object"
+          },
+          "UsageTotals": {
+            "additionalProperties": false,
+            "properties": {
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "model_requests": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_calls": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "model_requests",
+              "tool_calls",
+              "operations"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "comparisons": {
+            "items": {
+              "$ref": "#/$defs/Comparison2"
+            },
+            "type": "array"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/$defs/Evidence"
+            },
+            "type": "array"
+          },
+          "review": {
+            "$ref": "#/$defs/Revision"
+          },
+          "usage": {
+            "$ref": "#/$defs/ReviewUsage"
+          }
+        },
+        "required": [
+          "review",
+          "usage",
+          "evidence",
+          "comparisons"
+        ],
+        "title": "ReviewResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": null,
         "routes": [
           {
@@ -26250,6 +29187,12 @@
               "activeAgentMs": {
                 "$ref": "#/$defs/OutcomeMeasurement"
               },
+              "activities": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
               "elapsedExecutionMs": {
                 "$ref": "#/$defs/OutcomeMeasurement"
               },
@@ -26325,6 +29268,12 @@
               "coverage": {
                 "type": "string"
               },
+              "kinds": {
+                "additionalProperties": {
+                  "$ref": "#/$defs/OutcomeMeasurement"
+                },
+                "type": "object"
+              },
               "nextCursor": {
                 "type": [
                   "string",
@@ -26379,6 +29328,12 @@
             "properties": {
               "effort": {
                 "$ref": "#/$defs/OutcomeEffort"
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "outcomeId": {
                 "type": "string"

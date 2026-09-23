@@ -249,21 +249,17 @@ the earlier caching policy, so a normal refresh can load the redesigned code.
    ambiguous copied captures never silently select a different repository.
    Missing, expired, invalid, tampered, or unauthorized
    evidence is stated honestly and never replaced with a mock image.
-6. **Health** — host condition first as one aligned capacity group (CPU,
-   memory, root filesystem, load/swap) beside a separate operational-status
-   group (unhealthy deployments, critical alerts, active tests, total
-   containers, and class counts). At 1200 px and below the two groups stack;
-   incident cards keep their natural height. **Unhealthy deployments** names
-   exactly which component is unhealthy and why (`reasons` from
-   `health.summary`) with start/stop/restart and a link to details and
-   logs; current alerts; **History** — host CPU, memory, and storage charts
-   (min–max band plus average) over a selectable 24h/7d/30d window using
-   server-side downsampling; structured CPU and memory reconciliation; then
-   one row per
-   repository with CPU/memory/storage/health/trends plus the DevCoordinator
-   and shared/unattributed rows. Shared storage is a set of complete labelled
-   values instead of one clipped sentence. At 960 px and below repository rows
-   become labelled cards without document-level horizontal scrolling.
+6. **Health** — reported incidents start collapsed with an attention count.
+   Only recorded escalations appear; development, suppressed and agent-handled
+   observations stay outside the owner queue. Desktop shows the selected
+   explanation beside the inbox; phones expand it beneath the selected row.
+   Each explanation names the symptom, recorded agent response, escalation
+   reason and next step. Dismiss/Restore persists for the exact occurrence.
+   Resource measurements and compact 24h/7d/30d trends follow. Repository
+   families group verified Git origins and summarize repeated deployment
+   states; exact checkouts and deployment links are disclosed on demand.
+   Host attribution retains CPU, memory, storage categories and load/swap.
+   See [Health incidents](health-incidents.md) for the agent workflow and API.
    **Containers** view: every
    container with full identity, state, classification, repository,
    deployment/test, caller and client, CPU/memory/layer size, creation
@@ -308,7 +304,7 @@ explicit permission-denied notice instead of partial data.
 | Independent Compose-service start/stop/restart (detail only; explicitly declared services) | `deployment.start/stop/restart {component: "stack/service"}` | service badge and aggregate header change; unrelated service and route remain |
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
 | Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
-| Health container inventory / unhealthy deployment details | — (real hash links) | opens the Containers or exact deployment destination; Back/Health returns to the same Health context |
+| Health container inventory / incident deployment details | — (real hash links) | opens Containers or the exact deployment destination |
 | Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, totals, phase chart, exact table, and data-completeness explanation re-render from canonical reads |
 | Codex Usage completeness hint | — (client-side) | opens the full environment and excluded-not-zero explanation in a labelled DOM pop-up; Escape, focus departure, outside click, or the toggle closes it |
 | Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | completed bars above the baseline and newly added work below it share one scale within each lane, so equal values have equal lengths; a protected label area keeps titles clear of first-bucket maxima; completion running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
@@ -317,7 +313,8 @@ explicit permission-denied notice instead of partial data.
 | Progress exact values disclosure | — (client-side) | exposes every visible bucket value, coverage status, and counting method without hover |
 | Aspect and work-view links | — (real hash links followed by selected-detail reads) | Changes the current aspect or Plan/Progress/Usage view without losing the repository; legacy destination links resolve to the remembered selection. |
 | Console tools menu | — (client-side) | Opens host-level destinations and test settings; Escape closes the menu and restores focus. Settings dialogs return focus to the menu trigger after saving or cancelling. |
-| Unhealthy-deployment actions (health page cards) | `deployment.start/stop/restart` | summary re-read |
+| Reported incident selection / search / paging | `health.incidents` | Opens one inline briefing on phones or the adjacent detail on desktop; searches the loaded page and retains access to older pages |
+| Incident dismiss / restore | `health.incident.update`, then `health.incidents` | Confirms the stored disposition across reloads and browsers; a failed save remains visible |
 | Apply / rollback | `deployment.apply` / `deployment.rollback` | status re-read |
 | Remove deployment — keep data / Remove deployment and delete data | `deployment.remove {delete_data: false|true}` | list re-read |
 | Component logs | `deployment.logs` | tail rendered on demand |
@@ -391,14 +388,16 @@ earlier-run provenance, exact viewer continuation, and test actions.
 These are focused development passes; final validation must reference its own
 exact source candidate and retained report, not an earlier pass count.
 
-The Health layout has an additional focused journey gate at 390×844,
-856×915, 1440×1024, 959/960/961×915, and 1199/1200/1201×915. It verifies
-capacity/status hierarchy, naturally sized incident cards, the repository
-table-to-card transition, every shared-storage label/value, and zero horizontal
-document or attribution scrolling. The current focused interaction pass has
-138 checks and zero failures; formal verification checked all 9 planned cells
-with zero critical findings, and all 18 viewport/full-page images passed the
-manual review manifest.
+The Health acceptance journey uses `CONSOLE_VERIFY_HEALTH_ONLY=1` with the
+real SQLite-backed Console fixture. It checks explicit escalation, development
+and agent-handled exclusions, persistent dismissal, recurrence, access denial,
+failure recovery, and repository grouping. `HEALTH_FORMAL=1` additionally checks
+collapsed and expanded states at 390, 760, 761, and 1440 pixels in both themes.
+The 760/761 boundary checks inline-to-adjacent detail placement and focus.
+Reports retain automatic results and viewport/full-page screenshots for manual
+review; fixture metrics are deterministic while incident operations use the
+real API and database. The installed Console also needs a separate real-data
+check before delivery.
 
 The Deployments attribution gate gives different repositories distinct managed
 and observed deployments. Switching repositories must replace the collection

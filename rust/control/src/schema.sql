@@ -126,6 +126,27 @@ CREATE TABLE IF NOT EXISTS users (
   created_by TEXT NOT NULL,
   last_seen_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS health_incident_reviews (
+  incident_id TEXT PRIMARY KEY,
+  alert_key TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  record_json TEXT NOT NULL,
+  UNIQUE(alert_key, opened_at)
+);
+CREATE TABLE IF NOT EXISTS health_incident_history (
+  incident_id TEXT NOT NULL REFERENCES health_incident_reviews(incident_id),
+  revision INTEGER NOT NULL,
+  record_json TEXT NOT NULL,
+  PRIMARY KEY(incident_id,revision)
+);
+CREATE TRIGGER IF NOT EXISTS health_incident_history_no_update BEFORE UPDATE ON health_incident_history BEGIN
+  SELECT RAISE(ABORT, 'incident response history is permanent');
+END;
+CREATE TRIGGER IF NOT EXISTS health_incident_history_no_delete BEFORE DELETE ON health_incident_history BEGIN
+  SELECT RAISE(ABORT, 'incident response history is permanent');
+END;
 CREATE TABLE IF NOT EXISTS invitations (
   invitation_id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,

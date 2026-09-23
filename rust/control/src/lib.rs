@@ -24,6 +24,7 @@ pub mod events;
 pub mod glossary;
 pub mod health;
 pub mod ids;
+pub mod incidents;
 pub mod inventory;
 pub mod mcp;
 pub mod metrics;

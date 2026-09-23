@@ -24,6 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "isolated glossary acceptance fixture",
     )?;
     let database = Database::open(root.join("authority.sqlite3"))?;
+    let health = std::env::args().nth(2).as_deref() == Some("health");
     database.transaction(|connection| {
         for (identity, name) in [("r1111111111111111", "Vocabulary project"), ("r2222222222222222", "Other project")] {
             connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?3,'now',1000,'now')", rusqlite::params![identity, format!("/fixture/{identity}"), name])?;
@@ -36,6 +37,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         connection.execute("INSERT INTO grants VALUES('u2222222222222222','d1111111111111111','viewer','now','fixture')", [])?;
         Ok(())
     })?;
+    if health {
+        database.transaction(|c| {
+            c.execute("UPDATE repositories SET display_name='Kaizen' WHERE repository_id='r1111111111111111'",[])?;
+            c.execute("UPDATE deployments SET source='checkout',name='web',state='failed'",[])?;
+            for (key,kind,subject_kind,subject,severity,message) in [
+                ("component/d1111111111111111/web/unhealthy","component_unhealthy","component","d1111111111111111/web","critical","web exited"),
+                ("host/disk","host_disk","host","host","critical","root filesystem below 10% free"),
+                ("worktree/w1111111111111111/scratch","test_scratch","worktree","w1111111111111111","warning","test scratch exceeds 10 GiB"),
+                ("host/cpu","host_cpu","host","host","warning","CPU above 90% for five minutes"),
+            ] {
+                c.execute("INSERT INTO alerts VALUES(?1,?2,?3,?4,?5,?6,'2026-09-23T17:01:00Z','2026-09-23T17:14:00Z')",rusqlite::params![key,kind,subject_kind,subject,severity,message])?;
+            }
+            Ok(())
+        })?;
+    }
     let config = Config {
         socket_path: root.join("daemon.sock"),
         sandbox_bridge_dir: root.join("bridge"),
@@ -66,6 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let request: RequestEnvelope = serde_json::from_str(&line?)?;
         let public = request.client.identity.is_some();
         let caller = Caller {
+            via_edge: public,
             pid: 1,
             uid: if public { 999 } else { 1000 },
             gid: 1000,
@@ -78,6 +95,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             work: None,
             identity: request.client.identity,
         };
+        // Fixture-only recovery/recurrence lets the rendered incident journey
+        // exercise new occurrences without touching the installed daemon.
+        if health && request.operation == "fixture.incident.recur" {
+            database.transaction(|c| {
+                c.execute("UPDATE alerts SET opened_at='2026-09-23T18:01:00Z' WHERE alert_key='host/disk'", [])?;
+                Ok(())
+            })?;
+            writeln!(
+                output,
+                "{}",
+                json!({"protocol":2,"id":request.id,"ok":true,"data":{}})
+            )?;
+            output.flush()?;
+            continue;
+        }
         let response = match plane.execute(&request.operation, request.params, &caller) {
             Ok(data) => json!({"protocol":2,"id":request.id,"ok":true,"data":data}),
             Err(error) => {

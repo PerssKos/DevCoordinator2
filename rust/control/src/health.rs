@@ -169,6 +169,9 @@ impl HealthService {
                 "healthy"
             };
             rows.push(RepositoryHealthRow {
+                repository_source: crate::repository::repository_source_for_root(Path::new(
+                    &repository.root_path,
+                )),
                 repository_id: repository.repository_id.clone(),
                 display_name: repository.display_name,
                 root_path: Some(repository.root_path),
@@ -375,7 +378,7 @@ impl HealthService {
                         ))
                     })? {
                         let (component,state,status,health)=row?;
-                        if state == "running" && health != "unhealthy" { continue; }
+                        if matches!(state.as_str(), "running" | "completed") && health != "unhealthy" { continue; }
                         let detail = if health == "unhealthy" {
                             Some(if status != state { format!("container healthcheck failing ({status})") } else { "container healthcheck failing".into() })
                         } else if status != state { Some(status) } else { None };
@@ -389,7 +392,7 @@ impl HealthService {
                         Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,Option<String>>(4)?))
                     })? {
                         let (component,state,desired,health,detail)=row?;
-                        if state == "running" && health != "unhealthy" { continue; }
+                        if matches!(state.as_str(), "running" | "completed") && health != "unhealthy" { continue; }
                         if desired != "running" && state == "stopped" { continue; }
                         reasons.push(UnhealthyReason { component,state,detail });
                     }

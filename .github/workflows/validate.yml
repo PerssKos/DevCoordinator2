@@ -111,3 +111,9 @@ jobs:
       - name: Run rendered Console verification
         if: runner.os == 'Linux'
         run: node console/verify.mjs
+
+      - name: Verify incident reporting and mobile layout through the real database
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --package devcoordinator2-control --features glossary-fixture --example glossary_console_fixture
+          CONSOLE_VERIFY_HEALTH_ONLY=1 CONSOLE_VERIFY_PLAYWRIGHT="$GITHUB_WORKSPACE/ci/playwright" GLOSSARY_FIXTURE_BINARY="$GITHUB_WORKSPACE/target/debug/examples/glossary_console_fixture" node console/verify-glossary.mjs

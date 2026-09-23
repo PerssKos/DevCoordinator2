@@ -104,6 +104,8 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "test.capacity.get",
     "test.capacity.set",
     "health.summary",
+    "health.incidents",
+    "health.incident.update",
     "health.repositories",
     "health.repository",
     "health.history",
@@ -186,6 +188,7 @@ pub struct ControlPlane {
     events: EventService,
     capacity: CapacityBroker,
     health: HealthService,
+    incidents: crate::incidents::IncidentService,
     usage: UsageService,
     progress: ProgressService,
     telegram: TelegramService,
@@ -232,6 +235,8 @@ impl ControlPlane {
         let test_evidence =
             TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
         let sketches = SketchService::with_clock(&config, database.clone(), Arc::clone(&clock));
+        let incidents =
+            crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         let health = HealthService::with_clock(
             config.clone(),
@@ -338,6 +343,7 @@ impl ControlPlane {
             events,
             capacity,
             health,
+            incidents,
             usage,
             progress,
             telegram,
@@ -971,6 +977,21 @@ impl ControlPlane {
             "health.summary" => {
                 let _: params::Empty = decode(params)?;
                 encode(self.health.summary()?)
+            }
+            "health.incidents" => encode(self.incidents.list(decode(params)?)?),
+            "health.incident.update" => {
+                let incident = self.incidents.update(decode(params)?, &caller.actor())?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        kind: "health.incident.changed".into(),
+                        repository_id: incident.repository_id.clone(),
+                        deployment_id: incident.deployment_id.clone(),
+                        subject_kind: "health_incident".into(),
+                        subject_id: incident.incident_id.clone(),
+                    }),
+                    None,
+                );
+                encode(incident)
             }
             "health.repositories" => {
                 let _: params::Empty = decode(params)?;
