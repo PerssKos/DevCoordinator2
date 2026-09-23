@@ -302,7 +302,7 @@ const fixtures = (scenario) => {
     'test.log.search': { matches: [{ line_start: 41999, line_end: 41999, byte_start: 8388500, byte_end: 8388520, text: 'assertion failed' }], next_cursor: 'next-search', response_truncated: false },
     'test.log.range': { segments: [{ line_start: 40, line_end: 50, byte_start: 400, byte_end: 510, text: 'exact bounded range' }], next_cursor: null, response_truncated: false },
     'test.log.failure_context': { contexts: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed', occurrences: 2, fingerprint: `sha256:${'b'.repeat(64)}` }], next_cursor: null, response_truncated: false },
-    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
+    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', subject_kind: 'host', subject_id: 'host', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString() }, { alert_key: 'component/d1111111111111111/worker/unhealthy', kind: 'component_unhealthy', subject_kind: 'component', subject_id: 'd1111111111111111/worker', severity: 'critical', message: 'component d1111111111111111/worker is failed', opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
     'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r9999999999999999', display_name: 'legacy-repo', root_path: '/srv/repos/legacy-repo', cpu_percent: 2.5, memory_bytes: 123456789, storage_bytes: 45678, storage: {}, health: 'healthy', deployments: [observed], trend_cpu: [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3], trend_memory: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, { repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
     'health.containers': { containers: scenario.empty ? [] : [
       { id: 'a'.repeat(64), name: 'devcoordinator2-deploy-x-db', image: 'postgres:16-alpine', state: 'running', status: 'Up 3 days', created: '2026-08-20 10:00:00 +0000 UTC', repository_id: 'r0123456789abcdef', deployment_id: DEP, component: 'db', run_id: null, caller_uid: 1000, client: 'claude', ttl_seconds: null, data: 'persistent', classification: 'managed-permanent', cpu_percent: 1.2, memory_bytes: 2677821440, pids: 7, container_layer_bytes: 0 },
@@ -1037,8 +1037,10 @@ async function main() {
           const healthTable = document.querySelector('.health-repository-table');
           const healthTableWrap = healthTable?.closest('.tablewrap');
           const healthIncidentHeading = document.querySelector('#health-incidents-title');
+          const healthIncidentDisclosure = document.querySelector('.health-reported-incidents');
           const healthSummaryRect = healthSummary?.getBoundingClientRect();
           const healthStatusRect = document.querySelector('.health-status-panel')?.getBoundingClientRect();
+          const healthIncidentDisclosureRect = healthIncidentDisclosure?.getBoundingClientRect();
           return {
             overflow, clipped, buttons: buttons.length, offscreen: offscreen.length,
             text: document.body.innerText.slice(0, 4000), skeleton: !!document.querySelector('.skeleton'),
@@ -1058,7 +1060,9 @@ async function main() {
               statusItems: document.querySelectorAll('.health-status-item').length,
               capacityRowHeightSpreads: [...healthCapacityRows.values()].map((heights) => Math.max(...heights) - Math.min(...heights)),
               primaryInInitialViewport: healthSummaryRect.top >= 0 && healthStatusRect.bottom <= window.innerHeight,
-              primaryBeforeIncidents: healthSummaryRect.bottom <= healthIncidentHeading.getBoundingClientRect().top + 1,
+              incidentsInInitialViewport: healthIncidentDisclosureRect?.top >= 0 && healthIncidentDisclosureRect?.bottom <= window.innerHeight,
+              incidentsBeforePrimary: healthIncidentDisclosure?.getBoundingClientRect().bottom <= healthSummaryRect.top + 1,
+              incidentsCollapsed: document.querySelector('.health-incident-body') == null,
               storageItems: healthStorageItems.map((element) => ({
                 text: element.innerText,
                 clipped: element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1,
@@ -1110,12 +1114,12 @@ async function main() {
           check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(numberText), numberText.slice(0, 80));
         }
         if (scenarioName === 'populated' && view === '#/health') {
-          check(`${label}: host capacity and operational status lead as one aligned summary`,
+          check(`${label}: the collapsed reported-incident queue leads the capacity summary`,
             metrics.health?.capacityCards === 4
-            && metrics.health?.statusItems === 4
             && metrics.health?.capacityRowHeightSpreads.every((spread) => spread <= 1)
-            && metrics.health?.primaryInInitialViewport
-            && metrics.health?.primaryBeforeIncidents,
+            && metrics.health?.incidentsInInitialViewport
+            && metrics.health?.incidentsBeforePrimary
+            && metrics.health?.incidentsCollapsed,
             JSON.stringify(metrics.health));
           check(`${label}: every shared storage category is visible and contained`,
             metrics.health?.storageItems.length === 5
@@ -1894,15 +1898,32 @@ async function main() {
   await waitForSettledCall(daemon, page, 'health.container_remove');
   check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.operation === 'health.container_remove' && c.params.container_id === 'c'.repeat(64)));
   await page.goto(`http://${HOST}:${port}/#/health`);
-  await page.waitForSelector('.card.bad-edge');
+  await page.waitForSelector('.health-reported-incidents');
+  check('health: the reported incident queue starts collapsed with an attention count',
+    await page.locator('.health-incident-body').count() === 0
+    && await page.locator('.health-incident-count').innerText() === '2');
+  await page.click('[data-health-incidents-toggle]');
+  await page.waitForSelector('.health-incident-card');
   const healthText = await page.innerText('body');
   check('health names the unhealthy component and its cause',
-    /worker/.test(healthText) && /exited 1: boom/.test(healthText) && /healthcheck failing/.test(healthText));
+    /worker/.test(healthText) && /exited 1: boom/.test(healthText) && !/d1111111111111111/.test(healthText));
   check('health offers actions on unhealthy deployments',
-    await page.locator('.card.bad-edge [data-cmd="deployment.restart"]').count() >= 1);
+    await page.locator('.health-incident-card [data-cmd="deployment.restart"]').count() >= 1);
   check('health keeps the container inventory and incident details directly reachable',
     await page.locator('.health-page-heading a[href="#/health/containers"]').count() === 1
-    && await page.locator('.health-incident-card a[href^="#/deployments/"]').count() >= 2);
+    && await page.locator('.health-incident-card a[href^="#/deployments/"]').count() >= 1);
+  const deploymentIncident = page.locator('.health-incident-card').filter({ has: page.locator('[data-cmd="deployment.restart"]') }).first();
+  await deploymentIncident.locator('[data-health-dismiss]').click();
+  check('interaction: dismissing an incident removes it from the active timeline',
+    await page.locator('.health-incident-card').count() === 1
+    && await page.locator('.health-incident-count').innerText() === '1');
+  await page.click('[data-health-show-dismissed]');
+  await page.waitForSelector('[data-health-restore]');
+  check('interaction: dismissed incidents are recoverable without returning to the active queue',
+    await page.locator('[data-health-restore]').count() === 1
+    && await page.locator('.health-incident-card').count() === 1);
+  await page.locator('[data-health-restore]').click();
+  await page.waitForSelector('.health-incident-card');
   await page.waitForSelector('.chartbox svg.chart');
   check('health charts render host history with a min–max band',
     await page.locator('.chartbox svg.chart .band').count() >= 3);
@@ -2596,6 +2617,7 @@ async function main() {
     const layout = await healthPage.evaluate(() => {
       const summary = document.querySelector('.health-summary').getBoundingClientRect();
       const status = document.querySelector('.health-status-panel').getBoundingClientRect();
+      const incidents = document.querySelector('.health-reported-incidents').getBoundingClientRect();
       const table = document.querySelector('.health-repository-table');
       const wrap = table.closest('.tablewrap');
       const storageItems = [...document.querySelectorAll('.health-storage-breakdown > div')].map((element) => {
@@ -2609,14 +2631,14 @@ async function main() {
         if (!capacityRows.has(top)) capacityRows.set(top, []);
         capacityRows.get(top).push(rect.height);
       }
-      const incidentList = document.querySelector('.health-incident-list');
       return {
         documentOverflow: document.documentElement.scrollWidth - innerWidth,
         summaryInInitialViewport: summary.top >= 0 && status.bottom <= innerHeight,
-        summaryBeforeIncidents: summary.bottom <= document.querySelector('#health-incidents-title').getBoundingClientRect().top + 1,
+        incidentsInInitialViewport: incidents.top >= 0 && incidents.bottom <= innerHeight,
+        incidentsBeforeSummary: document.querySelector('.health-reported-incidents').getBoundingClientRect().bottom <= summary.top + 1,
+        incidentsCollapsed: document.querySelector('.health-incident-body') == null,
         capacityCards: document.querySelectorAll('.health-capacity-card').length,
         capacityRowHeightSpreads: [...capacityRows.values()].map((heights) => Math.max(...heights) - Math.min(...heights)),
-        incidentAlignment: getComputedStyle(incidentList).alignItems,
         tableDisplay: getComputedStyle(table).display,
         tableScroll: wrap.scrollWidth - wrap.clientWidth,
         storageItems,
@@ -2625,11 +2647,11 @@ async function main() {
     });
     const expectedTableDisplay = viewport.width <= 960 ? 'block' : 'table';
     check(`health-${viewport.width}: summary leads, aligns, and incidents keep natural height`,
-      layout.summaryInInitialViewport
-      && layout.summaryBeforeIncidents
+      layout.incidentsInInitialViewport
+      && layout.incidentsBeforeSummary
+      && layout.incidentsCollapsed
       && layout.capacityCards === 4
-      && layout.capacityRowHeightSpreads.every((spread) => spread <= 1)
-      && layout.incidentAlignment === 'start', JSON.stringify(layout));
+      && layout.capacityRowHeightSpreads.every((spread) => spread <= 1), JSON.stringify(layout));
     check(`health-${viewport.width}: repository layout switches at 960px without horizontal overflow`,
       layout.documentOverflow <= 0 && layout.tableDisplay === expectedTableDisplay && layout.tableScroll <= 1,
       JSON.stringify({ overflow: layout.documentOverflow, tableDisplay: layout.tableDisplay, tableScroll: layout.tableScroll }));
