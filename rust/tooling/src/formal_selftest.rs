@@ -2927,6 +2927,16 @@ fn run_review_phase(
     write_bytes_nofollow(&repo.join("backend.txt"), b"unrelated backend v1\n", 0o600)
         .map_err(|error| error.to_string())?;
     let base = server.base_url();
+    let module_url = serde_json::to_string(&format!(
+        "file://{}",
+        root.join("skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs")
+            .display()
+    ))
+    .map_err(|error| error.to_string())?;
+    let redaction_probe = "import { screenshotActionValues } from ".to_owned()
+        + &module_url
+        + "; const values=screenshotActionValues({verificationState:{actions:[{action:'fill',value:'   '},{action:'fill',value:'retained-example'}]}}); if (values.length!==1 || values[0]!=='retained-example') process.exit(9);";
+    run_node_probe(root, &redaction_probe, timeout)?;
     let base_config = review_config(root, &repo, &base);
     let first_dir = work.join("first");
     let first = run_verifier(root, &base_config, &first_dir, &[0], timeout, &[])?;

@@ -877,6 +877,18 @@ impl MetricNameArg {
 enum HealthCommand {
     Containers,
     Summary,
+    Incidents {
+        #[arg(long, default_value = "attention", value_parser = ["attention", "dismissed", "all"])]
+        view: String,
+        #[arg(long, default_value_t = 20)]
+        limit: u16,
+        #[arg(long)]
+        before: Option<String>,
+    },
+    Incident {
+        #[command(subcommand)]
+        command: HealthIncidentCommand,
+    },
     Repositories,
     Repository(PathArg),
     History {
@@ -888,6 +900,29 @@ enum HealthCommand {
         metric: MetricNameArg,
         #[arg(long, default_value_t = 60)]
         minutes: u32,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HealthIncidentCommand {
+    Update {
+        incident_id: String,
+        #[arg(long)]
+        expected_revision: u32,
+        #[arg(long, value_parser = ["handling", "suppressed", "escalated", "dismissed"])]
+        status: String,
+        #[arg(long, value_parser = ["operational", "development"])]
+        category: Option<String>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        what_happened: Option<String>,
+        #[arg(long)]
+        agent_response: Option<String>,
+        #[arg(long)]
+        escalation_reason: Option<String>,
+        #[arg(long)]
+        next_step: Option<String>,
     },
 }
 
@@ -1846,6 +1881,35 @@ impl HealthCommand {
         match self {
             Self::Containers => remote("health.containers", json!({})),
             Self::Summary => remote("health.summary", json!({})),
+            Self::Incidents {
+                view,
+                limit,
+                before,
+            } => remote(
+                "health.incidents",
+                json!({"view":view,"limit":limit,"before":before}),
+            ),
+            Self::Incident {
+                command:
+                    HealthIncidentCommand::Update {
+                        incident_id,
+                        expected_revision,
+                        status,
+                        category,
+                        summary,
+                        what_happened,
+                        agent_response,
+                        escalation_reason,
+                        next_step,
+                    },
+            } => remote(
+                "health.incident.update",
+                json!({
+                    "incident_id":incident_id,"expected_revision":expected_revision,"status":status,"category":category,
+                    "summary":summary,"what_happened":what_happened,"agent_response":agent_response,
+                    "escalation_reason":escalation_reason,"next_step":next_step
+                }),
+            ),
             Self::Repositories => remote("health.repositories", json!({})),
             Self::Repository(path) => remote("health.repository", path_params(&path)?),
             Self::History {
@@ -2301,7 +2365,7 @@ fn render_response_to(
 ) -> io::Result<()> {
     match format {
         OutputFormat::Json => {
-            serde_json::to_writer_pretty(&mut *output, response).map_err(io::Error::other)?;
+            serde_json::to_writer(&mut *output, response).map_err(io::Error::other)?;
             writeln!(output)
         }
         OutputFormat::Human => match response {
@@ -2876,6 +2940,25 @@ mod tests {
             ),
             (&["health", "containers"], "health.containers"),
             (&["health", "summary"], "health.summary"),
+            (
+                &["health", "incidents", "--view", "all"],
+                "health.incidents",
+            ),
+            (
+                &[
+                    "health",
+                    "incident",
+                    "update",
+                    "i-fixture",
+                    "--expected-revision",
+                    "0",
+                    "--status",
+                    "handling",
+                    "--agent-response",
+                    "Investigating",
+                ],
+                "health.incident.update",
+            ),
             (&["health", "repositories"], "health.repositories"),
             (&["health", "repository", "/tmp/repo"], "health.repository"),
             (
@@ -3429,6 +3512,11 @@ mod tests {
         assert_eq!(decoded["protocol"], 2);
         assert_eq!(decoded["data"]["repository_id"], "r1");
         assert!(decoded.get("result").is_none());
+        assert_eq!(json_output.iter().filter(|byte| **byte == b'\n').count(), 1);
+        assert_eq!(
+            json_output.len(),
+            serde_json::to_vec(&success).unwrap().len() + 1
+        );
 
         let mut human_output = Vec::new();
         render_response_to(

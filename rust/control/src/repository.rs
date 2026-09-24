@@ -885,6 +885,12 @@ struct GitOutput {
 
 fn run_command_with_timeout(mut command: Command, timeout: Duration) -> io::Result<GitOutput> {
     let mut child = command.spawn()?;
+    // Wake when Git exits instead of imposing a polling interval on every
+    // repository in the Console navigation catalogue.
+    #[cfg(target_os = "linux")]
+    let child_event = rustix::process::Pid::from_raw(child.id() as i32).and_then(|pid| {
+        rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+    });
     let stdout = child
         .stdout
         .take()
@@ -914,6 +920,27 @@ fn run_command_with_timeout(mut command: Command, timeout: Duration) -> io::Resu
                 io::ErrorKind::TimedOut,
                 format!("timed out after {} seconds", timeout.as_secs()),
             ));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(event) = &child_event {
+            use std::os::fd::AsRawFd;
+            let mut descriptor = libc::pollfd {
+                fd: event.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let remaining = deadline.saturating_duration_since(now);
+            // SAFETY: descriptor is one initialized pollfd; event stays open.
+            let result = unsafe {
+                libc::poll(
+                    &mut descriptor,
+                    1,
+                    remaining.as_millis().clamp(1, i32::MAX as u128) as i32,
+                )
+            };
+            if result >= 0 || io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
         }
         thread::sleep(PROCESS_POLL.min(deadline.saturating_duration_since(now)));
     };
@@ -1255,6 +1282,31 @@ mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
     use tempfile::{TempDir, tempdir};
+
+    #[test]
+    fn repository_probe_exit_and_timeout_keep_output_and_reap_the_child() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "printf result; printf diagnostic >&2; exit 7"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = run_command_with_timeout(command, Duration::from_secs(2)).unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"result");
+        assert_eq!(output.stderr, b"diagnostic");
+
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("10")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let began = Instant::now();
+        let error = run_command_with_timeout(command, Duration::from_millis(20))
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(began.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn test_repository_source_groups_origins_without_exposing_credentials() {

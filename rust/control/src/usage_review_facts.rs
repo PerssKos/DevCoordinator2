@@ -173,7 +173,7 @@ pub(super) fn read(
     })
 }
 
-fn decode_operation(
+pub(super) fn decode_operation(
     row: &rusqlite::Row<'_>,
     lower: u64,
     upper: u64,

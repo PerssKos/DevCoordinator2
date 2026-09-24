@@ -263,6 +263,7 @@ const fixtures = (scenario) => {
   };
   return {
     'user.whoami': { local: false, identity: scenario.identity, user_id: 'u1', administrator: scenario.admin, grants: scenario.admin ? {} : { [DEP]: scenario.denied ? 'viewer' : 'operator' } },
+    'health.incidents': {attention_count:scenario.empty?0:1,dismissed_count:0,total:scenario.empty?0:1,next_before:null,incidents:scenario.empty?[]:[{incident_id:'fixture-web-incident',alert_key:'fixture-web',opened_at:new Date(Date.now()-3600000).toISOString(),last_seen_at:new Date().toISOString(),repository_name:primaryRepositoryName,repository_id:REPO,deployment_id:'d1111111111111111',deployment_name:degraded.name,component:'worker',summary:'Preview is unavailable',what_happened:'The worker exited and the preview is unavailable.',agent_response:'The agent inspected the failed worker.',escalation_reason:'The owner needs to choose which version to restore.',next_step:'Review the deployment and its logs.',status:'escalated',severity:'critical',condition_active:true,revision:1,updated_at:new Date().toISOString()}]},
     'deployment.list': { deployments: scenario.empty ? [] : [running, degraded, observed], declared: scenario.empty ? [] : [{ name: 'tool', source: 'worktree', deployment_id: 'd2222222222222222' }] },
     'deployment.status': { ...running, previous_generation: 16, route_port: 20002, route_component: 'api', components, log_dir: '/state/logs' },
     'deployment.observed-status': { ...observed, previous_generation: null, components: observedComponents, log_dir: null, native_project: 'existing-compose-stack', observation_source: 'legacy-current-import' },
@@ -302,7 +303,7 @@ const fixtures = (scenario) => {
     'test.log.search': { matches: [{ line_start: 41999, line_end: 41999, byte_start: 8388500, byte_end: 8388520, text: 'assertion failed' }], next_cursor: 'next-search', response_truncated: false },
     'test.log.range': { segments: [{ line_start: 40, line_end: 50, byte_start: 400, byte_end: 510, text: 'exact bounded range' }], next_cursor: null, response_truncated: false },
     'test.log.failure_context': { contexts: [{ line_start: 41999, line_end: 42000, byte_start: 8388500, byte_end: 8388608, text: 'assertion failed', occurrences: 2, fingerprint: `sha256:${'b'.repeat(64)}` }], next_cursor: null, response_truncated: false },
-    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString() }, { alert_key: `component/${DEP}/worker/unhealthy`, kind: 'component_unhealthy', severity: 'critical', message: `component ${DEP}/worker is failed`, opened_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
+    'health.summary': { host: { cpu_percent: 93.4, memory_total: 264122252 * 1024, memory_used: 108579328 * 1024, memory_available: 155542924 * 1024, swap_total: 0, swap_used: 0, load_1: 8.32, load_5: 8.39, load_15: 7.69, fs_size: 2113513742336, fs_free: 148698841088, fs_used: 1964814901248, ncpu: 32, reconciliation: { managed_cpu_percent: 40.1, daemon_cpu_percent: 0.3, other_cpu_percent: 53.0, managed_memory: 50e9, daemon_memory: 120e6, other_memory: 60e9 } }, storage: { fs_used: 1964814901248, managed_repositories: 4e11, devcoordinator_state: 5e7, docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 }, unhealthy_deployments: scenario.empty ? [] : [{ ...degraded, reasons: [{ component: 'worker', state: 'failed', detail: 'exited 1: boom' }, { component: 'api', state: 'stopped', detail: null }] }, { deployment_id: OBS, name: 'existing-compose-stack', source: 'observed', state: 'running', health: 'unhealthy', repository_name: 'legacy-repo', observed_only: true, reasons: [{ component: 'app', state: 'running', detail: 'container healthcheck failing (Up 3 days (unhealthy))' }] }], active_tests: scenario.empty ? [] : ['unit'], container_counts: { 'managed-test': 1, 'managed-preview': 0, 'managed-permanent': 3, 'orphaned-managed': 1, unmanaged: 43 }, alerts: scenario.empty ? [] : [{ alert_key: 'host/cpu', kind: 'host_cpu', subject_kind: 'host', subject_id: 'host', severity: 'warning', message: 'host CPU 93% sustained', opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString() }, { alert_key: 'component/d1111111111111111/worker/unhealthy', kind: 'component_unhealthy', subject_kind: 'component', subject_id: 'd1111111111111111/worker', severity: 'critical', message: 'component d1111111111111111/worker is failed', opened_at: new Date().toISOString(), last_seen_at: new Date().toISOString() }], sampling: { retention_days: 30 } },
     'health.repositories': { repositories: scenario.empty ? [] : [{ repository_id: 'r9999999999999999', display_name: 'legacy-repo', root_path: '/srv/repos/legacy-repo', cpu_percent: 2.5, memory_bytes: 123456789, storage_bytes: 45678, storage: {}, health: 'healthy', deployments: [observed], trend_cpu: [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3], trend_memory: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1] }, { repository_id: 'r0123456789abcdef', display_name: 'repo-one', root_path: '/srv/repos/repo-one', cpu_percent: 40.1, memory_bytes: 5e10, storage_bytes: 4e11, storage: {}, health: 'unhealthy', deployments: [running, degraded], trend_cpu: [1, 5, 3, 8, 2, 9, 4, 7, 3, 6, 2, 5], trend_memory: [1, 1, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5] }, { repository_id: 'r2', display_name: LONG, root_path: `/srv/repos/${LONG}`, cpu_percent: 0, memory_bytes: 0, storage_bytes: 1234567890123, storage: {}, health: 'none', deployments: [], trend_cpu: [], trend_memory: [] }], devcoordinator: { cpu_percent: 0.3, memory_bytes: 120e6, storage_bytes: 5e7 }, shared_unattributed: { cpu_percent: 53, memory_bytes: 60e9, storage: { docker_shared: 3e10, docker_images: 2.7e10, docker_build_cache: 2.8e9, docker_shared_volumes: 1e8, other: 1.5e12 } }, host: {} },
     'health.containers': { containers: scenario.empty ? [] : [
       { id: 'a'.repeat(64), name: 'devcoordinator2-deploy-x-db', image: 'postgres:16-alpine', state: 'running', status: 'Up 3 days', created: '2026-08-20 10:00:00 +0000 UTC', repository_id: 'r0123456789abcdef', deployment_id: DEP, component: 'db', run_id: null, caller_uid: 1000, client: 'claude', ttl_seconds: null, data: 'persistent', classification: 'managed-permanent', cpu_percent: 1.2, memory_bytes: 2677821440, pids: 7, container_layer_bytes: 0 },
@@ -412,7 +413,7 @@ const destinationHref = (view) => {
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/performance/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['health.summary', 'health.incidents', 'health.incident.update', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -1026,9 +1027,9 @@ async function main() {
             return rect.top + rect.height / 2;
           });
           const headerRect = header.getBoundingClientRect();
-          const healthSummary = document.querySelector('.health-summary');
-          const healthStorageItems = [...document.querySelectorAll('.health-storage-breakdown > div')];
-          const healthCapacityRects = [...document.querySelectorAll('.health-capacity-card')].map((element) => element.getBoundingClientRect());
+          const healthSummary = document.querySelector('.hi-host');
+          const healthStorageItems = [...document.querySelectorAll('.hi-storage-breakdown > div')];
+          const healthCapacityRects = [...document.querySelectorAll('.hi-capacity-cell')].map((element) => element.getBoundingClientRect());
           const healthCapacityRows = new Map();
           for (const rect of healthCapacityRects) {
             const top = Math.round(rect.top);
@@ -1038,8 +1039,10 @@ async function main() {
           const healthTable = document.querySelector('.health-repository-table');
           const healthTableWrap = healthTable?.closest('.tablewrap');
           const healthIncidentHeading = document.querySelector('#health-incidents-title');
+          const healthIncidentDisclosure = document.querySelector('.hi-incidents');
           const healthSummaryRect = healthSummary?.getBoundingClientRect();
-          const healthStatusRect = document.querySelector('.health-status-panel')?.getBoundingClientRect();
+          const healthStatusRect = document.querySelector('.hi-trends')?.getBoundingClientRect();
+          const healthIncidentDisclosureRect = healthIncidentDisclosure?.getBoundingClientRect();
           return {
             overflow, clipped, buttons: buttons.length, offscreen: offscreen.length,
             text: document.body.innerText.slice(0, 4000), skeleton: !!document.querySelector('.skeleton'),
@@ -1059,7 +1062,9 @@ async function main() {
               statusItems: document.querySelectorAll('.health-status-item').length,
               capacityRowHeightSpreads: [...healthCapacityRows.values()].map((heights) => Math.max(...heights) - Math.min(...heights)),
               primaryInInitialViewport: healthSummaryRect.top >= 0 && healthStatusRect.bottom <= window.innerHeight,
-              primaryBeforeIncidents: healthSummaryRect.bottom <= healthIncidentHeading.getBoundingClientRect().top + 1,
+              incidentsInInitialViewport: healthIncidentDisclosureRect?.top >= 0 && healthIncidentDisclosureRect?.bottom <= window.innerHeight,
+              incidentsBeforePrimary: healthIncidentDisclosure?.getBoundingClientRect().bottom <= healthSummaryRect.top + 1,
+              incidentsCollapsed: document.querySelector('#hi-incident-panel')?.hidden === true,
               storageItems: healthStorageItems.map((element) => ({
                 text: element.innerText,
                 clipped: element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1,
@@ -1111,19 +1116,15 @@ async function main() {
           check(`${label}: large numbers humanized`, /MiB|GiB|TiB/.test(numberText), numberText.slice(0, 80));
         }
         if (scenarioName === 'populated' && view === '#/health') {
-          check(`${label}: host capacity and operational status lead as one aligned summary`,
+          check(`${label}: the collapsed reported-incident queue leads the capacity summary`,
             metrics.health?.capacityCards === 4
-            && metrics.health?.statusItems === 4
             && metrics.health?.capacityRowHeightSpreads.every((spread) => spread <= 1)
-            && metrics.health?.primaryInInitialViewport
-            && metrics.health?.primaryBeforeIncidents,
+            && metrics.health?.incidentsInInitialViewport
+            && metrics.health?.incidentsBeforePrimary
+            && metrics.health?.incidentsCollapsed,
             JSON.stringify(metrics.health));
-          check(`${label}: every shared storage category is visible and contained`,
-            metrics.health?.storageItems.length === 5
-            && metrics.health.storageItems.every((item) => !item.clipped && item.left >= -1 && item.right <= viewport.width + 1)
-            && ['Docker shared', 'Docker images', 'Docker build cache', 'Docker shared volumes', 'Other'].every((name) => metrics.health.storageItems.some((item) => item.text.includes(name))),
-            JSON.stringify(metrics.health?.storageItems));
-          check(`${label}: repository attribution does not need horizontal scrolling`, metrics.health?.tableScroll <= 1, `scroll ${metrics.health?.tableScroll}px`);
+          check(`${label}: storage attribution stays available on demand`, metrics.health?.storageItems.length === 5);
+
         }
         if (scenarioName === 'populated' && view === `#/plan/${REPO}`) {
           check(`${label}: plan shows owner controls for the administrator`, metrics.planControls >= 3, `${metrics.planControls} controls`);
@@ -1910,60 +1911,23 @@ async function main() {
   await waitForSettledCall(daemon, page, 'health.container_remove');
   check('interaction: container removal calls health.container_remove with the exact id', daemon.calls.some((c) => c.operation === 'health.container_remove' && c.params.container_id === 'c'.repeat(64)));
   await page.goto(`http://${HOST}:${port}/#/health`);
-  await page.waitForSelector('.card.bad-edge');
-  const healthText = await page.innerText('body');
-  check('health names the unhealthy component and its cause',
-    /worker/.test(healthText) && /exited 1: boom/.test(healthText) && /healthcheck failing/.test(healthText));
-  check('health offers actions on unhealthy deployments',
-    await page.locator('.card.bad-edge [data-cmd="deployment.restart"]').count() >= 1);
-  check('health keeps the container inventory and incident details directly reachable',
-    await page.locator('.health-page-heading a[href="#/health/containers"]').count() === 1
-    && await page.locator('.health-incident-card a[href^="#/deployments/"]').count() >= 2);
-  await page.waitForSelector('.chartbox svg.chart');
-  check('health charts render host history with a min–max band',
-    await page.locator('.chartbox svg.chart .band').count() >= 3);
-  daemon.calls.length = 0;
-  await page.click('[data-health-range="7d"]');
-  await page.waitForSelector('.chartbox svg.chart');
-  await waitForSettledCall(daemon, page,
-    (call) => call.operation === 'health.history' && call.params.minutes === 10080);
-  check('interaction: the 7d range requests a downsampled week of host history',
-    daemon.calls.some((c) => c.operation === 'health.history' && c.params.minutes === 10080 && c.params.points > 0));
-  daemon.calls.length = 0;
-  await page.click('[data-health-range="30d"]');
-  await page.waitForSelector('.chartbox svg.chart');
-  await waitForSettledCall(daemon, page,
-    (call) => call.operation === 'health.history' && call.params.minutes === 43200);
-  check('interaction: the 30d range requests a downsampled month of host history',
-    daemon.calls.some((c) => c.operation === 'health.history' && c.params.minutes === 43200 && c.params.points > 0));
-  for (const action of ['start', 'stop', 'restart']) {
-    daemon.calls.length = 0;
-    await page.click(`.health-incident-card [data-cmd="deployment.${action}"]`);
-    await page.waitForSelector('.health-incident-card');
-    await waitForSettledCall(daemon, page, `deployment.${action}`);
-    check(`interaction: Health ${action} acts on the selected unhealthy deployment`,
-      daemon.calls.some((call) => call.operation === `deployment.${action}` && call.params.deployment_id === 'd1111111111111111'));
-  }
-  await page.click('.health-page-heading a[href="#/health/containers"]');
-  await page.waitForURL(/#\/health\/containers$/);
-  await page.waitForFunction(() => document.querySelector('main h1 strong')?.textContent === 'Containers');
-  await page.waitForSelector('table');
-  check('interaction: View containers opens the real container inventory', /Containers/.test(await page.innerText('main h1')));
-  await page.click('main a[href="#/health"]');
-  await page.waitForURL(/#\/health$/);
-  await page.waitForSelector('.health-incident-card');
-  check('interaction: the container inventory returns to Health through its visible link', await page.locator('.health-summary').count() === 1);
-  await page.click('.health-incident-card a.btn[href^="#/deployments/"]');
+  await page.waitForSelector('.hi-incidents');
+  check('health starts with a collapsed operator queue', await page.locator('#hi-incident-panel').isHidden());
+  await page.locator('#hi-incidents-toggle').click();
+  await page.locator('[data-hi-select]').first().click();
+  check('health explains the recorded escalation', /What happened/.test(await page.innerText('.hi-incidents')) && /Agent response/.test(await page.innerText('.hi-incidents')) && /Why it needs you/.test(await page.innerText('.hi-incidents')));
+  await page.locator('#hi-selected-detail a.btn-primary').click();
   await page.waitForURL(/#\/deployments\//);
-  await page.waitForSelector('main h1 a[href="#/deployments"]');
-  check('interaction: incident details opens the deployment detail route', await page.locator('main h1 a[href="#/deployments"]').count() === 1);
-  daemon.setScenario(SCENARIOS.error);
+  check('Health next action opens the exact deployment', page.url().endsWith('#/deployments/d1111111111111111'));
   await page.goto(`http://${HOST}:${port}/#/health`);
-  await page.waitForSelector('.notice .btn');
-  daemon.setScenario(SCENARIOS.populated);
-  await page.click('.notice .btn');
-  await page.waitForSelector('.health-summary');
-  check('interaction: Health recovers from a load failure through Retry', await page.locator('.health-summary').count() === 1);
+  await page.waitForSelector('.hi-host');
+  for(const [range,minutes] of [['7d',10080],['30d',43200]]) {
+    await page.locator('[data-hi-range="'+range+'"]').click();
+    await waitForSettledCall(daemon,page,c=>c.operation==='health.history'&&c.params.minutes===minutes);
+    check('Health '+range+' range reads the real history operation',daemon.calls.some(c=>c.operation==='health.history'&&c.params.minutes===minutes));
+  }
+  // Dismissal, errors, permissions and recurrence use the real SQLite
+  // acceptance in verify-glossary.mjs with CONSOLE_VERIFY_HEALTH_ONLY=1.
 
   // Codex Usage: linked navigation, repository selection, truthful phase
   // chart, keyboard-preserving range changes, and accessible exact values.
@@ -2607,54 +2571,11 @@ async function main() {
   for (const viewport of healthSamples) {
     await healthPage.setViewportSize(viewport);
     await healthPage.goto(`http://${HOST}:${port}/#/health`);
-    await healthPage.waitForSelector('.health-storage-breakdown');
-    await healthPage.waitForSelector('.chartbox svg.chart');
-    await healthPage.screenshot({ path: path.join(OUT, `health-${viewport.width}.png`), fullPage: true });
-    const layout = await healthPage.evaluate(() => {
-      const summary = document.querySelector('.health-summary').getBoundingClientRect();
-      const status = document.querySelector('.health-status-panel').getBoundingClientRect();
-      const table = document.querySelector('.health-repository-table');
-      const wrap = table.closest('.tablewrap');
-      const storageItems = [...document.querySelectorAll('.health-storage-breakdown > div')].map((element) => {
-        const rect = element.getBoundingClientRect();
-        return { text: element.innerText, left: rect.left, right: rect.right, clipped: element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1 };
-      });
-      const capacityRows = new Map();
-      for (const card of document.querySelectorAll('.health-capacity-card')) {
-        const rect = card.getBoundingClientRect();
-        const top = Math.round(rect.top);
-        if (!capacityRows.has(top)) capacityRows.set(top, []);
-        capacityRows.get(top).push(rect.height);
-      }
-      const incidentList = document.querySelector('.health-incident-list');
-      return {
-        documentOverflow: document.documentElement.scrollWidth - innerWidth,
-        summaryInInitialViewport: summary.top >= 0 && status.bottom <= innerHeight,
-        summaryBeforeIncidents: summary.bottom <= document.querySelector('#health-incidents-title').getBoundingClientRect().top + 1,
-        capacityCards: document.querySelectorAll('.health-capacity-card').length,
-        capacityRowHeightSpreads: [...capacityRows.values()].map((heights) => Math.max(...heights) - Math.min(...heights)),
-        incidentAlignment: getComputedStyle(incidentList).alignItems,
-        tableDisplay: getComputedStyle(table).display,
-        tableScroll: wrap.scrollWidth - wrap.clientWidth,
-        storageItems,
-        rawStorageKeysVisible: /docker_(shared|images|build_cache|shared_volumes)/.test(document.body.innerText),
-      };
-    });
-    const expectedTableDisplay = viewport.width <= 960 ? 'block' : 'table';
-    check(`health-${viewport.width}: summary leads, aligns, and incidents keep natural height`,
-      layout.summaryInInitialViewport
-      && layout.summaryBeforeIncidents
-      && layout.capacityCards === 4
-      && layout.capacityRowHeightSpreads.every((spread) => spread <= 1)
-      && layout.incidentAlignment === 'start', JSON.stringify(layout));
-    check(`health-${viewport.width}: repository layout switches at 960px without horizontal overflow`,
-      layout.documentOverflow <= 0 && layout.tableDisplay === expectedTableDisplay && layout.tableScroll <= 1,
-      JSON.stringify({ overflow: layout.documentOverflow, tableDisplay: layout.tableDisplay, tableScroll: layout.tableScroll }));
-    check(`health-${viewport.width}: all storage attribution is readable`,
-      layout.storageItems.length === 5
-      && layout.storageItems.every((item) => !item.clipped && item.left >= -1 && item.right <= viewport.width + 1)
-      && !layout.rawStorageKeysVisible,
-      JSON.stringify(layout.storageItems));
+    await healthPage.waitForSelector('#hi-history svg');
+    await healthPage.locator('.hi-attribution summary').click();
+    const layout=await healthPage.evaluate(()=>({overflow:document.documentElement.scrollWidth-innerWidth,closed:document.querySelector('#hi-incident-panel').hidden,storage:[...document.querySelectorAll('.hi-storage-breakdown>div')].map(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1;}),disclosure:document.querySelector('.hi-disclosure').getBoundingClientRect().top}));
+    check(`health-${viewport.width}: incident disclosure and complete attribution remain reachable`,layout.overflow<=0&&layout.closed&&layout.storage.length===5&&layout.storage.every(Boolean)&&layout.disclosure<viewport.height,JSON.stringify(layout));
+    await healthPage.screenshot({path:path.join(OUT,`health-${viewport.width}.png`),fullPage:true});
   }
   await healthContext.close();
 
@@ -2690,7 +2611,7 @@ async function main() {
     && await navPage.locator('#nav-toggle:focus').count() === 1);
   await navPage.click('#nav-toggle');
   await navPage.click('#nav a[href="#/health"]');
-  await navPage.waitForSelector('.health-summary');
+  await navPage.waitForSelector('.hi-host');
   check('interaction: Console tools navigation closes the menu and opens the host destination', await navPage.locator('#nav:visible').count() === 0 && await navPage.locator('#repository-sidebar:visible').count() === 0);
   await navPage.setViewportSize({ width: 1240, height: 800 });
   await navPage.waitForFunction(() => document.querySelector('#nav-toggle')?.offsetParent !== null

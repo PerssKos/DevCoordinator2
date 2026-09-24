@@ -126,10 +126,31 @@ fn mark_incomplete(effort: &mut devcoordinator2_api::outcomes::OutcomeEffort) {
 
 pub(super) fn aggregate(
     connection: &Connection,
+    facts: Facts,
+    workstream: Option<&str>,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<(SourceReport, Groups), String> {
+    aggregate_facts(connection, facts, workstream, start_ms, end_ms, true)
+}
+
+pub(super) fn display(
+    connection: &Connection,
+    facts: Facts,
+    workstream: Option<&str>,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<(SourceReport, Groups), String> {
+    aggregate_facts(connection, facts, workstream, start_ms, end_ms, false)
+}
+
+fn aggregate_facts(
+    connection: &Connection,
     mut facts: Facts,
     workstream: Option<&str>,
     start_ms: u64,
     end_ms: u64,
+    include_coverage: bool,
 ) -> Result<(SourceReport, Groups), String> {
     let mut report = SourceReport {
         database_schema: 7,
@@ -292,14 +313,16 @@ pub(super) fn aggregate(
     report.execution_unknown = all.unknown_elapsed;
     report.agent_intervals = all.active;
     report.agent_unknown = all.unknown_active;
-    add_coverage(
-        connection,
-        &mut report,
-        &by_id,
-        start_ms,
-        end_ms,
-        end_ms - start_ms,
-        1,
-    )?;
+    if include_coverage {
+        add_coverage(
+            connection,
+            &mut report,
+            &by_id,
+            start_ms,
+            end_ms,
+            end_ms - start_ms,
+            1,
+        )?;
+    }
     Ok((report, groups))
 }

@@ -56,6 +56,18 @@ devcoordinator2 health --help
 - Use `health summary|repositories|containers` for host and ownership
   observation. Treat `unmanaged` as unknown; never infer ownership from a
   name, image, port, or path.
+- Use `health incidents --view all` or `health_incidents` to inspect current
+  observations and recorded responses. An automatic alert is not an owner
+  escalation. Record `health incident update` / `health_incident_update` with
+  the returned occurrence ID and expected revision: `handling` while owning
+  recovery, `suppressed` for a deliberate non-report decision, and category
+  `development` for expected testing or development conditions. Do not infer
+  that category from worktree source. Escalate only when owner action is
+  needed, recording what happened, the actual agent response, the reason the
+  owner is needed, and the next step. Do not invent an agent action or treat
+  missing response evidence as proof of inaction. Dismissal is stored for the
+  exact occurrence; it is not service recovery or suppression of later
+  recurrences. Re-read after writes; a failed save is never success.
 - Use `event wait` (or MCP `event_wait`) when a client must block for several
   owned state changes or heartbeat deadlines in one request. Keep and advance
   the returned monotonic cursor, treat `cursor_stale` as a required state

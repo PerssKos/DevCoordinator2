@@ -328,3 +328,15 @@ Three read-only repository-administrator operations expose the existing review/a
 - `performance.review`: `{repository_id, reference, outcome_cursor?, outcome_limit?}`. `reference` is an exact `review-id@revision`, validated against the repository. Returns the record, its canonical window/workstream measurements, resolved evidence and before/after comparisons. Outcome continuation reuses the existing five-minute frozen snapshot.
 
 Outcome effort projections add activity token measurements; rows add the current Plan kind; outcome reports add kind totals before pagination. The existing unmodified v1 numerical accounting semantics remain authoritative. Kinds use direct outcome bindings only; unknown/deleted metadata and unattributed work remain explicit. Time unions are never obtained by adding outcome rows. Display caches are memory-only, and source schemas/privacy controls remain unchanged. A receipt is not proof of causality; comparisons preserve the existing validated narrative, input identity, quality and missing-measurement rules.
+
+Performance chart reads use the existing repository/observation-time token index.
+They project provider total observations and their declared activity/outcome, including
+covered-observation deduplication and explicit unknown/multi-repository attribution.
+They do not scan unrelated repositories' execution histories. The chart usage packet
+labels its token-owning-operation basis; complete timing is unprojected rather than
+reported as zero. Before/after comparisons still read the complete canonical review
+measurements and validate quality evidence. Missing indexed capability falls back to
+the reviewed compatible reader. Query failure never becomes a successful empty period.
+
+CLI `--format json` emits compact JSON followed by one newline. The envelope and
+all values are unchanged; `--format human` remains the human-readable presentation.

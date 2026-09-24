@@ -10,6 +10,7 @@ use thiserror::Error;
 pub mod configuration;
 pub mod delivery;
 pub mod glossary;
+pub mod incidents;
 pub mod outcomes;
 pub mod params;
 pub mod performance;
@@ -20,7 +21,7 @@ pub mod runtime_recovery;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 24;
+pub const DATABASE_SCHEMA_VERSION: u32 = 25;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1095,6 +1096,24 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::HealthSummary
     ),
     operation!(
+        "health.incidents",
+        "List escalated incidents, dismissed occurrences, or all observations for agent triage.",
+        READ_SERVER_ADMIN,
+        Protocol["health incidents"],
+        ["health_incidents"],
+        incidents::IncidentListParams,
+        incidents::IncidentList
+    ),
+    operation!(
+        "health.incident.update",
+        "Record handling, non-reporting, escalation or dismissal for one exact incident occurrence.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["health incident update"],
+        ["health_incident_update"],
+        incidents::IncidentUpdate,
+        incidents::Incident
+    ),
+    operation!(
         "health.repositories",
         "Show visible per-repository resource use.",
         READ_REPOSITORY_VIEWER,
@@ -1937,9 +1956,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 115);
-        assert_eq!(tools.len(), 92);
-        assert_eq!(cli_routes.len(), 91);
+        assert_eq!(OPERATIONS.len(), 117);
+        assert_eq!(tools.len(), 94);
+        assert_eq!(cli_routes.len(), 93);
     }
 
     #[test]

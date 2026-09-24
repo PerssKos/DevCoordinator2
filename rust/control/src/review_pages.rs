@@ -26,6 +26,23 @@ impl ReviewService {
         params: &Prepare,
         deadline: Instant,
     ) -> Result<ReviewUsage, ProtocolError> {
+        self.scoped_usage(repository, params, deadline, false)
+    }
+    pub(super) fn performance_usage(
+        &self,
+        repository: &RepositoryRecord,
+        params: &Prepare,
+        deadline: Instant,
+    ) -> Result<ReviewUsage, ProtocolError> {
+        self.scoped_usage(repository, params, deadline, true)
+    }
+    fn scoped_usage(
+        &self,
+        repository: &RepositoryRecord,
+        params: &Prepare,
+        deadline: Instant,
+        tokens_only: bool,
+    ) -> Result<ReviewUsage, ProtocolError> {
         let limit = params.outcome_limit.unwrap_or(8);
         if !(1..=50).contains(&limit) {
             return Err(invalid("Outcome limit must be between 1 and 50"));
@@ -35,6 +52,7 @@ impl ReviewService {
             &params.workstream_id,
             params.window_start_ms,
             params.window_end_ms,
+            tokens_only,
         ))
         .map_err(|_| invalid("Cannot encode review scope"))?;
         if let Some(cursor) = &params.outcome_cursor {
@@ -60,13 +78,36 @@ impl ReviewService {
                 })?;
             return page(&snapshot.usage, id, offset, limit as usize);
         }
-        let mut usage = self.usage.review_window(
+        let read = if tokens_only {
+            UsageService::performance_window
+        } else {
+            UsageService::review_window
+        };
+        let mut usage = read(
+            &self.usage,
             repository,
             params.workstream_id.as_deref(),
             params.window_start_ms,
             params.window_end_ms,
             deadline,
         )?;
+        if tokens_only {
+            usage.outcomes.basis = "Provider total observations in the exact period, deduplicated by effective owner and source event. Activity and outcome declarations come from their recorded owner. Undeclared and multi-repository work stays explicit. This display projects token-owning operations only; complete execution timing remains part of review evidence.".into();
+            for effort in std::iter::once(&mut usage.outcomes.totals)
+                .chain(std::iter::once(&mut usage.outcomes.attributed))
+                .chain(std::iter::once(&mut usage.outcomes.unattributed))
+                .chain(usage.outcomes.rows.iter_mut().map(|r| &mut r.effort))
+            {
+                for metric in [
+                    &mut effort.active_agent_ms,
+                    &mut effort.elapsed_execution_ms,
+                    &mut effort.recorded_wait_ms,
+                ] {
+                    metric.exact = None;
+                    metric.unknown = metric.unknown.max(1);
+                }
+            }
+        }
         let ids = usage
             .outcomes
             .rows

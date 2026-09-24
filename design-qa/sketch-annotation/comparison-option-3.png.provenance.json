@@ -1,0 +1,10 @@
+{
+  "artifact_type": "test-fixture-snapshot",
+  "fixture_id": "sketch-annotation-audit-20260923",
+  "generator": "CodexDesignAudit",
+  "height": 623,
+  "schema_version": 1,
+  "sha256": "6cb6a18d88f0004aab74a9182e4651fcbb661f011a8948fe58c469e611e68a75",
+  "source": "isolated-test-fixture",
+  "width": 1262
+}

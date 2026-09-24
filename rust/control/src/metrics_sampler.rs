@@ -778,7 +778,8 @@ impl MetricSampler {
                 subject_id: id.clone(),
                 severity: "critical".into(),
                 message: format!("component {id} is {}", component.state),
-                active: component.desired_state == "running" && component.state != "running",
+                active: component.desired_state == "running"
+                    && !matches!(component.state.as_str(), "running" | "completed"),
                 sustain_seconds: 120.0,
             });
             if component.binding_kind.as_deref() == Some("unit")
@@ -1278,6 +1279,36 @@ mod tests {
         );
         sampler.flush().unwrap();
         assert!(sampler.metrics().table_size().unwrap() >= 3);
+        // Extend the real sampler/store path: successful finite work and an
+        // intentional stop must not become incidents; a failed worker must.
+        sampler.inner.database.transaction(|c| {
+            c.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
+                INSERT INTO worktrees VALUES('w1','r1','/fixture','t','t');
+                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f','{}','failed','t',1000,'fixture','t');")?;
+            for (name,desired,state) in [("bundle","running","completed"),("worker","running","failed"),("paused","stopped","stopped")] {
+                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,'external',0,'f',?2,?3,'none','t')",rusqlite::params![name,desired,state])?;
+            }
+            Ok(())
+        }).unwrap();
+        for _ in 0..10 {
+            sampler.tick().unwrap();
+        }
+        let alerts = sampler.alerts().current().unwrap();
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].subject_id, "d1/worker");
+        sampler
+            .inner
+            .database
+            .call(|c| {
+                c.execute(
+                    "UPDATE components SET state='completed' WHERE name='worker'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        sampler.tick().unwrap();
+        assert!(sampler.alerts().current().unwrap().is_empty());
     }
 
     #[test]

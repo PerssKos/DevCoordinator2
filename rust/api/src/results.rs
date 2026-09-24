@@ -1578,6 +1578,8 @@ pub struct RepositoryStorage {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepositoryHealthRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_source: Option<TestRepositorySource>,
     pub repository_id: String,
     pub display_name: String,
     pub root_path: Option<String>,

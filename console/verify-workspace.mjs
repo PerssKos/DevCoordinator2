@@ -149,7 +149,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   if (viewport.width <= 760) await page.click('#repository-close');
   await page.click('#nav-toggle');
   await page.locator('#nav a[data-view="health"]').click();
-  await page.locator('.health-summary').waitFor();
+  await page.locator('.hi-host').waitFor();
   verify('host tools do not pretend to be repository-scoped', !await page.locator('#workspace-context').isVisible());
   await page.click('#nav-toggle');
   await page.locator('#nav a[data-view="plan"]').click();
