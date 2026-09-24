@@ -190,6 +190,15 @@ their existing behavior. The setting is optional and read at startup; newly
 added certificate names must already be covered before this renewal-only
 handler serves their challenges.
 
+For an explicitly owner-authorized new subdomain, the private instance may set
+`EDGE_ACME_ADDITIONAL_HOSTS` to a comma-separated exact hostname allowlist beneath
+the base domain. This permits only safe HTTP ACME challenge reads while obtaining
+the initial certificate; it does not authorize application traffic or change
+route grants. Wildcards and names outside the base domain are rejected. The
+default is empty and retains renewal-only behavior. Remove a bootstrap hostname
+after the issued certificate covers it. Existing certificate names, private
+credentials and renewal hooks must be preserved during issuance.
+
 ## Tests
 
 `node --test edge/test/*.test.mjs` runs the edge against a fixture OIDC issuer, a fake

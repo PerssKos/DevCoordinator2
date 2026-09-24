@@ -72,6 +72,10 @@ export function loadConfig(e = process.env) {
   const baseDomain = (e.EDGE_BASE_DOMAIN || '').trim().replace(/\.$/, '');
   if (!baseDomain) throw new Error('EDGE_BASE_DOMAIN is required');
   const httpOnly = e.EDGE_HTTP_ONLY === '1';
+  const acmeAdditionalHosts = (e.EDGE_ACME_ADDITIONAL_HOSTS || '').split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
+  for (const host of acmeAdditionalHosts) {
+    if (!host.endsWith(`.${baseDomain.toLowerCase()}`) || !/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(host) || host.includes('..')) throw new Error('Invalid additional ACME hostname');
+  }
   return {
     baseDomain,
     baseRedirect: e.EDGE_BASE_REDIRECT === '1',
@@ -91,6 +95,7 @@ export function loadConfig(e = process.env) {
     upstreamAuthFile: e.EDGE_UPSTREAM_AUTH_FILE || '',
     reviewIdentityFile: e.EDGE_REVIEW_IDENTITY_FILE || '',
     acmeWebroot: e.EDGE_ACME_WEBROOT || '',
+    acmeAdditionalHosts,
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
@@ -378,8 +383,8 @@ export async function createEdge(config, { log = console } = {}) {
   async function handleAcme(req, res) {
     if (!acmeRoot || !req.url?.startsWith('/.well-known/acme-challenge/')) return false;
     const host = hostOf(req);
-    const allowedHost = host && (acmeCertificate ? acmeCertificate.checkHost(host) :
-      host === config.baseDomain || host === config.consoleHost || store.current().routes.some((route) => route.domain === host));
+    const allowedHost = host && ((config.acmeAdditionalHosts || []).includes(host) || (acmeCertificate ? acmeCertificate.checkHost(host) :
+      host === config.baseDomain || host === config.consoleHost || store.current().routes.some((route) => route.domain === host)));
     const token = req.url.split('?', 1)[0].slice('/.well-known/acme-challenge/'.length);
     if (!allowedHost || !/^[A-Za-z0-9_-]{1,256}$/.test(token) || !['GET', 'HEAD'].includes(req.method)) {
       res.writeHead(404, { 'content-length': '0', 'cache-control': 'no-store' });

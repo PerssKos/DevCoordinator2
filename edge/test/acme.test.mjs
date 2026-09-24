@@ -11,6 +11,9 @@ import { createEdge, loadConfig } from '../devcoordinator2-edge.mjs';
 
 test('ACME configuration is optional', () => {
   assert.equal(loadConfig({ EDGE_BASE_DOMAIN: 'example.test' }).acmeWebroot, '');
+  assert.deepEqual(loadConfig({ EDGE_BASE_DOMAIN: 'example.test' }).acmeAdditionalHosts, []);
+  assert.deepEqual(loadConfig({ EDGE_BASE_DOMAIN: 'example.test', EDGE_ACME_ADDITIONAL_HOSTS: 'new.example.test' }).acmeAdditionalHosts, ['new.example.test']);
+  for (const host of ['outside.test', '*.example.test', '../new.example.test', 'new..example.test']) assert.throws(() => loadConfig({ EDGE_BASE_DOMAIN: 'example.test', EDGE_ACME_ADDITIONAL_HOSTS: host }));
   assert.equal(loadConfig({ EDGE_BASE_DOMAIN: 'example.test', EDGE_ACME_WEBROOT: '/fixture/acme' }).acmeWebroot, '/fixture/acme');
 });
 
@@ -62,6 +65,15 @@ test('HTTP serves only safe ACME tokens for covered hosts and retains HTTPS redi
     assert.equal(response.headers['content-type'], 'text/plain; charset=utf-8');
   }
   const head = await request(challenge, { method: 'HEAD' });
+  assert.equal((await request(challenge, { host: 'new.example.test' })).status, 404);
+  const bootstrap = await createEdge({ ...config, acmeAdditionalHosts: ['new.example.test'], stateDir: path.join(directory, 'bootstrap-state') }, { log });
+  context.after(() => bootstrap.close());
+  const [, bootstrapPort] = await bootstrap.listen();
+  const initial = await request(challenge, { host: 'new.example.test', port: bootstrapPort });
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body, 'token_123-Abc.account-thumbprint');
+  assert.equal((await request(challenge, { host: 'outside.test', port: bootstrapPort })).status, 404);
+  assert.equal((await request('/ordinary', { host: 'new.example.test', port: bootstrapPort })).status, 302);
   assert.equal(head.status, 200);
   assert.equal(head.body, '');
   assert.equal(Number(head.headers['content-length']), Buffer.byteLength('token_123-Abc.account-thumbprint'));

@@ -30,6 +30,15 @@ untracked `instance/` directory and in the installed instance configuration
 
 ## Runtime trust boundary
 
+On 2026-09-24 the owner explicitly requested hosting Dnipro Watch on their
+`classified.guru` domain using available server access. This authorizes initial
+certificate issuance for `dnipro-watch.classified.guru`, not anonymous game
+access or changes to unrelated routes. An exact private ACME hostname allowlist
+may serve public challenge tokens for this new name before its first certificate
+exists. Default renewal-only behavior, application authentication and existing
+certificate names remain unchanged. Re-review for additional names or public
+access changes.
+
 ### Existing upstream credential migration
 
 - On 2026-09-07 the owner explicitly authorized replacing the legacy
