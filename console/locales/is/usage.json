@@ -21,20 +21,20 @@
   "time_breakdown_ca0aca": "Sundurliðun tíma",
   "separate_not_added_together_6dbbe5": "(aðskilið, ekki lagt saman)",
   "tool_outcomes_3a7a68": "Niðurstöður verkfæra",
-  "data_completeness_c7114d": "Data completeness",
-  "counting_method_7a480a": "Counting method",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Provider-reported total tokens; cached input and reasoning are subsets.",
-  "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · taxonomy {value20}",
+  "data_completeness_c7114d": "Gagnheilleiki",
+  "counting_method_7a480a": "Talningaraðferð",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Heildarfjöldi tákna frá þjónustuveitu; skyndiminni inntak og röksemdafærsla eru hlutar hans.",
+  "schema_value19_taxonomy_value20_cdddf8": "Líkan {value19} · flokkunarfræði {value20}",
   "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Umhverfi sem skiluðu engum gögnum og ómæld gildi eru útilokuð í stað þess að teljast núll.",
-  "token_subsets_unavailable_4cec86": "Token subsets unavailable.",
+  "token_subsets_unavailable_4cec86": "Undirmengi tákna ekki tiltæk.",
   "unknownIntervals": {
     "argument": "count",
     "forms": {
-      "one": "{count} unknown interval",
-      "other": "{count} unknown intervals"
+      "one": "{count} óþekkt bil",
+      "other": "{count} óþekkt bil"
     }
   },
-  "about_codex_environments_4a2e3e": "About Codex environments",
-  "explain_codex_usage_data_completeness_63247d": "Explain Codex usage data completeness",
-  "tokens_a039df": "Tokens"
+  "about_codex_environments_4a2e3e": "Um Codex-umhverfi",
+  "explain_codex_usage_data_completeness_63247d": "Útskýra heilleika Codex-notkunargagna",
+  "tokens_a039df": "Tákn"
 }

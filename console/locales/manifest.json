@@ -1374,7 +1374,7 @@
         "SK"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "hu/common.json"
@@ -1437,7 +1437,7 @@
         "IS"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "is/common.json"
