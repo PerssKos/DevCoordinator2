@@ -70,7 +70,7 @@ export async function verifyEvidenceLayout({ page, daemon, check, scenario, base
   await page.route('**/api/v2/test.evidence.feedback.reply', route => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'temporary', message: 'Temporary reply failure' } }) }));
   await page.locator('#evidence-feedback-reply textarea').fill('Retry this full-screen reply.');
   await page.locator('#evidence-feedback-reply button[type=submit]').click();
-  await page.getByText('Temporary reply failure', { exact: true }).waitFor();
+  await page.getByText('The request could not be completed. [temporary]: Temporary reply failure', { exact: true }).waitFor();
   verify('full-screen failures remain visible and keep the reply', await page.locator('.evidence-page #toasts').count() === 1 && await page.locator('#evidence-feedback-reply textarea').inputValue() === 'Retry this full-screen reply.');
   await page.unroute('**/api/v2/test.evidence.feedback.reply');
   const replied = page.waitForResponse(response => response.url().endsWith('/test.evidence.feedback.reply'));

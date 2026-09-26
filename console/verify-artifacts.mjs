@@ -96,14 +96,14 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   await page.locator('.test-thumbnail').first().click();
   await page.locator('.test-image-preview[open]').waitFor();
   await page.getByRole('button', { name: 'Open file', exact: true }).click();
-  await page.locator('#test-artifacts-dialog img').waitFor();
+  await page.locator('#test-artifacts-dialog .artifact-content img').waitFor();
   verify('native thumbnail opens its exact retained file', await page.locator('[data-artifact-file="capture.png"][aria-current=true]').count() === 1);
   await page.keyboard.press('Escape');
   await page.locator('[data-test-artifacts]').click();
   const dialog = page.locator('#test-artifacts-dialog');
-  await dialog.locator('img').waitFor();
-  await dialog.locator('img').evaluate((image) => image.decode());
-  verify('image preview decodes', await dialog.locator('img').evaluate((image) => image.complete && image.naturalWidth === 1));
+  await dialog.locator('.artifact-content img').waitFor();
+  await dialog.locator('.artifact-content img').evaluate((image) => image.decode());
+  verify('image preview decodes', await dialog.locator('.artifact-content img').evaluate((image) => image.complete && image.naturalWidth === 1));
   verify('opening keeps continuation in view', await dialog.evaluate((element) => element.contains(document.activeElement) && element.getBoundingClientRect().top >= 0));
   await page.screenshot({ path: path.join(output, `files-${theme}-${viewport.width}.png`) });
   await dialog.locator('[data-artifact-file="0305cfd9-5196-4424-a426-22aed07a6cb0-item-delta-desired.xml"]').click();
@@ -163,16 +163,16 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   verify('dialog does not overflow the viewport', await dialog.evaluate((element) => element.getBoundingClientRect().right <= innerWidth && element.getBoundingClientRect().bottom <= innerHeight && element.scrollWidth <= element.clientWidth));
   await page.keyboard.press('Escape');
   verify('cancel restores focus', await page.locator('[data-test-artifacts]').evaluate((element) => element === document.activeElement));
-  for (const [scenario, message] of [['artifactExpired', 'Retained files have expired.'], ['artifactDenied', 'Administrator access required.'], ['artifactChanged', 'The retained file changed or its response was incomplete.']]) {
+  for (const [scenario, message] of [['artifactExpired', 'This evidence is no longer retained. [test_artifact_expired]: Retained files have expired.'], ['artifactDenied', 'You do not have permission to perform this action. [permission_denied]: Administrator access required.'], ['artifactChanged', 'The retained file changed or its response was incomplete.']]) {
     daemon.setScenario({ artifactFiles: true, [scenario]: true });
     await page.locator('[data-test-artifacts]').click();
     await dialog.getByText(message, { exact: true }).waitFor();
-    verify(`${scenario} stays honest and does not show a stale image`, await dialog.locator('img').count() === 0);
+    verify(`${scenario} stays honest and does not show a stale image`, await dialog.locator('.artifact-content img').count() === 0);
     daemon.setScenario({ artifactFiles: true });
     await dialog.getByRole('button', { name: 'Try again', exact: true }).click();
-    await dialog.locator('img').waitFor();
-    await dialog.locator('img').evaluate((image) => image.decode());
-    verify(`${scenario} recovers on exact retry`, await dialog.locator('img').evaluate((image) => image.naturalWidth === 1));
+    await dialog.locator('.artifact-content img').waitFor();
+    await dialog.locator('.artifact-content img').evaluate((image) => image.decode());
+    verify(`${scenario} recovers on exact retry`, await dialog.locator('.artifact-content img').evaluate((image) => image.naturalWidth === 1));
     await dialog.getByRole('button', { name: 'Close evidence files', exact: true }).click();
   }
   daemon.setScenario({ artifactFiles: true, artifactSummaryTruncated: true });
@@ -186,14 +186,14 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   await page.locator('.test-detail>summary').click();
   await page.locator('[data-test-artifacts]').click();
   await dialog.getByLabel('Run', { exact: true }).selectOption(EARLIER_RUN);
-  await dialog.locator('img').waitFor();
-  await dialog.locator('img').evaluate((image) => image.decode());
-  verify('newer nonvisual runs do not hide retained earlier files', await dialog.locator('img').evaluate((image) => image.naturalWidth === 1));
+  await dialog.locator('.artifact-content img').waitFor();
+  await dialog.locator('.artifact-content img').evaluate((image) => image.decode());
+  verify('newer nonvisual runs do not hide retained earlier files', await dialog.locator('.artifact-content img').evaluate((image) => image.naturalWidth === 1));
   verify('earlier evidence uses its own run and check', daemon.calls.some((call) => call.operation === 'test.artifact.file' && call.params.run_id === EARLIER_RUN && call.params.check === 'earlier-session'));
   verify('earlier evidence does not inherit the latest test label', /earlier-native-editor/.test(await dialog.locator('.artifact-run-facts').innerText()));
   await dialog.getByLabel('Run', { exact: true }).selectOption(RUN);
   await dialog.getByText('No retained files are available for this run.', { exact: true }).waitFor();
-  verify('switching to a run without files clears old screenshots', await dialog.locator('img').count() === 0);
+  verify('switching to a run without files clears old screenshots', await dialog.locator('.artifact-content img').count() === 0);
   await dialog.getByRole('button', { name: 'Close evidence files', exact: true }).click();
   verify('no browser errors', errors.length === 0, errors.join('; '));
 }

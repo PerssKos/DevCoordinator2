@@ -4479,6 +4479,7 @@ const viewDecisions = guard(async (repoId) => {
 
 // --- Router ----------------------------------------------------------------
 const languageReady = import("./i18n.mjs").then(({ i18n }) => i18n.ready);
+let renderRequest = 0;
 const performancePage = window.DevCoordinatorPerformance.create({ api, esc, compactNumber, durationMs, coverageText, identity: () => state.who });
 const workspace = window.DevCoordinatorWorkspace.create({ api, esc, identity: () => state.who });
 window.addEventListener('resize', () => {
@@ -4487,8 +4488,14 @@ window.addEventListener('resize', () => {
   openEvidenceComposer(undefined, false);
 });
 async function render() {
+  const request = ++renderRequest;
+  const requestedHash = location.hash;
   await languageReady;
+  if (request !== renderRequest || requestedHash !== location.hash) return;
   await window.DevCoordinatorI18n.route();
+  // A newer navigation may still be loading its own message catalog. Do not
+  // resolve that newer route using the catalog loaded for this older request.
+  if (request !== renderRequest || requestedHash !== location.hash) return;
   closeGlossaryDialog?.();
   closeActiveProjectPicker?.(false);
   document.body.classList.remove('sketch-drawer-open');
@@ -4498,7 +4505,7 @@ async function render() {
   let route;
   try { route = await workspace.resolve(signal); }
   catch (error) {
-    if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') return;
+    if (request !== renderRequest || signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') return;
     if (['test_evidence_expired', 'test_evidence_not_found'].includes(error.code)) {
       main.innerHTML = currentDestinationHeading() + stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_visual_evidence_is_available_for_this_run_it__4f1873"));
       return;
@@ -4506,7 +4513,7 @@ async function render() {
     main.innerHTML = currentDestinationHeading() + stateBlock(error.code === 'permission_denied' ? 'denied' : 'error', () => error.message);
     return;
   }
-  if (!route || signal.aborted) return;
+  if (!route || signal.aborted || request !== renderRequest) return;
   const { view, arg } = route;
   main.classList.toggle('plan-page', view === 'plan' && !!arg);
   main.classList.toggle('glossary-page', view === 'glossary');

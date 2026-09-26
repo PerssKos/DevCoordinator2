@@ -18,6 +18,41 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
   await page.addInitScript(tag => localStorage.setItem('dc2-locale', tag), locale);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const repository = 'r0123456789abcdef';
+  // Hold independent namespaces so a previous navigation completes after the
+  // user has already chosen Performance. A stale renderer must not consume the
+  // newer route before that route's catalog is ready.
+  let releaseUsage, releasePerformance;
+  const usageGate = new Promise(resolve => { releaseUsage = resolve; });
+  const performanceGate = new Promise(resolve => { releasePerformance = resolve; });
+  const holdUsage = async route => { await usageGate; await route.continue(); };
+  const holdPerformance = async route => { await performanceGate; await route.continue(); };
+  await page.route('**/locales/en/usage.json', holdUsage);
+  await page.route('**/locales/en/performance.json', holdPerformance);
+  try {
+    await page.goto(`${baseUrl}#/bugs`);
+    await page.locator('#bug-form').waitFor();
+    const usageSeen = page.waitForRequest('**/locales/en/usage.json');
+    await page.evaluate(id => {
+      location.hash = `#/usage/${id}`;
+      window.__localizationPendingRoute = window.render().then(() => ({ ok: true }), error => ({ ok: false, message: error.message }));
+    }, repository);
+    await usageSeen;
+    const performanceSeen = page.waitForRequest('**/locales/en/performance.json');
+    await page.evaluate(id => { location.hash = `#/performance/${id}`; }, repository);
+    await performanceSeen;
+    releaseUsage();
+    const stale = await page.evaluate(() => window.__localizationPendingRoute);
+    verify('stale navigation does not render a newer unloaded namespace', stale.ok, stale.message || '');
+    verify('previous content remains until the selected route is ready', await page.locator('#bug-form').count() > 0);
+    releasePerformance();
+    await page.locator('[data-performance-page]').waitFor();
+    verify('rapid navigation reaches the selected translated route', await page.locator('[data-performance-scope-title]').innerText() === catalogs.performance.overview_usage_83f004);
+  } finally {
+    releaseUsage(); releasePerformance();
+    await page.unroute('**/locales/en/usage.json', holdUsage);
+    await page.unroute('**/locales/en/performance.json', holdPerformance);
+    await page.evaluate(() => { delete window.__localizationPendingRoute; });
+  }
   const routes = ['deployments',`deployments?repository=${repository}`,'deployments/d0123456789abcdef',`plan/${repository}`,`progress/${repository}`,`usage/${repository}`,`performance/${repository}`,`decisions/${repository}`,`tests?repository=${repository}`,'health','health/containers','bugs','admin',`sketches/${repository}`];
   for (const route of routes) {
     await page.goto(`${baseUrl}#/${route}`);

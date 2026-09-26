@@ -2013,7 +2013,7 @@ async function main() {
     && !/\bcollectors?\b|Partial coverage/.test(completenessText));
 
   for (const [scenarioName, scenario, expected, explanation] of [
-    ['complete', SCENARIOS.usageComplete, 'All 4 configured Codex environments included', 'Every configured environment supplied measurable data for this repository and period.'],
+    ['complete', SCENARIOS.usageComplete, 'All 4 environments included', 'Every configured environment supplied measurable data for this repository and period.'],
     ['no-measurement', SCENARIOS.empty, 'No usage measured in this period', 'The connected environments contained no measured usage for this repository and period.'],
     ['unavailable', SCENARIOS.usageUnavailable, 'Usage data unavailable', 'Configured environments could not supply usage data for this repository and period.'],
   ]) {
@@ -2094,11 +2094,14 @@ async function main() {
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
   await page.click('.progress-exact summary');
+  const exactProgressText = await page.innerText('.progress-exact');
+  const exactProgressRows = await page.locator('.progress-exact[open] tbody tr').count();
   check('interaction: exact progress values and counting rules expand in place',
-    await page.locator('.progress-exact[open] tbody tr').count() === 8
-    && /Planned lines added/.test(await page.innerText('.progress-exact'))
-    && /estimate reductions and dropped work are excluded/.test(await page.innerText('.progress-exact'))
-    && /not measured Git changes/.test(await page.innerText('.progress-exact')));
+    exactProgressRows === 8
+    && /Planned lines added/.test(exactProgressText)
+    && /estimate increases; reductions and dropped work are excluded/.test(exactProgressText)
+    && /not measured Git changes/.test(exactProgressText),
+  JSON.stringify({ rows: exactProgressRows, text: exactProgressText }));
   await page.click(`.progress-actions a[href="#/plan/${REPO}"]`);
   await page.waitForURL(new RegExp(`#\\/plan\\/${REPO}$`));
   await page.waitForSelector('.gantt');
@@ -2150,9 +2153,12 @@ async function main() {
     && await page.locator('.progress-evidence-lane > strong').allTextContents().then((values) => values.every((value) => value.trim() === '—'))
     && /No test runs recorded for this period/.test(await page.innerText('.progress-pulse'))
     && /Some token data is missing/.test(await page.innerText('.progress-pulse'))
-    && /71 tasks have no estimate/.test(await page.innerText('.progress-forecast'))
+    && /71 tasks have no estimate/i.test(await page.innerText('.progress-forecast'))
     && /reopened/.test(await page.innerText('.progress-release-work'))
-    && !/TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(await page.innerText('.progress-release-work')));
+    && !/TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(await page.innerText('.progress-release-work')),
+  JSON.stringify({ charts: await page.locator('.progress-evidence-chart').count(),
+    laneTotals: await page.locator('.progress-evidence-lane > strong').allTextContents(),
+    forecast: await page.innerText('.progress-forecast') }));
   daemon.setScenario(SCENARIOS.populated);
   await page.reload();
   await page.waitForSelector('.progress-pulse-chart');

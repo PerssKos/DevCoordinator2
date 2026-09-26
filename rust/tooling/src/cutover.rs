@@ -2449,6 +2449,7 @@ mod tests {
             &world.config.database_path,
             &world.config.daemon_unit_path,
             &world.config.edge_unit_path,
+            &world.config.tests_slice_unit_path,
             &world.config.cli_link,
             &world.config.tooling_link,
             &world.config.installed_manifest,
@@ -2518,6 +2519,7 @@ mod tests {
         for path in [
             &world.config.daemon_unit_path,
             &world.config.edge_unit_path,
+            &world.config.tests_slice_unit_path,
             &world.config.cli_link,
             &world.config.tooling_link,
             &world.config.installed_manifest,
@@ -2535,14 +2537,12 @@ mod tests {
         let mut host =
             HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                 .unwrap();
-        assert!(
-            host.bootstrap()
-                .unwrap_err()
-                .contains("new installation removed")
-        );
+        let error = host.bootstrap().unwrap_err();
+        assert!(error.contains("new installation removed"), "{error}");
         for path in [
             &world.config.daemon_unit_path,
             &world.config.edge_unit_path,
+            &world.config.tests_slice_unit_path,
             &world.config.cli_link,
             &world.config.tooling_link,
             &world.config.installed_manifest,
@@ -2609,6 +2609,7 @@ mod tests {
             for path in [
                 &world.config.daemon_unit_path,
                 &world.config.edge_unit_path,
+                &world.config.tests_slice_unit_path,
                 &world.config.cli_link,
                 &world.config.tooling_link,
                 &world.config.installed_manifest,
@@ -2626,7 +2627,7 @@ mod tests {
                 HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
                     .unwrap();
             let result = host.bootstrap();
-            assert_eq!(result.is_err(), fail_ping);
+            assert_eq!(result.is_err(), fail_ping, "{result:?}");
             assert!(!world.config.runtime_dir.join(ACTIVITY_FILE).exists());
             assert_eq!(
                 std::fs::read(&world.config.database_path).unwrap(),
@@ -2651,6 +2652,7 @@ mod tests {
                 }
             );
             assert_eq!(world.config.daemon_unit_path.exists(), !fail_ping);
+            assert_eq!(world.config.tests_slice_unit_path.exists(), !fail_ping);
             if !fail_ping {
                 let recovery = RecoveryConfig {
                     transaction_dir: world.config.transaction_dir.clone(),
@@ -2678,15 +2680,22 @@ mod tests {
 
     #[test]
     fn bootstrap_rejects_existing_active_or_invalid_test_receipt() {
-        for receipt in [
-            r#"{"schema":1,"active":[{"run":"existing"}]}"#,
-            r#"{"schema":2,"active":[]}"#,
+        for (receipt, expected_error) in [
+            (
+                r#"{"schema":1,"active":[{"run":"existing"}]}"#,
+                "bootstrap blocked by existing test activity",
+            ),
+            (
+                r#"{"schema":2,"active":[]}"#,
+                "test activity receipt has an unsupported schema",
+            ),
         ] {
             let mut world = host_world();
             world.config.canary = true;
             for path in [
                 &world.config.daemon_unit_path,
                 &world.config.edge_unit_path,
+                &world.config.tests_slice_unit_path,
                 &world.config.cli_link,
                 &world.config.tooling_link,
                 &world.config.installed_manifest,
@@ -2701,7 +2710,8 @@ mod tests {
             });
             let mut host =
                 HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
-            assert!(host.bootstrap().is_err());
+            let error = host.bootstrap().unwrap_err();
+            assert!(error.contains(expected_error), "{error}");
             assert!(!world.config.transaction_dir.exists());
             assert!(!world.config.daemon_unit_path.exists());
             assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
