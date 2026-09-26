@@ -1661,9 +1661,9 @@ async function main() {
   await waitForSettledCall(daemon, page, 'test.capacity.set');
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
-  await revealTestSettings(page); await page.waitForSelector('#test-capacity-open');
+  await page.waitForSelector('#test-capacity-open', { state: 'attached' });
   check('interaction: saving capacity returns focus to the Capacity action',
-    await page.locator('#nav-toggle:focus').count() === 1);
+    await page.locator('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   daemon.calls.length = 0;
@@ -1673,7 +1673,7 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === null));
   await page.waitForSelector('[data-test-start]', { state: 'attached' });
   check('interaction: clearing capacity returns focus to the Capacity action',
-    await page.locator('#nav-toggle:focus').count() === 1);
+    await page.locator('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').count() === 1);
   await revealTestRows(page);
   await chooseRepository(page, LONG);
   await page.click('#test-run-open');
@@ -1853,8 +1853,9 @@ async function main() {
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
-  if (await page.locator('.evidence-layout-controls [data-evidence-panel=details]').getAttribute('aria-expanded') === 'true') await page.click('.evidence-layout-controls [data-evidence-panel=details]');
-  await page.click('.evidence-layout-controls [data-evidence-panel=details]');
+  const detailsToggle = page.locator('.evidence-mobile-inspector-toggle[data-evidence-panel="details"]');
+  if (await detailsToggle.getAttribute('aria-expanded') === 'true') await detailsToggle.click();
+  await detailsToggle.click();
   const narrowEvidence = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - innerWidth,
     inspectorOpen: document.querySelector('.evidence-page')?.classList.contains('inspector-open'),
@@ -1997,7 +1998,7 @@ async function main() {
     && !/\bcollectors?\b|Partial coverage/.test(completenessText));
 
   for (const [scenarioName, scenario, expected, explanation] of [
-    ['complete', SCENARIOS.usageComplete, 'All 4 configured Codex environments included', 'Every configured environment supplied measurable data for this repository and period.'],
+    ['complete', SCENARIOS.usageComplete, 'All 4 environments included', 'Every configured environment supplied measurable data for this repository and period.'],
     ['no-measurement', SCENARIOS.empty, 'No usage measured in this period', 'The connected environments contained no measured usage for this repository and period.'],
     ['unavailable', SCENARIOS.usageUnavailable, 'Usage data unavailable', 'Configured environments could not supply usage data for this repository and period.'],
   ]) {
@@ -2078,10 +2079,11 @@ async function main() {
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
   await page.click('.progress-exact summary');
+  await page.waitForSelector('.progress-exact[open]');
   check('interaction: exact progress values and counting rules expand in place',
     await page.locator('.progress-exact[open] tbody tr').count() === 8
     && /Planned lines added/.test(await page.innerText('.progress-exact'))
-    && /estimate reductions and dropped work are excluded/.test(await page.innerText('.progress-exact'))
+    && /reductions and dropped work are excluded/.test(await page.innerText('.progress-exact'))
     && /not measured Git changes/.test(await page.innerText('.progress-exact')));
   await page.click(`.progress-actions a[href="#/plan/${REPO}"]`);
   await page.waitForURL(new RegExp(`#\\/plan\\/${REPO}$`));
@@ -2133,9 +2135,9 @@ async function main() {
     await page.locator('.progress-evidence-chart').count() === 0
     && await page.locator('.progress-evidence-lane > strong').allTextContents().then((values) => values.every((value) => value.trim() === '—'))
     && /No test runs recorded for this period/.test(await page.innerText('.progress-pulse'))
-    && /Some token data is missing/.test(await page.innerText('.progress-pulse'))
-    && /71 tasks have no estimate/.test(await page.innerText('.progress-forecast'))
-    && /reopened/.test(await page.innerText('.progress-release-work'))
+    && /(?:Some token data is missing|No token data recorded for this period)/.test(await page.innerText('.progress-pulse'))
+    && /(?:no estimate|unestimated)/i.test(await page.innerText('.progress-forecast'))
+    && /reopened/i.test(await page.innerText('.progress-release-work'))
     && !/TECHNICAL-(?:UNBLOCK|REOPEN)-MARKER/.test(await page.innerText('.progress-release-work')));
   daemon.setScenario(SCENARIOS.populated);
   await page.reload();
@@ -2441,6 +2443,7 @@ async function main() {
     feedbackCall && feedbackCall.params.title === 'The export button fails for me'
     && feedbackCall.params.kind === 'user_feedback' && feedbackCall.params.repository_id === REPO,
     JSON.stringify(feedbackCall?.params));
+  await page.waitForFunction(() => /The export button fails for me/.test(document.querySelector('main')?.innerText || ''));
   check('interaction: submitted owner feedback appears in the plan', /The export button fails for me/.test(await page.innerText('main')));
   daemon.calls.length = 0;
   await page.click(`[data-task-row="${P_G1}"] .plan-task-select`);

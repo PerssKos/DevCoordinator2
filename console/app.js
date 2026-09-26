@@ -1647,6 +1647,7 @@ function setupEvidenceLayout() {
   const paint = () => {
     if (!page.isConnected) return;
     const narrow = page.clientWidth < 1050;
+    const mobileDetails = narrow && window.matchMedia('(max-width: 1180px)').matches;
     page.classList.toggle('evidence-layout-narrow', narrow);
     page.classList.toggle('evidence-is-fullscreen', fullscreen);
     page.style.height = `${fullscreen ? innerHeight : Math.max(520, innerHeight - Math.max(0, page.getBoundingClientRect().top) - 1)}px`;
@@ -1654,7 +1655,7 @@ function setupEvidenceLayout() {
       const visible = expanded(panel);
       // Keep the narrow details bar mounted while its body is closed so the
       // user still has a control to reopen postmortem review.
-      $(selector, page).hidden = !visible && !(panel === 'details' && narrow);
+      $(selector, page).hidden = !visible && !(panel === 'details' && mobileDetails);
       page.style.setProperty(`--evidence-${panel}-width`, visible ? (panel === 'journey' ? '230px' : '280px') : '0px');
       page.querySelectorAll(`[data-evidence-panel="${panel}"]`).forEach(button => {
         button.setAttribute('aria-expanded', String(visible));
@@ -1698,7 +1699,7 @@ function setupEvidenceLayout() {
     }
     paint();
     if (focus) (visible && panel === 'details'
-      ? (page.clientWidth < 1050 ? $('.evidence-mobile-inspector-toggle', page) : $('.evidence-panel-close', page))
+      ? (page.clientWidth < 1050 && window.matchMedia('(max-width: 1180px)').matches ? $('.evidence-mobile-inspector-toggle', page) : $('.evidence-panel-close', page))
       : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
   };
   const finishFullscreen = () => {

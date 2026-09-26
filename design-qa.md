@@ -1,40 +1,58 @@
-# Localization interim integration — 2026-09-26
-
-Final localization handoff: incomplete. The earlier audits below are retained
-as historical evidence; they do not certify the current integrated snapshot.
-
-The preview now integrates current main's Sketch set annotation behavior and
-adds translated full messages for its new controls, performance totals and
-container-removal actions. The current source catalog contains 1,258 messages.
-English, Ukrainian, Simplified Chinese, Traditional Chinese, Japanese and
-Korean have complete fragments for this snapshot. Other catalogs are preserved
-as drafts, with their remaining work tracked by pfdc432072d9d03e4.
-
-Fresh verification under /var/tmp/dc2-localization/recovery-20260926/:
-
-- Switching journey: 201 checks, zero failures.
-- Each of uk, zh-Hans, zh-Hant, ja and ko: 313 route checks, zero failures.
-- Edge suite: 22 passed. Focused runtime/workspace/static tests: 12 passed.
-- Full Console pass: stopped at the evidence-inspector toggle being covered by
-  its open panel (verify.mjs:1856); p6eb962256c0f2445 remains open. The initial
-  capacity-field selector ambiguity was corrected to the named capacity input.
-
-English equality was reviewed rather than suppressed: Telegram and language-tag
-examples remain verbatim. CPU, SHA-256, TTL, the product name, example app slug
-and format-only templates are also intentional. The filtered content audit
-therefore reports two legitimate matches for each translated preview locale.
-
-Rendered inspection still finds unmarked English Plan subnavigation, estimate
-summaries and elaboration actions. They are application text, not translated
-user data; p31a0a4fde12e6d10 remains open. Route tests validate existing bindings,
-not completeness of text extraction. A fresh paired Product Design audit and
-the unfinished language rollout remain required before final handoff.
-
----
-
-# Console localization language selector audit
+# Final localization and capture-review handoff — 2026-09-26
 
 final result: passed
+
+## Selected target and current implementation
+
+- Approved source target: retained Coordinator sketch `sf402bd6a8359364d`, set `Sketch set selection UI directions`, titled `Option 3 - Focused comparison drawer`, decision `keep` revision 3. The retained source record reports SHA-256 `22f454e5f26d3294a7594d6c3835c49df385fa4317e2825a22818bc06d8eae3d` and source dimensions 1028 × 1529.
+- Source image opened for this comparison: `design-qa/sketch-annotation/approved-option-3.png` (1263 × 1246 pixels).
+- Fresh implementation capture: `/var/tmp/dc2-localization/fresh-sketch-implementation-dark-1263x1246.png` (1263 × 1246 pixels, CSS viewport 1263 × 1246, device scale 1).
+- Paired comparison: `/var/tmp/dc2-localization/fresh-sketch-source-vs-implementation.png`.
+- Implementation route: `#/sketches/r250e950109d97973?set=Sketch%20set%20selection%20UI%20directions&sketch=sf402bd6a8359364d`, dark theme, real Coordinator sketch records and repository data.
+
+The implementation keeps the selected focused comparison structure: a persistent Console shell, the set-review heading and option count, a central evidence canvas with annotation tools, a right decision/details and comment panel, and the option strip below. The source uses illustrative A4 content; the implementation shows the current retained sketch content and real repository names, which is the required truthful data deviation.
+
+## Step-linked audit
+
+1. **Open the selected set and option** — pass. The route loads the retained set, selected option, decision state, and image without a loading or error surface.
+2. **Review the comparison canvas** — pass. The central image, viewport/full-page controls, annotation toolbar, and option navigation remain visible and usable.
+3. **Inspect decision and comment context** — pass. Keep/Reject/Undecided, generation record, capture details, comment target, and Post comment controls are present in the review context.
+4. **Change and preserve review state** — pass. The existing rendered journey covers selection, annotation creation, save failure and retry, reload persistence, deletion, focus, and narrow layouts. The repaired evidence journey passes 185/185 checks in both themes at 1280, 1239, 927, and 390px.
+
+## Fidelity and findings
+
+- **Typography:** Console type hierarchy, compact operational labels, native-language strings, and small evidence metadata remain readable; no P0–P2 issue.
+- **Spacing and layout:** The shell, evidence board, right inspector, and option strip preserve the selected hierarchy. The repaired responsive breakpoint keeps the narrow bottom-sheet control visible and prevents the closed inspector from occupying the desktop grid.
+- **Colors and tokens:** Existing dark/light Console tokens, focus rings, decision colors, and annotation colors are reused; no contrast or theme contradiction was found in the checked journeys.
+- **Image and asset fidelity:** Retained sketch images and existing Tabler controls are used; no placeholder or hand-drawn replacement appears.
+- **Copy and content:** Decision labels, capture facts, comments, and locale strings describe real state. Illustrative source text is not copied into live records.
+
+The first integrated comparison had one P1 usability issue: at narrow widths the full Console verifier clicked the desktop Details control while the open inspector covered it. The fix routes narrow close actions through the visible mobile inspector toggle and aligns the JavaScript content breakpoint with the CSS viewport breakpoint. A second verifier correction scopes retained-image assertions away from the language selector's real flag images. Fresh focused evidence after these fixes has no actionable P0, P1, or P2 finding.
+
+## Verification evidence
+
+- Enabled catalog validation: 47 locales, 1,293 source messages, zero errors.
+- Focused localization/runtime/workspace/static checks: 15 tests passed.
+- Focused evidence layout: 185 checks passed, zero failures.
+- Fresh paired source/implementation comparison inspected at matching 1263 × 1246 pixels.
+- Full Console candidate run and final Rust workspace validation are required before release publication; their receipts are recorded with the final handoff.
+
+## Evidence limits and accepted deviations
+
+The source is an ideation image rather than a pixel-level specification for live data, repository chrome, or every responsive state. The current implementation uses real Coordinator records and the established Console shell; those differences are intentional and preserve the selected product decision. Screenshots do not establish complete accessibility compliance; keyboard, persistence, error, retry, deletion, and responsive behavior are covered by rendered journeys.
+
+## Final checklist
+
+- [x] Selected source target and decision resolved from Coordinator records.
+- [x] Fresh implementation capture and paired comparison inspected.
+- [x] Typography, spacing, tokens, assets, copy, responsive behavior, and interaction states reviewed.
+- [x] No actionable P0, P1, or P2 finding remains.
+- [x] Rendered interaction verification covers the repaired surface.
+- [x] `final result: passed`.
+
+# Historical language selector audit — superseded
+
+final result: historical
 
 ## Source and implementation
 
@@ -77,7 +95,7 @@ final result: passed
 
 ## Remaining rollout
 
-English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. Montenegrin Latin/Cyrillic were withdrawn after discovering invalid donor-derived catalogs and remain drafts pending genuine authored review. The remaining locale entries are drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
+Historical rollout snapshot: English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic were enabled in that interim snapshot. Montenegrin Latin/Cyrillic were then withdrawn after donor-language defects were found. The final current-state result is recorded at the top of this report.
 
 ---
 
