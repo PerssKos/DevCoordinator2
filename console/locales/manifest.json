@@ -1817,7 +1817,7 @@
         "MT"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "mt/common.json"
@@ -2070,7 +2070,7 @@
         "MK"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "mk/common.json"

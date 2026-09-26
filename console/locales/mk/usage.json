@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "работа фаза legend",
+  "scrollable_token_chart_83cb1f": "Scrollable токен графикон",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "давател-пријавено вкупно токени by работа фаза",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stacked UTC време buckets. точно вредности се listed по тој charts.",
+  "no_classified_token_activity_in_this_window_f460d0": "не classified токен активност во ова прозорец.",
+  "work_activity_bf3178": "работа активност",
+  "total_tokens_e7601c": "вкупно токени",
+  "activity_breakdown_7ebc89": "активност breakdown",
+  "separate_measurements_they_are_not_added_togethe_329294": "одделно мерења; they се не додадено together.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "не алатка резултати во ова прозорец.",
+  "total_c9b3c3": "вкупно",
+  "exact_bucket_values_a2a7fe": "точно bucket вредности",
+  "utc_bucket_fbd8d9": "Македонски превод: UTC bucket",
+  "data_status_87d914": "податоци статус",
+  "repository_13d6ff": "Македонски превод: Repository",
+  "model_requests_888826": "Македонски превод: Model requests",
+  "tool_calls_da5122": "алатка calls",
+  "execution_time_1069e2": "извршување време",
+  "data_included_217858": "податоци вклучено",
+  "time_breakdown_ca0aca": "време breakdown",
+  "separate_not_added_together_6dbbe5": "(одделно, не додадено together)",
+  "tool_outcomes_3a7a68": "алатка резултати",
+  "data_completeness_c7114d": "податоци completeness",
+  "counting_method_7a480a": "Македонски превод: Counting method",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "давател-пријавено вкупно токени; cached влез и reasoning се subsets.",
+  "schema_value19_taxonomy_value20_cdddf8": "шема {value19} · таксономија {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. окружувања that supplied не податоци и unmeasured вредности се excluded rather than treated as нула.",
+  "token_subsets_unavailable_4cec86": "токен subsets недостапно.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} непознато интервал",
+      "other": "{count} непознато интервали"
+    }
+  },
+  "about_codex_environments_4a2e3e": "за Codex окружувања",
+  "explain_codex_usage_data_completeness_63247d": "објасни Codex употреба податоци completeness",
+  "tokens_a039df": "токени"
+}

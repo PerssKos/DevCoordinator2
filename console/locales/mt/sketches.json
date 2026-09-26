@@ -1,0 +1,55 @@
+{
+  "no_comments_on_this_option_yet_801c78": "le kummenti fuq dan għażla għadu.",
+  "sketch_set_review_1e4713": "abbozz set reviżjoni",
+  "close_7d9eb7": "agħlaq",
+  "selection_mode_1935ae": "għażla mode",
+  "close_set_review_2680d1": "agħlaq set reviżjoni",
+  "sketch_set_options_62656f": "abbozz set għażliet",
+  "current_option_f4a3f8": "kurrenti għażla",
+  "comments_355f79": "kummenti",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "spjega għaliex you chose dan għażla jew set ta’ għażliet.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "għażliet salva as żomm, irrifjuta, jew mhux.",
+  "sketches_a56d78": "abbozzi",
+  "review_generated_options_by_set_then_select_one__020509": "reviżjoni generated għażliet by set, then agħżel wieħed jew several għal carry forward.",
+  "publish_from_a_skill_f33a0e": "ippubblika min wie skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "abbozzi huma ippubblikat by wie irreġistrat skill",
+  "value2_selected_value3_options_b64a24": "{value2} magħżul · {value3} għażliet",
+  "value5_sketches_value6_selected_87bdd8": "{value5} abbozzi · {value6} magħżul",
+  "value6_rejected_value7_undecided_bbc778": "{value6} irrifjutat · {value7} mhux",
+  "reviewer_d29f46": "rieżaminatur",
+  "option_unavailable_d03e4e": "għażla mhux",
+  "selected_57fd7a": "magħżul",
+  "rejected_aea4a0": "irrifjutat",
+  "undecided_00cc36": "mhux",
+  "select_2a7802": "agħżel",
+  "reject_ab604a": "irrifjuta",
+  "leave_undecided_65c5c0": "ħalli mhux",
+  "set_6ee0eb": "Traduzzjoni Maltija: set",
+  "sets_82c6db": "Traduzzjoni Maltija: sets",
+  "no_selection_211f6b": "le għażla",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "żid kuntest għal il magħżul għażla",
+      "other": "żid kuntest għal il magħżul għażliet",
+      "few": "Add context to the selected options",
+      "many": "Add context to the selected options",
+      "two": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "reviżjoni set",
+  "open_sketch_3ccc5c": "iftaħ abbozz",
+  "single_choice_45a76a": "wieħed choice",
+  "choose_multiple_b76dc5": "agħżel multipli",
+  "open_full_review_canvas_26fc95": "iftaħ sħiħ reviżjoni canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} set",
+      "other": "{count} sets",
+      "few": "{count} sets",
+      "many": "{count} sets",
+      "two": "{count} sets"
+    }
+  }
+}
