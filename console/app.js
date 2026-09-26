@@ -2966,8 +2966,10 @@ function coverageText(coverage, compact = false) {
   if (coverage.unavailable_reasons?.indexing) return window.DevCoordinatorI18n.t("common.updating_usage_data_c2a58f");
   if (coverage.state === 'complete') {
     const total = configured || included;
-    if (compact) return window.DevCoordinatorI18n.t("common.all_value1_environments_included_e48e29", {value1: total});
-    return window.DevCoordinatorI18n.t("common.all_value1_configured_codex_value2_included_22dccd", {value1: total, value2: total === 1 ? 'environment' : 'environments'});
+    // Keep the noun inside the locale catalog. Passing the English
+    // “environment/environments” as a parameter made an otherwise translated
+    // coverage sentence switch languages and broke plural grammar.
+    return window.DevCoordinatorI18n.t("common.all_value1_environments_included_e48e29", {value1: total});
   }
   if (coverage.state === 'partial') {
     if (compact) return window.DevCoordinatorI18n.t("common.value1_of_value2_environments_included_8432b4", {value1: included, value2: configured});

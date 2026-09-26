@@ -36,6 +36,10 @@ export async function verifyTranslatedConsole({ page, check, baseUrl, output, th
       const lifecycle = await page.locator('[data-cmd="deployment.start"], [data-cmd="deployment.stop"], [data-cmd="deployment.restart"]').evaluateAll(nodes => nodes.map(node => ({ action: node.dataset.cmd.split('.')[1], text: node.textContent })));
       verify(`${route}: lifecycle controls are localized`, lifecycle.length > 0 && lifecycle.every(item => item.text === catalogs.deployments['action_' + item.action]), JSON.stringify(lifecycle));
     }
+    if (route.startsWith('usage/')) {
+      const visible = await page.locator('main').innerText();
+      if (locale !== 'en') verify('Usage coverage does not inject English environment nouns', !/\bconfigured Codex environment(s)?\b/i.test(visible), visible.match(/.{0,24}configured Codex environment.{0,24}/i)?.[0] || '');
+    }
     if (route === 'bugs') {
       const fields = await page.locator('#bug-form label').evaluateAll(nodes => nodes.map(node => ({ field: node.querySelector('input,textarea').name, text: node.firstElementChild.textContent })));
       const keys = { component: 'component_ce54f0', summary: 'summary_8e76a9', expected: 'expected', actual: 'actual', steps: 'steps_1de3df' };
