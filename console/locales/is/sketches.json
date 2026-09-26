@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Engar athugasemdir við þennan valkost enn.",
+  "sketch_set_review_1e4713": "Yfirferð skissusets",
+  "close_7d9eb7": "Loka",
+  "selection_mode_1935ae": "Valhamur",
+  "close_set_review_2680d1": "Loka yfirferð setts",
+  "sketch_set_options_62656f": "Valkostir skissusets",
+  "current_option_f4a3f8": "Núverandi valkostur",
+  "comments_355f79": "Athugasemdir",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Útskýrðu hvers vegna þú valdir þennan valkost eða sett valkosta.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Val verða Halda, Hafna eða Óákveðið.",
+  "sketches_a56d78": "Skissur",
+  "review_generated_options_by_set_then_select_one__020509": "Farðu yfir myndaða valkosti eftir setti og veldu síðan einn eða fleiri til að halda áfram.",
+  "publish_from_a_skill_f33a0e": "Birta úr færni",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Skrásett færni birtir skissur",
+  "value2_selected_value3_options_b64a24": "{value2} valið · {value3} valkostir",
+  "value5_sketches_value6_selected_87bdd8": "{value5} skissur · {value6} valið",
+  "value6_rejected_value7_undecided_bbc778": "{value6} hafnað · {value7} óákveðin",
+  "reviewer_d29f46": "Yfirlesari",
+  "option_unavailable_d03e4e": "Valkostur ekki tiltækur",
+  "selected_57fd7a": "Valið",
+  "rejected_aea4a0": "Hafnað",
+  "undecided_00cc36": "Óákveðið",
+  "select_2a7802": "Velja",
+  "reject_ab604a": "Hafna",
+  "leave_undecided_65c5c0": "Skilja óákveðið",
+  "set_6ee0eb": "sett",
+  "sets_82c6db": "sett",
+  "no_selection_211f6b": "Ekkert val",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Bæta samhengi við valinn valkost",
+      "other": "Bæta samhengi við valda valkosti"
+    }
+  },
+  "review_set_ca242c": "Yfirfara sett",
+  "open_sketch_3ccc5c": "Opna skissu",
+  "single_choice_45a76a": "Eitt val",
+  "choose_multiple_b76dc5": "Velja mörg",
+  "open_full_review_canvas_26fc95": "Opna fullt yfirferðarspjald",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} sett",
+      "other": "{count} sett"
+    }
+  }
+}

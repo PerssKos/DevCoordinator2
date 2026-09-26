@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::install::{
     self, CommandRequest, CommandRunner, InstallManifest, read_and_verify_manifest_owned,
-    render_daemon_unit, render_edge_unit,
+    render_daemon_unit, render_edge_unit, render_tests_slice_unit,
 };
 
 const DRAIN_FILE: &str = "test-drain.json";
@@ -240,6 +240,7 @@ pub struct HostCutoverConfig {
     pub database_path: PathBuf,
     pub daemon_unit_path: PathBuf,
     pub edge_unit_path: PathBuf,
+    pub tests_slice_unit_path: PathBuf,
     pub cli_link: PathBuf,
     pub tooling_link: PathBuf,
     pub systemctl: PathBuf,
@@ -298,6 +299,7 @@ impl Default for HostCutoverConfig {
             database_path: "/var/lib/devcoordinator2/authority.sqlite3".into(),
             daemon_unit_path: "/etc/systemd/system/devcoordinator2.service".into(),
             edge_unit_path: "/etc/systemd/system/devcoordinator2-edge.service".into(),
+            tests_slice_unit_path: "/etc/systemd/system/devcoordinator2-tests.slice".into(),
             cli_link: "/usr/local/bin/devcoordinator2".into(),
             tooling_link: "/usr/local/bin/devcoordinator2-tooling".into(),
             systemctl: "/usr/bin/systemctl".into(),
@@ -356,6 +358,7 @@ pub struct HostCutover {
     manifest: InstallManifest,
     daemon_unit_text: String,
     edge_unit_text: String,
+    tests_slice_unit_text: String,
     tmpfiles_text: String,
     expected_owner: (u32, u32),
     fenced: bool,
@@ -546,6 +549,7 @@ impl HostCutover {
         let source_root = Path::new(&manifest.source_root);
         let daemon_unit_text = render_daemon_unit(source_root)?;
         let edge_unit_text = render_edge_unit(source_root, config.canary)?;
+        let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
         Ok(Self {
             config,
@@ -553,6 +557,7 @@ impl HostCutover {
             manifest,
             daemon_unit_text,
             edge_unit_text,
+            tests_slice_unit_text,
             tmpfiles_text,
             expected_owner,
             fenced: false,
@@ -590,10 +595,11 @@ impl HostCutover {
         }
     }
 
-    fn snapshot_targets(&self) -> [&Path; 6] {
+    fn snapshot_targets(&self) -> [&Path; 7] {
         [
             &self.config.daemon_unit_path,
             &self.config.edge_unit_path,
+            &self.config.tests_slice_unit_path,
             &self.config.cli_link,
             &self.config.tooling_link,
             &self.config.installed_manifest,
@@ -735,6 +741,12 @@ impl CutoverAdapter for HostCutover {
         install::atomic_file(
             &self.config.edge_unit_path,
             self.edge_unit_text.as_bytes(),
+            0o644,
+            Some(self.expected_owner),
+        )?;
+        install::atomic_file(
+            &self.config.tests_slice_unit_path,
+            self.tests_slice_unit_text.as_bytes(),
             0o644,
             Some(self.expected_owner),
         )?;
@@ -2306,6 +2318,11 @@ mod tests {
             "[Service]\nExecStart=/usr/bin/node /home/DevCoordinator2/edge/devcoordinator2-edge.mjs\nProtectHome=read-only\nReadOnlyPaths=/home/DevCoordinator2\n",
         )
         .unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2-tests.slice"),
+            include_str!("../../../deploy/devcoordinator2-tests.slice"),
+        )
+        .unwrap();
         let commit = "c".repeat(40);
         let mut receipts = Vec::new();
         for name in [
@@ -2382,6 +2399,7 @@ mod tests {
         std::fs::create_dir(&bin).unwrap();
         let daemon_unit_path = system.join("devcoordinator2.service");
         let edge_unit_path = system.join("devcoordinator2-edge.service");
+        let tests_slice_unit_path = system.join("devcoordinator2-tests.slice");
         let cli_link = bin.join("devcoordinator2");
         let tooling_link = bin.join("devcoordinator2-tooling");
         let installed_manifest = root.join("etc/install-manifest.json");
@@ -2389,6 +2407,7 @@ mod tests {
         let old_cli = "#!/usr/bin/python3\n".to_owned();
         std::fs::write(&daemon_unit_path, &old_daemon).unwrap();
         std::fs::write(&edge_unit_path, "old edge\n").unwrap();
+        std::fs::write(&tests_slice_unit_path, "old test slice\n").unwrap();
         std::fs::write(&cli_link, &old_cli).unwrap();
         std::fs::write(&tooling_link, "old tooling\n").unwrap();
         std::fs::write(&installed_manifest, "old manifest\n").unwrap();
@@ -2403,6 +2422,7 @@ mod tests {
                 database_path,
                 daemon_unit_path,
                 edge_unit_path,
+                tests_slice_unit_path,
                 cli_link,
                 tooling_link,
                 systemctl: "/fake/systemctl".into(),

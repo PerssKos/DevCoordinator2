@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "İş aşaması açıklaması",
+  "scrollable_token_chart_83cb1f": "Kaydırılabilir token grafiği",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "İş aşamasına göre sağlayıcının bildirdiği toplam tokenlar",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Yığılmış UTC zaman aralıkları. Kesin değerler grafiklerden sonra listelenir.",
+  "no_classified_token_activity_in_this_window_f460d0": "Bu pencerede sınıflandırılmış token etkinliği yok.",
+  "work_activity_bf3178": "İş etkinliği",
+  "total_tokens_e7601c": "Toplam tokenlar",
+  "activity_breakdown_7ebc89": "Etkinlik dökümü",
+  "separate_measurements_they_are_not_added_togethe_329294": "Ayrı ölçümler; toplanmaz.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Bu pencerede araç sonucu yok.",
+  "total_c9b3c3": "Toplam",
+  "exact_bucket_values_a2a7fe": "Kesin aralık değerleri",
+  "utc_bucket_fbd8d9": "UTC aralığı",
+  "data_status_87d914": "Veri durumu",
+  "repository_13d6ff": "Depo",
+  "model_requests_888826": "Model istekleri",
+  "tool_calls_da5122": "Araç çağrıları",
+  "execution_time_1069e2": "Çalıştırma süresi",
+  "data_included_217858": "Dahil edilen veriler",
+  "time_breakdown_ca0aca": "Zaman dökümü",
+  "separate_not_added_together_6dbbe5": "(ayrı, toplanmaz)",
+  "tool_outcomes_3a7a68": "Araç sonuçları",
+  "data_completeness_c7114d": "Veri eksiksizliği",
+  "counting_method_7a480a": "Sayma yöntemi",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Sağlayıcının bildirdiği toplam tokenlar; önbelleğe alınan girdi ve akıl yürütme alt kümelerdir.",
+  "schema_value19_taxonomy_value20_cdddf8": "Şema {value19} · taksonomi {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Veri sağlamayan ortamlar ve ölçülmemiş değerler hariç tutulur, sıfır sayılmaz.",
+  "token_subsets_unavailable_4cec86": "Token alt kümeleri kullanılamıyor",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} bilinmeyen aralık",
+      "other": "{count} bilinmeyen aralık",
+      "many": "{count} bilinmeyen aralık"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Codex ortamları hakkında",
+  "explain_codex_usage_data_completeness_63247d": "Codex kullanım verilerinin eksiksizliğini açıkla",
+  "tokens_a039df": "Tokenlar"
+}

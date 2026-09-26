@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "Legende der Arbeitsphasen",
+  "scrollable_token_chart_83cb1f": "Scrollbares Token-Diagramm",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Vom Anbieter gemeldete Gesamttokens nach Arbeitsphase",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Gestapelte UTC-Zeitintervalle. Genaue Werte stehen unter den Diagrammen.",
+  "no_classified_token_activity_in_this_window_f460d0": "Keine klassifizierte Tokennutzung in diesem Zeitraum.",
+  "work_activity_bf3178": "Arbeitstätigkeit",
+  "total_tokens_e7601c": "Gesamttokens",
+  "activity_breakdown_7ebc89": "Aufschlüsselung nach Tätigkeit",
+  "separate_measurements_they_are_not_added_togethe_329294": "Separate Messungen; sie werden nicht addiert.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Keine Werkzeugergebnisse in diesem Zeitraum.",
+  "total_c9b3c3": "Gesamt",
+  "exact_bucket_values_a2a7fe": "Genaue Werte pro Intervall",
+  "utc_bucket_fbd8d9": "UTC-Intervall",
+  "data_status_87d914": "Datenstatus",
+  "repository_13d6ff": "Repository",
+  "model_requests_888826": "Modellanfragen",
+  "tool_calls_da5122": "Werkzeugaufrufe",
+  "execution_time_1069e2": "Ausführungszeit",
+  "data_included_217858": "Enthaltene Daten",
+  "time_breakdown_ca0aca": "Zeitaufteilung",
+  "separate_not_added_together_6dbbe5": "(separat, nicht addiert)",
+  "tool_outcomes_3a7a68": "Werkzeugergebnisse",
+  "data_completeness_c7114d": "Datenvollständigkeit",
+  "counting_method_7a480a": "Zählmethode",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Vom Anbieter gemeldete Gesamttokens; zwischengespeicherte Eingaben und Reasoning sind darin enthalten.",
+  "schema_value19_taxonomy_value20_cdddf8": "Schema {value19} · Taxonomie {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Umgebungen ohne Daten und mit ungemessenen Werten werden ausgeschlossen statt als null behandelt.",
+  "token_subsets_unavailable_4cec86": "Token-Teilmengen nicht verfügbar.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} unbekanntes Intervall",
+      "other": "{count} unbekannte Intervalle"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Über Codex-Umgebungen",
+  "explain_codex_usage_data_completeness_63247d": "Vollständigkeit der Codex-Nutzungsdaten erklären",
+  "tokens_a039df": "Tokens"
+}

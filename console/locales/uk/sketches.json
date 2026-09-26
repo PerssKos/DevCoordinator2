@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "До цього варіанта ще немає коментарів.",
+  "sketch_set_review_1e4713": "Перегляд набору ескізів",
+  "close_7d9eb7": "Закрити",
+  "selection_mode_1935ae": "Режим вибору",
+  "close_set_review_2680d1": "Закрити перегляд набору",
+  "sketch_set_options_62656f": "Варіанти набору ескізів",
+  "current_option_f4a3f8": "Поточний варіант",
+  "comments_355f79": "Коментарі",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Поясніть, чому ви вибрали цей варіант або набір варіантів.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Вибір зберігається як «Залишити», «Відхилити» або «Не вирішено».",
+  "sketches_a56d78": "Ескізи",
+  "review_generated_options_by_set_then_select_one__020509": "Перегляньте згенеровані варіанти за наборами, а потім виберіть один або кілька для подальшої роботи.",
+  "publish_from_a_skill_f33a0e": "Опублікувати з навички",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Ескізи публікуються зареєстрованою навичкою",
+  "value2_selected_value3_options_b64a24": "Вибрано: {value2} · варіантів: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "Ескізів: {value5} · вибрано: {value6}",
+  "value6_rejected_value7_undecided_bbc778": "Відхилено: {value6} · не вирішено: {value7}",
+  "reviewer_d29f46": "Рецензент",
+  "option_unavailable_d03e4e": "Варіант недоступний",
+  "selected_57fd7a": "Вибрано",
+  "rejected_aea4a0": "Відхилено",
+  "undecided_00cc36": "Не вирішено",
+  "select_2a7802": "Вибрати",
+  "reject_ab604a": "Відхилити",
+  "leave_undecided_65c5c0": "Залишити невирішеним",
+  "set_6ee0eb": "набір",
+  "sets_82c6db": "набори",
+  "no_selection_211f6b": "Нічого не вибрано",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Додайте пояснення до вибраного варіанта",
+      "few": "Додайте пояснення до вибраних варіантів",
+      "many": "Додайте пояснення до вибраних варіантів",
+      "other": "Додайте пояснення до вибраних варіантів"
+    }
+  },
+  "review_set_ca242c": "Переглянути набір",
+  "open_sketch_3ccc5c": "Відкрити ескіз",
+  "single_choice_45a76a": "Один варіант",
+  "choose_multiple_b76dc5": "Вибрати кілька",
+  "open_full_review_canvas_26fc95": "Відкрити повне полотно перегляду",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} набір",
+      "few": "{count} набори",
+      "many": "{count} наборів",
+      "other": "{count} набору"
+    }
+  }
+}

@@ -88,3 +88,25 @@ fn existing_delivery_clients_do_not_require_web_metadata() {
         assert_eq!(serde_json::to_value(parsed).unwrap(), proof);
     }
 }
+
+#[test]
+fn native_console_evidence_is_additive_and_cannot_claim_qualification() {
+    let request = delivery_request("native-console");
+    let parsed = parse_request(&serde_json::to_vec(&request).unwrap()).unwrap();
+    (mcp_tool("release_deliver_evidence")
+        .unwrap()
+        .validate_params)(&parsed.params)
+    .unwrap();
+    let proof = json!({
+        "version":1,"kind":"native-console","target":"console-localization",
+        "source_sha256":"a".repeat(64),"file":"response.html",
+        "observed_sha256":"b".repeat(64),"checked_at_ms":1000,
+        "access":"https://console.example.test/","observation":"web_route_passed",
+        "native_console":{"daemon_source_commit":"c".repeat(40),"assets_sha256":"d".repeat(64),"http_status":200,"content_type":"text/html"}
+    });
+    let parsed: Verification = serde_json::from_value(proof.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), proof);
+    let mut forged = proof;
+    forged["native_console"]["qualified"] = json!(true);
+    assert!(serde_json::from_value::<Verification>(forged).is_err());
+}

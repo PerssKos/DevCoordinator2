@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "コンポーネント",
+  "summary_8e76a9": "概要",
+  "expected_actual_2457a7": "期待される動作／実際の動作",
+  "steps_1de3df": "手順",
+  "seen_8894cf": "確認日時",
+  "correlations_f54dae": "関連情報",
+  "open_bugs_dce3d4": "未解決の不具合",
+  "report_a_bug_f75e0b": "不具合を報告",
+  "report_b6ce78": "報告",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "短く独立した記録のみ入力してください。秘密情報、生ログ、非公開のパスは含めないでください。",
+  "close_310ff2": "閉じる",
+  "expected": "期待する結果",
+  "actual": "実際の結果"
+}

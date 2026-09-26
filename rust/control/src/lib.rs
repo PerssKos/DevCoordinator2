@@ -43,6 +43,7 @@ mod review_validation;
 pub mod routes;
 pub mod runtime_configuration;
 pub mod sandbox_bridge;
+pub mod server;
 pub mod sketches;
 mod socket_endpoint;
 pub mod systemd;

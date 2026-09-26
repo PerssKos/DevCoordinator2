@@ -6,11 +6,17 @@
     document.documentElement.dataset.theme = theme;
     const toggle = document.getElementById('theme-toggle');
     if (toggle) {
-      toggle.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
-      toggle.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`);
+      if (window.DevCoordinatorI18n?.manifest) {
+        window.DevCoordinatorI18n.text(toggle, theme === 'dark' ? 'shell.lightMode' : 'shell.darkMode');
+        window.DevCoordinatorI18n.text(toggle, theme === 'dark' ? 'shell.switchLight' : 'shell.switchDark', {}, 'aria-label');
+      } else {
+        toggle.textContent = theme === 'dark' ? 'Light mode' : 'Dark mode';
+        toggle.setAttribute('aria-label', `Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`);
+      }
     }
   };
   apply(selected === 'light' || selected === 'dark' ? selected : preference.matches ? 'dark' : 'light');
+  document.addEventListener('dc2:localechange', () => apply(document.documentElement.dataset.theme));
   document.addEventListener('DOMContentLoaded', () => {
     apply(document.documentElement.dataset.theme);
     document.getElementById('theme-toggle')?.addEventListener('click', () => {

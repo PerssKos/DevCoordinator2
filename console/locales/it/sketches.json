@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Ancora nessun commento su questa proposta.",
+  "sketch_set_review_1e4713": "Revisione del gruppo di bozzetti",
+  "close_7d9eb7": "Chiudi",
+  "selection_mode_1935ae": "Modalità di selezione",
+  "close_set_review_2680d1": "Chiudi revisione del gruppo",
+  "sketch_set_options_62656f": "Proposte del gruppo di bozzetti",
+  "current_option_f4a3f8": "Proposta attuale",
+  "comments_355f79": "Commenti",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Spiega perché hai scelto questa proposta o questo insieme di proposte.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Le selezioni si salvano come Mantieni, Rifiuta o Da decidere.",
+  "sketches_a56d78": "Bozzetti",
+  "review_generated_options_by_set_then_select_one__020509": "Esamina le proposte generate per gruppo, quindi selezionane una o più da sviluppare.",
+  "publish_from_a_skill_f33a0e": "Pubblica da una competenza",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "I bozzetti vengono pubblicati da una competenza registrata",
+  "value2_selected_value3_options_b64a24": "{value2} selezionate · {value3} opzioni",
+  "value5_sketches_value6_selected_87bdd8": "{value5} bozzetti · {value6} selezionati",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rifiutati · {value7} non decisi",
+  "reviewer_d29f46": "Revisore",
+  "option_unavailable_d03e4e": "Opzione non disponibile",
+  "selected_57fd7a": "Selezionato",
+  "rejected_aea4a0": "Rifiutato",
+  "undecided_00cc36": "Non deciso",
+  "select_2a7802": "Seleziona",
+  "reject_ab604a": "Rifiuta",
+  "leave_undecided_65c5c0": "Lascia non deciso",
+  "set_6ee0eb": "insieme",
+  "sets_82c6db": "insiemi",
+  "no_selection_211f6b": "Nessuna selezione",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Aggiungi contesto alla proposta selezionata",
+      "many": "Aggiungi contesto alle proposte selezionate",
+      "other": "Aggiungi contesto alle proposte selezionate"
+    }
+  },
+  "review_set_ca242c": "Revisiona gruppo",
+  "open_sketch_3ccc5c": "Apri bozza",
+  "single_choice_45a76a": "Scelta singola",
+  "choose_multiple_b76dc5": "Scelta multipla",
+  "open_full_review_canvas_26fc95": "Apri l’area di revisione completa",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} gruppo",
+      "many": "{count} gruppi",
+      "other": "{count} gruppi"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Selle valiku kohta pole veel kommentaare.",
+  "sketch_set_review_1e4713": "Visandikogumi ülevaatus",
+  "close_7d9eb7": "Sulge",
+  "selection_mode_1935ae": "Valikurežiim",
+  "close_set_review_2680d1": "Sulge kogumi ülevaatus",
+  "sketch_set_options_62656f": "Visandikogumi valikud",
+  "current_option_f4a3f8": "Praegune valik",
+  "comments_355f79": "Kommentaarid",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Selgita, miks valisid selle valiku või valikute kogumi.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Valikud salvestatakse kujul Säilita, Lükka tagasi või Otsustamata.",
+  "sketches_a56d78": "Visandid",
+  "review_generated_options_by_set_then_select_one__020509": "Vaata loodud valikuid kogumite kaupa ja vali jätkamiseks üks või mitu.",
+  "publish_from_a_skill_f33a0e": "Avalda oskuse kaudu",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Visandid avaldab registreeritud oskus",
+  "value2_selected_value3_options_b64a24": "{value2} valitud · {value3} valikut",
+  "value5_sketches_value6_selected_87bdd8": "{value5} visandit · {value6} valitud",
+  "value6_rejected_value7_undecided_bbc778": "{value6} tagasi lükatud · {value7} otsustamata",
+  "reviewer_d29f46": "Ülevaataja",
+  "option_unavailable_d03e4e": "Valik pole saadaval",
+  "selected_57fd7a": "Valitud",
+  "rejected_aea4a0": "Tagasi lükatud",
+  "undecided_00cc36": "Otsustamata",
+  "select_2a7802": "Vali",
+  "reject_ab604a": "Lükka tagasi",
+  "leave_undecided_65c5c0": "Jäta otsustamata",
+  "set_6ee0eb": "kogum",
+  "sets_82c6db": "kogumit",
+  "no_selection_211f6b": "Valikut pole",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Lisa valitud valikule kontekst",
+      "other": "Lisa valitud valikutele kontekst",
+      "many": "Lisa valitud valikutele kontekst"
+    }
+  },
+  "review_set_ca242c": "Vaata kogumit",
+  "open_sketch_3ccc5c": "Ava visand",
+  "single_choice_45a76a": "Üksikvalik",
+  "choose_multiple_b76dc5": "Vali mitu",
+  "open_full_review_canvas_26fc95": "Ava täielik ülevaatuse lõuend",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} kogum",
+      "other": "{count} kogumit",
+      "many": "{count} kogumit"
+    }
+  }
+}

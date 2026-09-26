@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "ამ ვარიანტზე კომენტარები ჯერ არ არის.",
+  "sketch_set_review_1e4713": "ესკიზების ნაკრების მიმოხილვა",
+  "close_7d9eb7": "დახურვა",
+  "selection_mode_1935ae": "არჩევის რეჟიმი",
+  "close_set_review_2680d1": "ნაკრების მიმოხილვის დახურვა",
+  "sketch_set_options_62656f": "ესკიზების ნაკრების ვარიანტები",
+  "current_option_f4a3f8": "მიმდინარე ვარიანტი",
+  "comments_355f79": "კომენტარები",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "ახსენით, რატომ აირჩიეთ ეს ვარიანტი ან ვარიანტების ნაკრები.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "არჩევანი ინახება როგორც შენარჩუნება, უარყოფა ან გადაუწყვეტელი.",
+  "sketches_a56d78": "ესკიზები",
+  "review_generated_options_by_set_then_select_one__020509": "გადაათვალიერეთ გენერირებული ვარიანტები ნაკრებების მიხედვით, შემდეგ აირჩიეთ ერთი ან რამდენიმე გასაგრძელებლად.",
+  "publish_from_a_skill_f33a0e": "უნარიდან გამოქვეყნება",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "ესკიზებს რეგისტრირებული უნარი აქვეყნებს",
+  "value2_selected_value3_options_b64a24": "არჩეულია {value2} · ვარიანტები: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "{value5} ესკიზი · არჩეულია {value6}",
+  "value6_rejected_value7_undecided_bbc778": "უარყოფილია {value6} · გადაუწყვეტელია {value7}",
+  "reviewer_d29f46": "მიმომხილველი",
+  "option_unavailable_d03e4e": "ვარიანტი მიუწვდომელია",
+  "selected_57fd7a": "არჩეულია",
+  "rejected_aea4a0": "უარყოფილია",
+  "undecided_00cc36": "გადაუწყვეტელი",
+  "select_2a7802": "არჩევა",
+  "reject_ab604a": "უარყოფა",
+  "leave_undecided_65c5c0": "გადაუწყვეტლად დატოვება",
+  "set_6ee0eb": "ნაკრები",
+  "sets_82c6db": "ნაკრებები",
+  "no_selection_211f6b": "არჩევანი არ არის",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "არჩეული ვარიანტისთვის კონტექსტის დამატება",
+      "other": "არჩეული ვარიანტებისთვის კონტექსტის დამატება"
+    }
+  },
+  "review_set_ca242c": "ნაკრების მიმოხილვა",
+  "open_sketch_3ccc5c": "ესკიზის გახსნა",
+  "single_choice_45a76a": "ერთი არჩევანი",
+  "choose_multiple_b76dc5": "რამდენიმეს არჩევა",
+  "open_full_review_canvas_26fc95": "მიმოხილვის სრული ტილოს გახსნა",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} ნაკრები",
+      "other": "{count} ნაკრები"
+    }
+  }
+}

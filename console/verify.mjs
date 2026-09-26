@@ -23,6 +23,8 @@ import { chooseRepository, revealTestRows, revealTestSettings, verifyTestsDesign
 import { artifactResponse, verifyTestArtifacts } from './verify-artifacts.mjs';
 import { verifyProgressCharts } from './verify-progress-charts.mjs';
 import { performanceFixture, verifyPerformance } from './verify-performance.mjs';
+import { verifyTranslatedConsole } from './verify-translated-console.mjs';
+import { verifyLocalization } from './verify-localization.mjs';
 import { verifyWorkspace } from './verify-workspace.mjs';
 import { verifyAnnotations } from './verify-annotations.mjs';
 import { verifyEvidenceLayout } from './verify-evidence-layout.mjs';
@@ -904,16 +906,17 @@ async function main() {
     return;
   }
 
-  if (process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
+  if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      for (const viewport of [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }]) {
+      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
+      for (const viewport of translatedViewports) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });
           const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
           await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
           const page = await context.newPage();
           page.setDefaultTimeout(8000);
-          try { await (process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? verifyPerformance : process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
+          try { await (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY ? verifyTranslatedConsole : process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY ? verifyLocalization : process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? verifyPerformance : process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY ? verifyEvidenceLayout : process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY ? verifyAnnotations : process.env.CONSOLE_VERIFY_WORKSPACE_ONLY ? verifyWorkspace : process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY ? verifyTestArtifacts : verifyTestsDesign)({ page, daemon, check, scenario: SCENARIOS.populated, baseUrl: `http://${HOST}:${port}/`, output: OUT, theme, viewport }); }
           catch (error) { check(`Tests design ${theme} ${viewport.width}`, false, error.message); }
           await context.close();
         }
@@ -1140,10 +1143,11 @@ async function main() {
         }
         if (scenarioName === 'populated' && view === `#/progress/${REPO}`) {
           check(`${label}: progress leads with the release forecast and daily progress`,
-            /Likely release:/.test(metrics.text) && /Daily progress/.test(metrics.text)
+            /Likely release:/i.test(metrics.text) && /Daily progress/i.test(metrics.text)
             && await page.locator('[data-ui-region="progress-forecast"]').count() === 1
             && await page.locator('.progress-pulse-chart').count() === 2
-            && await page.locator('[data-ui-region="progress-release-work"]').count() === 1);
+            && await page.locator('[data-ui-region="progress-release-work"]').count() === 1,
+            JSON.stringify({ likely: /Likely release:/.test(metrics.text), daily: /Daily progress/.test(metrics.text), forecast: await page.locator('[data-ui-region="progress-forecast"]').count(), charts: await page.locator('.progress-pulse-chart').count(), release: await page.locator('[data-ui-region="progress-release-work"]').count(), sample: metrics.text.slice(0,240) }));
           check(`${label}: progress shows factual Plan-ordered work without heuristic claims`,
             /Work in this release/.test(metrics.text)
             && /Shown in Plan order/.test(metrics.text)
@@ -1334,7 +1338,7 @@ async function main() {
   await page.setViewportSize(VIEWPORTS.wide);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
-  await page.locator('#test-capacity-dialog input').focus();
+  await page.locator('#test-capacity-dialog input[name="cap"]').focus();
   daemon.setScenario({ ...SCENARIOS.populated, testFinished: true, targetedOnly: true });
   await page.waitForFunction(() => {
     const row = document.querySelector('[data-test-run-id="t20260101T000000Z-abc123"]');

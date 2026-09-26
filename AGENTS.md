@@ -67,6 +67,10 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   relevant feedback and preserved after fixes. Use `devcoordinator2 plan`,
   `task`, and `decision`; never create or update Markdown ledger mirrors.
   Historical files are reference material, not a fallback authority.
+- A preview deployment's `status: delivered` result records release metadata
+  only. Delivery clocks require a qualified `release.deliver_evidence` receipt
+  and the receipt ID must be recorded against the matching target; a release
+  ID, deployment health result, or full journey bundle is not a substitute.
 - Use the installed Coordinator only for other repositories' governed runtime
   work and for ledger/decision operations. Never use it to test, install,
   deploy, roll back, or validate DevCoordinator2 itself.

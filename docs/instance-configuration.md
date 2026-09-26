@@ -21,7 +21,7 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_SANDBOX_BRIDGE_DIR` | `/tmp/devcoordinator2-bridge` | daemon-owned file transport used only when a client sandbox denies socket syscalls |
 | `DEVCOORDINATOR2_STATE_DIR` | `/var/lib/devcoordinator2` | authority DB and runtime state |
 | `DEVCOORDINATOR2_UNIT_PREFIX` | `devcoordinator2-test` | transient test unit prefix (dev instances use e.g. `devcoordinator2-dev`) |
-| `DEVCOORDINATOR2_SLICE` | `devcoordinator2-tests.slice` | parent slice for test units |
+| `DEVCOORDINATOR2_SLICE` | `devcoordinator2-tests.slice` | parent slice for test units; the installed slice applies `MemoryHigh=70%` and `MemoryMax=80%` to disposable test workloads |
 | `DEVCOORDINATOR2_CLIENT_GROUP` | `devcoordinator2-clients` | Unix group granted socket access |
 | `DEVCOORDINATOR2_PORT_RANGE` | `20000-29999` | host port range the daemon leases to deployment components |
 | `DEVCOORDINATOR2_BASE_DOMAIN` | (empty) | base public domain; deployment `domain` labels resolve beneath it (Phase 3+) |

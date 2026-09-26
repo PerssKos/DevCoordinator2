@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "ne komentarji na to možnost še.",
+  "sketch_set_review_1e4713": "skica niz pregled",
+  "close_7d9eb7": "zapri",
+  "selection_mode_1935ae": "izbira mode",
+  "close_set_review_2680d1": "zapri niz pregled",
+  "sketch_set_options_62656f": "skica niz možnosti",
+  "current_option_f4a3f8": "trenutno možnost",
+  "comments_355f79": "komentarji",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "razloži zakaj vi chose to možnost ali niz od možnosti.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "izbire shrani as obdrži, zavrni, ali neodločeno.",
+  "sketches_a56d78": "skice",
+  "review_generated_options_by_set_then_select_one__020509": "pregled generated možnosti by niz, then izberi ena ali several v carry forward.",
+  "publish_from_a_skill_f33a0e": "objavi od en skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "skice so objavljeno by en registrirano skill",
+  "value2_selected_value3_options_b64a24": "{value2} izbrano · {value3} možnosti",
+  "value5_sketches_value6_selected_87bdd8": "{value5} skice · {value6} izbrano",
+  "value6_rejected_value7_undecided_bbc778": "{value6} zavrnjeno · {value7} neodločeno",
+  "reviewer_d29f46": "pregledovalec",
+  "option_unavailable_d03e4e": "možnost ni na voljo",
+  "selected_57fd7a": "izbrano",
+  "rejected_aea4a0": "zavrnjeno",
+  "undecided_00cc36": "neodločeno",
+  "select_2a7802": "izberi",
+  "reject_ab604a": "zavrni",
+  "leave_undecided_65c5c0": "pusti neodločeno",
+  "set_6ee0eb": "niz",
+  "sets_82c6db": "nizi",
+  "no_selection_211f6b": "ne izbira",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "dodaj kontekst v ta izbrano možnost",
+      "other": "dodaj kontekst v ta izbrano možnosti",
+      "few": "Add context to the selected options",
+      "two": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "pregled niz",
+  "open_sketch_3ccc5c": "odpri skica",
+  "single_choice_45a76a": "enojno izbira",
+  "choose_multiple_b76dc5": "izberi več",
+  "open_full_review_canvas_26fc95": "odpri celotno pregled canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} niz",
+      "other": "{count} nizi",
+      "few": "{count} sets",
+      "two": "{count} sets"
+    }
+  }
+}

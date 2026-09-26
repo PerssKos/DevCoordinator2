@@ -1,0 +1,48 @@
+{
+  "no_comments_on_this_option_yet_801c78": "이 시안에는 아직 댓글이 없습니다.",
+  "sketch_set_review_1e4713": "시안 모음 검토",
+  "close_7d9eb7": "닫기",
+  "selection_mode_1935ae": "선택 모드",
+  "close_set_review_2680d1": "시안 모음 검토 닫기",
+  "sketch_set_options_62656f": "모음의 시안",
+  "current_option_f4a3f8": "현재 시안",
+  "comments_355f79": "댓글",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "이 시안 또는 시안 조합을 선택한 이유를 설명하세요.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "선택은 유지, 거부, 미정으로 저장됩니다.",
+  "sketches_a56d78": "디자인 시안",
+  "review_generated_options_by_set_then_select_one__020509": "생성된 시안을 모음별로 검토한 다음 진행할 시안을 하나 이상 선택하세요.",
+  "publish_from_a_skill_f33a0e": "스킬에서 게시",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "디자인 시안은 등록된 스킬이 게시합니다",
+  "value2_selected_value3_options_b64a24": "{value2}개 선택됨 · 옵션 {value3}개",
+  "value5_sketches_value6_selected_87bdd8": "스케치 {value5}개 · {value6}개 선택됨",
+  "value6_rejected_value7_undecided_bbc778": "거부됨 {value6}개 · 미결정 {value7}개",
+  "reviewer_d29f46": "검토자",
+  "option_unavailable_d03e4e": "시안을 사용할 수 없음",
+  "selected_57fd7a": "선택됨",
+  "rejected_aea4a0": "거부됨",
+  "undecided_00cc36": "미정",
+  "select_2a7802": "선택",
+  "reject_ab604a": "거부",
+  "leave_undecided_65c5c0": "미정으로 두기",
+  "set_6ee0eb": "모음",
+  "sets_82c6db": "모음",
+  "no_selection_211f6b": "선택 없음",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "other": "선택한 시안에 맥락 추가"
+    }
+  },
+  "review_set_ca242c": "시안 모음 검토",
+  "open_sketch_3ccc5c": "디자인 시안 열기",
+  "single_choice_45a76a": "단일 선택",
+  "choose_multiple_b76dc5": "여러 개 선택",
+  "open_full_review_canvas_26fc95": "전체 검토 캔버스 열기",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count}개 세트",
+      "other": "{count}개 세트"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Aucun commentaire sur cette proposition pour le moment.",
+  "sketch_set_review_1e4713": "Revue du groupe de maquettes",
+  "close_7d9eb7": "Fermer",
+  "selection_mode_1935ae": "Mode de sélection",
+  "close_set_review_2680d1": "Fermer la revue du groupe",
+  "sketch_set_options_62656f": "Propositions du groupe de maquettes",
+  "current_option_f4a3f8": "Proposition actuelle",
+  "comments_355f79": "Commentaires",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Expliquez pourquoi vous avez choisi cette proposition ou cet ensemble de propositions.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Les choix sont enregistrés comme Conserver, Rejeter ou Indécis.",
+  "sketches_a56d78": "Maquettes",
+  "review_generated_options_by_set_then_select_one__020509": "Examinez les propositions générées par groupe, puis sélectionnez-en une ou plusieurs à développer.",
+  "publish_from_a_skill_f33a0e": "Publier depuis une compétence",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Les maquettes sont publiées par une compétence enregistrée",
+  "value2_selected_value3_options_b64a24": "{value2} sélectionnées · {value3} propositions",
+  "value5_sketches_value6_selected_87bdd8": "{value5} maquettes · {value6} sélectionnées",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rejetées · {value7} sans décision",
+  "reviewer_d29f46": "Responsable de la revue",
+  "option_unavailable_d03e4e": "Proposition indisponible",
+  "selected_57fd7a": "Sélectionnée",
+  "rejected_aea4a0": "Rejetée",
+  "undecided_00cc36": "Indécise",
+  "select_2a7802": "Sélectionner",
+  "reject_ab604a": "Rejeter",
+  "leave_undecided_65c5c0": "Laisser sans décision",
+  "set_6ee0eb": "groupe",
+  "sets_82c6db": "groupes",
+  "no_selection_211f6b": "Aucune sélection",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Ajouter du contexte à la proposition sélectionnée",
+      "many": "Ajouter du contexte aux propositions sélectionnées",
+      "other": "Ajouter du contexte aux propositions sélectionnées"
+    }
+  },
+  "review_set_ca242c": "Examiner le groupe",
+  "open_sketch_3ccc5c": "Ouvrir la maquette",
+  "single_choice_45a76a": "Choix unique",
+  "choose_multiple_b76dc5": "Choix multiples",
+  "open_full_review_canvas_26fc95": "Ouvrir l’espace de revue complet",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} groupe",
+      "many": "{count} groupes",
+      "other": "{count} groupes"
+    }
+  }
+}

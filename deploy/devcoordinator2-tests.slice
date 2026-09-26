@@ -4,3 +4,10 @@
 Description=DevCoordinator2 test workloads
 
 [Slice]
+# Keep disposable test workloads below the host's emergency zone while
+# retaining enough headroom for the largest accepted checks. MemoryHigh starts
+# reclaim/throttling before the hard boundary; MemoryMax prevents a collection
+# of concurrent checks from consuming the entire machine. The executor records
+# the resulting failure and cleanup as MemoryPressure evidence.
+MemoryHigh=70%
+MemoryMax=80%

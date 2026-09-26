@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Šis variantas dar neturi komentarų.",
+  "sketch_set_review_1e4713": "Eskizų rinkinio peržiūra",
+  "close_7d9eb7": "Užverti",
+  "selection_mode_1935ae": "Pasirinkimo režimas",
+  "close_set_review_2680d1": "Užverti rinkinio peržiūrą",
+  "sketch_set_options_62656f": "Eskizų rinkinio variantai",
+  "current_option_f4a3f8": "Dabartinis variantas",
+  "comments_355f79": "Komentarai",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Paaiškinkite, kodėl pasirinkote šį variantą arba variantų rinkinį.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Pasirinkimai išsaugomi kaip „Palikti“, „Atmesti“ arba „Nenuspręsta“.",
+  "sketches_a56d78": "Eskizai",
+  "review_generated_options_by_set_then_select_one__020509": "Peržiūrėkite sugeneruotus variantus pagal rinkinius, tada pasirinkite vieną ar kelis tolesniam darbui.",
+  "publish_from_a_skill_f33a0e": "Paskelbti naudojant įgūdį",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Eskizus skelbia registruotas įgūdis",
+  "value2_selected_value3_options_b64a24": "Pasirinkta: {value2} · Variantų: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "Eskizų: {value5} · Pasirinkta: {value6}",
+  "value6_rejected_value7_undecided_bbc778": "Atmesta: {value6} · Nenuspręsta: {value7}",
+  "reviewer_d29f46": "Peržiūrėtojas",
+  "option_unavailable_d03e4e": "Variantas nepasiekiamas",
+  "selected_57fd7a": "Pasirinkta",
+  "rejected_aea4a0": "Atmesta",
+  "undecided_00cc36": "Nenuspręsta",
+  "select_2a7802": "Pasirinkti",
+  "reject_ab604a": "Atmesti",
+  "leave_undecided_65c5c0": "Palikti nenuspręstą",
+  "set_6ee0eb": "rinkinys",
+  "sets_82c6db": "rinkiniai",
+  "no_selection_211f6b": "Nieko nepasirinkta",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Pridėti pasirinkto varianto kontekstą",
+      "few": "Pridėti pasirinktų variantų kontekstą",
+      "many": "Pridėti pasirinktų variantų kontekstą",
+      "other": "Pridėti pasirinktų variantų kontekstą"
+    }
+  },
+  "review_set_ca242c": "Peržiūrėti rinkinį",
+  "open_sketch_3ccc5c": "Atverti eskizą",
+  "single_choice_45a76a": "Vienas pasirinkimas",
+  "choose_multiple_b76dc5": "Pasirinkti kelis",
+  "open_full_review_canvas_26fc95": "Atverti visą peržiūros drobę",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} rinkinys",
+      "few": "{count} rinkiniai",
+      "many": "{count} rinkinio",
+      "other": "{count} rinkinių"
+    }
+  }
+}

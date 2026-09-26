@@ -430,6 +430,56 @@ pub struct RegisteredRepository {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ServerHealth {
+    pub ok: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerPublication {
+    pub lifecycle: String,
+    pub pid: u32,
+    pub port: u16,
+    pub server_definition_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerBroker {
+    pub status: String,
+    pub publication: ServerPublication,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerRow {
+    pub server_definition_id: String,
+    pub agent: String,
+    pub project: String,
+    pub name: String,
+    pub role: String,
+    pub cwd: String,
+    pub argv: Vec<String>,
+    pub pid: u32,
+    pub port: u16,
+    pub host: String,
+    pub health_url: String,
+    pub health_timeout: u16,
+    pub status: String,
+    pub url_is_current: bool,
+    pub health: ServerHealth,
+    pub lease_id: String,
+    pub broker: ServerBroker,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerList {
+    pub servers: Vec<ServerRow>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CurrentTest {
     pub status: TestStatus,
     pub run_id: String,

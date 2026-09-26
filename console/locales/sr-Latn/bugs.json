@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponenta",
+  "summary_8e76a9": "Sažetak",
+  "expected_actual_2457a7": "Očekivano / stvarno",
+  "steps_1de3df": "Koraci",
+  "seen_8894cf": "Uočeno",
+  "correlations_f54dae": "Povezanosti",
+  "open_bugs_dce3d4": "Otvorene greške",
+  "report_a_bug_f75e0b": "Prijavi grešku",
+  "report_b6ce78": "Prijavi",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Samo kratki, samostalni zapisi: bez tajni, sirovih dnevnika i privatnih putanja.",
+  "close_310ff2": "zatvori",
+  "expected": "Očekivano",
+  "actual": "Stvarno"
+}

@@ -76,8 +76,9 @@ devcoordinator2 health --help
   what they mean. Never infer agents, tasks, conversations, turns, or wake-up
   behavior from this interface.
 - Use `plan overview`, `task create|update|history`,
-  `release create|deliver`, and `decision record|tail|search|summarize` for
-  the authoritative planning ledger and decision history (below).
+  `release create|request|deliver|deliver-evidence|evidence|evidence-show`,
+  and `decision record|tail|search|summarize` for the authoritative planning
+  ledger and decision history (below).
 - Use `bug report|list|close` for the independent open-bug registry
   (coordinator defects only; product work items are ledger tasks).
 - Use `glossary list|resolve|get|save|configure|inherit|history|check|impact`
@@ -292,11 +293,44 @@ already establishes an unfinished outcome. Record it when decided:
   coherent runnable increments to an established authorized non-production
   surface after focused checks, not only when `preview_requested` is set.
   Honor an explicit preview request promptly. Apply the declared deployment
-  from current work (dirty is expected), then use `release_deliver` to give
-  the owner exact access instructions and preliminary limitations. Continue
-  independent implementation and testing during publication; do not wait for
-  user acknowledgement. The owner's comments arrive as `user_feedback`
-  tasks. Preserve deployment authority and the self-hosting boundary below.
+  from current work (dirty is expected), then qualify the result before
+  recording it against a delivery clock. The qualified workflow is:
+  `release deliver-evidence` with a retained run artifact and a compact
+  verification document, read the returned receipt and require
+  `qualified: true`, then pass that receipt ID to
+  `project_automation.record_delivery`. `release deliver` records deployment
+  metadata only; its `status: delivered` result is not a qualified delivery
+  receipt and its release ID is not an `evidence_ref`. The verification
+  document must be the bounded request JSON expected by
+  `release.deliver_evidence`; do not pass a preview directory or the full
+  journey bundle. Continue independent implementation and testing during
+  publication; do not wait for user acknowledgement. The owner's comments
+  arrive as `user_feedback` tasks. Preserve deployment authority and the
+  self-hosting boundary below.
+
+  The bounded request has this shape (with real values from the retained run):
+
+  ```json
+  {
+    "release_id": "...",
+    "path": "/absolute/repository/worktree",
+    "run_id": "...",
+    "check": "...",
+    "artifact": "...",
+    "manifest_sha256": "...",
+    "source_sha256": "...",
+    "target": "web-preview",
+    "kind": "web-deployment",
+    "verification_file": "delivery.json"
+  }
+  ```
+
+  `delivery.json` is a separate small file inside the retained artifact. It
+  must match the `Verification` contract: source and observed file digests,
+  checked timestamp, access URL, `web_route_passed`, and the exact deployment
+  ID, generation, HTTP status, and HTML content type. The returned
+  `delivery-*` receipt ID, rather than the release ID, is the value used for
+  `release evidence` and `record_delivery`.
 - Treat every non-empty `elaboration_requests` list in a planning, task,
   release, or decision result as an owner request that must not be silently
   skipped. Read each named task with `task_history`, rewrite its title and/or

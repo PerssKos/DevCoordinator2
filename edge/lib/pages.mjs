@@ -1,3 +1,5 @@
+import { createPageLocalization } from './localization.mjs';
+
 // Self-contained dark-theme HTML pages for the auth/error surfaces.
 // No external assets, inline CSS only, and every interpolation is escaped.
 
@@ -73,163 +75,48 @@ const GOOGLE_ICON =
   '<path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>' +
   '</svg>';
 
-export function createPages({ config }) {
-  const domain = config.domain;
-  const consoleOrigin = config.consoleOrigin;
-  const brandLine = `DevCoordinator2 — ${domain}`;
-
+export function createPages({ config, localization = createPageLocalization(config.catalogDir), request } = {}) {
+  const { locale, direction, t } = localization.forRequest(request);
+  const text = (id, params) => escapeHtml(t(id, params));
+  const codeText = (id, name, value) => text(id, { [name]: '\uE000' }).replaceAll('\uE000', `<code>${escapeHtml(value)}</code>`);
+  const { domain, consoleOrigin } = config;
   function page({ title, body }) {
-    return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow">
-<title>${escapeHtml(title)} · DevCoordinator2</title>
-<style>${CSS}</style>
-</head>
-<body>
-<main class="card">
-<div class="brand">${MARK_SVG}<span class="brand-name">DevCoordinator2</span><span class="brand-domain">${escapeHtml(domain)}</span></div>
-${body}
-<footer class="foot">${escapeHtml(brandLine)}</footer>
-</main>
-</body>
-</html>`;
+    return `<!doctype html><html lang="${escapeHtml(locale)}" dir="${direction}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>${escapeHtml(title)} · DevCoordinator2</title><style>${CSS}</style></head><body><main class="card"><div class="brand">${MARK_SVG}<span class="brand-name">DevCoordinator2</span><span class="brand-domain">${escapeHtml(domain)}</span></div>${body}<footer class="foot">DevCoordinator2 — ${escapeHtml(domain)}</footer></main></body></html>`;
   }
-
-  function consoleButton(label = 'Open the console', href = `${consoleOrigin}/`) {
+  function consoleButton(href = `${consoleOrigin}/`) {
     const safeHref = /^https?:\/\//i.test(String(href)) ? String(href) : `${consoleOrigin}/`;
-    return `<a class="btn btn-ghost" href="${escapeHtml(safeHref)}">${escapeHtml(label)}</a>`;
+    return `<a class="btn btn-ghost" href="${escapeHtml(safeHref)}">${text('openConsole')}</a>`;
   }
-
   function renderLogin({ rt = '', error = '', degraded = false } = {}) {
     const safeRt = typeof rt === 'string' ? rt : '';
-    const errorNote = error
-      ? `<div class="note note-error" role="alert">${escapeHtml(error)}</div>\n`
-      : '';
-    let action;
-    if (degraded) {
-      action = `<div class="note note-warn">
-<strong>Google OAuth is not configured yet</strong>
-Sign-in stays disabled until this console has an OAuth client. To finish setup:
-<ol>
-<li>In Google Cloud Console open <em>APIs &amp; Services &rarr; Credentials</em> and create an <em>OAuth client ID</em> of type <em>Web application</em>.</li>
-<li>Register this exact authorized redirect URI:
-<span class="block">${escapeHtml(consoleOrigin)}/auth/callback</span></li>
-<li>Put the client ID and secret in the console&#39;s <code>.env</code> as <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code>, then restart the console.</li>
-</ol>
-</div>
-<button class="btn btn-google" type="button" disabled aria-disabled="true">${GOOGLE_ICON}Sign in with Google</button>`;
-    } else {
-      // GET form → the browser submits to /auth/start?rt=<value>.
-      const rtField = safeRt ? `\n<input type="hidden" name="rt" value="${escapeHtml(safeRt)}">` : '';
-      action = `<form method="get" action="/auth/start">${rtField}
-<button class="btn btn-google" type="submit">${GOOGLE_ICON}Sign in with Google</button>
-</form>`;
-    }
-    const body = `<h1>Sign in</h1>
-<p>Sign in with an approved Google account. Access is granted separately for the console and each protected <code>*.${escapeHtml(domain)}</code> domain.</p>
-${errorNote}${action}
-<p class="small gap-top">After signing in you will be returned to the page you asked for.</p>`;
-    return { status: error ? 400 : 200, html: page({ title: 'Sign in', body }) };
+    const errors = { 'sign-in is not available right now': 'signInUnavailable', 'sign-in failed; please try again': 'signInFailed' };
+    const errorNote = error ? `<div class="note note-error" role="alert">${errors[error] ? text(errors[error]) : escapeHtml(error)}</div>` : '';
+    const action = degraded
+      ? `<div class="note note-warn"><strong>${text('oauthNotConfigured')}</strong><p>${text('oauthSetup')}</p><ol><li>${text('oauthCreate')}</li><li>${text('oauthRedirect')}<span class="block" dir="ltr">${escapeHtml(consoleOrigin)}/auth/callback</span></li><li>${text('oauthCredentials')}</li></ol></div><button class="btn btn-google" type="button" disabled aria-disabled="true">${GOOGLE_ICON}${text('googleSignIn')}</button>`
+      : `<form method="get" action="/auth/start">${safeRt ? '<input type="hidden" name="rt" value="' + escapeHtml(safeRt) + '">' : ''}<button class="btn btn-google" type="submit">${GOOGLE_ICON}${text('googleSignIn')}</button></form>`;
+    return { status: error ? 400 : 200, html: page({ title: t('signIn'), body: `<h1>${text('signIn')}</h1><p>${text('signInIntroduction', { domain: '*.' + domain })}</p>${errorNote}${action}<p class="small gap-top">${text('returnAfterSignIn')}</p>` }) };
   }
-
   function renderDenied({ email = '', resource = '', sessionSet = false, requestToken = '' } = {}) {
-    const who = email
-      ? `<code>${escapeHtml(email)}</code> signed in with Google successfully, but that account`
-      : 'Your Google account';
-    const target = resource
-      ? ` does not have access to <code>${escapeHtml(resource)}</code>.`
-      : ' has not been invited to any Console-managed domain.';
-    const cookieNote = sessionSet
-      ? 'Your sign-in is still valid for any other domains the owner granted to you.'
-      : 'No session cookie was set.';
-    const action = sessionSet ? '/auth/logout' : '/auth/login';
-    const requestForm = requestToken
-      ? `<form method="post" action="/auth/request-invite">
-<input type="hidden" name="request_token" value="${escapeHtml(requestToken)}">
-<button class="btn btn-google" type="submit">Request invite</button>
-</form>`
-      : '';
-    const body = `<div class="status-code">403</div>
-<h1>Access denied</h1>
-<p>${who}${target}</p>
-<p class="small">Ask the Console owner to add your Google account or grant this domain. ${cookieNote}</p>
-${requestForm}
-<a class="btn btn-ghost" href="${action}">Try a different account</a>`;
-    return { status: 403, html: page({ title: 'Access denied', body }) };
+    const requestForm = requestToken ? `<form method="post" action="/auth/request-invite"><input type="hidden" name="request_token" value="${escapeHtml(requestToken)}"><button class="btn btn-google" type="submit">${text('requestInvite')}</button></form>` : '';
+    return { status: 403, html: page({ title: t('accessDenied'), body: `<div class="status-code">403</div><h1>${text('accessDenied')}</h1><p>${text(resource ? 'accountDenied' : 'accountUninvited')}</p>${email ? '<p><bdi>' + escapeHtml(email) + '</bdi></p>' : ''}${resource ? '<p><bdi>' + escapeHtml(resource) + '</bdi></p>' : ''}<p class="small">${text('askOwner')} ${text(sessionSet ? 'sessionValid' : 'noSession')}</p>${requestForm}<a class="btn btn-ghost" href="${sessionSet ? '/auth/logout' : '/auth/login'}">${text('differentAccount')}</a>` }) };
   }
-
   function renderInviteResult({ status = 202, duplicate = false, error = '', retryAfter = null } = {}) {
-    const ok = !error;
-    const title = ok ? (duplicate ? 'Request already pending' : 'Invite requested') : 'Request not sent';
-    const detail = ok
-      ? (duplicate
-          ? 'The Console owner already has this access request in the incoming queue.'
-          : 'The Console owner can now approve or deny this request from the incoming invites page.')
-      : escapeHtml(error);
-    const retry = retryAfter
-      ? `<p class="small">You can try again in about ${escapeHtml(String(retryAfter))} seconds.</p>`
-      : '';
-    const body = `<div class="status-code">${ok ? '202' : escapeHtml(status)}</div>
-<h1>${escapeHtml(title)}</h1>
-<p>${detail}</p>
-${retry}<a class="btn btn-ghost" href="/">Return to the requested resource</a>`;
-    return { status, html: page({ title, body }) };
+    const title = t(error ? 'requestNotSent' : duplicate ? 'requestPending' : 'inviteRequested');
+    return { status, html: page({ title, body: `<div class="status-code">${escapeHtml(error ? status : 202)}</div><h1>${escapeHtml(title)}</h1><p>${error ? escapeHtml(error) : text(duplicate ? 'alreadyPending' : 'ownerCanApprove')}</p>${retryAfter ? '<p class="small">' + text('retrySeconds', { count: retryAfter }) + '</p>' : ''}<a class="btn btn-ghost" href="/">${text('returnResource')}</a>` }) };
   }
-
   function renderNotFound({ host = '' } = {}) {
-    const lead = host
-      ? `<p>There is no route configured for <code>${escapeHtml(host)}</code>.</p>`
-      : '<p>This page does not exist.</p>';
-    const body = `<div class="status-code">404</div>
-<h1>Route not found</h1>
-${lead}
-<p class="small">Subdomain routes are managed from the console — create one there to bring this hostname to life.</p>
-${consoleButton()}`;
-    return { status: 404, html: page({ title: 'Not found', body }) };
+    return { status: 404, html: page({ title: t('notFound'), body: `<div class="status-code">404</div><h1>${text('routeNotFound')}</h1><p>${host ? codeText('noRoute', 'host', host) : text('noPage')}</p><p class="small">${text('routeSetup')}</p>${consoleButton()}` }) };
   }
-
-  const UPSTREAM_MESSAGES = {
-    connect: 'The upstream server refused the connection — nothing is listening on its port.',
-    timeout: 'The upstream server did not respond in time.',
-    reset: 'The upstream server closed the connection unexpectedly.',
-    stopped: 'The server behind this route is not running.',
-  };
-
   function renderUpstreamError({ slug = '', kind = '', detail = '', consoleUrl = '' } = {}) {
     const status = kind === 'timeout' ? 504 : 502;
-    const host = slug ? `${slug}.${domain}` : domain;
-    const message = UPSTREAM_MESSAGES[kind] || 'The server behind this route is currently unreachable.';
-    const rows = [
-      `<div class="meta-row"><span class="k">Host</span><span class="v">${escapeHtml(host)}</span></div>`,
-      kind ? `<div class="meta-row"><span class="k">Cause</span><span class="v">${escapeHtml(kind)}</span></div>` : '',
-    ].filter(Boolean).join('\n');
-    const detailBlock = detail ? `<span class="block">${escapeHtml(String(detail))}</span>\n` : '';
-    const body = `<div class="status-code">${status}</div>
-<h1>Upstream unavailable</h1>
-<p>${escapeHtml(message)}</p>
-<div class="meta">
-${rows}
-</div>
-${detailBlock}<p class="small">Start or restart the server from the console, then reload this page.</p>
-${consoleButton('Open the console', consoleUrl)}`;
-    return { status, html: page({ title: 'Upstream unavailable', body }) };
+    const message = { connect: 'upstreamConnect', timeout: 'upstreamTimeout', reset: 'upstreamReset', stopped: 'upstreamStopped' }[kind] || 'upstreamUnreachable';
+    const body = `<div class="status-code">${status}</div><h1>${text('upstreamUnavailable')}</h1><p>${text(message)}</p><div class="meta"><div class="meta-row"><span class="k">${text('host')}</span><bdi class="v">${escapeHtml(slug ? slug + '.' + domain : domain)}</bdi></div>${kind ? '<div class="meta-row"><span class="k">' + text('cause') + '</span><bdi class="v">' + escapeHtml(kind) + '</bdi></div>' : ''}</div>${detail ? '<span class="block" dir="auto">' + escapeHtml(String(detail)) + '</span>' : ''}<p class="small">${text('restartServer')}</p>${consoleButton(consoleUrl)}`;
+    return { status, html: page({ title: t('upstreamUnavailable'), body }) };
   }
-
-  function renderError({ status = 500, title = 'Something went wrong', detail = '' } = {}) {
+  function renderError({ status = 500, title = '', detail = '' } = {}) {
     const safeStatus = Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500;
-    const safeTitle = typeof title === 'string' && title !== '' ? title : 'Something went wrong';
-    const detailPara = detail
-      ? `<p>${escapeHtml(String(detail))}</p>`
-      : '<p>The request could not be completed.</p>';
-    const body = `<div class="status-code">${safeStatus}</div>
-<h1>${escapeHtml(safeTitle)}</h1>
-${detailPara}
-${consoleButton()}`;
-    return { status: safeStatus, html: page({ title: safeTitle, body }) };
+    const safeTitle = typeof title === 'string' && title ? title : t('somethingWrong');
+    return { status: safeStatus, html: page({ title: safeTitle, body: `<div class="status-code">${safeStatus}</div><h1>${escapeHtml(safeTitle)}</h1><p dir="auto">${detail ? escapeHtml(String(detail)) : text('requestFailed')}</p>${consoleButton()}` }) };
   }
-
-  return { renderLogin, renderDenied, renderInviteResult, renderNotFound, renderUpstreamError, renderError };
+  return { renderLogin, renderDenied, renderInviteResult, renderNotFound, renderUpstreamError, renderError, forRequest: request => createPages({ config, localization, request }) };
 }

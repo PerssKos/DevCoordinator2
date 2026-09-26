@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponent",
+  "summary_8e76a9": "Kokkuvõte",
+  "expected_actual_2457a7": "Oodatud / tegelik",
+  "steps_1de3df": "Sammud",
+  "seen_8894cf": "Nähtud",
+  "correlations_f54dae": "Seosed",
+  "open_bugs_dce3d4": "Avatud vead",
+  "report_a_bug_f75e0b": "Teata veast",
+  "report_b6ce78": "Teata",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Ainult piiratud mahuga iseseisvad kirjed: ära lisa saladusi, töötlemata logisid ega privaatseid failiteid.",
+  "close_310ff2": "sulge",
+  "expected": "Oodatav",
+  "actual": "Tegelik"
+}

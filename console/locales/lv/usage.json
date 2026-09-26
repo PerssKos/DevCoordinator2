@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "Darba posmu apzīmējumi",
+  "scrollable_token_chart_83cb1f": "Ritināma tokenu diagramma",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Pakalpojumu sniedzēja ziņotais kopējais tokenu skaits pēc darba posma",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "UTC laika intervāli attēloti kā salikti stabiņi. Precīzās vērtības norādītas aiz diagrammām.",
+  "no_classified_token_activity_in_this_window_f460d0": "Šajā intervālā nav klasificētu tokenu darbību.",
+  "work_activity_bf3178": "Darbība",
+  "total_tokens_e7601c": "Kopējais tokenu skaits",
+  "activity_breakdown_7ebc89": "Darbību sadalījums",
+  "separate_measurements_they_are_not_added_togethe_329294": "Atsevišķi mērījumi; tie netiek saskaitīti kopā.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Šajā intervālā nav rīku rezultātu.",
+  "total_c9b3c3": "Kopā",
+  "exact_bucket_values_a2a7fe": "Precīzās intervālu vērtības",
+  "utc_bucket_fbd8d9": "UTC intervāls",
+  "data_status_87d914": "Datu statuss",
+  "repository_13d6ff": "Repozitorijs",
+  "model_requests_888826": "Modeļa pieprasījumi",
+  "tool_calls_da5122": "Rīku izsaukumi",
+  "execution_time_1069e2": "Izpildes laiks",
+  "data_included_217858": "Iekļautie dati",
+  "time_breakdown_ca0aca": "Laika sadalījums",
+  "separate_not_added_together_6dbbe5": "(atsevišķi, netiek saskaitīti kopā)",
+  "tool_outcomes_3a7a68": "Rīku rezultāti",
+  "data_completeness_c7114d": "Datu pilnīgums",
+  "counting_method_7a480a": "Uzskaites metode",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Pakalpojumu sniedzēja ziņotais kopējais tokenu skaits; kešotā ievade un spriešana ir tā daļas.",
+  "schema_value19_taxonomy_value20_cdddf8": "Shēma {value19} · taksonomija {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Vides, kas nesniedza datus, un neizmērītās vērtības tiek izlaistas, nevis uzskatītas par nulli.",
+  "token_subsets_unavailable_4cec86": "Tokenu apakškopas nav pieejamas.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "zero": "{count} nezināmu intervālu",
+      "one": "{count} nezināms intervāls",
+      "other": "{count} nezināmi intervāli"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Par Codex vidēm",
+  "explain_codex_usage_data_completeness_63247d": "Paskaidrot Codex lietojuma datu pilnīgumu",
+  "tokens_a039df": "Tokeni"
+}

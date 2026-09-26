@@ -1,0 +1,42 @@
+{
+  "work_phase_legend_0886c1": "Легенда етапів роботи",
+  "scrollable_token_chart_83cb1f": "Прокручувана діаграма токенів",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Загальна кількість токенів за даними постачальника, за етапами роботи",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Складені стовпці за часовими інтервалами UTC. Точні значення наведено після діаграм.",
+  "no_classified_token_activity_in_this_window_f460d0": "За цей період немає класифікованої активності використання токенів.",
+  "work_activity_bf3178": "Види роботи",
+  "total_tokens_e7601c": "Усього токенів",
+  "activity_breakdown_7ebc89": "Розподіл за видами роботи",
+  "separate_measurements_they_are_not_added_togethe_329294": "Окремі вимірювання; вони не додаються.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "За цей період немає результатів викликів інструментів.",
+  "total_c9b3c3": "Усього",
+  "exact_bucket_values_a2a7fe": "Точні значення інтервалів",
+  "utc_bucket_fbd8d9": "Інтервал UTC",
+  "data_status_87d914": "Стан даних",
+  "repository_13d6ff": "Репозиторій",
+  "model_requests_888826": "Запити до моделі",
+  "tool_calls_da5122": "Виклики інструментів",
+  "execution_time_1069e2": "Час виконання",
+  "data_included_217858": "Ураховані дані",
+  "time_breakdown_ca0aca": "Розподіл часу",
+  "separate_not_added_together_6dbbe5": "(окремі показники, не додаються)",
+  "tool_outcomes_3a7a68": "Результати інструментів",
+  "data_completeness_c7114d": "Повнота даних",
+  "counting_method_7a480a": "Метод підрахунку",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Загальна кількість токенів за даними постачальника; кешований вхід і міркування входять до цієї кількості.",
+  "schema_value19_taxonomy_value20_cdddf8": "Схема {value19} · класифікація {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Середовища, що не надали даних, і невиміряні значення виключено, а не враховано як нуль.",
+  "token_subsets_unavailable_4cec86": "Підмножини токенів недоступні.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} невідомий інтервал",
+      "few": "{count} невідомі інтервали",
+      "many": "{count} невідомих інтервалів",
+      "other": "{count} невідомого інтервалу"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Про середовища Codex",
+  "explain_codex_usage_data_completeness_63247d": "Пояснення повноти даних використання Codex",
+  "tokens_a039df": "Токени"
+}

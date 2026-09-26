@@ -132,7 +132,7 @@ window.DevCoordinatorWorkspace = (() => {
         delete sidebar.dataset.uiContextualOverlay;
       }
       toggle.setAttribute('aria-expanded', String(expanded));
-      toggle.setAttribute('aria-label', expanded ? 'Hide repositories' : 'Show repositories');
+      window.DevCoordinatorI18n.text(toggle, expanded ? 'shell.hideRepositories' : 'shell.show_repositories_4cad75', {}, 'aria-label');
     }
 
     function setSidebarCollapsed(collapsed) {
@@ -154,11 +154,11 @@ window.DevCoordinatorWorkspace = (() => {
         const selected = group === current();
         const title = [group.name, group.rootPath].filter(Boolean).join('\n');
         return `<a class="workspace-repository" title="${esc(title)}" data-repository-icon="${group.icon || 'folder'}" href="${href(currentView, selected ? selectedId : group.repositoryId)}"${selected ? ' aria-current="page"' : ''}>${repositoryIcon(group.icon)}<span><span class="workspace-repository-name">${esc(group.name)}</span>${group.rootPath ? `<small>${esc(group.rootPath)}</small>` : ''}</span></a>`;
-      }).join('') : `<p class="muted">${searchText ? 'No matching repositories.' : 'No repositories available.'}</p>`;
+      }).join('') : `<p class="muted">${window.DevCoordinatorI18n.markup(searchText ? 'shell.noMatchingRepositories' : 'shell.noRepositories')}</p>`;
       const selected = current();
       const checkouts = document.querySelector('#workspace-checkouts');
       checkouts.hidden = !selected?.paths.length;
-      checkouts.innerHTML = selected ? `<summary>Checkouts${selected.paths.length > 1 ? ` <span>${selected.paths.length}</span>` : ''}</summary><div>${selected.records.map((record) => `<div class="workspace-checkout">${record.paths.map((path) => `<span>${esc(path)}</span>`).join('')}${selected.records.length > 1 ? `<a href="${href(currentView, record.repository_id)}"${selectedId === record.repository_id ? ' aria-current="page"' : ''}>${selectedId === record.repository_id ? 'Selected' : 'Use this checkout’s plan & records'}</a>` : ''}</div>`).join('')}</div>` : '';
+      checkouts.innerHTML = selected ? `<summary>${window.DevCoordinatorI18n.markup("shell.checkouts")}${selected.paths.length > 1 ? ` <span>${selected.paths.length}</span>` : ''}</summary><div>${selected.records.map((record) => `<div class="workspace-checkout">${record.paths.map((path) => `<span>${esc(path)}</span>`).join('')}${selected.records.length > 1 ? `<a href="${href(currentView, record.repository_id)}"${selectedId === record.repository_id ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup(selectedId === record.repository_id ? "shell.selected" : "shell.useCheckout")}</a>` : ''}</div>`).join('')}</div>` : '';
     }
 
     function paint() {
@@ -169,25 +169,24 @@ window.DevCoordinatorWorkspace = (() => {
       if (!active) { workNavigation.hidden = true; return; }
       const selected = current();
       heading.innerHTML = selected ? `${repositoryIcon(selected.icon)}<span>${esc(selected.name)}</span>` : 'Repositories';
-      heading.title = selected?.name || 'Repositories';
+      window.DevCoordinatorI18n.bind(heading, () => (selected?.name || window.DevCoordinatorI18n.t("shell.repositories_1e32af")), "title");
       const root = document.querySelector('#workspace-root');
       root.hidden = !selected?.rootPath;
-      root.textContent = selected?.rootPath ? `Root: ${selected.rootPath}` : '';
+      if (selected?.rootPath) window.DevCoordinatorI18n.text(root, 'shell.root', { path: selected.rootPath }); else root.textContent = '';
       root.title = root.textContent;
       root.dataset.uiAllowTruncation = 'The full repository path remains available in Checkouts';
       editPresentation.hidden = !selected || !identity()?.administrator;
-      toggle.title = selected ? `Current repository: ${selected.name}` : 'Repositories';
+      window.DevCoordinatorI18n.bind(toggle, () => (selected ? window.DevCoordinatorI18n.t("shell.current_repository_value1_35de51", {value1: selected.name}) : window.DevCoordinatorI18n.t("shell.repositories_1e32af")), "title");
       const record = selected?.records.find((item) => item.repository_id === selectedId);
       const scope = document.querySelector('#workspace-record-scope');
       scope.hidden = !record || selectedId === selected?.repositoryId || ['tests', 'deployments'].includes(currentView);
       const checkoutPath = record?.paths[0] || record?.display_name || '';
-      scope.textContent = scope.hidden ? '' : selected.rootPath && checkoutPath.startsWith(`${selected.rootPath}/`)
-        ? `./${checkoutPath.slice(selected.rootPath.length + 1)}` : checkoutPath;
-      scope.title = scope.hidden ? '' : checkoutPath;
+      window.DevCoordinatorI18n.bind(scope, () => (scope.hidden ? '' : (selected.rootPath && checkoutPath.startsWith(`${selected.rootPath}/`) ? `./${checkoutPath.slice(selected.rootPath.length + 1)}` : checkoutPath)));
+      window.DevCoordinatorI18n.bind(scope, () => (scope.hidden ? '' : checkoutPath), "title");
       const tabs = [['plan', 'Plan & progress'], ['deployments', 'Deployments'], ['tests', 'Tests'], ['sketches', 'Sketches'], ['decisions', 'Decisions'], ['glossary', 'Glossary']];
-      aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
+      aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup(view === "plan" ? "shell.planProgress" : "shell.view_" + view)}</a>`).join('') : '';
       workNavigation.hidden = !selectedId || !workViews.has(currentView);
-      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? [['plan', 'Plan'], ...(canOperate() ? [['progress', 'Progress'], ['usage', 'Usage']] : []), ...(identity()?.administrator ? [['performance', 'Performance']] : [])].map(([view, label]) => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
+      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? ['plan', ...(canOperate() ? ['progress', 'usage'] : []), ...(identity()?.administrator ? ['performance'] : [])].map(view => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup('shell.view_' + view)}</a>`).join('') : '';
       paintNavigation();
     }
 
@@ -198,7 +197,7 @@ window.DevCoordinatorWorkspace = (() => {
       dialog.id = 'repository-presentation-dialog';
       dialog.className = 'repository-presentation-dialog';
       dialog.setAttribute('aria-labelledby', 'repository-presentation-title');
-      dialog.innerHTML = `<form><h2 id="repository-presentation-title">Repository appearance</h2><label class="f">Name in Console<input name="display_name" maxlength="80" required value="${esc(selected.name)}" placeholder="${esc(selected.defaultName)}"></label><fieldset><legend>Icon</legend><div class="repository-icon-picker">${Object.entries(icons).map(([value, [label]]) => `<label><input type="radio" name="icon" value="${value}"${selected.icon === value ? ' checked' : ''}>${repositoryIcon(value)}<span>${label}</span></label>`).join('')}</div></fieldset><p class="muted">The repository and its checkout paths stay unchanged.</p><p role="alert" hidden></p><div class="actions"><button class="btn btn-small" type="button" data-presentation-reset>Use defaults</button><button class="btn" type="button" data-presentation-cancel>Cancel</button><button class="btn btn-primary" type="submit">Save</button></div></form>`;
+      dialog.innerHTML = `<form><h2 id="repository-presentation-title"><span data-i18n="shell.repository_appearance_c85fe7">Repository appearance</span></h2><label class="f"><span data-i18n="shell.name_in_console_ddff94">Name in Console</span><input name="display_name" maxlength="80" required value="${esc(selected.name)}" placeholder="${esc(selected.defaultName)}"></label><fieldset><legend><span data-i18n="shell.icon_a35abc">Icon</span></legend><div class="repository-icon-picker">${Object.entries(icons).map(([value, [label]]) => `<label><input type="radio" name="icon" value="${value}"${selected.icon === value ? ' checked' : ''}>${repositoryIcon(value)}<span>${window.DevCoordinatorI18n.markup("shell.icon_" + value)}</span></label>`).join('')}</div></fieldset><p class="muted"><span data-i18n="shell.the_repository_and_its_checkout_paths_stay_uncha_592111">The repository and its checkout paths stay unchanged.</span></p><p role="alert" hidden></p><div class="actions"><button class="btn btn-small" type="button" data-presentation-reset><span data-i18n="shell.use_defaults_41d83b">Use defaults</span></button><button class="btn" type="button" data-presentation-cancel><span data-i18n="shell.cancel_19766e">Cancel</span></button><button class="btn btn-primary" type="submit"><span data-i18n="shell.save_1509f5">Save</span></button></div></form>`;
       document.body.appendChild(dialog);
       const form = dialog.querySelector('form');
       const close = () => dialog.close();
@@ -224,7 +223,7 @@ window.DevCoordinatorWorkspace = (() => {
           paint(); close();
         } catch (error) {
           const message = dialog.querySelector('[role=alert]');
-          message.textContent = error.message || 'Could not save repository appearance. Try again.';
+          window.DevCoordinatorI18n.bind(message, () => (error.message || window.DevCoordinatorI18n.t("shell.could_not_save_repository_appearance_try_again_955cdd")));
           message.hidden = false;
         } finally { for (const control of form.elements) control.disabled = false; }
       });
@@ -250,7 +249,7 @@ window.DevCoordinatorWorkspace = (() => {
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
         const unavailable = [['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]].filter(([, result]) => result.error && result.error.code !== 'permission_denied');
-        document.querySelector('#repository-status').textContent = unavailable.length ? `${unavailable.map(([label]) => label).join(', ')} repositories unavailable. Refresh to retry.` : '';
+        window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
       });
       loading = { signal, promise };
       return promise;
@@ -266,7 +265,7 @@ window.DevCoordinatorWorkspace = (() => {
       shell.classList.add('repository-scoped');
       sidebar.hidden = false;
       document.querySelector('#workspace-context').hidden = false;
-      if (!data) navigation.innerHTML = '<p class="muted">Loading repositories…</p>';
+      if (!data) navigation.innerHTML = "<p class=\"muted\"><span data-i18n=\"shell.loading_repositories_460ca9\">Loading repositories…</span></p>";
       await load(signal);
       if (signal.aborted) return null;
       const query = new URLSearchParams(queryString);

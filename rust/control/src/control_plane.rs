@@ -33,6 +33,7 @@ use crate::platform::{Clock, HostClock};
 use crate::progress::ProgressService;
 use crate::repository::Registry;
 use crate::routes::RouteFilePublisher;
+use crate::server::ServerService;
 use crate::sketches::SketchService;
 use crate::telegram::{TelegramEvent, TelegramScope, TelegramService, parse_scope};
 use crate::test_artifacts::TestArtifactService;
@@ -68,6 +69,9 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "repository.presentation.update",
     "repository.archive",
     "repository.unarchive",
+    "server.register",
+    "server.list",
+    "server.stop",
     "deployment.list",
     "deployment.status",
     "deployment.apply",
@@ -185,6 +189,7 @@ pub struct ControlPlane {
     test_evidence: TestEvidenceService,
     sketches: SketchService,
     deployments: Deployments,
+    servers: ServerService,
     events: EventService,
     capacity: CapacityBroker,
     health: HealthService,
@@ -224,6 +229,7 @@ impl ControlPlane {
             registry.clone(),
             Arc::clone(&clock),
         );
+        let servers = ServerService::new(database.clone());
         let evidence = Arc::new(SqliteDeploymentEvidence::new(
             database.clone(),
             config.base_domain.clone(),
@@ -261,6 +267,10 @@ impl ControlPlane {
             database.clone(),
             artifacts.clone(),
             config.base_domain.clone(),
+        )
+        .with_native_console(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+            SOURCE_COMMIT.to_owned(),
         );
         let tests = TestLifecycle::new(
             config.clone(),
@@ -340,6 +350,7 @@ impl ControlPlane {
             test_evidence,
             sketches,
             deployments,
+            servers,
             events,
             capacity,
             health,
@@ -631,6 +642,9 @@ impl ControlPlane {
                 );
                 encode(result)
             }
+            "server.register" => encode(self.servers.register(decode(params)?)?),
+            "server.list" => encode(self.servers.list(decode(params)?)?),
+            "server.stop" => encode(self.servers.stop(decode(params)?)?),
             "deployment.list" => encode(self.deployments.list(decode(params)?, caller)?),
             "deployment.status" => {
                 let params: params::DeploymentReference = decode(params)?;

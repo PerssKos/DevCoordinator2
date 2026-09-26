@@ -1,3 +1,86 @@
+# Localization interim integration — 2026-09-26
+
+Final localization handoff: incomplete. The earlier audits below are retained
+as historical evidence; they do not certify the current integrated snapshot.
+
+The preview now integrates current main's Sketch set annotation behavior and
+adds translated full messages for its new controls, performance totals and
+container-removal actions. The current source catalog contains 1,258 messages.
+English, Ukrainian, Simplified Chinese, Traditional Chinese, Japanese and
+Korean have complete fragments for this snapshot. Other catalogs are preserved
+as drafts, with their remaining work tracked by pfdc432072d9d03e4.
+
+Fresh verification under /var/tmp/dc2-localization/recovery-20260926/:
+
+- Switching journey: 201 checks, zero failures.
+- Each of uk, zh-Hans, zh-Hant, ja and ko: 313 route checks, zero failures.
+- Edge suite: 22 passed. Focused runtime/workspace/static tests: 12 passed.
+- Full Console pass: stopped at the evidence-inspector toggle being covered by
+  its open panel (verify.mjs:1856); p6eb962256c0f2445 remains open. The initial
+  capacity-field selector ambiguity was corrected to the named capacity input.
+
+English equality was reviewed rather than suppressed: Telegram and language-tag
+examples remain verbatim. CPU, SHA-256, TTL, the product name, example app slug
+and format-only templates are also intentional. The filtered content audit
+therefore reports two legitimate matches for each translated preview locale.
+
+Rendered inspection still finds unmarked English Plan subnavigation, estimate
+summaries and elaboration actions. They are application text, not translated
+user data; p31a0a4fde12e6d10 remains open. Route tests validate existing bindings,
+not completeness of text extraction. A fresh paired Product Design audit and
+the unfinished language rollout remain required before final handoff.
+
+---
+
+# Console localization language selector audit
+
+final result: passed
+
+## Source and implementation
+
+- Source visual truth: Coordinator-retained sketch `s3bb42e5e6bb75208` in batch `kb6fd7388b447ab70` (the source image was captured from the selected Product Design result); selected by the owner under `DC2-LOCALIZATION-MENU-20260923`.
+- Fresh implementation capture: `/var/tmp/dc2-localization/audit-exact-final/translated-uk-dark-1487.png`.
+- Paired comparison: `/var/tmp/dc2-localization/audit/option1-vs-implementation.png`.
+- Both are 1487 × 1058 pixels at CSS viewport 1487 × 1058 and device scale 1; no density normalization was needed.
+- State: Plan route, dark theme, selected repository, language menu open, browser preference and supported languages visible.
+
+## Step-linked audit
+
+1. **Open the language control — healthy.** The globe button remains in the header, keeps the current route visible, and has an accessible current-language name.
+2. **Browse Recent and All languages — healthy.** Search, browser-preference labeling, dual current/native names, one-to-three country flags and selected state are visible.
+3. **Use the menu at the target desktop viewport — healthy.** The anchored panel stays inside the viewport and preserves the existing Console surfaces.
+4. **Change language and preserve work — healthy.** Fresh rendered verification covers route preservation, a filled dialog draft, focus restoration, reload persistence, browser-language reset, failed-fragment fallback and narrow layout.
+
+## Findings and accepted deviations
+
+- No actionable P0, P1 or P2 finding remains in the selector journey.
+- The implementation menu is wider than the source mockup because the owner added native labels, browser-preference status and up to three flags per language. This is an intentional requirement-backed deviation.
+- The current Console uses its approved responsive hamburger shell at this viewport, while the generated source shows inline navigation. This preserves `DC2-2026-08-30-CONSOLE-NAVIGATION-SHELL` and the existing responsive navigation decision; no new navigation system was introduced.
+- The underlying Plan data differs from the illustrative mockup because the implementation renders real fixture/API data. This is expected and preserves truthful product behavior.
+
+## Required fidelity surfaces
+
+- **Typography:** existing Inter/system fallback, compact header hierarchy, native-script labels and accessible names remain readable.
+- **Spacing:** right-aligned menu, bounded viewport placement, scrollable results and compact header controls remain contained.
+- **Colors/tokens:** existing light/dark Console tokens are reused; selected rows and focus rings retain semantic contrast.
+- **Assets:** flags are locally hosted licensed SVG assets; the existing Tabler globe icon is used; no raster or CSS-drawn replacement was introduced.
+- **Copy/content:** current and native names, browser preference, fallback state and country names are product messages; repository names, task text, comments, logs and evidence remain user data.
+
+## Evidence
+
+- Fresh rendered localization verification: 201 checks, zero failures for Ukrainian at desktop, tablet and mobile themes, including modal-draft preservation.
+- Fresh rendered verification artifacts exist for the earlier locale batch, but the 2026-09-24 content review found mixed-language messages in those catalogs and withdrew them from the menu pending rewrite. Current admission is limited to Ukrainian and Czech (313 checks each, zero failures) plus English.
+- Complete Console state matrix: 1,421 checks, zero failures after making translated checks case-insensitive and adding the initial loading surface.
+- Focused locale/runtime tests: 12 tests passed; edge suite: 22 tests passed.
+- Final exact-size audit journey: 79 checks, zero failures at 1487 × 1058 after the Health merge.
+- Evidence limits: screenshots cannot prove full accessibility compliance; keyboard, persistence, error recovery and draft preservation are covered by the rendered interaction checks.
+
+## Remaining rollout
+
+English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. Montenegrin Latin/Cyrillic were withdrawn after discovering invalid donor-derived catalogs and remain drafts pending genuine authored review. The remaining locale entries are drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
+
+---
+
 # Performance page design QA
 
 final result: passed

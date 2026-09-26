@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Összetevő",
+  "summary_8e76a9": "Összefoglaló",
+  "expected_actual_2457a7": "Várt / tényleges",
+  "steps_1de3df": "Lépések",
+  "seen_8894cf": "Észlelve",
+  "correlations_f54dae": "Kapcsolatok",
+  "open_bugs_dce3d4": "Nyitott hibák",
+  "report_a_bug_f75e0b": "Hiba jelentése",
+  "report_b6ce78": "Jelentés",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Csak rövid, önálló hibajelentéseket adjon meg, titkok, nyers naplók és privát elérési utak nélkül.",
+  "close_310ff2": "lezárás",
+  "expected": "Várt eredmény",
+  "actual": "Tényleges eredmény"
+}

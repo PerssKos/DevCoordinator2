@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "工作階段圖例",
+  "scrollable_token_chart_83cb1f": "可滾動的詞元圖表",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "按工作階段統計的服務提供方報告詞元總數",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "按 UTC 時間段堆疊顯示。圖表下方列出精確數值。",
+  "no_classified_token_activity_in_this_window_f460d0": "此時間段內沒有已分類的詞元使用記錄。",
+  "work_activity_bf3178": "工作活動",
+  "total_tokens_e7601c": "詞元總數",
+  "activity_breakdown_7ebc89": "活動分佈",
+  "separate_measurements_they_are_not_added_togethe_329294": "這些測量相互獨立，不進行加總。",
+  "no_tool_outcomes_in_this_window_4f3fa4": "此時間段內沒有工具執行結果。",
+  "total_c9b3c3": "總計",
+  "exact_bucket_values_a2a7fe": "各時間段精確數值",
+  "utc_bucket_fbd8d9": "UTC 時間段",
+  "data_status_87d914": "資料狀態",
+  "repository_13d6ff": "倉庫",
+  "model_requests_888826": "模型請求",
+  "tool_calls_da5122": "工具呼叫",
+  "execution_time_1069e2": "執行時間",
+  "data_included_217858": "已納入資料",
+  "time_breakdown_ca0aca": "時間分佈",
+  "separate_not_added_together_6dbbe5": "（獨立統計，不加總）",
+  "tool_outcomes_3a7a68": "工具執行結果",
+  "data_completeness_c7114d": "資料完整性",
+  "counting_method_7a480a": "統計方法",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "服務提供方報告的詞元總數；快取輸入與推理詞元均包含在總數中。",
+  "schema_value19_taxonomy_value20_cdddf8": "資料結構版本 {value19} · 分類體系版本 {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。沒有資料或包含未測量值的環境會被排除，不會視為零。",
+  "token_subsets_unavailable_4cec86": "詞元子集無法使用。",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} 個未知區間",
+      "other": "{count} 個未知區間"
+    }
+  },
+  "about_codex_environments_4a2e3e": "關於 Codex 環境",
+  "explain_codex_usage_data_completeness_63247d": "解釋 Codex 用量資料完整性",
+  "tokens_a039df": "詞元"
+}

@@ -755,6 +755,63 @@ pub(crate) fn test_repository_source(
     None
 }
 
+/// Enumerate Console source files through bounded Git discovery as their owner.
+pub(crate) fn tracked_console_paths(root: &Path) -> Option<Vec<String>> {
+    use std::os::unix::fs::MetadataExt;
+    let owner = root.metadata().ok()?;
+    let output = run_git_arguments(
+        root,
+        Some((owner.uid(), owner.gid())),
+        &["ls-files", "-z", "--", "console"],
+        Duration::from_secs(2),
+    )
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut paths = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|value| !value.is_empty())
+        .map(|value| std::str::from_utf8(value).ok().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()?;
+    // Match the edge's fixed static MIME map; source documentation is not served.
+    paths.retain(|path| {
+        let path = Path::new(path);
+        !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext.to_ascii_lowercase().as_str(),
+                        "html"
+                            | "css"
+                            | "js"
+                            | "mjs"
+                            | "svg"
+                            | "woff2"
+                            | "png"
+                            | "ico"
+                            | "json"
+                            | "txt"
+                    )
+                })
+    });
+    if paths.is_empty()
+        || paths.len() > 4096
+        || paths.iter().any(|path| !path.starts_with("console/"))
+    {
+        return None;
+    }
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
 /// Resolve presentation independently of retained test runs, using the root's
 /// physical owner for the existing bounded, credential-free Git discovery.
 pub(crate) fn repository_source_for_root(

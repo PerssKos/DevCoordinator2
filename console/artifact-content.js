@@ -119,9 +119,7 @@ window.DevCoordinatorArtifactContent = (() => {
     else if (/^(passed|pass|success|successful|ok)$/i.test(node.value)) kind = 'success';
     else if (/^(warning|warn|skipped|pending)$/i.test(node.value)) kind = 'warning';
     element.className = `log-token log-token-${kind} artifact-value`;
-    element.textContent = node.kind === 'number'
-      ? node.value.replace(/^(-?)(\d{4,})(\.\d+)?$/, (_match, sign, whole, fraction = '') => sign + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + fraction)
-      : node.value;
+    window.DevCoordinatorI18n.bind(element, () => (node.kind === 'number' ? node.value.replace(/^(-?)(\d{4,})(\.\d+)?$/, (_match, sign, whole, fraction = '') => sign + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + fraction) : node.value));
     return element;
   }
 
@@ -212,10 +210,10 @@ window.DevCoordinatorArtifactContent = (() => {
         }
       }
       if (root) renderChildren(root.children || [root], container);
-      if (!container.childElementCount) container.textContent = 'No readable data in this file. The original is available to download.';
+      if (!container.childElementCount) window.DevCoordinatorI18n.text(container, "artifacts.no_readable_data_in_this_file_the_original_is_av_7a8394");
     } catch {
       container.classList.add('artifact-data-unavailable');
-      container.textContent = truncated ? 'Download file to read the complete data.' : 'This file could not be shown as readable data. The original is available to download.';
+      window.DevCoordinatorI18n.bind(container, () => (truncated ? window.DevCoordinatorI18n.t("artifacts.download_file_to_read_the_complete_data_6918f5") : window.DevCoordinatorI18n.t("artifacts.this_file_could_not_be_shown_as_readable_data_th_21c7d8")));
     }
     return container;
   }

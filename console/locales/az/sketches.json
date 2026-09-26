@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Bu seçim üçün hələ şərh yoxdur.",
+  "sketch_set_review_1e4713": "Eskiz toplusuna baxış",
+  "close_7d9eb7": "Bağla",
+  "selection_mode_1935ae": "Seçim rejimi",
+  "close_set_review_2680d1": "Toplu baxışını bağla",
+  "sketch_set_options_62656f": "Eskiz toplusunun seçimləri",
+  "current_option_f4a3f8": "Cari seçim",
+  "comments_355f79": "Şərhlər",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Bu seçimi və ya seçimlər toplusunu niyə etdiyinizi izah edin.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Seçimlər Saxla, Rədd et və ya Qərar verilməyib kimi saxlanılır.",
+  "sketches_a56d78": "Eskizlər",
+  "review_generated_options_by_set_then_select_one__020509": "Yaradılmış seçimləri toplu üzrə nəzərdən keçirin, sonra davam etmək üçün birini və ya bir neçəsini seçin.",
+  "publish_from_a_skill_f33a0e": "Bacarıq vasitəsilə dərc et",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Eskizlər qeydiyyatdan keçmiş bacarıq vasitəsilə dərc olunur",
+  "value2_selected_value3_options_b64a24": "{value2} seçilib · {value3} seçim",
+  "value5_sketches_value6_selected_87bdd8": "{value5} eskiz · {value6} seçilib",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rədd edilib · {value7} qərarsızdır",
+  "reviewer_d29f46": "Baxışı aparan",
+  "option_unavailable_d03e4e": "Seçim əlçatan deyil",
+  "selected_57fd7a": "Seçilmiş",
+  "rejected_aea4a0": "Rədd edilib",
+  "undecided_00cc36": "Qərar verilməyib",
+  "select_2a7802": "Seç",
+  "reject_ab604a": "Rədd et",
+  "leave_undecided_65c5c0": "Qərarsız saxla",
+  "set_6ee0eb": "toplu",
+  "sets_82c6db": "toplular",
+  "no_selection_211f6b": "Seçim yoxdur",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Seçilmiş varianta əlavə izah ver",
+      "other": "Seçilmiş variantlara əlavə izah ver"
+    }
+  },
+  "review_set_ca242c": "Toplunu nəzərdən keçir",
+  "open_sketch_3ccc5c": "Eskizi aç",
+  "single_choice_45a76a": "Tək seçim",
+  "choose_multiple_b76dc5": "Bir neçəsini seç",
+  "open_full_review_canvas_26fc95": "Tam baxış lövhəsini aç",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} toplu",
+      "other": "{count} toplu"
+    }
+  }
+}

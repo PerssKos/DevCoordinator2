@@ -34,10 +34,15 @@ decisions, and execution evidence remain in their authoritative services.
   restore model-turn polling or create another capacity/scheduling authority.
 - Section 6 follows `APP-WIDE-TWO-STAGE-DELIVERY-OVERRIDES` and
   `APP-WIDE-PROJECT-DELIVERY-DEADLINES`: performance-only work has no delivery
-  alarms; an authorized implementation target establishes its baseline; at
-  24 hours one request runs concurrently; only at 36 hours does the affected
-  scope become recovery-only. Explicit user revisions preserve actual times,
-  retire obsolete wakes, and reevaluate blocks. Targets remain independent.
+  alarms; an authorized implementation target establishes one runtime alarm;
+  at 24 hours one request runs concurrently and the agent plans a convenient
+  coherent delivery; only at 36 hours does the affected scope stop starting new
+  batches. The bounded work item already underway may be finalized, including
+  its required edits, checks and packaging, with delivery immediately after.
+  This adds no third deadline and never permits expanding the item or treating
+  every small batch as a delivery trigger. Explicit user revisions preserve
+  actual times, retire obsolete wakes, and reevaluate blocks. Targets remain
+  independent. See `APP-WIDE-DELIVERY-CADENCE-FINISH-CURRENT-20260926`.
 - Persistent clocks/wakes/admission belong to the agent runtime. Coordinator
   retains outcomes, evidence, decisions, and execution capacity. Review and
   delivery receipts remain separate. No API or scheduler backend is added here.

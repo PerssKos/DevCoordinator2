@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "Légende des phases de travail",
+  "scrollable_token_chart_83cb1f": "Graphique des jetons défilant",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Total des jetons déclaré par le fournisseur, par phase de travail",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Intervalles UTC empilés. Les valeurs exactes figurent sous les graphiques.",
+  "no_classified_token_activity_in_this_window_f460d0": "Aucune activité de jetons classée sur cette période.",
+  "work_activity_bf3178": "Activité de travail",
+  "total_tokens_e7601c": "Total des jetons",
+  "activity_breakdown_7ebc89": "Répartition par activité",
+  "separate_measurements_they_are_not_added_togethe_329294": "Mesures distinctes ; elles ne sont pas additionnées.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Aucun résultat d’outil sur cette période.",
+  "total_c9b3c3": "Total",
+  "exact_bucket_values_a2a7fe": "Valeurs exactes par intervalle",
+  "utc_bucket_fbd8d9": "Intervalle UTC",
+  "data_status_87d914": "État des données",
+  "repository_13d6ff": "Dépôt",
+  "model_requests_888826": "Requêtes au modèle",
+  "tool_calls_da5122": "Appels d’outils",
+  "execution_time_1069e2": "Temps d’exécution",
+  "data_included_217858": "Données incluses",
+  "time_breakdown_ca0aca": "Répartition du temps",
+  "separate_not_added_together_6dbbe5": "(distincts, non additionnés)",
+  "tool_outcomes_3a7a68": "Résultats des outils",
+  "data_completeness_c7114d": "Complétude des données",
+  "counting_method_7a480a": "Méthode de comptage",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Total des jetons déclaré par le fournisseur ; les entrées en cache et le raisonnement sont inclus dans ce total.",
+  "schema_value19_taxonomy_value20_cdddf8": "Schéma {value19} · classification {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Les environnements sans données et les valeurs non mesurées sont exclus plutôt que comptés comme zéro.",
+  "token_subsets_unavailable_4cec86": "Sous-ensembles de jetons indisponibles.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} intervalle inconnu",
+      "many": "{count} intervalles inconnus",
+      "other": "{count} intervalles inconnus"
+    }
+  },
+  "about_codex_environments_4a2e3e": "À propos des environnements Codex",
+  "explain_codex_usage_data_completeness_63247d": "Explication de la complétude des données d’utilisation de Codex",
+  "tokens_a039df": "Jetons"
+}

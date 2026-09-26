@@ -19,6 +19,7 @@ import {
 } from '../devcoordinator2-edge.mjs';
 import { canonicalJson } from '../lib/routes-store.mjs';
 import { startIssuer } from './fixture-issuer.mjs';
+import { createPageLocalization } from '../lib/localization.mjs';
 
 const BASE = 'example.test';
 let tmp; let issuer; let upstream; let upstreamPort; let daemonSock; let daemon; let daemonCalls = []; let edge; let port; let pendingWaitHooks; let edgeConfig;
@@ -37,10 +38,11 @@ async function publish(routes, access, generation) {
   await edge.store.reload();
 }
 
-function get(pathname, { host, cookie, method = 'GET', body } = {}) {
+function get(pathname, { host, cookie, acceptLanguage, method = 'GET', body } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, path: pathname, method,
       headers: { host: host || `console.${BASE}`, ...(cookie ? { cookie } : {}),
+        ...(acceptLanguage ? { 'accept-language': acceptLanguage } : {}),
         ...(body ? { 'content-type': 'application/json' } : {}) } }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -103,6 +105,40 @@ before(async () => {
 });
 
 after(async () => { await edge?.close(); await issuer?.close(); upstream?.closeAllConnections?.(); await new Promise((r) => upstream?.close(r)); await new Promise((r) => daemon?.close(r)); });
+
+test('sign-in pages use each enabled language, script preferences and validated locale cookies', async () => {
+  const manifest=JSON.parse(await fs.readFile(new URL('../../console/locales/manifest.json',import.meta.url),'utf8'));
+  for(const entry of manifest.locales.filter(entry=>entry.status==='enabled')) {
+    const reply=await get('/auth/login',{acceptLanguage:entry.tag});
+    const messages=Object.assign({},...await Promise.all(entry.files.auth.map(file=>fs.readFile(new URL('../../console/locales/'+file,import.meta.url),'utf8').then(JSON.parse))));
+    assert.equal(reply.status,200);
+    assert.ok(reply.body.includes(`lang="${entry.tag}"`),entry.tag);
+    assert.ok(reply.body.includes(messages.googleSignIn),entry.tag);
+  }
+  for(const [options,expected] of [
+    [{acceptLanguage:'zh-HK,uk-UA;q=0.8'},'zh-Hant'],
+    [{acceptLanguage:'zh-SG'},'zh-Hans'],
+    [{acceptLanguage:'uk-UA',cookie:'dc2-locale=ja'},'ja'],
+    [{acceptLanguage:'uk-UA',cookie:'dc2-locale=../../invalid'},'uk'],
+    [{acceptLanguage:'xx-XX'},'en'],
+  ]) assert.ok((await get('/auth/login',options)).body.includes(`lang="${expected}"`),expected);
+});
+
+test('missing edge catalog fragments preserve the selected locale and English plural grammar', async () => {
+  const catalogDir=await fs.mkdtemp(path.join(tmp,'locale-fault-'));
+  await fs.mkdir(path.join(catalogDir,'en'));
+  await fs.copyFile(new URL('../../console/locales/en/auth.json',import.meta.url),path.join(catalogDir,'en/auth.json'));
+  await fs.writeFile(path.join(catalogDir,'manifest.json'),JSON.stringify({sourceLocale:'en',locales:[
+    {tag:'en',status:'enabled',direction:'ltr',files:{auth:['en/auth.json']}},
+    {tag:'fr',status:'enabled',direction:'ltr',files:{auth:['fr/missing.json']}},
+  ]}));
+  const pages=createPageLocalization(catalogDir);
+  const request=pages.forRequest({headers:{'accept-language':'fr'}});
+  assert.equal(request.locale,'fr');
+  assert.equal(request.t('retrySeconds',{count:0}),'You can try again in about 0 seconds.');
+  assert.equal(request.t('retrySeconds',{count:1}),'You can try again in about 1 second.');
+  assert.equal(request.t('googleSignIn'),'Sign in with Google');
+});
 
 test('public route proxies without sign-in; authenticated route demands sign-in', async () => {
   await publish([

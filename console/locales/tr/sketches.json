@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Bu seçenek için henüz yorum yok.",
+  "sketch_set_review_1e4713": "Taslak kümesi incelemesi",
+  "close_7d9eb7": "Kapat",
+  "selection_mode_1935ae": "Seçim modu",
+  "close_set_review_2680d1": "Küme incelemesini kapat",
+  "sketch_set_options_62656f": "Taslak kümesindeki seçenekler",
+  "current_option_f4a3f8": "Geçerli seçenek",
+  "comments_355f79": "Yorumlar",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Bu seçeneği veya seçenek kümesini neden seçtiğinizi açıklayın.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Seçimler Koru, Reddet veya Karar verilmedi olarak kaydedilir.",
+  "sketches_a56d78": "Taslaklar",
+  "review_generated_options_by_set_then_select_one__020509": "Oluşturulan seçenekleri kümeler hâlinde inceleyin; ardından devam etmek için birini veya birkaçını seçin.",
+  "publish_from_a_skill_f33a0e": "Bir beceri üzerinden yayımla",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Taslaklar kayıtlı bir beceri tarafından yayımlanır",
+  "value2_selected_value3_options_b64a24": "{value2} seçildi · {value3} seçenek",
+  "value5_sketches_value6_selected_87bdd8": "{value5} taslak · {value6} seçildi",
+  "value6_rejected_value7_undecided_bbc778": "{value6} reddedildi · {value7} kararsız",
+  "reviewer_d29f46": "İnceleyen",
+  "option_unavailable_d03e4e": "Seçenek kullanılamıyor",
+  "selected_57fd7a": "Seçildi",
+  "rejected_aea4a0": "Reddedildi",
+  "undecided_00cc36": "Karar verilmedi",
+  "select_2a7802": "Seç",
+  "reject_ab604a": "Reddet",
+  "leave_undecided_65c5c0": "Karar vermeden bırak",
+  "set_6ee0eb": "küme",
+  "sets_82c6db": "kümeler",
+  "no_selection_211f6b": "Seçim yok",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Seçili seçeneğe bağlam ekle",
+      "other": "Seçili seçeneklere bağlam ekle"
+    }
+  },
+  "review_set_ca242c": "Kümeyi incele",
+  "open_sketch_3ccc5c": "Taslağı aç",
+  "single_choice_45a76a": "Tek seçim",
+  "choose_multiple_b76dc5": "Birden fazla seç",
+  "open_full_review_canvas_26fc95": "Tam inceleme tuvalini aç",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} küme",
+      "other": "{count} küme"
+    }
+  }
+}

@@ -643,3 +643,31 @@ END;
 CREATE TRIGGER IF NOT EXISTS deployment_recoveries_no_delete BEFORE DELETE ON deployment_recoveries BEGIN
   SELECT RAISE(ABORT, 'deployment recovery provenance is permanent');
 END;
+
+-- Schema 26: systemd-supervised external listeners adopted by the current
+-- Coordinator. These rows are server-wide runtime authority, not repository
+-- deployments; they preserve exact process/port/health identity across the
+-- post-start registration gate and controlled stops.
+CREATE TABLE IF NOT EXISTS server_definitions (
+  server_definition_id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  project TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  argv_json TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  port INTEGER NOT NULL,
+  host TEXT NOT NULL,
+  health_url TEXT NOT NULL,
+  health_timeout INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('running','stopping','stopped','failed')),
+  url_is_current INTEGER NOT NULL DEFAULT 0 CHECK(url_is_current IN (0,1)),
+  health_json TEXT NOT NULL,
+  lease_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(agent, project, name)
+);
+CREATE INDEX IF NOT EXISTS server_definitions_project_name
+  ON server_definitions(project, name);

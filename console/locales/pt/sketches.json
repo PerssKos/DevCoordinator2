@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Ainda não há comentários sobre esta opção.",
+  "sketch_set_review_1e4713": "Revisão do conjunto de esboços",
+  "close_7d9eb7": "Fechar",
+  "selection_mode_1935ae": "Modo de seleção",
+  "close_set_review_2680d1": "Fechar revisão do conjunto",
+  "sketch_set_options_62656f": "Opções do conjunto de esboços",
+  "current_option_f4a3f8": "Opção atual",
+  "comments_355f79": "Comentários",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Explique por que escolheu esta opção ou este conjunto de opções.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "As seleções são guardadas como Manter, Rejeitar ou Por decidir.",
+  "sketches_a56d78": "Esboços",
+  "review_generated_options_by_set_then_select_one__020509": "Reveja as opções geradas por conjunto e selecione uma ou mais para desenvolver.",
+  "publish_from_a_skill_f33a0e": "Publicar a partir de uma competência",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Os esboços são publicados por uma competência registada",
+  "value2_selected_value3_options_b64a24": "{value2} selecionadas · {value3} opções",
+  "value5_sketches_value6_selected_87bdd8": "{value5} esboços · {value6} selecionado",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rejeitados · {value7} por decidir",
+  "reviewer_d29f46": "Revisor",
+  "option_unavailable_d03e4e": "Opção indisponível",
+  "selected_57fd7a": "Selecionado",
+  "rejected_aea4a0": "Rejeitada",
+  "undecided_00cc36": "Por decidir",
+  "select_2a7802": "Selecionar",
+  "reject_ab604a": "Rejeitar",
+  "leave_undecided_65c5c0": "Deixar por decidir",
+  "set_6ee0eb": "conjunto",
+  "sets_82c6db": "conjuntos",
+  "no_selection_211f6b": "Nenhuma seleção",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Adicionar contexto à opção selecionada",
+      "many": "Adicionar contexto às opções selecionadas",
+      "other": "Adicionar contexto às opções selecionadas"
+    }
+  },
+  "review_set_ca242c": "Rever conjunto",
+  "open_sketch_3ccc5c": "Abrir esboço",
+  "single_choice_45a76a": "Escolha única",
+  "choose_multiple_b76dc5": "Escolher vários",
+  "open_full_review_canvas_26fc95": "Abrir o quadro de revisão completo",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} conjunto",
+      "many": "{count} conjuntos",
+      "other": "{count} conjuntos"
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponent",
+  "summary_8e76a9": "Sammanfattning",
+  "expected_actual_2457a7": "Förväntat / faktiskt",
+  "steps_1de3df": "Steg",
+  "seen_8894cf": "Observerat",
+  "correlations_f54dae": "Samband",
+  "open_bugs_dce3d4": "Öppna fel",
+  "report_a_bug_f75e0b": "Rapportera ett fel",
+  "report_b6ce78": "Rapportera",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Endast korta, självständiga poster: inga hemligheter, råloggar eller privata sökvägar.",
+  "close_310ff2": "stäng",
+  "expected": "Förväntat",
+  "actual": "Faktiskt"
+}

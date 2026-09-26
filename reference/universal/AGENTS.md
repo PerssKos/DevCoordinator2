@@ -41,12 +41,26 @@ earlier model messages or reload unchanged instructions.
   performance-only: reviews apply, delivery obligations and alarms do not.
   Only an authorized transition to implementation with a real delivery target
   starts that target's delivery baseline; earlier discussion time is excluded.
-- For delivery-eligible work, independent defaults are 24 hours to request
-  delivery concurrently and 36 hours to restrict the affected delivery scope
-  to recovery. The first deadline never blocks ordinary implementation. Honor
-  confirmed overrides; explicit postponements retain deadline revision history
-  and real timestamps and immediately reevaluate obsolete blocks. A completed
-  review and a qualified delivery are separate receipts.
+- For delivery-eligible work, set one runtime delivery alarm per target when
+  authorized implementation starts. Independent defaults are 24 hours
+  for the alarm/request and 36 hours for the hard-stop threshold. The alarm is
+  a planning signal, not a per-batch deployment command: when it fires, request
+  one delivery concurrently and plan the next convenient coherent result while
+  ordinary implementation continues. Honor confirmed overrides; explicit
+  postponements retain deadline revision history and real timestamps and
+  immediately reevaluate obsolete wakes. A completed review and a qualified
+  delivery are separate receipts. A release metadata row or healthy deployment
+  is not a qualified delivery: require a `release.deliver_evidence` receipt
+  with `qualified: true`, then record that receipt ID against the matching
+  delivery target and schedule its next alarm from the actual delivery time.
+- At or beyond the hard-stop threshold without a qualified receipt, block the
+  affected scope from starting another implementation batch. A bounded
+  work item already underway may be finalized when directly needed to make
+  that delivery usable, including its required checks, packaging and
+  publication; deliver immediately afterward. This finishing allowance keeps
+  the overdue state visible, adds no new grace-period clock, and does not
+  permit new scope or indefinite continuation. Mandatory host/tool controls
+  still apply.
 - Review continuing work daily and on deduplicated evidenced bottlenecks.
   Prioritize elapsed time to the next useful result without weakening scope,
   correctness, or required verification. Use hypothesis → options → chosen

@@ -1,0 +1,48 @@
+{
+  "no_comments_on_this_option_yet_801c78": "此方案尚无评论。",
+  "sketch_set_review_1e4713": "设计草图集审查",
+  "close_7d9eb7": "关闭",
+  "selection_mode_1935ae": "选择模式",
+  "close_set_review_2680d1": "关闭草图集审查",
+  "sketch_set_options_62656f": "草图集方案",
+  "current_option_f4a3f8": "当前方案",
+  "comments_355f79": "评论",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "说明您选择此方案或这组方案的原因。",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "选择结果保存为“保留”“拒绝”或“未决定”。",
+  "sketches_a56d78": "设计草图",
+  "review_generated_options_by_set_then_select_one__020509": "按组审查生成的方案，再选择一个或多个继续推进。",
+  "publish_from_a_skill_f33a0e": "从技能发布",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "设计草图由已注册的技能发布",
+  "value2_selected_value3_options_b64a24": "已选 {value2} 项 · 共 {value3} 个方案",
+  "value5_sketches_value6_selected_87bdd8": "{value5} 张草图 · 已选 {value6} 张",
+  "value6_rejected_value7_undecided_bbc778": "已否决 {value6} 项 · 待定 {value7} 项",
+  "reviewer_d29f46": "审查者",
+  "option_unavailable_d03e4e": "方案不可用",
+  "selected_57fd7a": "已选择",
+  "rejected_aea4a0": "已否决",
+  "undecided_00cc36": "未决定",
+  "select_2a7802": "选择",
+  "reject_ab604a": "拒绝",
+  "leave_undecided_65c5c0": "保持未决定",
+  "set_6ee0eb": "方案集",
+  "sets_82c6db": "方案集",
+  "no_selection_211f6b": "没有选择",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "other": "为所选方案添加上下文"
+    }
+  },
+  "review_set_ca242c": "审查方案集",
+  "open_sketch_3ccc5c": "打开设计草图",
+  "single_choice_45a76a": "单选",
+  "choose_multiple_b76dc5": "多选",
+  "open_full_review_canvas_26fc95": "打开完整审查画布",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} 组",
+      "other": "{count} 组"
+    }
+  }
+}

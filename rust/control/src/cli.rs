@@ -93,6 +93,7 @@ impl Cli {
             Command::Telegram { command } => command.into_invocation(),
             Command::Event { command } => command.into_invocation(),
             Command::Repository { command } => command.into_invocation(),
+            Command::Server { command } => command.into_invocation(),
             Command::Plan { command } => command.into_invocation(),
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
@@ -220,6 +221,10 @@ enum Command {
     Repository {
         #[command(subcommand)]
         command: RepositoryCommand,
+    },
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
     },
     Plan {
         #[command(subcommand)]
@@ -1034,6 +1039,54 @@ enum RepositoryCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ServerCommand {
+    Register(ServerRegisterArgs),
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    Stop(ServerStopArgs),
+}
+
+#[derive(Debug, Args)]
+struct ServerRegisterArgs {
+    #[arg(long)]
+    agent: String,
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    role: String,
+    #[arg(long)]
+    cwd: String,
+    #[arg(long)]
+    argv: String,
+    #[arg(long)]
+    pid: u32,
+    #[arg(long)]
+    port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+    #[arg(long)]
+    health_url: String,
+    #[arg(long, default_value_t = 5)]
+    health_timeout: u16,
+}
+
+#[derive(Debug, Args)]
+struct ServerStopArgs {
+    #[arg(long)]
+    agent: String,
+    #[arg(long)]
+    project: String,
+    #[arg(long)]
+    name: String,
+}
+
+#[derive(Debug, Subcommand)]
 enum PlanCommand {
     Recovery {
         #[arg(long)]
@@ -1218,11 +1271,26 @@ enum ReleaseCommand {
     Create(ReleaseCreateArgs),
     Update(ReleaseUpdateArgs),
     Request(ReleaseRequestArgs),
+    #[command(
+        name = "deliver",
+        about = "Record deployment metadata only; use deliver-evidence for a qualified delivery receipt."
+    )]
     Deliver(ReleaseDeliverArgs),
+    #[command(
+        name = "deliver-evidence",
+        about = "Create a qualified delivery receipt from retained artifact and bounded verification proof."
+    )]
     DeliverEvidence {
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "JSON request for release.deliver_evidence; it references the retained run artifact and its compact verification file."
+        )]
         file: PathBuf,
     },
+    #[command(
+        name = "evidence",
+        about = "Read one exact delivery receipt by its delivery-* receipt ID."
+    )]
     Evidence {
         reference: String,
     },
@@ -2020,6 +2088,45 @@ impl RepositoryCommand {
     }
 }
 
+impl ServerCommand {
+    fn into_invocation(self) -> Result<Invocation, CliValidationError> {
+        match self {
+            Self::Register(args) => {
+                let argv: Vec<String> = serde_json::from_str(&args.argv).map_err(|error| {
+                    invalid(format!("--argv must be a JSON string array: {error}"))
+                })?;
+                remote(
+                    "server.register",
+                    json!({
+                        "agent": args.agent,
+                        "project": args.project,
+                        "name": args.name,
+                        "role": args.role,
+                        "cwd": args.cwd,
+                        "argv": argv,
+                        "pid": args.pid,
+                        "port": args.port,
+                        "host": args.host,
+                        "health_url": args.health_url,
+                        "health_timeout": args.health_timeout,
+                    }),
+                )
+            }
+            Self::List { project, name } => {
+                remote("server.list", json!({"project": project, "name": name}))
+            }
+            Self::Stop(args) => remote(
+                "server.stop",
+                json!({
+                    "agent": args.agent,
+                    "project": args.project,
+                    "name": args.name,
+                }),
+            ),
+        }
+    }
+}
+
 impl PlanCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
@@ -2151,7 +2258,8 @@ impl ReleaseCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
             Self::DeliverEvidence { file } => {
-                remote("release.deliver_evidence", review_cli::bounded_file(&file)?)
+                let params = qualified_delivery_request(&file)?;
+                remote("release.deliver_evidence", params)
             }
             Self::Evidence { reference } => {
                 remote("release.evidence", json!({"reference":reference}))
@@ -2323,6 +2431,18 @@ where
 
 fn invalid(message: impl Into<String>) -> CliValidationError {
     CliValidationError::Invalid(message.into())
+}
+
+fn qualified_delivery_request(file: &PathBuf) -> Result<Value, CliValidationError> {
+    let params = review_cli::bounded_file(file)?;
+    serde_json::from_value::<devcoordinator2_api::delivery::Deliver>(params.clone()).map_err(
+        |error| {
+            invalid(format!(
+                "invalid release.deliver_evidence request: {error}; required fields are release_id, path, run_id, check, artifact, manifest_sha256, source_sha256, target, kind, and optional verification_file"
+            ))
+        },
+    )?;
+    Ok(params)
 }
 
 fn remote(operation_name: &'static str, params: Value) -> Result<Invocation, CliValidationError> {
@@ -2874,6 +2994,55 @@ mod tests {
             (&["test", "capacity", "show"], "test.capacity.get"),
             (&["test", "capacity", "set", "8"], "test.capacity.set"),
             (&["test", "capacity", "clear"], "test.capacity.set"),
+            (
+                &[
+                    "server",
+                    "register",
+                    "--agent",
+                    "systemd-agent",
+                    "--project",
+                    "/tmp/repo",
+                    "--name",
+                    "production-web",
+                    "--role",
+                    "gateway",
+                    "--cwd",
+                    "/tmp/repo",
+                    "--argv",
+                    "[\"npm\",\"start\"]",
+                    "--pid",
+                    "42",
+                    "--port",
+                    "3001",
+                    "--health-url",
+                    "http://127.0.0.1:3001/healthz",
+                ],
+                "server.register",
+            ),
+            (
+                &[
+                    "server",
+                    "list",
+                    "--project",
+                    "/tmp/repo",
+                    "--name",
+                    "production-web",
+                ],
+                "server.list",
+            ),
+            (
+                &[
+                    "server",
+                    "stop",
+                    "--agent",
+                    "systemd-agent",
+                    "--project",
+                    "/tmp/repo",
+                    "--name",
+                    "production-web",
+                ],
+                "server.stop",
+            ),
             (&["deployment", "list"], "deployment.list"),
             (
                 &["deployment", "apply", "/tmp/repo", "--name", "web"],
@@ -3321,6 +3490,23 @@ mod tests {
         assert_eq!(event_wait["cursor"], 9);
         assert_eq!(event_wait["filters"].as_array().unwrap().len(), 2);
         assert_eq!(event_wait["limit"], 25);
+    }
+
+    #[test]
+    fn qualified_delivery_cli_explains_the_request_shape_before_remote_submission() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), br#"{"release_id":"release-only"}"#).unwrap();
+        let error = invocation(&[
+            "release",
+            "deliver-evidence",
+            "--file",
+            file.path().to_str().unwrap(),
+        ])
+        .expect_err("incomplete delivery request should fail locally");
+        let message = error.to_string();
+        assert!(message.contains("invalid release.deliver_evidence request"));
+        assert!(message.contains("manifest_sha256"));
+        assert!(message.contains("verification_file"));
     }
 
     #[test]

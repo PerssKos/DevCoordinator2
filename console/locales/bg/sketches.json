@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Все още няма коментари за този вариант.",
+  "sketch_set_review_1e4713": "Преглед на набор от скици",
+  "close_7d9eb7": "Затвори",
+  "selection_mode_1935ae": "Режим на избор",
+  "close_set_review_2680d1": "Затвори прегледа на набора",
+  "sketch_set_options_62656f": "Варианти в набора от скици",
+  "current_option_f4a3f8": "Текущ вариант",
+  "comments_355f79": "Коментари",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Обяснете защо избрахте този вариант или набор от варианти.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Изборите се запазват като „Запази“, „Отхвърли“ или „Без решение“.",
+  "sketches_a56d78": "Скици",
+  "review_generated_options_by_set_then_select_one__020509": "Прегледайте генерираните варианти по набори, след което изберете един или няколко за продължаване.",
+  "publish_from_a_skill_f33a0e": "Публикувай чрез умение",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Скиците се публикуват чрез регистрирано умение",
+  "value2_selected_value3_options_b64a24": "{value2} избрани · {value3} варианта",
+  "value5_sketches_value6_selected_87bdd8": "{value5} скици · {value6} избрани",
+  "value6_rejected_value7_undecided_bbc778": "{value6} отхвърлени · {value7} без решение",
+  "reviewer_d29f46": "Преглеждащ",
+  "option_unavailable_d03e4e": "Вариантът не е наличен",
+  "selected_57fd7a": "Избрано",
+  "rejected_aea4a0": "Отхвърлено",
+  "undecided_00cc36": "Без решение",
+  "select_2a7802": "Избери",
+  "reject_ab604a": "Отхвърли",
+  "leave_undecided_65c5c0": "Остави без решение",
+  "set_6ee0eb": "набор",
+  "sets_82c6db": "набори",
+  "no_selection_211f6b": "Няма избор",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Добави контекст към избрания вариант",
+      "other": "Добави контекст към избраните варианти"
+    }
+  },
+  "review_set_ca242c": "Прегледай набора",
+  "open_sketch_3ccc5c": "Отвори скицата",
+  "single_choice_45a76a": "Един избор",
+  "choose_multiple_b76dc5": "Избери няколко",
+  "open_full_review_canvas_26fc95": "Отвори цялото платно за преглед",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} набор",
+      "other": "{count} набора"
+    }
+  }
+}

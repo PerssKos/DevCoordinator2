@@ -8,6 +8,7 @@ pub enum Kind {
     RegistryPackage,
     LocalExecutable,
     WebDeployment,
+    NativeConsole,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -90,6 +91,17 @@ pub struct Verification {
     pub observation: VerificationObservation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<WebDeploymentVerification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_console: Option<NativeConsoleVerification>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeConsoleVerification {
+    pub daemon_source_commit: String,
+    pub assets_sha256: String,
+    pub http_status: u16,
+    pub content_type: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

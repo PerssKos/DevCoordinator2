@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Nog geen reacties op deze optie.",
+  "sketch_set_review_1e4713": "Schetsenset beoordelen",
+  "close_7d9eb7": "Sluiten",
+  "selection_mode_1935ae": "Selectiemodus",
+  "close_set_review_2680d1": "Setbeoordeling sluiten",
+  "sketch_set_options_62656f": "Opties in schetsenset",
+  "current_option_f4a3f8": "Huidige optie",
+  "comments_355f79": "Reacties",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Leg uit waarom u deze optie of combinatie hebt gekozen.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Selecties worden opgeslagen als Behouden, Afwijzen of Onbeslist.",
+  "sketches_a56d78": "Schetsen",
+  "review_generated_options_by_set_then_select_one__020509": "Beoordeel de gegenereerde opties per set en selecteer er een of meer om verder uit te werken.",
+  "publish_from_a_skill_f33a0e": "Publiceren vanuit een vaardigheid",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Schetsen worden gepubliceerd door een geregistreerde vaardigheid",
+  "value2_selected_value3_options_b64a24": "{value2} geselecteerd · {value3} opties",
+  "value5_sketches_value6_selected_87bdd8": "{value5} schetsen · {value6} geselecteerd",
+  "value6_rejected_value7_undecided_bbc778": "{value6} afgewezen · {value7} onbeslist",
+  "reviewer_d29f46": "Beoordelaar",
+  "option_unavailable_d03e4e": "Optie niet beschikbaar",
+  "selected_57fd7a": "Geselecteerd",
+  "rejected_aea4a0": "Afwijzened",
+  "undecided_00cc36": "Onbeslist",
+  "select_2a7802": "Selecteren",
+  "reject_ab604a": "Afwijzen",
+  "leave_undecided_65c5c0": "Onbeslist laten",
+  "set_6ee0eb": "set",
+  "sets_82c6db": "sets",
+  "no_selection_211f6b": "Niets geselecteerd",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Context toevoegen aan de geselecteerde optie",
+      "other": "Context toevoegen aan de geselecteerde opties"
+    }
+  },
+  "review_set_ca242c": "Set beoordelen",
+  "open_sketch_3ccc5c": "Schets openen",
+  "single_choice_45a76a": "Enkele keuze",
+  "choose_multiple_b76dc5": "Meerdere kiezen",
+  "open_full_review_canvas_26fc95": "Volledig reviewcanvas openen",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} set",
+      "other": "{count} sets"
+    }
+  }
+}

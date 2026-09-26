@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Noch keine Kommentare zu dieser Variante.",
+  "sketch_set_review_1e4713": "Entwurfsgruppe prüfen",
+  "close_7d9eb7": "Schließen",
+  "selection_mode_1935ae": "Auswahlmodus",
+  "close_set_review_2680d1": "Gruppenprüfung schließen",
+  "sketch_set_options_62656f": "Varianten der Entwurfsgruppe",
+  "current_option_f4a3f8": "Aktuelle Variante",
+  "comments_355f79": "Kommentare",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Begründen Sie, warum Sie diese Variante oder diese Kombination gewählt haben.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Die Auswahl wird als Beibehalten, Ablehnen oder Unentschieden gespeichert.",
+  "sketches_a56d78": "Entwürfe",
+  "review_generated_options_by_set_then_select_one__020509": "Prüfen Sie erzeugte Varianten gruppenweise und wählen Sie eine oder mehrere zur Weiterbearbeitung aus.",
+  "publish_from_a_skill_f33a0e": "Über einen Skill veröffentlichen",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Entwürfe werden von einem registrierten Skill veröffentlicht",
+  "value2_selected_value3_options_b64a24": "{value2} ausgewählt · {value3} Varianten",
+  "value5_sketches_value6_selected_87bdd8": "{value5} Entwürfe · {value6} ausgewählt",
+  "value6_rejected_value7_undecided_bbc778": "{value6} abgelehnt · {value7} unentschieden",
+  "reviewer_d29f46": "Prüfer",
+  "option_unavailable_d03e4e": "Variante nicht verfügbar",
+  "selected_57fd7a": "Ausgewählt",
+  "rejected_aea4a0": "Ablehnened",
+  "undecided_00cc36": "Unentschieden",
+  "select_2a7802": "Auswählen",
+  "reject_ab604a": "Ablehnen",
+  "leave_undecided_65c5c0": "Unentschieden lassen",
+  "set_6ee0eb": "Set",
+  "sets_82c6db": "Sets",
+  "no_selection_211f6b": "Keine Auswahl",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Kontext zur ausgewählten Variante hinzufügen",
+      "other": "Kontext zu den ausgewählten Varianten hinzufügen"
+    }
+  },
+  "review_set_ca242c": "Gruppe prüfen",
+  "open_sketch_3ccc5c": "Entwurf öffnen",
+  "single_choice_45a76a": "Einzelauswahl",
+  "choose_multiple_b76dc5": "Mehrfachauswahl",
+  "open_full_review_canvas_26fc95": "Vollständige Prüfoberfläche öffnen",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} Set",
+      "other": "{count} Sets"
+    }
+  }
+}

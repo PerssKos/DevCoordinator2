@@ -6,6 +6,8 @@ use serde_json::json;
 
 const RUN: &str = "t20260903T120718Z-57067c";
 const FINISHED: u64 = START + WEEK + 86_400_000;
+const NATIVE_HTML: &[u8] =
+    b"<!doctype html><html><title>Console</title><main>Native Console</main></html>";
 
 #[path = "delivery_web_tests.rs"]
 mod web;
@@ -25,8 +27,34 @@ struct World {
 }
 
 impl World {
-    fn new(kind: Kind, proof: Option<Verification>) -> Self {
+    fn new(kind: Kind, mut proof: Option<Verification>) -> Self {
         let fixture = Fixture::new();
+        let native = kind == Kind::NativeConsole;
+        let source = if native {
+            std::fs::create_dir(fixture.repository.join("console")).unwrap();
+            std::fs::write(fixture.repository.join("console/index.html"), NATIVE_HTML).unwrap();
+            for arguments in [vec!["init", "--quiet"], vec!["add", "console/index.html"]] {
+                assert!(
+                    std::process::Command::new("git")
+                        .current_dir(&fixture.repository)
+                        .args(arguments)
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+            }
+            devcoordinator2_executor_core::source_digest(&fixture.repository).unwrap()
+        } else {
+            "a".repeat(64)
+        };
+        if native && let Some(proof) = proof.as_mut() {
+            proof.source_sha256 = source.clone();
+            if let Some(native) = proof.native_console.as_mut()
+                && native.assets_sha256.is_empty()
+            {
+                native.assets_sha256 = console_assets_digest(&fixture.repository).unwrap();
+            }
+        }
         fixture.database.call(|connection| {
             connection.execute_batch("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,created_at,created_by,updated_at) VALUES('release-alpha','project-alpha',1,'First CLI','preview','planned','1970-01-01T00:16:40Z','fixture','1970-01-01T00:16:40Z');")?;
             Ok(())
@@ -38,7 +66,14 @@ impl World {
         let evidence = root.join("checks/build/check/evidence");
         let retained = evidence.join("retained/package");
         std::fs::create_dir_all(&retained).unwrap();
-        let mut files = vec![("cli".to_owned(), b"fixture executable bytes".to_vec())];
+        let mut files = vec![(
+            "cli".to_owned(),
+            if native {
+                NATIVE_HTML.to_vec()
+            } else {
+                b"fixture executable bytes".to_vec()
+            },
+        )];
         if let Some(proof) = proof {
             files.push(("delivery.json".into(), serde_json::to_vec(&proof).unwrap()));
         }
@@ -63,12 +98,12 @@ impl World {
             .collect::<String>();
         let manifest = serde_json::to_vec(&json!({
             "schema":1,"kind":"devcoordinator2-retained-artifact-trees","run_id":RUN,"test":"cli-release","check":"build",
-            "requested_tier":"development","readiness_eligible":false,"proof":"selected","source_sha256":"a".repeat(64),"config_sha256":"b".repeat(64),
+            "requested_tier":"development","readiness_eligible":false,"proof":"selected","source_sha256":source,"config_sha256":"b".repeat(64),
             "artifacts":[{"name":"package","size":files.iter().map(|(_,bytes)|bytes.len()).sum::<usize>(),"files":files.len(),"sha256":tree,"entries":entries}]
         })).unwrap();
         std::fs::write(evidence.join("retained-artifacts.json"), &manifest).unwrap();
         std::fs::write(root.join("run.json"), serde_json::to_vec(&json!({"schema":2,"run_id":RUN,"test":"cli-release","started_at_epoch_ms":FINISHED-1000,"finished_at_epoch_ms":FINISHED,"status":"passed","complete":true})).unwrap()).unwrap();
-        let service = DeliveryService::new(
+        let mut service = DeliveryService::new(
             fixture.database.clone(),
             TestArtifactService::new(
                 fixture.database.clone(),
@@ -76,6 +111,9 @@ impl World {
             ),
             fixture.config.base_domain.clone(),
         );
+        if native {
+            service = service.with_native_console(fixture.repository.clone(), "c".repeat(40));
+        }
         let params = Deliver {
             release_id: "release-alpha".into(),
             path: fixture.repository.to_string_lossy().into_owned(),
@@ -83,7 +121,7 @@ impl World {
             check: "build".into(),
             artifact: "package".into(),
             manifest_sha256: digest(&manifest),
-            source_sha256: "a".repeat(64),
+            source_sha256: source,
             target: "linux-cli".into(),
             kind,
             verification_file: (files.len() > 1).then(|| "delivery.json".into()),
@@ -150,18 +188,32 @@ fn proof(kind: Kind) -> Verification {
             "http://127.0.0.1:24002/airfoils/ag24".into(),
             VerificationObservation::WebRoutePassed,
         ),
+        Kind::NativeConsole => (
+            "https://console.example.test/".into(),
+            VerificationObservation::WebRoutePassed,
+        ),
     };
     Verification {
         version: 1,
-        kind,
+        kind: kind.clone(),
         target: "linux-cli".into(),
         source_sha256: "a".repeat(64),
         file: "cli".into(),
-        observed_sha256: digest(b"fixture executable bytes"),
+        observed_sha256: digest(if kind == Kind::NativeConsole {
+            NATIVE_HTML
+        } else {
+            b"fixture executable bytes"
+        }),
         checked_at_ms: FINISHED - 100,
         access,
         observation,
         deployment,
+        native_console: (kind == Kind::NativeConsole).then(|| NativeConsoleVerification {
+            daemon_source_commit: "c".repeat(40),
+            assets_sha256: String::new(),
+            http_status: 200,
+            content_type: "text/html; charset=utf-8".into(),
+        }),
     }
 }
 

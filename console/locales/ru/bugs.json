@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Компонент",
+  "summary_8e76a9": "Краткое описание",
+  "expected_actual_2457a7": "Ожидаемое / фактическое",
+  "steps_1de3df": "Шаги",
+  "seen_8894cf": "Замечено",
+  "correlations_f54dae": "Связи",
+  "open_bugs_dce3d4": "Открытые ошибки",
+  "report_a_bug_f75e0b": "Сообщить об ошибке",
+  "report_b6ce78": "Отправить",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Только краткие самостоятельные записи: без секретов, необработанных журналов и закрытых путей.",
+  "close_310ff2": "закрыть",
+  "expected": "Ожидаемое",
+  "actual": "Фактическое"
+}

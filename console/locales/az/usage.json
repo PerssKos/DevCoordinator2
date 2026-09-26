@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "İş mərhələlərinin izahı",
+  "scrollable_token_chart_83cb1f": "Sürüşdürülə bilən token qrafiki",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "İş mərhələsinə görə provayderin bildirdiyi ümumi tokenlər",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Yığılmış UTC vaxt qrupları. Dəqiq dəyərlər qrafiklərdən sonra göstərilir.",
+  "no_classified_token_activity_in_this_window_f460d0": "Bu pəncərədə təsnif edilmiş token fəaliyyəti yoxdur.",
+  "work_activity_bf3178": "İş fəaliyyəti",
+  "total_tokens_e7601c": "Ümumi tokenlər",
+  "activity_breakdown_7ebc89": "Fəaliyyət bölgüsü",
+  "separate_measurements_they_are_not_added_togethe_329294": "Ayrı ölçmələrdir; bir-birinə əlavə edilmir.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Bu pəncərədə alət nəticəsi yoxdur.",
+  "total_c9b3c3": "Cəmi",
+  "exact_bucket_values_a2a7fe": "Qrup dəyərlərinin dəqiqi",
+  "utc_bucket_fbd8d9": "UTC qrupu",
+  "data_status_87d914": "Məlumat vəziyyəti",
+  "repository_13d6ff": "Repo",
+  "model_requests_888826": "Model sorğuları",
+  "tool_calls_da5122": "Alət çağırışları",
+  "execution_time_1069e2": "İcra müddəti",
+  "data_included_217858": "Daxil edilən məlumatlar",
+  "time_breakdown_ca0aca": "Vaxt bölgüsü",
+  "separate_not_added_together_6dbbe5": "(ayrıdır, toplanmır)",
+  "tool_outcomes_3a7a68": "Alət nəticələri",
+  "data_completeness_c7114d": "Məlumat tamlığı",
+  "counting_method_7a480a": "Sayma üsulu",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Provayderin bildirdiyi ümumi token sayı; keşlənmiş giriş və mühakimə tokenləri bu cəmin alt çoxluqlarıdır.",
+  "schema_value19_taxonomy_value20_cdddf8": "Sxem {value19} · taksonomiya {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Məlumat verməyən mühitlər və ölçülməmiş dəyərlər xaric edilir, sıfır kimi qəbul olunmur.",
+  "token_subsets_unavailable_4cec86": "Token alt dəstləri əlçatan deyil",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} naməlum interval",
+      "other": "{count} naməlum interval",
+      "many": "{count} naməlum interval"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Codex mühitləri haqqında",
+  "explain_codex_usage_data_completeness_63247d": "Codex istifadə məlumatlarının tamlığını izah et",
+  "tokens_a039df": "Tokenlər"
+}

@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Ehhez a lehetőséghez még nincs megjegyzés.",
+  "sketch_set_review_1e4713": "Vázlatkészlet áttekintése",
+  "close_7d9eb7": "Bezárás",
+  "selection_mode_1935ae": "Kiválasztási mód",
+  "close_set_review_2680d1": "Készlet áttekintésének bezárása",
+  "sketch_set_options_62656f": "Vázlatkészlet lehetőségei",
+  "current_option_f4a3f8": "Jelenlegi lehetőség",
+  "comments_355f79": "Megjegyzések",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Indokolja meg, miért ezt a lehetőséget vagy lehetőségkészletet választotta.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "A kiválasztások Megtartás, Elutasítás vagy Eldöntetlen állapotként menthetők.",
+  "sketches_a56d78": "Vázlatok",
+  "review_generated_options_by_set_then_select_one__020509": "Tekintse át a létrehozott lehetőségeket készletenként, majd válasszon egyet vagy többet a folytatáshoz.",
+  "publish_from_a_skill_f33a0e": "Közzététel készségből",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "A vázlatokat regisztrált készség teszi közzé",
+  "value2_selected_value3_options_b64a24": "{value2} kiválasztva · {value3} lehetőség",
+  "value5_sketches_value6_selected_87bdd8": "{value5} vázlat · {value6} kiválasztva",
+  "value6_rejected_value7_undecided_bbc778": "{value6} elutasítva · {value7} nem eldöntött",
+  "reviewer_d29f46": "Ellenőrző",
+  "option_unavailable_d03e4e": "A lehetőség nem érhető el",
+  "selected_57fd7a": "Kiválasztva",
+  "rejected_aea4a0": "Elutasítva",
+  "undecided_00cc36": "Nem eldöntött",
+  "select_2a7802": "Kiválasztás",
+  "reject_ab604a": "Elutasítás",
+  "leave_undecided_65c5c0": "Nyitva hagyás",
+  "set_6ee0eb": "készlet",
+  "sets_82c6db": "készletek",
+  "no_selection_211f6b": "Nincs kiválasztás",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Adjon környezetet a kiválasztott lehetőséghez",
+      "other": "Adjon környezetet a kiválasztott lehetőségekhez"
+    }
+  },
+  "review_set_ca242c": "Készlet ellenőrzése",
+  "open_sketch_3ccc5c": "Vázlat megnyitása",
+  "single_choice_45a76a": "Egyetlen választás",
+  "choose_multiple_b76dc5": "Több választás",
+  "open_full_review_canvas_26fc95": "Teljes ellenőrzővászon megnyitása",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} készlet",
+      "other": "{count} készlet"
+    }
+  }
+}

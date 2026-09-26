@@ -1,0 +1,55 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Níl aon nótaí tráchta ar an rogha seo fós.",
+  "sketch_set_review_1e4713": "Athbhreithniú tacair sceitse",
+  "close_7d9eb7": "Dún",
+  "selection_mode_1935ae": "Mód roghnaithe",
+  "close_set_review_2680d1": "Dún athbhreithniú tacair",
+  "sketch_set_options_62656f": "Roghanna tacair sceitse",
+  "current_option_f4a3f8": "Rogha reatha",
+  "comments_355f79": "Nótaí tráchta",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Mínigh cén fáth ar roghnaigh tú an rogha nó an tacar roghanna seo.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "roghanna sábháil as coinnigh, diúltaigh, nó gan cinneadh.",
+  "sketches_a56d78": "sceitsí",
+  "review_generated_options_by_set_then_select_one__020509": "Déan athbhreithniú ar na roghanna ginte de réir tacair, ansin roghnaigh ceann amháin nó níos mó le tabhairt ar aghaidh.",
+  "publish_from_a_skill_f33a0e": "foilsigh ó a scil",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "sceitsí tá foilsithe ag a cláraithe scil",
+  "value2_selected_value3_options_b64a24": "{value2} roghnaithe · {value3} roghanna",
+  "value5_sketches_value6_selected_87bdd8": "{value5} sceitsí · {value6} roghnaithe",
+  "value6_rejected_value7_undecided_bbc778": "{value6} diúltaithe · {value7} gan cinneadh",
+  "reviewer_d29f46": "athbhreithneoir",
+  "option_unavailable_d03e4e": "rogha nach bhfuil ar fáil",
+  "selected_57fd7a": "roghnaithe",
+  "rejected_aea4a0": "diúltaithe",
+  "undecided_00cc36": "gan cinneadh",
+  "select_2a7802": "roghnaigh",
+  "reject_ab604a": "diúltaigh",
+  "leave_undecided_65c5c0": "fág gan cinneadh",
+  "set_6ee0eb": "tacar",
+  "sets_82c6db": "tacair",
+  "no_selection_211f6b": "níl rogha",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "cuir comhthéacs chuig an roghnaithe rogha",
+      "other": "cuir comhthéacs chuig an roghnaithe roghanna",
+      "few": "Add context to the selected options",
+      "many": "Add context to the selected options",
+      "two": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "athbhreithniú tacar",
+  "open_sketch_3ccc5c": "oscail sceitse",
+  "single_choice_45a76a": "aonair rogha",
+  "choose_multiple_b76dc5": "roghnaigh iolrach",
+  "open_full_review_canvas_26fc95": "oscail iomlán athbhreithniú canbhás",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} tacar",
+      "other": "{count} tacair",
+      "few": "{count} sets",
+      "many": "{count} sets",
+      "two": "{count} sets"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "K této variantě zatím nejsou komentáře.",
+  "sketch_set_review_1e4713": "Posouzení sady náčrtů",
+  "close_7d9eb7": "Zavřít",
+  "selection_mode_1935ae": "Režim výběru",
+  "close_set_review_2680d1": "Zavřít posouzení sady",
+  "sketch_set_options_62656f": "Varianty sady náčrtů",
+  "current_option_f4a3f8": "Aktuální varianta",
+  "comments_355f79": "Komentáře",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Vysvětlete, proč jste vybrali tuto variantu nebo kombinaci variant.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Výběry se ukládají jako Ponechat, Odmítnout nebo Nerozhodnuto.",
+  "sketches_a56d78": "Náčrty",
+  "review_generated_options_by_set_then_select_one__020509": "Prohlédněte si vytvořené varianty po sadách a vyberte jednu či více pro další práci.",
+  "publish_from_a_skill_f33a0e": "Publikovat z dovednosti",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Náčrty publikuje registrovaná dovednost",
+  "value2_selected_value3_options_b64a24": "Vybráno: {value2} · variant: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "Náčrtů: {value5} · vybráno: {value6}",
+  "value6_rejected_value7_undecided_bbc778": "Odmítnuto: {value6} · nerozhodnuto: {value7}",
+  "reviewer_d29f46": "Posuzovatel",
+  "option_unavailable_d03e4e": "Varianta není dostupná",
+  "selected_57fd7a": "Vybráno",
+  "rejected_aea4a0": "Odmítnuto",
+  "undecided_00cc36": "Nerozhodnuto",
+  "select_2a7802": "Vybrat",
+  "reject_ab604a": "Odmítnout",
+  "leave_undecided_65c5c0": "Ponechat nerozhodnuté",
+  "set_6ee0eb": "sada",
+  "sets_82c6db": "sady",
+  "no_selection_211f6b": "Žádný výběr",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Doplnit kontext k vybrané variantě",
+      "few": "Doplnit kontext k vybraným variantám",
+      "many": "Doplnit kontext k vybraným variantám",
+      "other": "Doplnit kontext k vybraným variantám"
+    }
+  },
+  "review_set_ca242c": "Posoudit sadu",
+  "open_sketch_3ccc5c": "Otevřít náčrt",
+  "single_choice_45a76a": "Výběr jedné varianty",
+  "choose_multiple_b76dc5": "Výběr více variant",
+  "open_full_review_canvas_26fc95": "Otevřít celou plochu pro posouzení",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} sada",
+      "few": "{count} sady",
+      "many": "{count} sady",
+      "other": "{count} sad"
+    }
+  }
+}

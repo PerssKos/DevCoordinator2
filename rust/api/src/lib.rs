@@ -21,7 +21,7 @@ pub mod runtime_recovery;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 25;
+pub const DATABASE_SCHEMA_VERSION: u32 = 26;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -718,6 +718,33 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::Repository
     ),
     operation!(
+        "server.register",
+        "Adopt one systemd-supervised local listener into the server inventory.",
+        IDEMPOTENT_APPEND_SERVER_ADMIN,
+        Protocol["server register"],
+        [],
+        params::ServerRegister,
+        results::ServerRow
+    ),
+    operation!(
+        "server.list",
+        "List exact systemd-supervised local listener registrations.",
+        READ_SERVER_ADMIN,
+        Protocol["server list"],
+        [],
+        params::ServerList,
+        results::ServerList
+    ),
+    operation!(
+        "server.stop",
+        "Mark one systemd-supervised listener registration as stopping.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["server stop"],
+        [],
+        params::ServerStop,
+        results::ServerRow
+    ),
+    operation!(
         "test.start",
         "Start or supersede one governed validation run.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
@@ -1331,7 +1358,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "release.deliver",
-        "Attach real delivery evidence to a release.",
+        "Record deployment metadata for a release; this does not create a qualified delivery receipt or satisfy a delivery clock.",
         APPEND_REPOSITORY_ADMIN,
         Protocol["release deliver"],
         ["release_deliver"],
@@ -1421,7 +1448,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "release.deliver_evidence",
-        "Attach retained delivery proof or explicitly pending external evidence.",
+        "Create a server-derived delivery receipt from retained artifact proof; use a qualified receipt ID for the delivery clock.",
         APPEND_REPOSITORY_ADMIN,
         Protocol["release deliver-evidence"],
         ["release_deliver_evidence"],
@@ -1956,9 +1983,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 117);
+        assert_eq!(OPERATIONS.len(), 120);
         assert_eq!(tools.len(), 94);
-        assert_eq!(cli_routes.len(), 93);
+        assert_eq!(cli_routes.len(), 96);
     }
 
     #[test]

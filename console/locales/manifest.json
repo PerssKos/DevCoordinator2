@@ -1,0 +1,3026 @@
+{
+  "version": 1,
+  "sourceLocale": "en",
+  "namespaces": [
+    "common",
+    "shell",
+    "auth",
+    "deployments",
+    "tests",
+    "evidence",
+    "sketches",
+    "health",
+    "usage",
+    "progress",
+    "bugs",
+    "admin",
+    "plan",
+    "decisions",
+    "glossary",
+    "artifacts",
+    "performance"
+  ],
+  "locales": [
+    {
+      "tag": "en",
+      "nativeName": "English",
+      "englishName": "English",
+      "countries": [
+        "GB",
+        "US",
+        "CA"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "en/common.json"
+        ],
+        "shell": [
+          "en/shell.json"
+        ],
+        "auth": [
+          "en/auth.json"
+        ],
+        "deployments": [
+          "en/deployments.json"
+        ],
+        "tests": [
+          "en/tests.json"
+        ],
+        "evidence": [
+          "en/evidence.json"
+        ],
+        "sketches": [
+          "en/sketches.json"
+        ],
+        "health": [
+          "en/health.json"
+        ],
+        "usage": [
+          "en/usage.json"
+        ],
+        "progress": [
+          "en/progress.json"
+        ],
+        "bugs": [
+          "en/bugs.json"
+        ],
+        "admin": [
+          "en/admin.json"
+        ],
+        "plan": [
+          "en/plan.json"
+        ],
+        "decisions": [
+          "en/decisions.json"
+        ],
+        "glossary": [
+          "en/glossary.json"
+        ],
+        "artifacts": [
+          "en/artifacts.json"
+        ],
+        "performance": [
+          "en/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sq",
+      "nativeName": "Shqip",
+      "englishName": "Albanian",
+      "countries": [
+        "AL",
+        "MK",
+        "ME"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sq/common.json"
+        ],
+        "shell": [
+          "sq/shell.json"
+        ],
+        "auth": [
+          "sq/auth.json"
+        ],
+        "deployments": [
+          "sq/deployments.json"
+        ],
+        "tests": [
+          "sq/tests.json"
+        ],
+        "evidence": [
+          "sq/evidence.json"
+        ],
+        "sketches": [
+          "sq/sketches.json"
+        ],
+        "health": [
+          "sq/health.json"
+        ],
+        "usage": [
+          "sq/usage.json"
+        ],
+        "progress": [
+          "sq/progress.json"
+        ],
+        "bugs": [
+          "sq/bugs.json"
+        ],
+        "admin": [
+          "sq/admin.json"
+        ],
+        "plan": [
+          "sq/plan.json"
+        ],
+        "decisions": [
+          "sq/decisions.json"
+        ],
+        "glossary": [
+          "sq/glossary.json"
+        ],
+        "artifacts": [
+          "sq/artifacts.json"
+        ],
+        "performance": [
+          "sq/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ca",
+      "nativeName": "Català",
+      "englishName": "Catalan",
+      "countries": [
+        "AD",
+        "ES",
+        "FR"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ca/common.json"
+        ],
+        "shell": [
+          "ca/shell.json"
+        ],
+        "auth": [
+          "ca/auth.json"
+        ],
+        "deployments": [
+          "ca/deployments.json"
+        ],
+        "tests": [
+          "ca/tests.json"
+        ],
+        "evidence": [
+          "ca/evidence.json"
+        ],
+        "sketches": [
+          "ca/sketches.json"
+        ],
+        "health": [
+          "ca/health.json"
+        ],
+        "usage": [
+          "ca/usage.json"
+        ],
+        "progress": [
+          "ca/progress.json"
+        ],
+        "bugs": [
+          "ca/bugs.json"
+        ],
+        "admin": [
+          "ca/admin.json"
+        ],
+        "plan": [
+          "ca/plan.json"
+        ],
+        "decisions": [
+          "ca/decisions.json"
+        ],
+        "glossary": [
+          "ca/glossary.json"
+        ],
+        "artifacts": [
+          "ca/artifacts.json"
+        ],
+        "performance": [
+          "ca/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "hy",
+      "nativeName": "Հայերեն",
+      "englishName": "Armenian",
+      "countries": [
+        "AM"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "hy/common.json"
+        ],
+        "shell": [
+          "hy/shell.json"
+        ],
+        "auth": [
+          "hy/auth.json"
+        ],
+        "deployments": [
+          "hy/deployments.json"
+        ],
+        "tests": [
+          "hy/tests.json"
+        ],
+        "evidence": [
+          "hy/evidence.json"
+        ],
+        "sketches": [
+          "hy/sketches.json"
+        ],
+        "health": [
+          "hy/health.json"
+        ],
+        "usage": [
+          "hy/usage.json"
+        ],
+        "progress": [
+          "hy/progress.json"
+        ],
+        "bugs": [
+          "hy/bugs.json"
+        ],
+        "admin": [
+          "hy/admin.json"
+        ],
+        "plan": [
+          "hy/plan.json"
+        ],
+        "decisions": [
+          "hy/decisions.json"
+        ],
+        "glossary": [
+          "hy/glossary.json"
+        ],
+        "artifacts": [
+          "hy/artifacts.json"
+        ],
+        "performance": [
+          "hy/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "az",
+      "nativeName": "Azərbaycanca",
+      "englishName": "Azerbaijani",
+      "countries": [
+        "AZ"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "az/common.json"
+        ],
+        "shell": [
+          "az/shell.json"
+        ],
+        "auth": [
+          "az/auth.json"
+        ],
+        "deployments": [
+          "az/deployments.json"
+        ],
+        "tests": [
+          "az/tests.json"
+        ],
+        "evidence": [
+          "az/evidence.json"
+        ],
+        "sketches": [
+          "az/sketches.json"
+        ],
+        "health": [
+          "az/health.json"
+        ],
+        "usage": [
+          "az/usage.json"
+        ],
+        "progress": [
+          "az/progress.json"
+        ],
+        "bugs": [
+          "az/bugs.json"
+        ],
+        "admin": [
+          "az/admin.json"
+        ],
+        "plan": [
+          "az/plan.json"
+        ],
+        "decisions": [
+          "az/decisions.json"
+        ],
+        "glossary": [
+          "az/glossary.json"
+        ],
+        "artifacts": [
+          "az/artifacts.json"
+        ],
+        "performance": [
+          "az/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "de",
+      "nativeName": "Deutsch",
+      "englishName": "German",
+      "countries": [
+        "DE",
+        "AT",
+        "CH"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "de/common.json"
+        ],
+        "shell": [
+          "de/shell.json"
+        ],
+        "auth": [
+          "de/auth.json"
+        ],
+        "deployments": [
+          "de/deployments.json"
+        ],
+        "tests": [
+          "de/tests.json"
+        ],
+        "evidence": [
+          "de/evidence.json"
+        ],
+        "sketches": [
+          "de/sketches.json"
+        ],
+        "health": [
+          "de/health.json"
+        ],
+        "usage": [
+          "de/usage.json"
+        ],
+        "progress": [
+          "de/progress.json"
+        ],
+        "bugs": [
+          "de/bugs.json"
+        ],
+        "admin": [
+          "de/admin.json"
+        ],
+        "plan": [
+          "de/plan.json"
+        ],
+        "decisions": [
+          "de/decisions.json"
+        ],
+        "glossary": [
+          "de/glossary.json"
+        ],
+        "artifacts": [
+          "de/artifacts.json"
+        ],
+        "performance": [
+          "de/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "fr",
+      "nativeName": "Français",
+      "englishName": "French",
+      "countries": [
+        "FR",
+        "CA",
+        "BE"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "fr/common.json"
+        ],
+        "shell": [
+          "fr/shell.json"
+        ],
+        "auth": [
+          "fr/auth.json"
+        ],
+        "deployments": [
+          "fr/deployments.json"
+        ],
+        "tests": [
+          "fr/tests.json"
+        ],
+        "evidence": [
+          "fr/evidence.json"
+        ],
+        "sketches": [
+          "fr/sketches.json"
+        ],
+        "health": [
+          "fr/health.json"
+        ],
+        "usage": [
+          "fr/usage.json"
+        ],
+        "progress": [
+          "fr/progress.json"
+        ],
+        "bugs": [
+          "fr/bugs.json"
+        ],
+        "admin": [
+          "fr/admin.json"
+        ],
+        "plan": [
+          "fr/plan.json"
+        ],
+        "decisions": [
+          "fr/decisions.json"
+        ],
+        "glossary": [
+          "fr/glossary.json"
+        ],
+        "artifacts": [
+          "fr/artifacts.json"
+        ],
+        "performance": [
+          "fr/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "nl",
+      "nativeName": "Nederlands",
+      "englishName": "Dutch",
+      "countries": [
+        "NL",
+        "BE",
+        "SR"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "nl/common.json"
+        ],
+        "shell": [
+          "nl/shell.json"
+        ],
+        "auth": [
+          "nl/auth.json"
+        ],
+        "deployments": [
+          "nl/deployments.json"
+        ],
+        "tests": [
+          "nl/tests.json"
+        ],
+        "evidence": [
+          "nl/evidence.json"
+        ],
+        "sketches": [
+          "nl/sketches.json"
+        ],
+        "health": [
+          "nl/health.json"
+        ],
+        "usage": [
+          "nl/usage.json"
+        ],
+        "progress": [
+          "nl/progress.json"
+        ],
+        "bugs": [
+          "nl/bugs.json"
+        ],
+        "admin": [
+          "nl/admin.json"
+        ],
+        "plan": [
+          "nl/plan.json"
+        ],
+        "decisions": [
+          "nl/decisions.json"
+        ],
+        "glossary": [
+          "nl/glossary.json"
+        ],
+        "artifacts": [
+          "nl/artifacts.json"
+        ],
+        "performance": [
+          "nl/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "bs",
+      "nativeName": "Bosanski",
+      "englishName": "Bosnian",
+      "countries": [
+        "BA"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "bs/common.json"
+        ],
+        "shell": [
+          "bs/shell.json"
+        ],
+        "auth": [
+          "bs/auth.json"
+        ],
+        "deployments": [
+          "bs/deployments.json"
+        ],
+        "tests": [
+          "bs/tests.json"
+        ],
+        "evidence": [
+          "bs/evidence.json"
+        ],
+        "sketches": [
+          "bs/sketches.json"
+        ],
+        "health": [
+          "bs/health.json"
+        ],
+        "usage": [
+          "bs/usage.json"
+        ],
+        "progress": [
+          "bs/progress.json"
+        ],
+        "bugs": [
+          "bs/bugs.json"
+        ],
+        "admin": [
+          "bs/admin.json"
+        ],
+        "plan": [
+          "bs/plan.json"
+        ],
+        "decisions": [
+          "bs/decisions.json"
+        ],
+        "glossary": [
+          "bs/glossary.json"
+        ],
+        "artifacts": [
+          "bs/artifacts.json"
+        ],
+        "performance": [
+          "bs/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "hr",
+      "nativeName": "Hrvatski",
+      "englishName": "Croatian",
+      "countries": [
+        "HR",
+        "BA"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "hr/common.json"
+        ],
+        "shell": [
+          "hr/shell.json"
+        ],
+        "auth": [
+          "hr/auth.json"
+        ],
+        "deployments": [
+          "hr/deployments.json"
+        ],
+        "tests": [
+          "hr/tests.json"
+        ],
+        "evidence": [
+          "hr/evidence.json"
+        ],
+        "sketches": [
+          "hr/sketches.json"
+        ],
+        "health": [
+          "hr/health.json"
+        ],
+        "usage": [
+          "hr/usage.json"
+        ],
+        "progress": [
+          "hr/progress.json"
+        ],
+        "bugs": [
+          "hr/bugs.json"
+        ],
+        "admin": [
+          "hr/admin.json"
+        ],
+        "plan": [
+          "hr/plan.json"
+        ],
+        "decisions": [
+          "hr/decisions.json"
+        ],
+        "glossary": [
+          "hr/glossary.json"
+        ],
+        "artifacts": [
+          "hr/artifacts.json"
+        ],
+        "performance": [
+          "hr/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sr-Cyrl",
+      "nativeName": "Српски (ћирилица)",
+      "englishName": "Serbian (Cyrillic)",
+      "countries": [
+        "RS",
+        "BA",
+        "ME"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sr-Cyrl/common.json"
+        ],
+        "shell": [
+          "sr-Cyrl/shell.json"
+        ],
+        "auth": [
+          "sr-Cyrl/auth.json"
+        ],
+        "deployments": [
+          "sr-Cyrl/deployments.json"
+        ],
+        "tests": [
+          "sr-Cyrl/tests.json"
+        ],
+        "evidence": [
+          "sr-Cyrl/evidence.json"
+        ],
+        "sketches": [
+          "sr-Cyrl/sketches.json"
+        ],
+        "health": [
+          "sr-Cyrl/health.json"
+        ],
+        "usage": [
+          "sr-Cyrl/usage.json"
+        ],
+        "progress": [
+          "sr-Cyrl/progress.json"
+        ],
+        "bugs": [
+          "sr-Cyrl/bugs.json"
+        ],
+        "admin": [
+          "sr-Cyrl/admin.json"
+        ],
+        "plan": [
+          "sr-Cyrl/plan.json"
+        ],
+        "decisions": [
+          "sr-Cyrl/decisions.json"
+        ],
+        "glossary": [
+          "sr-Cyrl/glossary.json"
+        ],
+        "artifacts": [
+          "sr-Cyrl/artifacts.json"
+        ],
+        "performance": [
+          "sr-Cyrl/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sr-Latn",
+      "nativeName": "Srpski (latinica)",
+      "englishName": "Serbian (Latin)",
+      "countries": [
+        "RS",
+        "BA",
+        "ME"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sr-Latn/common.json"
+        ],
+        "shell": [
+          "sr-Latn/shell.json"
+        ],
+        "auth": [
+          "sr-Latn/auth.json"
+        ],
+        "deployments": [
+          "sr-Latn/deployments.json"
+        ],
+        "tests": [
+          "sr-Latn/tests.json"
+        ],
+        "evidence": [
+          "sr-Latn/evidence.json"
+        ],
+        "sketches": [
+          "sr-Latn/sketches.json"
+        ],
+        "health": [
+          "sr-Latn/health.json"
+        ],
+        "usage": [
+          "sr-Latn/usage.json"
+        ],
+        "progress": [
+          "sr-Latn/progress.json"
+        ],
+        "bugs": [
+          "sr-Latn/bugs.json"
+        ],
+        "admin": [
+          "sr-Latn/admin.json"
+        ],
+        "plan": [
+          "sr-Latn/plan.json"
+        ],
+        "decisions": [
+          "sr-Latn/decisions.json"
+        ],
+        "glossary": [
+          "sr-Latn/glossary.json"
+        ],
+        "artifacts": [
+          "sr-Latn/artifacts.json"
+        ],
+        "performance": [
+          "sr-Latn/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "bg",
+      "nativeName": "Български",
+      "englishName": "Bulgarian",
+      "countries": [
+        "BG"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "bg/common.json"
+        ],
+        "shell": [
+          "bg/shell.json"
+        ],
+        "auth": [
+          "bg/auth.json"
+        ],
+        "deployments": [
+          "bg/deployments.json"
+        ],
+        "tests": [
+          "bg/tests.json"
+        ],
+        "evidence": [
+          "bg/evidence.json"
+        ],
+        "sketches": [
+          "bg/sketches.json"
+        ],
+        "health": [
+          "bg/health.json"
+        ],
+        "usage": [
+          "bg/usage.json"
+        ],
+        "progress": [
+          "bg/progress.json"
+        ],
+        "bugs": [
+          "bg/bugs.json"
+        ],
+        "admin": [
+          "bg/admin.json"
+        ],
+        "plan": [
+          "bg/plan.json"
+        ],
+        "decisions": [
+          "bg/decisions.json"
+        ],
+        "glossary": [
+          "bg/glossary.json"
+        ],
+        "artifacts": [
+          "bg/artifacts.json"
+        ],
+        "performance": [
+          "bg/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "el",
+      "nativeName": "Ελληνικά",
+      "englishName": "Greek",
+      "countries": [
+        "GR",
+        "CY"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "el/common.json"
+        ],
+        "shell": [
+          "el/shell.json"
+        ],
+        "auth": [
+          "el/auth.json"
+        ],
+        "deployments": [
+          "el/deployments.json"
+        ],
+        "tests": [
+          "el/tests.json"
+        ],
+        "evidence": [
+          "el/evidence.json"
+        ],
+        "sketches": [
+          "el/sketches.json"
+        ],
+        "health": [
+          "el/health.json"
+        ],
+        "usage": [
+          "el/usage.json"
+        ],
+        "progress": [
+          "el/progress.json"
+        ],
+        "bugs": [
+          "el/bugs.json"
+        ],
+        "admin": [
+          "el/admin.json"
+        ],
+        "plan": [
+          "el/plan.json"
+        ],
+        "decisions": [
+          "el/decisions.json"
+        ],
+        "glossary": [
+          "el/glossary.json"
+        ],
+        "artifacts": [
+          "el/artifacts.json"
+        ],
+        "performance": [
+          "el/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "tr",
+      "nativeName": "Türkçe",
+      "englishName": "Turkish",
+      "countries": [
+        "TR",
+        "CY"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "tr/common.json"
+        ],
+        "shell": [
+          "tr/shell.json"
+        ],
+        "auth": [
+          "tr/auth.json"
+        ],
+        "deployments": [
+          "tr/deployments.json"
+        ],
+        "tests": [
+          "tr/tests.json"
+        ],
+        "evidence": [
+          "tr/evidence.json"
+        ],
+        "sketches": [
+          "tr/sketches.json"
+        ],
+        "health": [
+          "tr/health.json"
+        ],
+        "usage": [
+          "tr/usage.json"
+        ],
+        "progress": [
+          "tr/progress.json"
+        ],
+        "bugs": [
+          "tr/bugs.json"
+        ],
+        "admin": [
+          "tr/admin.json"
+        ],
+        "plan": [
+          "tr/plan.json"
+        ],
+        "decisions": [
+          "tr/decisions.json"
+        ],
+        "glossary": [
+          "tr/glossary.json"
+        ],
+        "artifacts": [
+          "tr/artifacts.json"
+        ],
+        "performance": [
+          "tr/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "cs",
+      "nativeName": "Čeština",
+      "englishName": "Czech",
+      "countries": [
+        "CZ"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "cs/common.json"
+        ],
+        "shell": [
+          "cs/shell.json"
+        ],
+        "auth": [
+          "cs/auth.json"
+        ],
+        "deployments": [
+          "cs/deployments.json"
+        ],
+        "tests": [
+          "cs/tests.json"
+        ],
+        "evidence": [
+          "cs/evidence.json"
+        ],
+        "sketches": [
+          "cs/sketches.json"
+        ],
+        "health": [
+          "cs/health.json"
+        ],
+        "usage": [
+          "cs/usage.json"
+        ],
+        "progress": [
+          "cs/progress.json"
+        ],
+        "bugs": [
+          "cs/bugs.json"
+        ],
+        "admin": [
+          "cs/admin.json"
+        ],
+        "plan": [
+          "cs/plan.json"
+        ],
+        "decisions": [
+          "cs/decisions.json"
+        ],
+        "glossary": [
+          "cs/glossary.json"
+        ],
+        "artifacts": [
+          "cs/artifacts.json"
+        ],
+        "performance": [
+          "cs/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "da",
+      "nativeName": "Dansk",
+      "englishName": "Danish",
+      "countries": [
+        "DK"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "da/common.json"
+        ],
+        "shell": [
+          "da/shell.json"
+        ],
+        "auth": [
+          "da/auth.json"
+        ],
+        "deployments": [
+          "da/deployments.json"
+        ],
+        "tests": [
+          "da/tests.json"
+        ],
+        "evidence": [
+          "da/evidence.json"
+        ],
+        "sketches": [
+          "da/sketches.json"
+        ],
+        "health": [
+          "da/health.json"
+        ],
+        "usage": [
+          "da/usage.json"
+        ],
+        "progress": [
+          "da/progress.json"
+        ],
+        "bugs": [
+          "da/bugs.json"
+        ],
+        "admin": [
+          "da/admin.json"
+        ],
+        "plan": [
+          "da/plan.json"
+        ],
+        "decisions": [
+          "da/decisions.json"
+        ],
+        "glossary": [
+          "da/glossary.json"
+        ],
+        "artifacts": [
+          "da/artifacts.json"
+        ],
+        "performance": [
+          "da/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "et",
+      "nativeName": "Eesti",
+      "englishName": "Estonian",
+      "countries": [
+        "EE"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "et/common.json"
+        ],
+        "shell": [
+          "et/shell.json"
+        ],
+        "auth": [
+          "et/auth.json"
+        ],
+        "deployments": [
+          "et/deployments.json"
+        ],
+        "tests": [
+          "et/tests.json"
+        ],
+        "evidence": [
+          "et/evidence.json"
+        ],
+        "sketches": [
+          "et/sketches.json"
+        ],
+        "health": [
+          "et/health.json"
+        ],
+        "usage": [
+          "et/usage.json"
+        ],
+        "progress": [
+          "et/progress.json"
+        ],
+        "bugs": [
+          "et/bugs.json"
+        ],
+        "admin": [
+          "et/admin.json"
+        ],
+        "plan": [
+          "et/plan.json"
+        ],
+        "decisions": [
+          "et/decisions.json"
+        ],
+        "glossary": [
+          "et/glossary.json"
+        ],
+        "artifacts": [
+          "et/artifacts.json"
+        ],
+        "performance": [
+          "et/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "fi",
+      "nativeName": "Suomi",
+      "englishName": "Finnish",
+      "countries": [
+        "FI"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "fi/common.json"
+        ],
+        "shell": [
+          "fi/shell.json"
+        ],
+        "auth": [
+          "fi/auth.json"
+        ],
+        "deployments": [
+          "fi/deployments.json"
+        ],
+        "tests": [
+          "fi/tests.json"
+        ],
+        "evidence": [
+          "fi/evidence.json"
+        ],
+        "sketches": [
+          "fi/sketches.json"
+        ],
+        "health": [
+          "fi/health.json"
+        ],
+        "usage": [
+          "fi/usage.json"
+        ],
+        "progress": [
+          "fi/progress.json"
+        ],
+        "bugs": [
+          "fi/bugs.json"
+        ],
+        "admin": [
+          "fi/admin.json"
+        ],
+        "plan": [
+          "fi/plan.json"
+        ],
+        "decisions": [
+          "fi/decisions.json"
+        ],
+        "glossary": [
+          "fi/glossary.json"
+        ],
+        "artifacts": [
+          "fi/artifacts.json"
+        ],
+        "performance": [
+          "fi/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sv",
+      "nativeName": "Svenska",
+      "englishName": "Swedish",
+      "countries": [
+        "SE",
+        "FI"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sv/common.json"
+        ],
+        "shell": [
+          "sv/shell.json"
+        ],
+        "auth": [
+          "sv/auth.json"
+        ],
+        "deployments": [
+          "sv/deployments.json"
+        ],
+        "tests": [
+          "sv/tests.json"
+        ],
+        "evidence": [
+          "sv/evidence.json"
+        ],
+        "sketches": [
+          "sv/sketches.json"
+        ],
+        "health": [
+          "sv/health.json"
+        ],
+        "usage": [
+          "sv/usage.json"
+        ],
+        "progress": [
+          "sv/progress.json"
+        ],
+        "bugs": [
+          "sv/bugs.json"
+        ],
+        "admin": [
+          "sv/admin.json"
+        ],
+        "plan": [
+          "sv/plan.json"
+        ],
+        "decisions": [
+          "sv/decisions.json"
+        ],
+        "glossary": [
+          "sv/glossary.json"
+        ],
+        "artifacts": [
+          "sv/artifacts.json"
+        ],
+        "performance": [
+          "sv/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ka",
+      "nativeName": "ქართული",
+      "englishName": "Georgian",
+      "countries": [
+        "GE"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ka/common.json"
+        ],
+        "shell": [
+          "ka/shell.json"
+        ],
+        "auth": [
+          "ka/auth.json"
+        ],
+        "deployments": [
+          "ka/deployments.json"
+        ],
+        "tests": [
+          "ka/tests.json"
+        ],
+        "evidence": [
+          "ka/evidence.json"
+        ],
+        "sketches": [
+          "ka/sketches.json"
+        ],
+        "health": [
+          "ka/health.json"
+        ],
+        "usage": [
+          "ka/usage.json"
+        ],
+        "progress": [
+          "ka/progress.json"
+        ],
+        "bugs": [
+          "ka/bugs.json"
+        ],
+        "admin": [
+          "ka/admin.json"
+        ],
+        "plan": [
+          "ka/plan.json"
+        ],
+        "decisions": [
+          "ka/decisions.json"
+        ],
+        "glossary": [
+          "ka/glossary.json"
+        ],
+        "artifacts": [
+          "ka/artifacts.json"
+        ],
+        "performance": [
+          "ka/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "hu",
+      "nativeName": "Magyar",
+      "englishName": "Hungarian",
+      "countries": [
+        "HU",
+        "RO",
+        "SK"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "hu/common.json"
+        ],
+        "shell": [
+          "hu/shell.json"
+        ],
+        "auth": [
+          "hu/auth.json"
+        ],
+        "deployments": [
+          "hu/deployments.json"
+        ],
+        "tests": [
+          "hu/tests.json"
+        ],
+        "evidence": [
+          "hu/evidence.json"
+        ],
+        "sketches": [
+          "hu/sketches.json"
+        ],
+        "health": [
+          "hu/health.json"
+        ],
+        "usage": [
+          "hu/usage.json"
+        ],
+        "progress": [
+          "hu/progress.json"
+        ],
+        "bugs": [
+          "hu/bugs.json"
+        ],
+        "admin": [
+          "hu/admin.json"
+        ],
+        "plan": [
+          "hu/plan.json"
+        ],
+        "decisions": [
+          "hu/decisions.json"
+        ],
+        "glossary": [
+          "hu/glossary.json"
+        ],
+        "artifacts": [
+          "hu/artifacts.json"
+        ],
+        "performance": [
+          "hu/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "is",
+      "nativeName": "Íslenska",
+      "englishName": "Icelandic",
+      "countries": [
+        "IS"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "is/common.json"
+        ],
+        "shell": [
+          "is/shell.json"
+        ],
+        "auth": [
+          "is/auth.json"
+        ],
+        "deployments": [
+          "is/deployments.json"
+        ],
+        "tests": [
+          "is/tests.json"
+        ],
+        "evidence": [
+          "is/evidence.json"
+        ],
+        "sketches": [
+          "is/sketches.json"
+        ],
+        "health": [
+          "is/health.json"
+        ],
+        "usage": [
+          "is/usage.json"
+        ],
+        "progress": [
+          "is/progress.json"
+        ],
+        "bugs": [
+          "is/bugs.json"
+        ],
+        "admin": [
+          "is/admin.json"
+        ],
+        "plan": [
+          "is/plan.json"
+        ],
+        "decisions": [
+          "is/decisions.json"
+        ],
+        "glossary": [
+          "is/glossary.json"
+        ],
+        "artifacts": [
+          "is/artifacts.json"
+        ],
+        "performance": [
+          "is/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ga",
+      "nativeName": "Gaeilge",
+      "englishName": "Irish",
+      "countries": [
+        "IE"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ga/common.json"
+        ],
+        "shell": [
+          "ga/shell.json"
+        ],
+        "auth": [
+          "ga/auth.json"
+        ],
+        "deployments": [
+          "ga/deployments.json"
+        ],
+        "tests": [
+          "ga/tests.json"
+        ],
+        "evidence": [
+          "ga/evidence.json"
+        ],
+        "sketches": [
+          "ga/sketches.json"
+        ],
+        "health": [
+          "ga/health.json"
+        ],
+        "usage": [
+          "ga/usage.json"
+        ],
+        "progress": [
+          "ga/progress.json"
+        ],
+        "bugs": [
+          "ga/bugs.json"
+        ],
+        "admin": [
+          "ga/admin.json"
+        ],
+        "plan": [
+          "ga/plan.json"
+        ],
+        "decisions": [
+          "ga/decisions.json"
+        ],
+        "glossary": [
+          "ga/glossary.json"
+        ],
+        "artifacts": [
+          "ga/artifacts.json"
+        ],
+        "performance": [
+          "ga/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "it",
+      "nativeName": "Italiano",
+      "englishName": "Italian",
+      "countries": [
+        "IT",
+        "CH",
+        "SM"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "it/common.json"
+        ],
+        "shell": [
+          "it/shell.json"
+        ],
+        "auth": [
+          "it/auth.json"
+        ],
+        "deployments": [
+          "it/deployments.json"
+        ],
+        "tests": [
+          "it/tests.json"
+        ],
+        "evidence": [
+          "it/evidence.json"
+        ],
+        "sketches": [
+          "it/sketches.json"
+        ],
+        "health": [
+          "it/health.json"
+        ],
+        "usage": [
+          "it/usage.json"
+        ],
+        "progress": [
+          "it/progress.json"
+        ],
+        "bugs": [
+          "it/bugs.json"
+        ],
+        "admin": [
+          "it/admin.json"
+        ],
+        "plan": [
+          "it/plan.json"
+        ],
+        "decisions": [
+          "it/decisions.json"
+        ],
+        "glossary": [
+          "it/glossary.json"
+        ],
+        "artifacts": [
+          "it/artifacts.json"
+        ],
+        "performance": [
+          "it/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "lv",
+      "nativeName": "Latviešu",
+      "englishName": "Latvian",
+      "countries": [
+        "LV"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "lv/common.json"
+        ],
+        "shell": [
+          "lv/shell.json"
+        ],
+        "auth": [
+          "lv/auth.json"
+        ],
+        "deployments": [
+          "lv/deployments.json"
+        ],
+        "tests": [
+          "lv/tests.json"
+        ],
+        "evidence": [
+          "lv/evidence.json"
+        ],
+        "sketches": [
+          "lv/sketches.json"
+        ],
+        "health": [
+          "lv/health.json"
+        ],
+        "usage": [
+          "lv/usage.json"
+        ],
+        "progress": [
+          "lv/progress.json"
+        ],
+        "bugs": [
+          "lv/bugs.json"
+        ],
+        "admin": [
+          "lv/admin.json"
+        ],
+        "plan": [
+          "lv/plan.json"
+        ],
+        "decisions": [
+          "lv/decisions.json"
+        ],
+        "glossary": [
+          "lv/glossary.json"
+        ],
+        "artifacts": [
+          "lv/artifacts.json"
+        ],
+        "performance": [
+          "lv/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "lt",
+      "nativeName": "Lietuvių",
+      "englishName": "Lithuanian",
+      "countries": [
+        "LT"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "lt/common.json"
+        ],
+        "shell": [
+          "lt/shell.json"
+        ],
+        "auth": [
+          "lt/auth.json"
+        ],
+        "deployments": [
+          "lt/deployments.json"
+        ],
+        "tests": [
+          "lt/tests.json"
+        ],
+        "evidence": [
+          "lt/evidence.json"
+        ],
+        "sketches": [
+          "lt/sketches.json"
+        ],
+        "health": [
+          "lt/health.json"
+        ],
+        "usage": [
+          "lt/usage.json"
+        ],
+        "progress": [
+          "lt/progress.json"
+        ],
+        "bugs": [
+          "lt/bugs.json"
+        ],
+        "admin": [
+          "lt/admin.json"
+        ],
+        "plan": [
+          "lt/plan.json"
+        ],
+        "decisions": [
+          "lt/decisions.json"
+        ],
+        "glossary": [
+          "lt/glossary.json"
+        ],
+        "artifacts": [
+          "lt/artifacts.json"
+        ],
+        "performance": [
+          "lt/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "lb",
+      "nativeName": "Lëtzebuergesch",
+      "englishName": "Luxembourgish",
+      "countries": [
+        "LU"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "lb/common.json"
+        ],
+        "shell": [
+          "lb/shell.json"
+        ],
+        "auth": [
+          "lb/auth.json"
+        ],
+        "deployments": [
+          "lb/deployments.json"
+        ],
+        "tests": [
+          "lb/tests.json"
+        ],
+        "evidence": [
+          "lb/evidence.json"
+        ],
+        "sketches": [
+          "lb/sketches.json"
+        ],
+        "health": [
+          "lb/health.json"
+        ],
+        "usage": [
+          "lb/usage.json"
+        ],
+        "progress": [
+          "lb/progress.json"
+        ],
+        "bugs": [
+          "lb/bugs.json"
+        ],
+        "admin": [
+          "lb/admin.json"
+        ],
+        "plan": [
+          "lb/plan.json"
+        ],
+        "decisions": [
+          "lb/decisions.json"
+        ],
+        "glossary": [
+          "lb/glossary.json"
+        ],
+        "artifacts": [
+          "lb/artifacts.json"
+        ],
+        "performance": [
+          "lb/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "mt",
+      "nativeName": "Malti",
+      "englishName": "Maltese",
+      "countries": [
+        "MT"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "mt/common.json"
+        ],
+        "shell": [
+          "mt/shell.json"
+        ],
+        "auth": [
+          "mt/auth.json"
+        ],
+        "deployments": [
+          "mt/deployments.json"
+        ],
+        "tests": [
+          "mt/tests.json"
+        ],
+        "evidence": [
+          "mt/evidence.json"
+        ],
+        "sketches": [
+          "mt/sketches.json"
+        ],
+        "health": [
+          "mt/health.json"
+        ],
+        "usage": [
+          "mt/usage.json"
+        ],
+        "progress": [
+          "mt/progress.json"
+        ],
+        "bugs": [
+          "mt/bugs.json"
+        ],
+        "admin": [
+          "mt/admin.json"
+        ],
+        "plan": [
+          "mt/plan.json"
+        ],
+        "decisions": [
+          "mt/decisions.json"
+        ],
+        "glossary": [
+          "mt/glossary.json"
+        ],
+        "artifacts": [
+          "mt/artifacts.json"
+        ],
+        "performance": [
+          "mt/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ro",
+      "nativeName": "Română",
+      "englishName": "Romanian",
+      "countries": [
+        "RO",
+        "MD"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ro/common.json"
+        ],
+        "shell": [
+          "ro/shell.json"
+        ],
+        "auth": [
+          "ro/auth.json"
+        ],
+        "deployments": [
+          "ro/deployments.json"
+        ],
+        "tests": [
+          "ro/tests.json"
+        ],
+        "evidence": [
+          "ro/evidence.json"
+        ],
+        "sketches": [
+          "ro/sketches.json"
+        ],
+        "health": [
+          "ro/health.json"
+        ],
+        "usage": [
+          "ro/usage.json"
+        ],
+        "progress": [
+          "ro/progress.json"
+        ],
+        "bugs": [
+          "ro/bugs.json"
+        ],
+        "admin": [
+          "ro/admin.json"
+        ],
+        "plan": [
+          "ro/plan.json"
+        ],
+        "decisions": [
+          "ro/decisions.json"
+        ],
+        "glossary": [
+          "ro/glossary.json"
+        ],
+        "artifacts": [
+          "ro/artifacts.json"
+        ],
+        "performance": [
+          "ro/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "cnr-Latn",
+      "nativeName": "Crnogorski (latinica)",
+      "englishName": "Montenegrin (Latin)",
+      "countries": [
+        "ME"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "cnr-Latn/common.json"
+        ],
+        "shell": [
+          "cnr-Latn/shell.json"
+        ],
+        "auth": [
+          "cnr-Latn/auth.json"
+        ],
+        "deployments": [
+          "cnr-Latn/deployments.json"
+        ],
+        "tests": [
+          "cnr-Latn/tests.json"
+        ],
+        "evidence": [
+          "cnr-Latn/evidence.json"
+        ],
+        "sketches": [
+          "cnr-Latn/sketches.json"
+        ],
+        "health": [
+          "cnr-Latn/health.json"
+        ],
+        "usage": [
+          "cnr-Latn/usage.json"
+        ],
+        "progress": [
+          "cnr-Latn/progress.json"
+        ],
+        "bugs": [
+          "cnr-Latn/bugs.json"
+        ],
+        "admin": [
+          "cnr-Latn/admin.json"
+        ],
+        "plan": [
+          "cnr-Latn/plan.json"
+        ],
+        "decisions": [
+          "cnr-Latn/decisions.json"
+        ],
+        "glossary": [
+          "cnr-Latn/glossary.json"
+        ],
+        "artifacts": [
+          "cnr-Latn/artifacts.json"
+        ],
+        "performance": [
+          "cnr-Latn/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "cnr-Cyrl",
+      "nativeName": "Црногорски (ћирилица)",
+      "englishName": "Montenegrin (Cyrillic)",
+      "countries": [
+        "ME"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "cnr-Cyrl/common.json"
+        ],
+        "shell": [
+          "cnr-Cyrl/shell.json"
+        ],
+        "auth": [
+          "cnr-Cyrl/auth.json"
+        ],
+        "deployments": [
+          "cnr-Cyrl/deployments.json"
+        ],
+        "tests": [
+          "cnr-Cyrl/tests.json"
+        ],
+        "evidence": [
+          "cnr-Cyrl/evidence.json"
+        ],
+        "sketches": [
+          "cnr-Cyrl/sketches.json"
+        ],
+        "health": [
+          "cnr-Cyrl/health.json"
+        ],
+        "usage": [
+          "cnr-Cyrl/usage.json"
+        ],
+        "progress": [
+          "cnr-Cyrl/progress.json"
+        ],
+        "bugs": [
+          "cnr-Cyrl/bugs.json"
+        ],
+        "admin": [
+          "cnr-Cyrl/admin.json"
+        ],
+        "plan": [
+          "cnr-Cyrl/plan.json"
+        ],
+        "decisions": [
+          "cnr-Cyrl/decisions.json"
+        ],
+        "glossary": [
+          "cnr-Cyrl/glossary.json"
+        ],
+        "artifacts": [
+          "cnr-Cyrl/artifacts.json"
+        ],
+        "performance": [
+          "cnr-Cyrl/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "mk",
+      "nativeName": "Македонски",
+      "englishName": "Macedonian",
+      "countries": [
+        "MK"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "mk/common.json"
+        ],
+        "shell": [
+          "mk/shell.json"
+        ],
+        "auth": [
+          "mk/auth.json"
+        ],
+        "deployments": [
+          "mk/deployments.json"
+        ],
+        "tests": [
+          "mk/tests.json"
+        ],
+        "evidence": [
+          "mk/evidence.json"
+        ],
+        "sketches": [
+          "mk/sketches.json"
+        ],
+        "health": [
+          "mk/health.json"
+        ],
+        "usage": [
+          "mk/usage.json"
+        ],
+        "progress": [
+          "mk/progress.json"
+        ],
+        "bugs": [
+          "mk/bugs.json"
+        ],
+        "admin": [
+          "mk/admin.json"
+        ],
+        "plan": [
+          "mk/plan.json"
+        ],
+        "decisions": [
+          "mk/decisions.json"
+        ],
+        "glossary": [
+          "mk/glossary.json"
+        ],
+        "artifacts": [
+          "mk/artifacts.json"
+        ],
+        "performance": [
+          "mk/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "nb",
+      "nativeName": "Norsk bokmål",
+      "englishName": "Norwegian Bokmål",
+      "countries": [
+        "NO"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "aliases": [
+        "no"
+      ],
+      "files": {
+        "common": [
+          "nb/common.json"
+        ],
+        "shell": [
+          "nb/shell.json"
+        ],
+        "auth": [
+          "nb/auth.json"
+        ],
+        "deployments": [
+          "nb/deployments.json"
+        ],
+        "tests": [
+          "nb/tests.json"
+        ],
+        "evidence": [
+          "nb/evidence.json"
+        ],
+        "sketches": [
+          "nb/sketches.json"
+        ],
+        "health": [
+          "nb/health.json"
+        ],
+        "usage": [
+          "nb/usage.json"
+        ],
+        "progress": [
+          "nb/progress.json"
+        ],
+        "bugs": [
+          "nb/bugs.json"
+        ],
+        "admin": [
+          "nb/admin.json"
+        ],
+        "plan": [
+          "nb/plan.json"
+        ],
+        "decisions": [
+          "nb/decisions.json"
+        ],
+        "glossary": [
+          "nb/glossary.json"
+        ],
+        "artifacts": [
+          "nb/artifacts.json"
+        ],
+        "performance": [
+          "nb/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "nn",
+      "nativeName": "Norsk nynorsk",
+      "englishName": "Norwegian Nynorsk",
+      "countries": [
+        "NO"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "nn/common.json"
+        ],
+        "shell": [
+          "nn/shell.json"
+        ],
+        "auth": [
+          "nn/auth.json"
+        ],
+        "deployments": [
+          "nn/deployments.json"
+        ],
+        "tests": [
+          "nn/tests.json"
+        ],
+        "evidence": [
+          "nn/evidence.json"
+        ],
+        "sketches": [
+          "nn/sketches.json"
+        ],
+        "health": [
+          "nn/health.json"
+        ],
+        "usage": [
+          "nn/usage.json"
+        ],
+        "progress": [
+          "nn/progress.json"
+        ],
+        "bugs": [
+          "nn/bugs.json"
+        ],
+        "admin": [
+          "nn/admin.json"
+        ],
+        "plan": [
+          "nn/plan.json"
+        ],
+        "decisions": [
+          "nn/decisions.json"
+        ],
+        "glossary": [
+          "nn/glossary.json"
+        ],
+        "artifacts": [
+          "nn/artifacts.json"
+        ],
+        "performance": [
+          "nn/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "pl",
+      "nativeName": "Polski",
+      "englishName": "Polish",
+      "countries": [
+        "PL"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "pl/common.json"
+        ],
+        "shell": [
+          "pl/shell.json"
+        ],
+        "auth": [
+          "pl/auth.json"
+        ],
+        "deployments": [
+          "pl/deployments.json"
+        ],
+        "tests": [
+          "pl/tests.json"
+        ],
+        "evidence": [
+          "pl/evidence.json"
+        ],
+        "sketches": [
+          "pl/sketches.json"
+        ],
+        "health": [
+          "pl/health.json"
+        ],
+        "usage": [
+          "pl/usage.json"
+        ],
+        "progress": [
+          "pl/progress.json"
+        ],
+        "bugs": [
+          "pl/bugs.json"
+        ],
+        "admin": [
+          "pl/admin.json"
+        ],
+        "plan": [
+          "pl/plan.json"
+        ],
+        "decisions": [
+          "pl/decisions.json"
+        ],
+        "glossary": [
+          "pl/glossary.json"
+        ],
+        "artifacts": [
+          "pl/artifacts.json"
+        ],
+        "performance": [
+          "pl/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "pt",
+      "nativeName": "Português",
+      "englishName": "Portuguese",
+      "countries": [
+        "BR",
+        "PT",
+        "AO"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "pt/common.json"
+        ],
+        "shell": [
+          "pt/shell.json"
+        ],
+        "auth": [
+          "pt/auth.json"
+        ],
+        "deployments": [
+          "pt/deployments.json"
+        ],
+        "tests": [
+          "pt/tests.json"
+        ],
+        "evidence": [
+          "pt/evidence.json"
+        ],
+        "sketches": [
+          "pt/sketches.json"
+        ],
+        "health": [
+          "pt/health.json"
+        ],
+        "usage": [
+          "pt/usage.json"
+        ],
+        "progress": [
+          "pt/progress.json"
+        ],
+        "bugs": [
+          "pt/bugs.json"
+        ],
+        "admin": [
+          "pt/admin.json"
+        ],
+        "plan": [
+          "pt/plan.json"
+        ],
+        "decisions": [
+          "pt/decisions.json"
+        ],
+        "glossary": [
+          "pt/glossary.json"
+        ],
+        "artifacts": [
+          "pt/artifacts.json"
+        ],
+        "performance": [
+          "pt/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sk",
+      "nativeName": "Slovenčina",
+      "englishName": "Slovak",
+      "countries": [
+        "SK"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sk/common.json"
+        ],
+        "shell": [
+          "sk/shell.json"
+        ],
+        "auth": [
+          "sk/auth.json"
+        ],
+        "deployments": [
+          "sk/deployments.json"
+        ],
+        "tests": [
+          "sk/tests.json"
+        ],
+        "evidence": [
+          "sk/evidence.json"
+        ],
+        "sketches": [
+          "sk/sketches.json"
+        ],
+        "health": [
+          "sk/health.json"
+        ],
+        "usage": [
+          "sk/usage.json"
+        ],
+        "progress": [
+          "sk/progress.json"
+        ],
+        "bugs": [
+          "sk/bugs.json"
+        ],
+        "admin": [
+          "sk/admin.json"
+        ],
+        "plan": [
+          "sk/plan.json"
+        ],
+        "decisions": [
+          "sk/decisions.json"
+        ],
+        "glossary": [
+          "sk/glossary.json"
+        ],
+        "artifacts": [
+          "sk/artifacts.json"
+        ],
+        "performance": [
+          "sk/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "sl",
+      "nativeName": "Slovenščina",
+      "englishName": "Slovenian",
+      "countries": [
+        "SI"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "sl/common.json"
+        ],
+        "shell": [
+          "sl/shell.json"
+        ],
+        "auth": [
+          "sl/auth.json"
+        ],
+        "deployments": [
+          "sl/deployments.json"
+        ],
+        "tests": [
+          "sl/tests.json"
+        ],
+        "evidence": [
+          "sl/evidence.json"
+        ],
+        "sketches": [
+          "sl/sketches.json"
+        ],
+        "health": [
+          "sl/health.json"
+        ],
+        "usage": [
+          "sl/usage.json"
+        ],
+        "progress": [
+          "sl/progress.json"
+        ],
+        "bugs": [
+          "sl/bugs.json"
+        ],
+        "admin": [
+          "sl/admin.json"
+        ],
+        "plan": [
+          "sl/plan.json"
+        ],
+        "decisions": [
+          "sl/decisions.json"
+        ],
+        "glossary": [
+          "sl/glossary.json"
+        ],
+        "artifacts": [
+          "sl/artifacts.json"
+        ],
+        "performance": [
+          "sl/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "es",
+      "nativeName": "Español",
+      "englishName": "Spanish",
+      "countries": [
+        "MX",
+        "ES",
+        "CO"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "es/common.json"
+        ],
+        "shell": [
+          "es/shell.json"
+        ],
+        "auth": [
+          "es/auth.json"
+        ],
+        "deployments": [
+          "es/deployments.json"
+        ],
+        "tests": [
+          "es/tests.json"
+        ],
+        "evidence": [
+          "es/evidence.json"
+        ],
+        "sketches": [
+          "es/sketches.json"
+        ],
+        "health": [
+          "es/health.json"
+        ],
+        "usage": [
+          "es/usage.json"
+        ],
+        "progress": [
+          "es/progress.json"
+        ],
+        "bugs": [
+          "es/bugs.json"
+        ],
+        "admin": [
+          "es/admin.json"
+        ],
+        "plan": [
+          "es/plan.json"
+        ],
+        "decisions": [
+          "es/decisions.json"
+        ],
+        "glossary": [
+          "es/glossary.json"
+        ],
+        "artifacts": [
+          "es/artifacts.json"
+        ],
+        "performance": [
+          "es/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "rm",
+      "nativeName": "Rumantsch",
+      "englishName": "Romansh",
+      "countries": [
+        "CH"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "rm/common.json"
+        ],
+        "shell": [
+          "rm/shell.json"
+        ],
+        "auth": [
+          "rm/auth.json"
+        ],
+        "deployments": [
+          "rm/deployments.json"
+        ],
+        "tests": [
+          "rm/tests.json"
+        ],
+        "evidence": [
+          "rm/evidence.json"
+        ],
+        "sketches": [
+          "rm/sketches.json"
+        ],
+        "health": [
+          "rm/health.json"
+        ],
+        "usage": [
+          "rm/usage.json"
+        ],
+        "progress": [
+          "rm/progress.json"
+        ],
+        "bugs": [
+          "rm/bugs.json"
+        ],
+        "admin": [
+          "rm/admin.json"
+        ],
+        "plan": [
+          "rm/plan.json"
+        ],
+        "decisions": [
+          "rm/decisions.json"
+        ],
+        "glossary": [
+          "rm/glossary.json"
+        ],
+        "artifacts": [
+          "rm/artifacts.json"
+        ],
+        "performance": [
+          "rm/performance.json"
+        ]
+      },
+      "intlFallbacks": [
+        "en"
+      ]
+    },
+    {
+      "tag": "uk",
+      "nativeName": "Українська",
+      "englishName": "Ukrainian",
+      "countries": [
+        "UA"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "uk/common.json"
+        ],
+        "shell": [
+          "uk/shell.json"
+        ],
+        "auth": [
+          "uk/auth.json"
+        ],
+        "deployments": [
+          "uk/deployments.json"
+        ],
+        "tests": [
+          "uk/tests.json"
+        ],
+        "evidence": [
+          "uk/evidence.json"
+        ],
+        "sketches": [
+          "uk/sketches.json"
+        ],
+        "health": [
+          "uk/health.json"
+        ],
+        "usage": [
+          "uk/usage.json"
+        ],
+        "progress": [
+          "uk/progress.json"
+        ],
+        "bugs": [
+          "uk/bugs.json"
+        ],
+        "admin": [
+          "uk/admin.json"
+        ],
+        "plan": [
+          "uk/plan.json"
+        ],
+        "decisions": [
+          "uk/decisions.json"
+        ],
+        "glossary": [
+          "uk/glossary.json"
+        ],
+        "artifacts": [
+          "uk/artifacts.json"
+        ],
+        "performance": [
+          "uk/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ru",
+      "nativeName": "Русский",
+      "englishName": "Russian",
+      "countries": [
+        "RU",
+        "BY",
+        "KZ"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ru/common.json"
+        ],
+        "shell": [
+          "ru/shell.json"
+        ],
+        "auth": [
+          "ru/auth.json"
+        ],
+        "deployments": [
+          "ru/deployments.json"
+        ],
+        "tests": [
+          "ru/tests.json"
+        ],
+        "evidence": [
+          "ru/evidence.json"
+        ],
+        "sketches": [
+          "ru/sketches.json"
+        ],
+        "health": [
+          "ru/health.json"
+        ],
+        "usage": [
+          "ru/usage.json"
+        ],
+        "progress": [
+          "ru/progress.json"
+        ],
+        "bugs": [
+          "ru/bugs.json"
+        ],
+        "admin": [
+          "ru/admin.json"
+        ],
+        "plan": [
+          "ru/plan.json"
+        ],
+        "decisions": [
+          "ru/decisions.json"
+        ],
+        "glossary": [
+          "ru/glossary.json"
+        ],
+        "artifacts": [
+          "ru/artifacts.json"
+        ],
+        "performance": [
+          "ru/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "zh-Hans",
+      "nativeName": "简体中文",
+      "englishName": "Chinese (Simplified)",
+      "countries": [
+        "CN",
+        "SG",
+        "MY"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "zh-Hans/common.json"
+        ],
+        "shell": [
+          "zh-Hans/shell.json"
+        ],
+        "auth": [
+          "zh-Hans/auth.json"
+        ],
+        "deployments": [
+          "zh-Hans/deployments.json"
+        ],
+        "tests": [
+          "zh-Hans/tests.json"
+        ],
+        "evidence": [
+          "zh-Hans/evidence.json"
+        ],
+        "sketches": [
+          "zh-Hans/sketches.json"
+        ],
+        "health": [
+          "zh-Hans/health.json"
+        ],
+        "usage": [
+          "zh-Hans/usage.json"
+        ],
+        "progress": [
+          "zh-Hans/progress.json"
+        ],
+        "bugs": [
+          "zh-Hans/bugs.json"
+        ],
+        "admin": [
+          "zh-Hans/admin.json"
+        ],
+        "plan": [
+          "zh-Hans/plan.json"
+        ],
+        "decisions": [
+          "zh-Hans/decisions.json"
+        ],
+        "glossary": [
+          "zh-Hans/glossary.json"
+        ],
+        "artifacts": [
+          "zh-Hans/artifacts.json"
+        ],
+        "performance": [
+          "zh-Hans/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "zh-Hant",
+      "nativeName": "繁體中文",
+      "englishName": "Chinese (Traditional)",
+      "countries": [
+        "TW"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "zh-Hant/common.json"
+        ],
+        "shell": [
+          "zh-Hant/shell.json"
+        ],
+        "auth": [
+          "zh-Hant/auth.json"
+        ],
+        "deployments": [
+          "zh-Hant/deployments.json"
+        ],
+        "tests": [
+          "zh-Hant/tests.json"
+        ],
+        "evidence": [
+          "zh-Hant/evidence.json"
+        ],
+        "sketches": [
+          "zh-Hant/sketches.json"
+        ],
+        "health": [
+          "zh-Hant/health.json"
+        ],
+        "usage": [
+          "zh-Hant/usage.json"
+        ],
+        "progress": [
+          "zh-Hant/progress.json"
+        ],
+        "bugs": [
+          "zh-Hant/bugs.json"
+        ],
+        "admin": [
+          "zh-Hant/admin.json"
+        ],
+        "plan": [
+          "zh-Hant/plan.json"
+        ],
+        "decisions": [
+          "zh-Hant/decisions.json"
+        ],
+        "glossary": [
+          "zh-Hant/glossary.json"
+        ],
+        "artifacts": [
+          "zh-Hant/artifacts.json"
+        ],
+        "performance": [
+          "zh-Hant/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ja",
+      "nativeName": "日本語",
+      "englishName": "Japanese",
+      "countries": [
+        "JP"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ja/common.json"
+        ],
+        "shell": [
+          "ja/shell.json"
+        ],
+        "auth": [
+          "ja/auth.json"
+        ],
+        "deployments": [
+          "ja/deployments.json"
+        ],
+        "tests": [
+          "ja/tests.json"
+        ],
+        "evidence": [
+          "ja/evidence.json"
+        ],
+        "sketches": [
+          "ja/sketches.json"
+        ],
+        "health": [
+          "ja/health.json"
+        ],
+        "usage": [
+          "ja/usage.json"
+        ],
+        "progress": [
+          "ja/progress.json"
+        ],
+        "bugs": [
+          "ja/bugs.json"
+        ],
+        "admin": [
+          "ja/admin.json"
+        ],
+        "plan": [
+          "ja/plan.json"
+        ],
+        "decisions": [
+          "ja/decisions.json"
+        ],
+        "glossary": [
+          "ja/glossary.json"
+        ],
+        "artifacts": [
+          "ja/artifacts.json"
+        ],
+        "performance": [
+          "ja/performance.json"
+        ]
+      }
+    },
+    {
+      "tag": "ko",
+      "nativeName": "한국어",
+      "englishName": "Korean",
+      "countries": [
+        "KR",
+        "KP"
+      ],
+      "direction": "ltr",
+      "status": "enabled",
+      "files": {
+        "common": [
+          "ko/common.json"
+        ],
+        "shell": [
+          "ko/shell.json"
+        ],
+        "auth": [
+          "ko/auth.json"
+        ],
+        "deployments": [
+          "ko/deployments.json"
+        ],
+        "tests": [
+          "ko/tests.json"
+        ],
+        "evidence": [
+          "ko/evidence.json"
+        ],
+        "sketches": [
+          "ko/sketches.json"
+        ],
+        "health": [
+          "ko/health.json"
+        ],
+        "usage": [
+          "ko/usage.json"
+        ],
+        "progress": [
+          "ko/progress.json"
+        ],
+        "bugs": [
+          "ko/bugs.json"
+        ],
+        "admin": [
+          "ko/admin.json"
+        ],
+        "plan": [
+          "ko/plan.json"
+        ],
+        "decisions": [
+          "ko/decisions.json"
+        ],
+        "glossary": [
+          "ko/glossary.json"
+        ],
+        "artifacts": [
+          "ko/artifacts.json"
+        ],
+        "performance": [
+          "ko/performance.json"
+        ]
+      }
+    }
+  ]
+}

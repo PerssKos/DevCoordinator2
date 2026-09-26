@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "Vinnufasaútskýring",
+  "scrollable_token_chart_83cb1f": "Skrunanlegt táknarit tákna",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Heildarfjöldi tákna frá þjónustuveitu eftir vinnufasa",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Staflaðir UTC-tímakubbar. Nákvæm gildi eru sýnd eftir gröfunum.",
+  "no_classified_token_activity_in_this_window_f460d0": "Engin flokkuð táknvirkni í þessum glugga.",
+  "work_activity_bf3178": "Virkni vinnu",
+  "total_tokens_e7601c": "Heildarfjöldi tákna",
+  "activity_breakdown_7ebc89": "Sundurliðun virkni",
+  "separate_measurements_they_are_not_added_togethe_329294": "Aðskildar mælingar; þær eru ekki lagðar saman.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Engar niðurstöður verkfæra í þessum glugga.",
+  "total_c9b3c3": "Samtals",
+  "exact_bucket_values_a2a7fe": "Nákvæm gildi kubba",
+  "utc_bucket_fbd8d9": "UTC-kubbur",
+  "data_status_87d914": "Gagnastaða",
+  "repository_13d6ff": "Geymsla",
+  "model_requests_888826": "Beiðnir módels",
+  "tool_calls_da5122": "Verkfæraköll",
+  "execution_time_1069e2": "Keyrslutími",
+  "data_included_217858": "Gögn með",
+  "time_breakdown_ca0aca": "Sundurliðun tíma",
+  "separate_not_added_together_6dbbe5": "(aðskilið, ekki lagt saman)",
+  "tool_outcomes_3a7a68": "Niðurstöður verkfæra",
+  "data_completeness_c7114d": "Gagnheilleiki",
+  "counting_method_7a480a": "Talningaraðferð",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Heildarfjöldi tákna frá þjónustuveitu; skyndiminni inntak og röksemdafærsla eru hlutar hans.",
+  "schema_value19_taxonomy_value20_cdddf8": "Líkan {value19} · flokkunarfræði {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Umhverfi sem skiluðu engum gögnum og ómæld gildi eru útilokuð í stað þess að teljast núll.",
+  "token_subsets_unavailable_4cec86": "Undirmengi tákna ekki tiltæk.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} óþekkt bil",
+      "other": "{count} óþekkt bil"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Um Codex-umhverfi",
+  "explain_codex_usage_data_completeness_63247d": "Útskýra heilleika Codex-notkunargagna",
+  "tokens_a039df": "Tákn"
+}

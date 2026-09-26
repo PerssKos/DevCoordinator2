@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Composant",
+  "summary_8e76a9": "Résumé",
+  "expected_actual_2457a7": "Attendu / réel",
+  "steps_1de3df": "Étapes",
+  "seen_8894cf": "Observation",
+  "correlations_f54dae": "Corrélations",
+  "open_bugs_dce3d4": "Anomalies ouvertes",
+  "report_a_bug_f75e0b": "Signaler une anomalie",
+  "report_b6ce78": "Signaler",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Uniquement des entrées courtes et autonomes : aucun secret, journal brut ou chemin privé.",
+  "close_310ff2": "fermer",
+  "expected": "Attendu",
+  "actual": "Réel"
+}

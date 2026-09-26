@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Tästä vaihtoehdosta ei ole vielä kommentteja.",
+  "sketch_set_review_1e4713": "Luonnossarjan tarkastelu",
+  "close_7d9eb7": "Sulje",
+  "selection_mode_1935ae": "Valintatila",
+  "close_set_review_2680d1": "Sulje sarjan tarkastelu",
+  "sketch_set_options_62656f": "Luonnossarjan vaihtoehdot",
+  "current_option_f4a3f8": "Nykyinen vaihtoehto",
+  "comments_355f79": "Kommentit",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Selitä, miksi valitsit tämän vaihtoehdon tai vaihtoehtosarjan.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Valinnat tallennetaan muodossa Säilytä, Hylkää tai Päättämätön.",
+  "sketches_a56d78": "Luonnokset",
+  "review_generated_options_by_set_then_select_one__020509": "Tarkastele luotuja vaihtoehtoja sarjoittain ja valitse yksi tai useampi jatkoa varten.",
+  "publish_from_a_skill_f33a0e": "Julkaise taidon kautta",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Rekisteröity taito julkaisee luonnokset",
+  "value2_selected_value3_options_b64a24": "{value2} valittu · {value3} vaihtoehtoa",
+  "value5_sketches_value6_selected_87bdd8": "{value5} luonnosta · {value6} valittu",
+  "value6_rejected_value7_undecided_bbc778": "{value6} hylätty · {value7} päättämätön",
+  "reviewer_d29f46": "Tarkastaja",
+  "option_unavailable_d03e4e": "Vaihtoehto ei ole saatavilla",
+  "selected_57fd7a": "Valittu",
+  "rejected_aea4a0": "Hylätty",
+  "undecided_00cc36": "Päättämätön",
+  "select_2a7802": "Valitse",
+  "reject_ab604a": "Hylkää",
+  "leave_undecided_65c5c0": "Jätä päättämättömäksi",
+  "set_6ee0eb": "sarja",
+  "sets_82c6db": "sarjat",
+  "no_selection_211f6b": "Ei valintaa",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Lisää konteksti valittuun vaihtoehtoon",
+      "other": "Lisää konteksti valittuihin vaihtoehtoihin"
+    }
+  },
+  "review_set_ca242c": "Tarkastele sarjaa",
+  "open_sketch_3ccc5c": "Avaa luonnos",
+  "single_choice_45a76a": "Yksi valinta",
+  "choose_multiple_b76dc5": "Valitse useita",
+  "open_full_review_canvas_26fc95": "Avaa koko tarkastelukangas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} sarja",
+      "other": "{count} sarjaa"
+    }
+  }
+}

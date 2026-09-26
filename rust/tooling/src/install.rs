@@ -151,6 +151,7 @@ pub struct InstallationPlan {
     pub manifest_path: String,
     pub daemon_unit_path: String,
     pub edge_unit_path: String,
+    pub tests_slice_unit_path: String,
     pub binary_links: BTreeMap<String, String>,
 }
 
@@ -554,8 +555,17 @@ pub fn installation_plan(
         manifest_path: path_text(manifest_path)?,
         daemon_unit_path: "/etc/systemd/system/devcoordinator2.service".to_owned(),
         edge_unit_path: "/etc/systemd/system/devcoordinator2-edge.service".to_owned(),
+        tests_slice_unit_path: "/etc/systemd/system/devcoordinator2-tests.slice".to_owned(),
         binary_links: links,
     })
+}
+
+pub fn render_tests_slice_unit(source_root: &Path) -> Result<String, String> {
+    let template = read_template(&source_root.join("deploy/devcoordinator2-tests.slice"))?;
+    if !template.contains("MemoryHigh=70%") || !template.contains("MemoryMax=80%") {
+        return Err("test slice does not declare memory containment".to_owned());
+    }
+    Ok(template)
 }
 
 pub fn validate_registered_repository_configs(
@@ -2082,6 +2092,21 @@ mod tests {
             paths,
             ["/home /var/lib/devcoordinator2 /run/devcoordinator2 /etc/devcoordinator2"]
         );
+    }
+
+    #[test]
+    fn rendered_test_slice_contains_memory_containment() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path();
+        std::fs::create_dir(source.join("deploy")).unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2-tests.slice"),
+            include_str!("../../../deploy/devcoordinator2-tests.slice"),
+        )
+        .unwrap();
+        let rendered = render_tests_slice_unit(source).unwrap();
+        assert!(rendered.contains("MemoryHigh=70%"));
+        assert!(rendered.contains("MemoryMax=80%"));
     }
 
     #[test]

@@ -11,50 +11,46 @@
 <link rel="stylesheet" href="/artifacts.css?v=readable-evidence-20260906">
 <link rel="stylesheet" href="/tests.css?v=shared-workspace-20260907">
 <link rel="stylesheet" href="/workspace.css?v=sketch-annotation-20260923">
+<link rel="stylesheet" href="/i18n.css">
+
 <link rel="stylesheet" href="/health.css?v=incident-inbox-20260923">
 <link rel="stylesheet" href="/performance.css?v=performance-20260922">
 </head>
 <body>
 <header class="top">
   <a class="brand" href="#/plan">DevCoordinator2</a>
-  <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open navigation" aria-controls="nav" aria-expanded="false"><span class="ti ti-menu-2" aria-hidden="true"></span></button>
-  <nav id="nav" aria-label="Primary">
-    <a href="#/plan" data-view="plan">Repositories</a>
-    <a href="#/health" data-view="health">Health</a>
-    <a href="#/bugs" data-view="bugs">Bugs</a>
-    <a href="#/glossary/shared" data-view="glossary">Shared glossary</a>
-    <a href="#/tests?settings=capacity" data-view="test-capacity" id="test-capacity-open">Test capacity</a>
-    <a href="#/tests?settings=retention" data-view="test-retention" id="test-log-retention-open">Log retention</a>
-    <a href="#/sketches" data-view="sketches">Sketches</a>
-    <a href="#/admin" data-view="admin" id="nav-admin" hidden>Administration</a>
+  <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open navigation" aria-controls="nav" aria-expanded="false" data-i18n-attrs='{"aria-label":"shell.open_navigation_0ed77f"}'><span class="ti ti-menu-2" aria-hidden="true"></span></button>
+  <nav id="nav" aria-label="Primary" data-i18n-attrs='{"aria-label":"shell.primary_efe10c"}'>
+    <a href="#/plan" data-view="plan"><span data-i18n="shell.repositories_1e32af">Repositories</span></a>
+    <a href="#/health" data-view="health"><span data-i18n="shell.health_558984">Health</span></a>
+    <a href="#/bugs" data-view="bugs"><span data-i18n="shell.bugs_ff7c54">Bugs</span></a>
+    <a href="#/glossary/shared" data-view="glossary"><span data-i18n="shell.shared_glossary_3551c4">Shared glossary</span></a>
+    <a href="#/tests?settings=capacity" data-view="test-capacity" id="test-capacity-open"><span data-i18n="shell.test_capacity_408011">Test capacity</span></a>
+    <a href="#/tests?settings=retention" data-view="test-retention" id="test-log-retention-open"><span data-i18n="shell.log_retention_46c385">Log retention</span></a>
+    <a href="#/sketches" data-view="sketches"><span data-i18n="shell.sketches_a56d78">Sketches</span></a>
+    <a href="#/admin" data-view="admin" id="nav-admin" hidden><span data-i18n="shell.administration_4b42c6">Administration</span></a>
   </nav>
-  <div class="who"><button class="btn btn-small" id="theme-toggle" type="button">Appearance</button><span id="who-email" class="mono"></span> <a href="/auth/logout" class="btn btn-small">Sign out</a></div>
+  <div class="who"><button class="btn btn-small" id="theme-toggle" type="button"><span data-i18n="shell.appearance_3907fa">Appearance</span></button><span id="who-email" class="mono"></span> <a href="/auth/logout" class="btn btn-small"><span data-i18n="shell.sign_out_48f0d3">Sign out</span></a></div>
 </header>
 <div id="banner" class="banner" hidden></div>
 <div id="repository-workspace" class="repository-workspace">
-  <button type="button" id="repository-overlay" class="repository-overlay" aria-label="Close repository list" tabindex="-1" hidden></button>
-  <aside id="repository-sidebar" class="repository-sidebar" aria-label="Repository selection" hidden>
-    <div class="repository-sidebar-heading"><strong>Repositories</strong><button type="button" id="repository-refresh" class="workspace-icon" aria-label="Refresh repositories"><span class="ti ti-refresh" aria-hidden="true"></span></button><button type="button" id="repository-close" class="workspace-icon" aria-label="Close repository list"><span class="ti ti-x" aria-hidden="true"></span></button></div>
-    <label class="repository-search"><input id="repository-search" type="search" aria-label="Find a repository" placeholder="Find a repository"></label>
-    <nav id="repository-list" class="repository-list" aria-label="Repositories"></nav>
+  <button type="button" id="repository-overlay" class="repository-overlay" aria-label="Close repository list" tabindex="-1" hidden data-i18n-attrs='{"aria-label":"shell.close_repository_list_174ddd"}'></button>
+  <aside id="repository-sidebar" class="repository-sidebar" aria-label="Repository selection" hidden data-i18n-attrs='{"aria-label":"shell.repository_selection_cdbb90"}'>
+    <div class="repository-sidebar-heading"><strong><span data-i18n="shell.repositories_1e32af">Repositories</span></strong><button type="button" id="repository-refresh" class="workspace-icon" aria-label="Refresh repositories" data-i18n-attrs='{"aria-label":"shell.refresh_repositories_31be4d"}'><span class="ti ti-refresh" aria-hidden="true"></span></button><button type="button" id="repository-close" class="workspace-icon" aria-label="Close repository list" data-i18n-attrs='{"aria-label":"shell.close_repository_list_174ddd"}'><span class="ti ti-x" aria-hidden="true"></span></button></div>
+    <label class="repository-search"><input id="repository-search" type="search" aria-label="Find a repository" placeholder="Find a repository" data-i18n-attrs='{"aria-label":"shell.find_a_repository_0733ca","placeholder":"shell.find_a_repository_0733ca"}'></label>
+    <nav id="repository-list" class="repository-list" aria-label="Repositories" data-i18n-attrs='{"aria-label":"shell.repositories_1e32af"}'></nav>
     <p id="repository-status" role="status"></p>
     <details id="workspace-checkouts" class="workspace-checkouts" hidden></details>
-    <div id="repository-resize" class="repository-resize" role="separator" aria-label="Repository sidebar width" aria-orientation="vertical" aria-controls="repository-sidebar" aria-valuemin="240" aria-valuemax="480" aria-valuenow="280" tabindex="0"></div>
+    <div id="repository-resize" class="repository-resize" role="separator" aria-label="Repository sidebar width" aria-orientation="vertical" aria-controls="repository-sidebar" aria-valuemin="240" aria-valuemax="480" aria-valuenow="280" tabindex="0" data-i18n-attrs='{"aria-label":"shell.repository_sidebar_width_846c82"}'></div>
   </aside>
   <div class="workspace-content">
-    <header id="workspace-context" class="workspace-context" hidden><div class="workspace-title"><button type="button" id="repository-toggle" class="workspace-icon" aria-label="Show repositories" aria-controls="repository-sidebar" aria-expanded="false"><span class="ti ti-menu-2" aria-hidden="true"></span></button><p id="workspace-heading"></p><button type="button" id="repository-presentation" class="workspace-icon" aria-label="Edit repository name and icon" title="Edit repository name and icon" hidden><span class="ti ti-pencil" aria-hidden="true"></span></button></div><p id="workspace-root" hidden></p><span id="workspace-record-scope" hidden></span><nav id="workspace-aspects" class="workspace-aspects" aria-label="Repository aspects"></nav></header>
-    <nav id="workspace-work-views" class="workspace-work-views" aria-label="Plan and progress views" hidden></nav>
-    <main id="main" class="main"><p class="muted">Loading…</p></main>
+    <header id="workspace-context" class="workspace-context" hidden><div class="workspace-title"><button type="button" id="repository-toggle" class="workspace-icon" aria-label="Show repositories" aria-controls="repository-sidebar" aria-expanded="false" data-i18n-attrs='{"aria-label":"shell.show_repositories_4cad75"}'><span class="ti ti-menu-2" aria-hidden="true"></span></button><p id="workspace-heading"></p><button type="button" id="repository-presentation" class="workspace-icon" aria-label="Edit repository name and icon" title="Edit repository name and icon" hidden data-i18n-attrs='{"aria-label":"shell.edit_repository_name_and_icon_9d30ee","title":"shell.edit_repository_name_and_icon_9d30ee"}'><span class="ti ti-pencil" aria-hidden="true"></span></button></div><p id="workspace-root" hidden></p><span id="workspace-record-scope" hidden></span><nav id="workspace-aspects" class="workspace-aspects" aria-label="Repository aspects" data-i18n-attrs='{"aria-label":"shell.repository_aspects_f5d7d3"}'></nav></header>
+    <nav id="workspace-work-views" class="workspace-work-views" aria-label="Plan and progress views" hidden data-i18n-attrs='{"aria-label":"shell.plan_and_progress_views_ae71cd"}'></nav>
+    <main id="main" class="main"><p class="muted"><span data-i18n="shell.loading_ba3bbb">Loading…</span></p><div class="skeleton" aria-hidden="true"></div></main>
   </div>
 </div>
 <div id="toasts" class="toasts" aria-live="polite"></div>
-<script src="/glossary.js?v=glossary-20260905"></script>
-<script src="/artifact-content.js?v=readable-evidence-20260906b"></script>
-<script src="/artifacts.js?v=shared-workspace-20260907"></script>
-<script src="/tests.js?v=shared-workspace-20260907"></script>
-<script src="/workspace.js?v=shared-workspace-20260907"></script>
-<script src="/performance.js?v=performance-20260922"></script>
-<script src="/health.js?v=incident-inbox-20260923"></script>
-<script src="/app.js?v=sketch-annotation-20260923"></script>
+<script type="module" src="/bootstrap.mjs"></script>
+
 </body>
 </html>

@@ -216,6 +216,51 @@ pub struct PathOnly {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ServerRegister {
+    #[schemars(length(min = 1, max = 128))]
+    pub agent: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub project: String,
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub role: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub cwd: String,
+    #[schemars(length(max = 128))]
+    pub argv: Vec<String>,
+    pub pid: u32,
+    pub port: u16,
+    #[schemars(length(min = 1, max = 128))]
+    pub host: String,
+    #[schemars(length(min = 1, max = 2048))]
+    pub health_url: String,
+    #[schemars(range(min = 1, max = 60))]
+    pub health_timeout: u16,
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerList {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerStop {
+    #[schemars(length(min = 1, max = 128))]
+    pub agent: String,
+    #[schemars(length(min = 1, max = 4096))]
+    pub project: String,
+    #[schemars(length(min = 1, max = 128))]
+    pub name: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TestHistory {
     pub path: String,
     #[serde(default)]

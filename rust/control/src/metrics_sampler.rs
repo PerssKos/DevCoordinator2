@@ -9,6 +9,8 @@ use std::time::Duration as StdDuration;
 use devcoordinator2_api::results::{HealthHost, HostReconciliation, MetricSample};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tracing::warn;
 
 use crate::alerts::{AlertEngine, Condition};
 use crate::config::Config;
@@ -377,16 +379,12 @@ impl MetricSampler {
     }
 
     pub fn storage_tick(&self) -> Result<(), ProtocolError> {
-        let mut working = self
-            .inner
-            .working
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.inner.storage_requested.store(false, Ordering::SeqCst);
         let (repositories, worktrees, deployments, components, observed) =
             self.storage_records()
                 .inspect_err(|_| self.request_storage())?;
         let mut storage = BTreeMap::new();
+        let mut metric_records = Vec::new();
         let mut per_repository = repositories
             .iter()
             .map(|(id, _)| (id.clone(), repository_storage()))
@@ -494,7 +492,7 @@ impl MetricSampler {
                     .or_insert_with(BTreeMap::new)
                     .extend(facts.clone());
                 for (metric, value) in facts {
-                    record(&mut working, &key.kind, &key.id, &metric, value as f64);
+                    metric_records.push((key.kind.clone(), key.id.clone(), metric, value as f64));
                 }
             }
         }
@@ -531,13 +529,12 @@ impl MetricSampler {
         for (repository_id, mut buckets) in per_repository {
             let total = buckets.values().copied().fold(0_u64, u64::saturating_add);
             buckets.insert("total".into(), total);
-            record(
-                &mut working,
-                "repository",
-                &repository_id,
-                "storage_bytes",
+            metric_records.push((
+                "repository".into(),
+                repository_id.clone(),
+                "storage_bytes".into(),
                 total as f64,
-            );
+            ));
             storage.insert(SubjectKey::new("repository", repository_id), buckets);
         }
         let state_size = self
@@ -546,13 +543,6 @@ impl MetricSampler {
             .directory_size(&self.inner.config.state_dir, StdDuration::from_secs(60))
             .unwrap_or(0);
         let filesystem = self.inner.source.filesystem(Path::new("/"));
-        record(
-            &mut working,
-            "host",
-            "host",
-            "storage_bytes",
-            filesystem.used as f64,
-        );
         let managed_total = storage
             .iter()
             .filter(|(key, _)| key.kind == "repository")
@@ -583,6 +573,21 @@ impl MetricSampler {
                 ),
             ]),
         );
+        let mut working = self
+            .inner
+            .working
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (kind, id, metric, value) in metric_records {
+            record(&mut working, &kind, &id, &metric, value);
+        }
+        record(
+            &mut working,
+            "host",
+            "host",
+            "storage_bytes",
+            filesystem.used as f64,
+        );
         let mut state = self
             .inner
             .state
@@ -604,6 +609,7 @@ impl MetricSampler {
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) {
         let mut next_sample = tokio::time::Instant::now();
         let mut next_storage = tokio::time::Instant::now();
+        let mut storage_task: Option<JoinHandle<Result<(), ProtocolError>>> = None;
         loop {
             if *shutdown.borrow() {
                 break;
@@ -615,9 +621,11 @@ impl MetricSampler {
                 next_sample =
                     tokio::time::Instant::now() + StdDuration::from_secs(u64::from(SAMPLE_SECONDS));
             }
-            if now >= next_storage || self.inner.storage_requested.load(Ordering::SeqCst) {
+            if storage_task.is_none()
+                && (now >= next_storage || self.inner.storage_requested.load(Ordering::SeqCst))
+            {
                 let sampler = self.clone();
-                let _ = tokio::task::spawn_blocking(move || sampler.storage_tick()).await;
+                storage_task = Some(tokio::task::spawn_blocking(move || sampler.storage_tick()));
                 next_storage = tokio::time::Instant::now()
                     + StdDuration::from_secs(u64::from(STORAGE_SECONDS));
             }
@@ -627,8 +635,26 @@ impl MetricSampler {
                         break;
                     }
                 }
+                completed = async {
+                    storage_task
+                        .as_mut()
+                        .expect("storage task guard must match task state")
+                        .await
+                }, if storage_task.is_some() => {
+                    storage_task = None;
+                    if let Ok(Err(error)) = completed {
+                        warn!(%error, "storage sampler failed");
+                    }
+                }
                 () = tokio::time::sleep(StdDuration::from_millis(100)) => {}
             }
+        }
+        if let Some(task) = storage_task
+            && tokio::time::timeout(StdDuration::from_secs(5), task)
+                .await
+                .is_err()
+        {
+            warn!("storage sampler did not stop within shutdown grace period");
         }
         let _ = self.flush();
     }

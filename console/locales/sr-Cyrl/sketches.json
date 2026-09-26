@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Још нема коментара о овој опцији.",
+  "sketch_set_review_1e4713": "Преглед скупа скица",
+  "close_7d9eb7": "Затвори",
+  "selection_mode_1935ae": "Начин избора",
+  "close_set_review_2680d1": "Затвори преглед скупа",
+  "sketch_set_options_62656f": "Опције скупа скица",
+  "current_option_f4a3f8": "Тренутна опција",
+  "comments_355f79": "Коментари",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Објасните зашто сте изабрали ову опцију или скуп опција.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Избори се чувају као Задржи, Одбаци или Неодлучено.",
+  "sketches_a56d78": "Скице",
+  "review_generated_options_by_set_then_select_one__020509": "Прегледајте генерисане опције по скуповима, па изаберите једну или више за наставак.",
+  "publish_from_a_skill_f33a0e": "Објави путем вештине",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Скице објављује регистрована вештина",
+  "value2_selected_value3_options_b64a24": "{value2} изабрано · {value3} опција",
+  "value5_sketches_value6_selected_87bdd8": "{value5} скица · {value6} изабрано",
+  "value6_rejected_value7_undecided_bbc778": "{value6} одбачено · {value7} неодлучено",
+  "reviewer_d29f46": "Рецензент",
+  "option_unavailable_d03e4e": "Опција није доступна",
+  "selected_57fd7a": "Изабрано",
+  "rejected_aea4a0": "Одбачено",
+  "undecided_00cc36": "Неодлучено",
+  "select_2a7802": "Изабери",
+  "reject_ab604a": "Одбаци",
+  "leave_undecided_65c5c0": "Остави неодлучено",
+  "set_6ee0eb": "скуп",
+  "sets_82c6db": "скупови",
+  "no_selection_211f6b": "Нема избора",
+  "review_set_ca242c": "Прегледај скуп",
+  "open_sketch_3ccc5c": "Отвори скицу",
+  "single_choice_45a76a": "Један избор",
+  "choose_multiple_b76dc5": "Изабери више",
+  "open_full_review_canvas_26fc95": "Отвори цело платно прегледа",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Додај контекст изабраној опцији",
+      "few": "Додај контекст изабраним опцијама",
+      "other": "Додај контекст изабраним опцијама"
+    }
+  },
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} скуп",
+      "few": "{count} скупа",
+      "other": "{count} скупова"
+    }
+  }
+}

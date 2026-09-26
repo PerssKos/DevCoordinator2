@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "nie komentáre na tento možnosť ešte.",
+  "sketch_set_review_1e4713": "náčrt súprava kontrola",
+  "close_7d9eb7": "zatvoriť",
+  "selection_mode_1935ae": "výber mode",
+  "close_set_review_2680d1": "zatvoriť súprava kontrola",
+  "sketch_set_options_62656f": "náčrt súprava možnosti",
+  "current_option_f4a3f8": "aktuálne možnosť",
+  "comments_355f79": "komentáre",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "vysvetliť prečo vy chose tento možnosť alebo súprava z možnosti.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "výbery uložiť as ponechať, zamietnuť, alebo nerozhodnuté.",
+  "sketches_a56d78": "náčrty",
+  "review_generated_options_by_set_then_select_one__020509": "kontrola generated možnosti by súprava, then vybrať jeden alebo several do carry forward.",
+  "publish_from_a_skill_f33a0e": "zverejniť z jeden skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "náčrty sú zverejnené by jeden registrované skill",
+  "value2_selected_value3_options_b64a24": "{value2} vybrané · {value3} možnosti",
+  "value5_sketches_value6_selected_87bdd8": "{value5} náčrty · {value6} vybrané",
+  "value6_rejected_value7_undecided_bbc778": "{value6} zamietnuté · {value7} nerozhodnuté",
+  "reviewer_d29f46": "kontrolór",
+  "option_unavailable_d03e4e": "možnosť nedostupné",
+  "selected_57fd7a": "vybrané",
+  "rejected_aea4a0": "zamietnuté",
+  "undecided_00cc36": "nerozhodnuté",
+  "select_2a7802": "vybrať",
+  "reject_ab604a": "zamietnuť",
+  "leave_undecided_65c5c0": "ponechať nerozhodnuté",
+  "set_6ee0eb": "súprava",
+  "sets_82c6db": "súpravy",
+  "no_selection_211f6b": "nie výber",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "pridať kontext do ten vybrané možnosť",
+      "other": "pridať kontext do ten vybrané možnosti",
+      "few": "Add context to the selected options",
+      "many": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "kontrola súprava",
+  "open_sketch_3ccc5c": "otvoriť náčrt",
+  "single_choice_45a76a": "jedna choice",
+  "choose_multiple_b76dc5": "vybrať viaceré",
+  "open_full_review_canvas_26fc95": "otvoriť úplné kontrola canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} súprava",
+      "other": "{count} súpravy",
+      "few": "{count} sets",
+      "many": "{count} sets"
+    }
+  }
+}

@@ -158,7 +158,8 @@ body.evidence-shell { overflow: visible; }
   .workspace-aspects { flex-wrap: wrap; gap: 0 16px; margin-top: 4px; overflow-x: visible; }
   .workspace-aspects a { font-size: 13px; }
   .evidence-shell .workspace-aspects a { padding: 8px 0; }
-  .workspace-work-views { padding: 10px 14px 0; }
+  .workspace-work-views { padding: 10px 14px 0; gap: 2px; flex-wrap: wrap; }
+  .workspace-work-views a { padding-inline: 5px; }
   .repository-scoped .main { padding: 16px 14px; }
   .repository-scoped .evidence-page { height: auto; min-height: 0; }
 }

@@ -4,6 +4,7 @@ use devcoordinator2_api::params::{ArtifactCatalog as CatalogParams, ArtifactFile
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 use crate::access::Caller;
 use crate::database::Database;
@@ -18,6 +19,7 @@ pub(crate) struct DeliveryService {
     database: Database,
     artifacts: TestArtifactService,
     base_domain: String,
+    native_console: Option<(PathBuf, String)>,
 }
 
 impl DeliveryService {
@@ -30,7 +32,15 @@ impl DeliveryService {
             database,
             artifacts,
             base_domain,
+            native_console: None,
         }
+    }
+
+    pub(crate) fn with_native_console(mut self, root: PathBuf, daemon_commit: String) -> Self {
+        if daemon_commit.len() == 40 && daemon_commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            self.native_console = Some((root, daemon_commit));
+        }
+        self
     }
 
     pub(crate) fn deliver(
@@ -139,6 +149,9 @@ impl DeliveryService {
             )?;
             if params.kind == Kind::WebDeployment {
                 self.validate_web_deployment(&params, &verification, &receipt.repository_id)?;
+            }
+            if params.kind == Kind::NativeConsole {
+                self.validate_native_console(&params, &verification)?;
             }
             if params.kind == Kind::LocalExecutable
                 && verification.access
@@ -288,6 +301,62 @@ impl DeliveryService {
         Ok(())
     }
 
+    fn validate_native_console(
+        &self,
+        params: &Deliver,
+        proof: &Verification,
+    ) -> Result<(), ProtocolError> {
+        let (root, daemon_commit) = self
+            .native_console
+            .as_ref()
+            .ok_or_else(|| invalid("Native Console source binding is unavailable"))?;
+        let observation = proof
+            .native_console
+            .as_ref()
+            .ok_or_else(|| invalid("Native Console observation is missing"))?;
+        let root = root
+            .canonicalize()
+            .map_err(|_| invalid("Native Console source is unavailable"))?;
+        let requested = std::fs::canonicalize(&params.path)
+            .map_err(|_| invalid("Native Console evidence checkout is unavailable"))?;
+        if requested != root || observation.daemon_source_commit != *daemon_commit {
+            return Err(invalid(
+                "Native Console evidence does not match the running source binding",
+            ));
+        }
+        if observation.http_status != 200
+            || observation.content_type.split(';').next().map(str::trim) != Some("text/html")
+        {
+            return Err(invalid(
+                "Native Console observation requires a successful HTML response",
+            ));
+        }
+        let expected = reqwest::Url::parse(&format!("https://console.{}/", self.base_domain))
+            .map_err(|_| invalid("Configured Console origin is unavailable"))?;
+        let access = reqwest::Url::parse(&proof.access)
+            .map_err(|_| invalid("Observed Console origin is invalid"))?;
+        if self.base_domain.is_empty() || access != expected {
+            return Err(invalid(
+                "Native Console access must be its configured HTTPS root",
+            ));
+        }
+        let current = devcoordinator2_executor_core::source_digest(&root)
+            .map_err(|_| invalid("Cannot verify current Console source identity"))?;
+        let index = std::fs::read(root.join("console/index.html"))
+            .map_err(|_| invalid("Native Console index is unavailable"))?;
+        let index_digest: String = Sha256::digest(index)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        if current != params.source_sha256
+            || index_digest != proof.observed_sha256
+            || console_assets_digest(&root)? != observation.assets_sha256
+        {
+            return Err(invalid("Native Console source or observed index changed"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn receipt(
         &self,
         params: devcoordinator2_api::review::Reference,
@@ -310,6 +379,38 @@ impl DeliveryService {
     }
 }
 
+fn console_assets_digest(root: &std::path::Path) -> Result<String, ProtocolError> {
+    let paths = crate::repository::tracked_console_paths(root)
+        .ok_or_else(|| invalid("Cannot identify native Console assets"))?;
+    let mut digest = Sha256::new();
+    digest.update(b"devcoordinator2-console-assets-v1\0");
+    for relative in paths {
+        let file = root.join(&relative);
+        let metadata = file
+            .symlink_metadata()
+            .map_err(|_| invalid("Console asset unavailable"))?;
+        if !metadata.is_file() || metadata.len() > 1_048_576 {
+            return Err(invalid("Console asset must be a bounded regular file"));
+        }
+        let bytes = std::fs::read(file).map_err(|_| invalid("Console asset unavailable"))?;
+        digest.update(relative.as_bytes());
+        digest.update(b"\0");
+        digest.update(bytes.len().to_string().as_bytes());
+        digest.update(b"\0");
+        let hash: String = Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        digest.update(hash.as_bytes());
+        digest.update(b"\0");
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
 fn validate_observation(
     params: &Deliver,
     proof: &Verification,
@@ -325,6 +426,7 @@ fn validate_observation(
         || proof.checked_at_ms < started_ms
         || proof.checked_at_ms > finished_ms
         || (params.kind != Kind::WebDeployment && proof.deployment.is_some())
+        || (params.kind != Kind::NativeConsole && proof.native_console.is_some())
     {
         return Err(invalid(
             "Retained delivery observation mismatches kind, target, source, file digest or run timestamp",
@@ -345,7 +447,7 @@ fn validate_observation(
         (Kind::LocalExecutable, VerificationObservation::ExecutableSmokePassed) => {
             proof.access.starts_with("artifact://") && !proof.access.contains(['?', '#', '@'])
         }
-        (Kind::WebDeployment, VerificationObservation::WebRoutePassed) => {
+        (Kind::WebDeployment | Kind::NativeConsole, VerificationObservation::WebRoutePassed) => {
             reqwest::Url::parse(&proof.access).is_ok_and(|url| {
                 (url.scheme() == "https"
                     || (url.scheme() == "http" && url.host_str() == Some("127.0.0.1")))

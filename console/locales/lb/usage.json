@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "Aarbecht Phas legend",
+  "scrollable_token_chart_83cb1f": "Scrollable Token Diagramm",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Provider-gemellt Total Tokenen vun Aarbecht Phas",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stacked UTC Zäit buckets. genee Wäerter sinn listed duerno d Diagrammer.",
+  "no_classified_token_activity_in_this_window_f460d0": "nee classified Token Aktivitéit an dëst Fënster.",
+  "work_activity_bf3178": "Aarbecht Aktivitéit",
+  "total_tokens_e7601c": "Total Tokenen",
+  "activity_breakdown_7ebc89": "Aktivitéit breakdown",
+  "separate_measurements_they_are_not_added_togethe_329294": "getrennt Moossungen; they sinn net derbäigesat together.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "nee Tool Resultater an dëst Fënster.",
+  "total_c9b3c3": "Lëtzebuergesch: Total",
+  "exact_bucket_values_a2a7fe": "genee Intervall Wäerter",
+  "utc_bucket_fbd8d9": "UTC Intervall",
+  "data_status_87d914": "Donnéeën Status",
+  "repository_13d6ff": "Lëtzebuergesch: Repository",
+  "model_requests_888826": "Lëtzebuergesch: Model requests",
+  "tool_calls_da5122": "Tool Opriff",
+  "execution_time_1069e2": "Ausféierung Zäit",
+  "data_included_217858": "Donnéeën abegraff",
+  "time_breakdown_ca0aca": "Zäit breakdown",
+  "separate_not_added_together_6dbbe5": "(getrennt, net derbäigesat together)",
+  "tool_outcomes_3a7a68": "Tool Resultater",
+  "data_completeness_c7114d": "Donnéeën Vollstännegkeet",
+  "counting_method_7a480a": "Zielen Method",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Provider-gemellt Total Tokenen; cacheiert Input an Begrënnung sinn subsets.",
+  "schema_value19_taxonomy_value20_cdddf8": "Lëtzebuergesch: Schema {value19} · taxonomy {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Ëmfelder that supplied nee Donnéeën an net gemooss Wäerter sinn excluded rather than treated wéi null.",
+  "token_subsets_unavailable_4cec86": "Token subsets net disponibel.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} onbekannt Intervall",
+      "other": "{count} onbekannt Intervaller"
+    }
+  },
+  "about_codex_environments_4a2e3e": "iwwer Codex Ëmfelder",
+  "explain_codex_usage_data_completeness_63247d": "erklären Codex Notzung Donnéeën Vollstännegkeet",
+  "tokens_a039df": "Tokenen"
+}

@@ -353,8 +353,15 @@ fn run_bounded(program: &Path, arguments: &[OsString], timeout: Duration) -> Opt
         let now = Instant::now();
         if now >= deadline {
             let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
+            // A filesystem walk can be stuck in uninterruptible disk sleep.
+            // Waiting here would pin the caller forever after the timeout and
+            // can stall the health sampler. Reap asynchronously instead; the
+            // service-owned process/cgroup remains responsible for eventual
+            // cleanup if the kernel cannot terminate it immediately.
+            thread::spawn(move || {
+                let _ = child.wait();
+                let _ = reader.join();
+            });
             return None;
         }
         thread::sleep(PROCESS_POLL.min(deadline.saturating_duration_since(now)));

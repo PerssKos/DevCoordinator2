@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "No comments on this option yet.",
+  "sketch_set_review_1e4713": "Sketch set review",
+  "close_7d9eb7": "Close",
+  "selection_mode_1935ae": "Selection mode",
+  "close_set_review_2680d1": "Close set review",
+  "sketch_set_options_62656f": "Sketch set options",
+  "current_option_f4a3f8": "Current option",
+  "comments_355f79": "Comments",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Explain why you chose this option or set of options.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Selections save as Keep, Reject, or Undecided.",
+  "sketches_a56d78": "Sketches",
+  "review_generated_options_by_set_then_select_one__020509": "Review generated options by set, then select one or several to carry forward.",
+  "publish_from_a_skill_f33a0e": "Publish from a skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Sketches are published by a registered skill",
+  "value2_selected_value3_options_b64a24": "{value2} selected · {value3} options",
+  "value5_sketches_value6_selected_87bdd8": "{value5} sketches · {value6} selected",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rejected · {value7} undecided",
+  "reviewer_d29f46": "Reviewer",
+  "option_unavailable_d03e4e": "Option unavailable",
+  "selected_57fd7a": "Selected",
+  "rejected_aea4a0": "Rejected",
+  "undecided_00cc36": "Undecided",
+  "select_2a7802": "Select",
+  "reject_ab604a": "Reject",
+  "leave_undecided_65c5c0": "Leave undecided",
+  "set_6ee0eb": "set",
+  "sets_82c6db": "sets",
+  "no_selection_211f6b": "No selection",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Add context to the selected option",
+      "other": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "Review set",
+  "open_sketch_3ccc5c": "Open sketch",
+  "single_choice_45a76a": "Single choice",
+  "choose_multiple_b76dc5": "Choose multiple",
+  "open_full_review_canvas_26fc95": "Open full review canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} set",
+      "other": "{count} sets"
+    }
+  }
+}

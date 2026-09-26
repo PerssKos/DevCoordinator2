@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponent",
+  "summary_8e76a9": "Sammendrag",
+  "expected_actual_2457a7": "Forventet / faktisk",
+  "steps_1de3df": "Steg",
+  "seen_8894cf": "Observert",
+  "correlations_f54dae": "Sammenhenger",
+  "open_bugs_dce3d4": "Åpne feil",
+  "report_a_bug_f75e0b": "Rapporter en feil",
+  "report_b6ce78": "Rapporter",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Bare korte, selvstendige oppføringer: ingen hemmeligheter, rålogger eller private stier.",
+  "close_310ff2": "lukk",
+  "expected": "Forventet",
+  "actual": "Faktisk"
+}

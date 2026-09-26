@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Encara no hi ha comentaris sobre aquesta opció.",
+  "sketch_set_review_1e4713": "Revisió del conjunt d’esbossos",
+  "close_7d9eb7": "Tanca",
+  "selection_mode_1935ae": "Mode de selecció",
+  "close_set_review_2680d1": "Tanca la revisió del conjunt",
+  "sketch_set_options_62656f": "Opcions del conjunt d’esbossos",
+  "current_option_f4a3f8": "Opció actual",
+  "comments_355f79": "Comentaris",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Explica per què has triat aquesta opció o aquest conjunt d’opcions.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Les seleccions es desen com Conservar, Rebutjar o Sense decidir.",
+  "sketches_a56d78": "Esbossos",
+  "review_generated_options_by_set_then_select_one__020509": "Revisa les opcions generades per conjunt i selecciona’n una o diverses per continuar.",
+  "publish_from_a_skill_f33a0e": "Publica des d’una competència",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Els esbossos els publica una competència registrada",
+  "value2_selected_value3_options_b64a24": "{value2} seleccionades · {value3} opcions",
+  "value5_sketches_value6_selected_87bdd8": "{value5} esbossos · {value6} seleccionats",
+  "value6_rejected_value7_undecided_bbc778": "{value6} rebutjats · {value7} sense decidir",
+  "reviewer_d29f46": "Revisor",
+  "option_unavailable_d03e4e": "Opció no disponible",
+  "selected_57fd7a": "Seleccionat",
+  "rejected_aea4a0": "Rebutjat",
+  "undecided_00cc36": "Sense decidir",
+  "select_2a7802": "Selecciona",
+  "reject_ab604a": "Rebutja",
+  "leave_undecided_65c5c0": "Deixa sense decidir",
+  "set_6ee0eb": "conjunt",
+  "sets_82c6db": "conjunts",
+  "no_selection_211f6b": "Cap selecció",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Afegeix context a l’opció seleccionada",
+      "other": "Afegeix context a les opcions seleccionades",
+      "many": "Afegeix context a les opcions seleccionades"
+    }
+  },
+  "review_set_ca242c": "Conjunt de revisió",
+  "open_sketch_3ccc5c": "Obre l’esbós",
+  "single_choice_45a76a": "Elecció única",
+  "choose_multiple_b76dc5": "Tria’n diverses",
+  "open_full_review_canvas_26fc95": "Obre el llenç complet de revisió",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} conjunt",
+      "many": "{count} conjunts",
+      "other": "{count} conjunts"
+    }
+  }
+}

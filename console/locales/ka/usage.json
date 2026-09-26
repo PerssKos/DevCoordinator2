@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "სამუშაოს ფაზების ლეგენდა",
+  "scrollable_token_chart_83cb1f": "გადახვევადი ტოკენების დიაგრამა",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "მომწოდებლის მიერ მოხსენებული ტოკენების ჯამი სამუშაოს ფაზების მიხედვით",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "UTC დროის დაწყობილი შუალედები. ზუსტი მნიშვნელობები დიაგრამების შემდეგ არის ჩამოთვლილი.",
+  "no_classified_token_activity_in_this_window_f460d0": "ამ ფანჯარაში კლასიფიცირებული ტოკენების აქტივობა არ არის.",
+  "work_activity_bf3178": "სამუშაოს აქტივობა",
+  "total_tokens_e7601c": "ტოკენების ჯამი",
+  "activity_breakdown_7ebc89": "აქტივობის დაშლა",
+  "separate_measurements_they_are_not_added_togethe_329294": "ცალკე გაზომვები; ისინი ერთმანეთს არ ემატება.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "ამ ფანჯარაში ხელსაწყოს შედეგები არ არის.",
+  "total_c9b3c3": "ჯამი",
+  "exact_bucket_values_a2a7fe": "შუალედების ზუსტი მნიშვნელობები",
+  "utc_bucket_fbd8d9": "UTC შუალედი",
+  "data_status_87d914": "მონაცემების სტატუსი",
+  "repository_13d6ff": "რეპოზიტორია",
+  "model_requests_888826": "მოდელის მოთხოვნები",
+  "tool_calls_da5122": "ხელსაწყოს გამოძახებები",
+  "execution_time_1069e2": "შესრულების დრო",
+  "data_included_217858": "ჩართული მონაცემები",
+  "time_breakdown_ca0aca": "დროის დაშლა",
+  "separate_not_added_together_6dbbe5": "(ცალკე, ერთმანეთს არ ემატება)",
+  "tool_outcomes_3a7a68": "ხელსაწყოს შედეგები",
+  "data_completeness_c7114d": "მონაცემების სისრულე",
+  "counting_method_7a480a": "დათვლის მეთოდი",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "მომწოდებლის მიერ მოხსენებული ტოკენების ჯამი; ქეშირებული შეყვანა და მსჯელობა ქვეჯგუფებია.",
+  "schema_value19_taxonomy_value20_cdddf8": "სქემა {value19} · ტაქსონომია {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. მონაცემების არმომწოდებელი და გაუზომავი მნიშვნელობების მქონე გარემოები გამორიცხულია და ნულად არ ითვლება.",
+  "token_subsets_unavailable_4cec86": "ტოკენების ქვეჯგუფები მიუწვდომელია.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} უცნობი ინტერვალი",
+      "other": "{count} უცნობი ინტერვალი"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Codex-ის გარემოების შესახებ",
+  "explain_codex_usage_data_completeness_63247d": "Codex-ის გამოყენების მონაცემების სისრულის ახსნა",
+  "tokens_a039df": "ტოკენები"
+}

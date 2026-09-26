@@ -1,0 +1,48 @@
+{
+  "no_comments_on_this_option_yet_801c78": "この案にはまだコメントがありません。",
+  "sketch_set_review_1e4713": "デザイン案セットのレビュー",
+  "close_7d9eb7": "閉じる",
+  "selection_mode_1935ae": "選択モード",
+  "close_set_review_2680d1": "セットのレビューを閉じる",
+  "sketch_set_options_62656f": "セット内のデザイン案",
+  "current_option_f4a3f8": "現在の案",
+  "comments_355f79": "コメント",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "この案または案の組み合わせを選んだ理由を説明してください。",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "選択は「採用」「却下」「未決定」として保存されます。",
+  "sketches_a56d78": "デザイン案",
+  "review_generated_options_by_set_then_select_one__020509": "生成された案をセットごとに確認し、進める案を1つ以上選んでください。",
+  "publish_from_a_skill_f33a0e": "スキルから公開",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "デザイン案は登録済みのスキルから公開されます",
+  "value2_selected_value3_options_b64a24": "{value2} 件選択済み · 選択肢 {value3} 件",
+  "value5_sketches_value6_selected_87bdd8": "スケッチ {value5} 件 · {value6} 件選択済み",
+  "value6_rejected_value7_undecided_bbc778": "却下 {value6} 件 · 未決定 {value7} 件",
+  "reviewer_d29f46": "レビュー担当者",
+  "option_unavailable_d03e4e": "案を利用できません",
+  "selected_57fd7a": "選択済み",
+  "rejected_aea4a0": "却下済み",
+  "undecided_00cc36": "未決定",
+  "select_2a7802": "選択",
+  "reject_ab604a": "却下",
+  "leave_undecided_65c5c0": "未決定のままにする",
+  "set_6ee0eb": "セット",
+  "sets_82c6db": "セット",
+  "no_selection_211f6b": "選択なし",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "other": "選択した案にコンテキストを追加"
+    }
+  },
+  "review_set_ca242c": "セットをレビュー",
+  "open_sketch_3ccc5c": "デザイン案を開く",
+  "single_choice_45a76a": "単一選択",
+  "choose_multiple_b76dc5": "複数選択",
+  "open_full_review_canvas_26fc95": "レビューキャンバス全体を開く",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} セット",
+      "other": "{count} セット"
+    }
+  }
+}

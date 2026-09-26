@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "작업 단계 범례",
+  "scrollable_token_chart_83cb1f": "스크롤 가능한 토큰 차트",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "공급자가 보고한 작업 단계별 총 토큰 수",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "UTC 시간 구간별 누적 표시입니다. 차트 아래에 정확한 값이 나열됩니다.",
+  "no_classified_token_activity_in_this_window_f460d0": "이 기간에는 분류된 토큰 사용 기록이 없습니다.",
+  "work_activity_bf3178": "작업 활동",
+  "total_tokens_e7601c": "총 토큰",
+  "activity_breakdown_7ebc89": "활동별 내역",
+  "separate_measurements_they_are_not_added_togethe_329294": "별도로 측정한 값이며 서로 합산하지 않습니다.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "이 기간에는 도구 실행 결과가 없습니다.",
+  "total_c9b3c3": "합계",
+  "exact_bucket_values_a2a7fe": "구간별 정확한 값",
+  "utc_bucket_fbd8d9": "UTC 구간",
+  "data_status_87d914": "데이터 상태",
+  "repository_13d6ff": "저장소",
+  "model_requests_888826": "모델 요청",
+  "tool_calls_da5122": "도구 호출",
+  "execution_time_1069e2": "실행 시간",
+  "data_included_217858": "포함된 데이터",
+  "time_breakdown_ca0aca": "시간 내역",
+  "separate_not_added_together_6dbbe5": "(별도 측정, 합산하지 않음)",
+  "tool_outcomes_3a7a68": "도구 실행 결과",
+  "data_completeness_c7114d": "데이터 완전성",
+  "counting_method_7a480a": "집계 방식",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "공급자가 보고한 총 토큰 수입니다. 캐시된 입력과 추론 토큰은 이 합계에 포함됩니다.",
+  "schema_value19_taxonomy_value20_cdddf8": "스키마 {value19} · 분류 체계 {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. 데이터가 없거나 측정되지 않은 값이 있는 환경은 제외하며 0으로 계산하지 않습니다.",
+  "token_subsets_unavailable_4cec86": "토큰 하위 집합을 사용할 수 없습니다.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "알 수 없는 구간 {count}개",
+      "other": "알 수 없는 구간 {count}개"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Codex 환경 정보",
+  "explain_codex_usage_data_completeness_63247d": "Codex 사용량 데이터 완전성 설명",
+  "tokens_a039df": "토큰"
+}

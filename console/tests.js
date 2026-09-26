@@ -35,7 +35,7 @@ window.DevCoordinatorTests = (() => {
       else replacementNotices.delete(run.worktree_path);
       for (const article of main.querySelectorAll('[data-test-run-id]')) {
         const displayed = runs.find((item) => item.run_id === article.dataset.testRunId);
-        if (displayed?.worktree_path === run.worktree_path) article.querySelector('.test-replacement-notice').textContent = replacementNotices.get(run.worktree_path) || '';
+        if (displayed?.worktree_path === run.worktree_path) window.DevCoordinatorI18n.bind(article.querySelector('.test-replacement-notice'), () => (replacementNotices.get(run.worktree_path) || ''));
       }
     };
     const current = () => repository ? { name: repository.name, runs: runs.filter((run) => repository.ids.includes(run.repository_id)).sort((left, right) => timestamp(right) - timestamp(left) || left.run_id.localeCompare(right.run_id)) } : groups.find((group) => group.key === selected);
@@ -46,7 +46,7 @@ window.DevCoordinatorTests = (() => {
     };
     const viewerUrl = (run, image) => `#/tests/${encodeURIComponent(run.run_id)}?${new URLSearchParams({ ...(image ? { image: image.image_id } : {}), ...(run.worktree_id ? { worktree: run.worktree_id } : {}) })}`;
     const duration = (run) => durationMs(run.duration_seconds == null ? null : run.duration_seconds * 1000);
-    const time = (run) => Number.isFinite(Date.parse(run.started_at)) ? new Date(run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable';
+    const time = (run) => Number.isFinite(Date.parse(run.started_at)) ? new Date(run.started_at).toLocaleString(window.DevCoordinatorI18n.locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Time unavailable';
     const availableFiles = (run) => window.DevCoordinatorArtifacts.bundles(run);
     const evidenceRun = (run) => run.visual_evidence?.status === 'available' || run.visual_evidence?.issue_count ? run
       : run.earlier_visual_evidence ? { ...run, ...run.earlier_visual_evidence, earlier: true } : null;
@@ -65,13 +65,13 @@ window.DevCoordinatorTests = (() => {
       if (activeStates.has(check.status)) return [execution.executing ? `${execution.executing} executing` : '', execution.waiting ? `${execution.waiting} waiting` : ''].filter(Boolean).join(' · ');
       return `${durationMs(execution.process_duration_ms)} process time · ${durationMs(execution.capacity_wait_ms)} waiting`;
     };
-    const checkBadge = (check) => ['invalidated', 'not_meaningful'].includes(check.status) ? '<span class="badge">Not run</span>' : badge(checkState(check));
+    const checkBadge = (check) => ['invalidated', 'not_meaningful'].includes(check.status) ? "<span class=\"badge\"><span data-i18n=\"tests.not_run_25f0c2\">Not run</span></span>" : badge(checkState(check));
     const runLabel = (run) => run.targets?.length ? run.targets.map(readable).join(' + ') : readable(run.test);
     const selectionLabel = (run) => run.proof === 'selected' ? 'Selected checks' : run.proof === 'retry' ? 'Retry' : '';
     const phaseTime = (ms) => ms > 0 && ms < 1000 ? `${Math.max(1, Math.round(ms))}ms` : durationMs(ms);
-    const phaseTimes = (run) => run.phase_durations?.some((entry) => entry.phase !== 'check') ? `<table class="test-phase-times" aria-label="Phase durations"><thead><tr><th>Phase</th><th>Execution</th><th>Elapsed</th></tr></thead><tbody>${run.phase_durations.map((entry) => `<tr><th scope="row">${esc(readable(entry.phase))}</th><td>${esc(phaseTime(entry.duration_seconds * 1000))}</td><td>${entry.elapsed_seconds == null ? 'Unavailable' : esc(phaseTime(entry.elapsed_seconds * 1000))}</td></tr>`).join('')}</tbody></table>` : '';
-    const caseRows = (check) => (check.cases || []).filter((item) => item.phases?.length).map((item) => `<div class="test-case"><div class="test-case-heading"><strong>${esc(item.id)}</strong>${badge(item.status)}</div><ul>${item.phases.map((phase) => `<li class="test-case-phase"><span>${phase.phase === 'fixture' ? 'Database setup' : phase.phase === 'case' ? 'Execution' : esc(readable(phase.phase))}</span>${phase.status === 'invalidated' ? '<span class="badge">Not run</span>' : badge(phase.status)}<span>${phase.status === 'invalidated' ? '—' : esc(phaseTime(phase.duration_ms))}</span></li>`).join('')}</ul></div>`).join('');
-    const checkRows = (checks) => checks.map((check) => `<div class="test-check-group"><div class="test-check"><span>${esc(check.display_name || readable(check.name))}</span>${checkBadge(check)}<span class="muted">${esc(checkTiming(check))}</span></div>${caseRows(check)}${check.cases_truncated ? `<p class="muted">${check.cases?.length || 0} of ${check.case_count} cases shown. All retained case output is available in Logs.</p>` : ''}</div>`).join('');
+    const phaseTimes = (run) => run.phase_durations?.some((entry) => entry.phase !== 'check') ? `<table class="test-phase-times" aria-label="Phase durations" data-i18n-attrs='{"aria-label":"tests.phase_durations_e500c2"}'><thead><tr><th><span data-i18n="tests.phase_46342e">Phase</span></th><th><span data-i18n="tests.execution_a45cd4">Execution</span></th><th><span data-i18n="tests.elapsed_a194a6">Elapsed</span></th></tr></thead><tbody>${run.phase_durations.map((entry) => `<tr><th scope="row">${esc(readable(entry.phase))}</th><td>${window.DevCoordinatorI18n.computedMarkup(() => phaseTime(entry.duration_seconds * 1000))}</td><td>${(entry.elapsed_seconds == null ? window.DevCoordinatorI18n.markup("tests.unavailable_ca1844") : esc(phaseTime(entry.elapsed_seconds * 1000)))}</td></tr>`).join('')}</tbody></table>` : '';
+    const caseRows = (check) => (check.cases || []).filter((item) => item.phases?.length).map((item) => `<div class="test-case"><div class="test-case-heading"><strong>${esc(item.id)}</strong>${badge(item.status)}</div><ul>${item.phases.map((phase) => `<li class="test-case-phase"><span>${(phase.phase === 'fixture' ? window.DevCoordinatorI18n.markup("tests.database_setup_7a9e87") : (phase.phase === 'case' ? window.DevCoordinatorI18n.markup("tests.execution_a45cd4") : esc(readable(phase.phase))))}</span>${phase.status === 'invalidated' ? "<span class=\"badge\"><span data-i18n=\"tests.not_run_25f0c2\">Not run</span></span>" : badge(phase.status)}<span>${phase.status === 'invalidated' ? '—' : esc(phaseTime(phase.duration_ms))}</span></li>`).join('')}</ul></div>`).join('');
+    const checkRows = (checks) => checks.map((check) => `<div class="test-check-group"><div class="test-check"><span>${esc(check.display_name || readable(check.name))}</span>${checkBadge(check)}<span class="muted">${window.DevCoordinatorI18n.computedMarkup(() => checkTiming(check))}</span></div>${caseRows(check)}${check.cases_truncated ? `<p class="muted">${window.DevCoordinatorI18n.markup("tests.value1_of_value2_cases_shown_all_retained_case_o_89db76", {value1: check.cases?.length || 0, value2: check.case_count})}</p>` : ''}</div>`).join('');
     const reportIssue = (issue) => ({
       missing: 'The run ended without a check report.',
       invalid: 'The check report could not be validated. The run logs are available for diagnosis.',
@@ -84,9 +84,9 @@ window.DevCoordinatorTests = (() => {
       const visual = evidenceRun(run);
       const files = availableFiles(run);
       return `<article class="test-result" data-test-run-id="${esc(run.run_id)}">
-        <div class="test-result-summary"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${run.status === 'passed' ? 'circle-check' : run.status === 'failed' ? 'circle-x' : 'refresh'}" aria-hidden="true"></span></span><div class="test-result-name"><h2>${esc(runLabel(run))}</h2><div class="test-run-time"><time datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${esc(time(run))}</time>${run.duration_seconds == null ? '' : `<span>· ${esc(duration(run))}</span>`}${selectionLabel(run) ? `<span>${esc(selectionLabel(run))}</span>` : ''}</div></div>${badge(run.status)}</div>
-        ${visual || files.length ? `<div class="test-previews" data-preview-run="${esc(run.run_id)}" aria-label="Screenshots for ${esc(runLabel(run))}"><span class="muted">Loading screenshots…</span></div>` : ''}
-        <div class="test-result-actions"><button type="button" class="test-text-action" data-test-logs>Logs</button>${files.length || run.checks_truncated ? '<button type="button" class="test-text-action" data-test-artifacts>Files</button>' : ''}<button type="button" class="test-text-action ${activeStates.has(run.status) ? 'test-stop' : ''}" data-test-start>${activeStates.has(run.status) ? 'Stop run' : 'Run again'}</button><details class="test-detail" data-disclosure="${esc(run.run_id)}"><summary aria-label="Details for ${esc(runLabel(run))}">Details</summary><div class="test-detail-content"><div data-test-checks>${checkRows(run.checks || [])}</div>${phaseTimes(run)}<dl class="test-technical"><dt>Checkout</dt><dd>${esc(run.worktree_path)}</dd><dt>Validation</dt><dd>${esc(run.requested_tier || 'Not recorded')}</dd><dt>Exit code</dt><dd>${run.exit_code ?? '—'}</dd><dt>Output / errors</dt><dd>${bytes(run.stdout_bytes_observed)} / ${bytes(run.stderr_bytes_observed)}</dd></dl>${!files.length && !run.checks_truncated ? '<button type="button" class="test-text-action" data-test-artifacts>Earlier files</button>' : ''}</div></details></div><div class="test-action-error" role="status">${esc(reportIssue(run.report_issue))}</div>
+        <div class="test-result-summary"><span class="test-status-icon ${run.status === 'failed' ? 'bad' : ''}"><span class="ti ti-${run.status === 'passed' ? 'circle-check' : run.status === 'failed' ? 'circle-x' : 'refresh'}" aria-hidden="true"></span></span><div class="test-result-name"><h2>${esc(runLabel(run))}</h2><div class="test-run-time"><time datetime="${esc(run.started_at)}" title="${esc(run.started_at)}">${window.DevCoordinatorI18n.computedMarkup(() => time(run))}</time>${run.duration_seconds == null ? '' : `<span>· ${window.DevCoordinatorI18n.computedMarkup(() => duration(run))}</span>`}${selectionLabel(run) ? `<span>${window.DevCoordinatorI18n.computedMarkup(() => selectionLabel(run))}</span>` : ''}</div></div>${badge(run.status)}</div>
+        ${visual || files.length ? `<div class="test-previews" data-preview-run="${esc(run.run_id)}" aria-label="Screenshots for ${esc(runLabel(run))}"><span class="muted"><span data-i18n="tests.loading_screenshots_e06f72">Loading screenshots…</span></span></div>` : ''}
+        <div class="test-result-actions"><button type="button" class="test-text-action" data-test-logs><span data-i18n="tests.logs_ea2100">Logs</span></button>${files.length || run.checks_truncated ? "<button type=\"button\" class=\"test-text-action\" data-test-artifacts><span data-i18n=\"tests.files_abc7e9\">Files</span></button>" : ''}<button type="button" class="test-text-action ${activeStates.has(run.status) ? 'test-stop' : ''}" data-test-start>${activeStates.has(run.status) ? window.DevCoordinatorI18n.markup("tests.stop_run_b7ec68") : window.DevCoordinatorI18n.markup("tests.run_again_3e310b")}</button><details class="test-detail" data-disclosure="${esc(run.run_id)}"><summary aria-label="Details for ${esc(runLabel(run))}"><span data-i18n="tests.details_45989d">Details</span></summary><div class="test-detail-content"><div data-test-checks>${checkRows(run.checks || [])}</div>${phaseTimes(run)}<dl class="test-technical"><dt><span data-i18n="tests.checkout_99e71f">Checkout</span></dt><dd>${esc(run.worktree_path)}</dd><dt><span data-i18n="tests.validation_68e1ca">Validation</span></dt><dd>${run.requested_tier ? esc(run.requested_tier) : window.DevCoordinatorI18n.markup("tests.not_recorded_b37c78")}</dd><dt><span data-i18n="tests.exit_code_ccc6eb">Exit code</span></dt><dd>${run.exit_code ?? '—'}</dd><dt><span data-i18n="tests.output_errors_878776">Output / errors</span></dt><dd>${window.DevCoordinatorI18n.computedMarkup(() => bytes(run.stdout_bytes_observed))} / ${window.DevCoordinatorI18n.computedMarkup(() => bytes(run.stderr_bytes_observed))}</dd></dl>${!files.length && !run.checks_truncated ? "<button type=\"button\" class=\"test-text-action\" data-test-artifacts><span data-i18n=\"tests.earlier_files_0fd1b6\">Earlier files</span></button>" : ''}</div></details></div><div class="test-action-error" role="status">${esc(reportIssue(run.report_issue))}</div>
         <p class="test-replacement-notice" role="status">${esc(replacementNotices.get(run.worktree_path) || '')}</p>
       </article>`;
     }
@@ -100,7 +100,7 @@ window.DevCoordinatorTests = (() => {
         recordReplacement(run, result);
         if (!signal.aborted) await refresh();
       } catch (failure) {
-        if (!signal.aborted) error.textContent = failure.message;
+        if (!signal.aborted) window.DevCoordinatorI18n.bind(error, () => failure.message);
       } finally {
         button.disabled = false;
       }
@@ -111,17 +111,17 @@ window.DevCoordinatorTests = (() => {
       let offset = 0;
       let total = null;
       do {
-        if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+        if (signal.aborted) throw window.DevCoordinatorI18n.error("tests.screenshot_loading_cancelled_50e74f");
         const chunk = await api('test.evidence.image', { path: run.worktree_path, run_id: run.run_id, image_id: image.image_id, offset, max_bytes: 184320 });
         const block = Uint8Array.from(atob(chunk.base64 || ''), (character) => character.charCodeAt(0));
-        if (chunk.image_id !== image.image_id || chunk.offset !== offset || block.length !== chunk.bytes || chunk.total_bytes > 16777216 || (total != null && chunk.total_bytes !== total)) throw new Error('The screenshot changed while loading.');
+        if (chunk.image_id !== image.image_id || chunk.offset !== offset || block.length !== chunk.bytes || chunk.total_bytes > 16777216 || (total != null && chunk.total_bytes !== total)) throw window.DevCoordinatorI18n.error("tests.the_screenshot_changed_while_loading_94fe13");
         total = chunk.total_bytes;
         chunks.push(block);
         offset += block.length;
-        if (!block.length || (chunk.next_offset != null && chunk.next_offset !== offset)) throw new Error('The screenshot response was incomplete.');
-        if (chunk.next_offset == null && offset !== total) throw new Error('The screenshot response was incomplete.');
+        if (!block.length || (chunk.next_offset != null && chunk.next_offset !== offset)) throw window.DevCoordinatorI18n.error("tests.the_screenshot_response_was_incomplete_4d7952");
+        if (chunk.next_offset == null && offset !== total) throw window.DevCoordinatorI18n.error("tests.the_screenshot_response_was_incomplete_4d7952");
       } while (offset < total);
-      if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+      if (signal.aborted) throw window.DevCoordinatorI18n.error("tests.screenshot_loading_cancelled_50e74f");
       const url = URL.createObjectURL(new Blob(chunks, { type: 'image/png' }));
       urls.add(url);
       return url;
@@ -141,10 +141,10 @@ window.DevCoordinatorTests = (() => {
       const dialog = document.createElement('dialog');
       previewDialog = dialog;
       dialog.className = 'test-image-preview';
-      dialog.setAttribute('aria-label', 'Screenshot gallery');
+      window.DevCoordinatorI18n.text(dialog, "tests.screenshot_gallery_7bd298", {}, "aria-label");
       const rowId = opener.closest('[data-test-run-id]')?.dataset.testRunId;
       const thumbnailIndex = [...opener.parentElement.querySelectorAll('.test-thumbnail')].indexOf(opener);
-      dialog.innerHTML = `<div class="dialog-head"><div><span data-gallery-title></span><small data-gallery-count aria-live="polite"></small>${run.earlier ? `<small class="test-preview-provenance">Earlier run · ${esc(time(run))}</small>` : ''}</div><button type="button" class="dialog-close" aria-label="Close screenshot preview"><span class="ti ti-x" aria-hidden="true"></span></button></div><div class="test-gallery-stage"><button type="button" class="test-gallery-arrow" data-gallery-previous aria-label="Previous screenshot"${images.length === 1 ? ' disabled' : ''}><span class="ti ti-chevron-left" aria-hidden="true"></span></button><div class="test-gallery-image"><img data-gallery-image data-ui-continuation-anchor alt=""><div class="test-gallery-message" role="status"></div></div><button type="button" class="test-gallery-arrow" data-gallery-next aria-label="Next screenshot"${images.length === 1 ? ' disabled' : ''}><span class="ti ti-chevron-right" aria-hidden="true"></span></button></div><nav class="test-gallery-thumbnails" aria-label="Screenshots">${images.map((image, position) => `<button type="button" data-gallery-index="${position}" aria-label="Screenshot ${position + 1}: ${esc(image.label)}" aria-pressed="false"><img alt="" width="96" height="64"><span>${esc(image.label)}</span></button>`).join('')}</nav><footer data-gallery-footer></footer>`;
+      dialog.innerHTML = `<div class="dialog-head"><div><span data-gallery-title></span><small data-gallery-count aria-live="polite"></small>${run.earlier ? `<small class="test-preview-provenance">Earlier run · ${window.DevCoordinatorI18n.computedMarkup(() => time(run))}</small>` : ''}</div><button type="button" class="dialog-close" aria-label="Close screenshot preview" data-i18n-attrs='{"aria-label":"tests.close_screenshot_preview_e49000"}'><span class="ti ti-x" aria-hidden="true"></span></button></div><div class="test-gallery-stage"><button type="button" class="test-gallery-arrow" data-gallery-previous aria-label="Previous screenshot"${images.length === 1 ? ' disabled' : ''} data-i18n-attrs='{"aria-label":"tests.previous_screenshot_af9be1"}'><span class="ti ti-chevron-left" aria-hidden="true"></span></button><div class="test-gallery-image"><img data-gallery-image data-ui-continuation-anchor alt=""><div class="test-gallery-message" role="status"></div></div><button type="button" class="test-gallery-arrow" data-gallery-next aria-label="Next screenshot"${images.length === 1 ? ' disabled' : ''} data-i18n-attrs='{"aria-label":"tests.next_screenshot_fd250f"}'><span class="ti ti-chevron-right" aria-hidden="true"></span></button></div><nav class="test-gallery-thumbnails" aria-label="Screenshots" data-i18n-attrs='{"aria-label":"tests.screenshots_067348"}'>${images.map((image, position) => `<button type="button" data-gallery-index="${position}" aria-label="Screenshot ${position + 1}: ${esc(image.label)}" aria-pressed="false"><img alt="" width="96" height="64"><span>${esc(image.label)}</span></button>`).join('')}</nav><footer data-gallery-footer></footer>`;
       const rail = dialog.querySelector('.test-gallery-thumbnails');
       const thumbnails = [...rail.querySelectorAll('button')];
       const railObserver = new IntersectionObserver((entries) => {
@@ -168,15 +168,15 @@ window.DevCoordinatorTests = (() => {
         const display = dialog.querySelector('[data-gallery-image]');
         const message = dialog.querySelector('.test-gallery-message');
         dialog.querySelector('[data-gallery-title]').textContent = image.label;
-        dialog.querySelector('[data-gallery-count]').textContent = `${index + 1} of ${images.length}`;
+        window.DevCoordinatorI18n.bind(dialog.querySelector('[data-gallery-count]'), () => window.DevCoordinatorI18n.t("tests.value1_of_value2_882c45", {value1: index + 1, value2: images.length}));
         display.alt = image.label;
         display.hidden = !image.url;
         if (image.url) display.src = image.url;
-        message.textContent = image.url ? '' : 'Loading screenshot…';
+        window.DevCoordinatorI18n.bind(message, () => (image.url ? '' : window.DevCoordinatorI18n.t("tests.loading_screenshot_e0fd7b")));
         thumbnails.forEach((button, position) => button.setAttribute('aria-pressed', String(position === index)));
         thumbnails[index].scrollIntoView({ block: 'nearest', inline: 'nearest' });
         const footer = dialog.querySelector('[data-gallery-footer]');
-        footer.innerHTML = image.native ? '<button type="button" class="btn" data-open-file>Open file</button>' : `<a class="btn" href="${viewerUrl(run, image)}">Open in viewer / comment</a>`;
+        footer.innerHTML = image.native ? "<button type=\"button\" class=\"btn\" data-open-file><span data-i18n=\"tests.open_file_4190c0\">Open file</span></button>" : `<a class="btn" href="${viewerUrl(run, image)}"><span data-i18n="tests.open_in_viewer_comment_ad9420">Open in viewer / comment</span></a>`;
         footer.querySelector('[data-open-file]')?.addEventListener('click', () => { close(); openFiles(run, opener, image); });
         try {
           const url = await ensureImage(result, image);
@@ -190,7 +190,7 @@ window.DevCoordinatorTests = (() => {
         } catch (error) {
           if (requested !== generation || !dialog.isConnected || signal.aborted) return;
           display.hidden = true;
-          message.innerHTML = `<span>${esc(error.message)}</span><button type="button" class="btn btn-small">Retry screenshot</button>`;
+          message.innerHTML = `<span>${esc(error.message)}</span><button type="button" class="btn btn-small"><span data-i18n="tests.retry_screenshot_23b6c7">Retry screenshot</span></button>`;
           message.querySelector('button').addEventListener('click', () => { image.url = null; image.loading = null; show(index); });
         }
       };
@@ -219,7 +219,7 @@ window.DevCoordinatorTests = (() => {
         const screenshot = cell.screenshots?.[kind];
         return screenshot?.status === 'available' ? [{ ...screenshot, label: `${readable(cell.state_name)} · ${cell.viewport?.name || 'Screenshot'}${kind === 'full_page' ? ' · full page' : ''}` }] : [];
       }))).map((image) => [image.image_id, image])).values()];
-      if (!candidates.length && data.issues?.length) throw new Error('Screenshots could not be read.');
+      if (!candidates.length && data.issues?.length) throw window.DevCoordinatorI18n.error("tests.screenshots_could_not_be_read_92f171");
       return { run: visual, images: candidates, count: candidates.length };
     }
 
@@ -233,7 +233,7 @@ window.DevCoordinatorTests = (() => {
         await Promise.all(initialImages.map(async (image) => {
           const probe = new Image();
           probe.src = await ensureImage(result, image);
-          try { await probe.decode(); } catch { throw new Error('Screenshot could not be previewed.'); }
+          try { await probe.decode(); } catch { throw window.DevCoordinatorI18n.error("tests.screenshot_could_not_be_previewed_11a0c5"); }
         }));
         if (signal.aborted || !host.isConnected) return;
         host.replaceChildren();
@@ -241,7 +241,7 @@ window.DevCoordinatorTests = (() => {
         for (const image of initialImages) {
           const button = document.createElement('button');
           button.type = 'button'; button.className = 'test-thumbnail';
-          button.setAttribute('aria-label', `Preview ${image.label}`);
+          window.DevCoordinatorI18n.bind(button, () => window.DevCoordinatorI18n.t("tests.preview_value1_cb5dab", {value1: image.label}), "aria-label");
           button.innerHTML = `<img src="${esc(image.url)}" alt="${esc(image.label)}" width="112" height="76"><span>${esc(image.label)}</span>`;
           button.addEventListener('click', () => preview(result, result.images.indexOf(image), button));
           host.append(button);
@@ -250,21 +250,21 @@ window.DevCoordinatorTests = (() => {
           const more = document.createElement('button');
           more.type = 'button'; more.className = 'test-preview-more';
           more.textContent = `+${result.count - initialImages.length}`;
-          more.setAttribute('aria-label', `Browse all ${result.count} screenshots`);
+          window.DevCoordinatorI18n.bind(more, () => window.DevCoordinatorI18n.t("tests.browse_all_value1_screenshots_81fcf6", {value1: result.count}), "aria-label");
           more.addEventListener('click', () => preview(result, result.images.findIndex((image) => !initialImages.includes(image)), more));
           host.append(more);
         }
         if (result.run.earlier) {
           const provenance = document.createElement('span');
           provenance.className = 'test-preview-provenance';
-          provenance.textContent = `Earlier run · ${time(result.run)}`;
-          provenance.title = 'These screenshots do not verify the latest run.';
+          window.DevCoordinatorI18n.bind(provenance, () => window.DevCoordinatorI18n.t("tests.earlier_run_value1_68bdba", {value1: time(result.run)}));
+          window.DevCoordinatorI18n.text(provenance, "tests.these_screenshots_do_not_verify_the_latest_run_0e24e3", {}, "title");
           host.append(provenance);
         }
       } catch (error) {
         if (signal.aborted || !host.isConnected) return;
         cache.delete(key);
-        host.innerHTML = `<span class="muted">${esc(error.message)}</span><button class="test-text-action" type="button">Retry screenshots</button>`;
+        host.innerHTML = `<span class="muted">${esc(error.message)}</span><button class="test-text-action" type="button"><span data-i18n="tests.retry_screenshots_232a99">Retry screenshots</span></button>`;
         host.querySelector('button').addEventListener('click', () => populatePreviews(host, run));
       }
     }
@@ -279,8 +279,8 @@ window.DevCoordinatorTests = (() => {
       const open = new Set([...collection.querySelectorAll('details[open]')].map((details) => details.dataset.disclosure));
       const scroll = { top: scrollY, left: scrollX };
       const group = current();
-      collection.setAttribute('aria-label', group ? `${group.name} test results` : 'Test results');
-      collection.innerHTML = group?.runs.length ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : '<p class="muted">No test runs yet.</p>';
+      window.DevCoordinatorI18n.bind(collection, () => (group ? window.DevCoordinatorI18n.t("tests.value1_test_results_293210", {value1: group.name}) : window.DevCoordinatorI18n.t("tests.test_results_3ea600")), "aria-label");
+      collection.innerHTML = group?.runs.length ? `<div class="test-results">${group.runs.map(row).join('')}</div>` : "<p class=\"muted\"><span data-i18n=\"tests.no_test_runs_yet_3c5be5\">No test runs yet.</span></p>";
       if (form) { collection.prepend(form); focusedField?.focus({ preventScroll: true }); }
       query('#test-run-open').disabled = !group?.runs.some((run) => !activeStates.has(run.status));
       for (const article of collection.querySelectorAll('.test-result')) {
@@ -296,9 +296,9 @@ window.DevCoordinatorTests = (() => {
           try {
             const detail = await api('test.status', { path: run.worktree_path });
             if (signal.aborted || !details.isConnected) return;
-            if (detail.run_id !== run.run_id) throw new Error('A newer run is available. Refresh to view it.');
+            if (detail.run_id !== run.run_id) throw window.DevCoordinatorI18n.error("tests.a_newer_run_is_available_refresh_to_view_it_c113b3");
             details.querySelector('[data-test-checks]').innerHTML = checkRows(detail.checks || []);
-          } catch (error) { if (!signal.aborted && details.isConnected) article.querySelector('.test-action-error').textContent = error.message; }
+          } catch (error) { if (!signal.aborted && details.isConnected) window.DevCoordinatorI18n.bind(article.querySelector('.test-action-error'), () => error.message); }
           finally { delete details.dataset.loading; }
         });
         details.open = open.has(run.run_id);
@@ -336,7 +336,7 @@ window.DevCoordinatorTests = (() => {
       const choices = current()?.runs.filter((run) => !activeStates.has(run.status)) || [];
       const form = document.createElement('form');
       form.id = 'test-run-form';
-      form.innerHTML = `<label class="f">Test<select name="run">${choices.map((run) => `<option value="${esc(run.run_id)}">${esc(runLabel(run))} · ${esc(time(run))}</option>`).join('')}</select></label><label class="f">Validation<select name="tier"><option value="release">Release</option><option value="pre-merge">Pre-merge</option><option value="development">Development</option></select></label><div class="test-run-form-actions"><button type="submit" class="btn btn-primary">Run</button><button class="test-text-action" type="button" data-cancel>Cancel</button></div><p role="status"></p>`;
+      form.innerHTML = `<label class="f"><span data-i18n="tests.test_532eaa">Test</span><select name="run">${choices.map((run) => `<option value="${esc(run.run_id)}">${esc(runLabel(run))} · ${esc(time(run))}</option>`).join('')}</select></label><label class="f"><span data-i18n="tests.validation_68e1ca">Validation</span><select name="tier"><option value="release" data-i18n="tests.release_e020e3">Release</option><option value="pre-merge" data-i18n="tests.pre_merge_175f55">Pre-merge</option><option value="development" data-i18n="tests.development_21b6a7">Development</option></select></label><div class="test-run-form-actions"><button type="submit" class="btn btn-primary"><span data-i18n="tests.run_00d60e">Run</span></button><button class="test-text-action" type="button" data-cancel><span data-i18n="tests.cancel_19766e">Cancel</span></button></div><p role="status"></p>`;
       form.querySelector('[data-cancel]').addEventListener('click', () => { form.remove(); opener.focus(); });
       form.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); form.remove(); opener.focus(); } });
       form.addEventListener('submit', async (event) => {
@@ -349,7 +349,7 @@ window.DevCoordinatorTests = (() => {
           recordReplacement(run, result);
           form.remove(); opener.focus();
           if (!signal.aborted) await refresh();
-        } catch (error) { form.querySelector('[role=status]').textContent = error.message; event.submitter.disabled = false; }
+        } catch (error) { window.DevCoordinatorI18n.bind(form.querySelector('[role=status]'), () => error.message); event.submitter.disabled = false; }
       });
       query('#test-runs-collection').prepend(form);
       form.querySelector('select').focus({ preventScroll: true });
@@ -371,7 +371,7 @@ window.DevCoordinatorTests = (() => {
           }
           query('#test-live-status').textContent = '';
         } catch (error) {
-          if (!signal.aborted) query('#test-live-status').textContent = `Updates paused: ${error.message}`;
+          if (!signal.aborted) window.DevCoordinatorI18n.bind(query('#test-live-status'), () => window.DevCoordinatorI18n.t("tests.updates_paused_value1_11b351", {value1: error.message}));
         } finally {
           refreshPromise = null;
           if (!signal.aborted && runs.some((run) => activeStates.has(run.status))) refreshTimer = setTimeout(refresh, 2000);
@@ -380,13 +380,13 @@ window.DevCoordinatorTests = (() => {
       return refreshPromise;
     }
 
-    main.innerHTML = repository ? `<section class="tests-workspace"><header class="workspace-tests-heading"><h1>Tests</h1><button class="btn" type="button" id="test-run-open">Run tests</button></header><span id="test-live-status" role="status"></span><section id="test-runs-collection" tabindex="-1"></section></section>` : `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link">Tests</a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings"><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open">Log retention</button><button class="btn" type="button" id="test-capacity-open">Capacity</button></div></details></header><nav class="test-repository-list" aria-label="Repositories"></nav><button class="btn" type="button" id="test-run-open">Run tests</button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
+    main.innerHTML = repository ? `<section class="tests-workspace"><header class="workspace-tests-heading"><h1><span data-i18n="tests.tests_e5c9d7">Tests</span></h1><button class="btn" type="button" id="test-run-open"><span data-i18n="tests.run_tests_3f6d6b">Run tests</span></button></header><span id="test-live-status" role="status"></span><section id="test-runs-collection" tabindex="-1"></section></section>` : `<section class="tests-workspace"><aside class="tests-sidebar"><header><h1><a href="#/tests" class="destination-link"><span data-i18n="tests.tests_e5c9d7">Tests</span></a></h1><details class="test-settings"><summary class="test-settings-toggle" aria-label="Test settings" data-i18n-attrs='{"aria-label":"tests.test_settings_1db6e5"}'><span class="ti ti-settings" aria-hidden="true"></span></summary><div class="test-settings-menu"><button class="btn" type="button" id="test-log-retention-open"><span data-i18n="tests.log_retention_46c385">Log retention</span></button><button class="btn" type="button" id="test-capacity-open"><span data-i18n="tests.capacity_ae65d0">Capacity</span></button></div></details></header><nav class="test-repository-list" aria-label="Repositories" data-i18n-attrs='{"aria-label":"tests.repositories_1e32af"}'></nav><button class="btn" type="button" id="test-run-open"><span data-i18n="tests.run_tests_3f6d6b">Run tests</span></button><span id="test-live-status" role="status"></span></aside><section id="test-runs-collection" tabindex="-1"></section></section>`;
     paintNavigation(); paintRows(); bindSettings();
     const linkedRun = new URLSearchParams(location.hash.split('?')[1] || '').get('run');
     if (linkedRun) {
       const row = query('[data-test-run-id="' + CSS.escape(linkedRun) + '"]');
       if (row) { row.querySelector('details').open = true; row.querySelector('[data-test-logs]').focus({ preventScroll: true }); row.scrollIntoView({ block: 'center' }); }
-      else query('#test-live-status').textContent = 'The linked run is no longer available in retained history.';
+      else window.DevCoordinatorI18n.text(query('#test-live-status'), "tests.the_linked_run_is_no_longer_available_in_retaine_a39a19");
     }
     query('#test-run-open').addEventListener('click', (event) => runForm(event.currentTarget));
     query('#test-capacity-open')?.addEventListener('click', (event) => openCapacity(capacity, event.currentTarget));

@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "Legenda faza rada",
+  "scrollable_token_chart_83cb1f": "Pomični graf tokena",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Ukupni tokeni koje je prijavio pružalac, po fazi rada",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Složeni vremenski intervali UTC. Tačne vrijednosti navedene su ispod grafova.",
+  "no_classified_token_activity_in_this_window_f460d0": "Nema klasificirane aktivnosti tokena u ovom razdoblju.",
+  "work_activity_bf3178": "Radna aktivnost",
+  "total_tokens_e7601c": "Ukupno tokena",
+  "activity_breakdown_7ebc89": "Pregled po aktivnosti",
+  "separate_measurements_they_are_not_added_togethe_329294": "Odvojena mjerenja; ne zbrajaju se.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Nema rezultata alata u ovom razdoblju.",
+  "total_c9b3c3": "Ukupno",
+  "exact_bucket_values_a2a7fe": "Tačne vrijednosti po intervalu",
+  "utc_bucket_fbd8d9": "Interval UTC",
+  "data_status_87d914": "Stanje podataka",
+  "repository_13d6ff": "Repozitorij",
+  "model_requests_888826": "Zahtjevi modelu",
+  "tool_calls_da5122": "Pozivi alata",
+  "execution_time_1069e2": "Vrijeme izvođenja",
+  "data_included_217858": "Uključeni podaci",
+  "time_breakdown_ca0aca": "Pregled vremena",
+  "separate_not_added_together_6dbbe5": "(odvojeno, ne zbraja se)",
+  "tool_outcomes_3a7a68": "Rezultati alata",
+  "data_completeness_c7114d": "Potpunost podataka",
+  "counting_method_7a480a": "Način brojanja",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Ukupni tokeni koje je prijavio pružalac; keširani unos i razmišljanje uključeni su u taj zbroj.",
+  "schema_value19_taxonomy_value20_cdddf8": "Šema {value19} · taksonomija {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Okruženja bez podataka i nemerenih vrednosti isključena su i ne tretiraju se kao nula.",
+  "token_subsets_unavailable_4cec86": "Podskupovi tokena nisu dostupni",
+  "about_codex_environments_4a2e3e": "O Codex okruženjima",
+  "explain_codex_usage_data_completeness_63247d": "Objasni potpunost podataka o korišćenju Codexa",
+  "tokens_a039df": "Tokeni",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} nepoznat interval",
+      "few": "{count} nepoznata intervala",
+      "other": "{count} nepoznatih intervala"
+    }
+  }
+}

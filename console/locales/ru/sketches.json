@@ -1,0 +1,53 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Комментариев к этому варианту ещё нет.",
+  "sketch_set_review_1e4713": "Обзор набора эскизов",
+  "close_7d9eb7": "Закрыть",
+  "selection_mode_1935ae": "Режим выбора",
+  "close_set_review_2680d1": "Закрыть обзор набора",
+  "sketch_set_options_62656f": "Варианты набора эскизов",
+  "current_option_f4a3f8": "Текущий вариант",
+  "comments_355f79": "Комментарии",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Объясните, почему вы выбрали этот вариант или набор вариантов.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Выбор сохраняется как «Сохранить», «Отклонить» или «Не решено».",
+  "sketches_a56d78": "Эскизы",
+  "review_generated_options_by_set_then_select_one__020509": "Просмотрите созданные варианты по наборам, затем выберите один или несколько для дальнейшей работы.",
+  "publish_from_a_skill_f33a0e": "Опубликовать из навыка",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Эскизы публикуются зарегистрированным навыком",
+  "value2_selected_value3_options_b64a24": "Выбрано: {value2} · вариантов: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "Эскизов: {value5} · выбрано: {value6}",
+  "value6_rejected_value7_undecided_bbc778": "Отклонено: {value6} · Не решено: {value7}",
+  "reviewer_d29f46": "Проверяющий",
+  "option_unavailable_d03e4e": "Вариант недоступен",
+  "selected_57fd7a": "Выбрано",
+  "rejected_aea4a0": "Отклонитьed",
+  "undecided_00cc36": "Не решено",
+  "select_2a7802": "Выбрать",
+  "reject_ab604a": "Отклонить",
+  "leave_undecided_65c5c0": "Оставить без решения",
+  "set_6ee0eb": "набор",
+  "sets_82c6db": "наборов",
+  "no_selection_211f6b": "Выбор отсутствует",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Добавить контекст к выбранному варианту",
+      "few": "Добавить контекст к выбранным вариантам",
+      "many": "Добавить контекст к выбранным вариантам",
+      "other": "Добавить контекст к выбранным вариантам"
+    }
+  },
+  "review_set_ca242c": "Проверить набор",
+  "open_sketch_3ccc5c": "Открыть эскиз",
+  "single_choice_45a76a": "Один вариант",
+  "choose_multiple_b76dc5": "Выбрать несколько",
+  "open_full_review_canvas_26fc95": "Открыть полный холст проверки",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} набор",
+      "few": "{count} набора",
+      "many": "{count} наборов",
+      "other": "{count} набора"
+    }
+  }
+}

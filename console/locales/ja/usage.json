@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "作業フェーズの凡例",
+  "scrollable_token_chart_83cb1f": "スクロール可能なトークンのグラフ",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "プロバイダー報告の合計トークン数（作業フェーズ別）",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "UTC 時間帯ごとの積み上げ表示です。正確な値はグラフの下に記載されています。",
+  "no_classified_token_activity_in_this_window_f460d0": "この期間には分類済みのトークン使用記録がありません。",
+  "work_activity_bf3178": "作業内容",
+  "total_tokens_e7601c": "合計トークン数",
+  "activity_breakdown_7ebc89": "作業内容の内訳",
+  "separate_measurements_they_are_not_added_togethe_329294": "独立した計測値であり、合算しません。",
+  "no_tool_outcomes_in_this_window_4f3fa4": "この期間にはツールの実行結果がありません。",
+  "total_c9b3c3": "合計",
+  "exact_bucket_values_a2a7fe": "時間帯ごとの正確な値",
+  "utc_bucket_fbd8d9": "UTC 時間帯",
+  "data_status_87d914": "データの状態",
+  "repository_13d6ff": "リポジトリ",
+  "model_requests_888826": "モデルへのリクエスト",
+  "tool_calls_da5122": "ツール呼び出し",
+  "execution_time_1069e2": "実行時間",
+  "data_included_217858": "対象データ",
+  "time_breakdown_ca0aca": "時間の内訳",
+  "separate_not_added_together_6dbbe5": "（独立した値。合算しません）",
+  "tool_outcomes_3a7a68": "ツールの実行結果",
+  "data_completeness_c7114d": "データの完全性",
+  "counting_method_7a480a": "集計方法",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "プロバイダー報告の合計トークン数です。キャッシュ済み入力と推論はこの合計に含まれます。",
+  "schema_value19_taxonomy_value20_cdddf8": "スキーマ {value19} · 分類体系 {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}。データがない、または未測定値がある環境は除外し、ゼロとして数えません。",
+  "token_subsets_unavailable_4cec86": "トークンのサブセットを利用できません。",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "不明な区間 {count} 件",
+      "other": "不明な区間 {count} 件"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Codex 環境について",
+  "explain_codex_usage_data_completeness_63247d": "Codex 使用量データの完全性を説明",
+  "tokens_a039df": "トークン"
+}

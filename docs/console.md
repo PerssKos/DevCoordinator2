@@ -63,6 +63,20 @@ header switch persists an explicit choice across navigation and reloads.
 Authentication and upstream-error pages use matching colors with a system-font
 fallback, keeping those documents self-contained before sign-in.
 
+The header language button opens a searchable anchored menu. It shows the five
+most recently chosen supported languages followed by supported languages
+reported by the browser, then all enabled languages. Each row carries the name
+in the current Console language, the native name, the locale tag and one to
+three representative country flags; flags are supplementary and do not identify
+the language. Choosing a language updates marked interface copy and locale-aware
+formatting in place, keeps the current route, focus, scroll position and open
+drafts, and stores the choice locally. **Use browser language** clears the
+explicit choice. Browser language preferences that do not have a complete
+catalog are not offered as supported choices. Message catalogs are split by
+locale and feature namespace, loaded on demand, and fall back to English when a
+fragment or message is unavailable. User-authored names, task text, comments,
+logs and artifact contents are never translated.
+
 Unversioned assets revalidate using ETags rather than remaining immutable for an
 hour. The document's versioned asset requests also bypass caches populated by
 the earlier caching policy, so a normal refresh can load the redesigned code.

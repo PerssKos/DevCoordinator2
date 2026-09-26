@@ -126,6 +126,45 @@ native delivery clocks. A legacy `release deliver` record is not silently
 upgraded; new qualification requires retained verification evidence. Existing
 artifact, registry-package and local-executable contracts are unchanged.
 
+### Native Console observations
+
+The Coordinator's own Console is served by its repository-owned edge and
+installer, not a managed deployment. Use `kind: "native-console"` with a real
+passing `run-local` self-validation artifact. This keeps verification outside
+the installed daemon; the installed service only reads the retained proof and
+records the qualified receipt.
+
+The version-1 verification document uses `observation: "web_route_passed"`,
+the actual HTTPS Console root as `access`, and the retained response HTML as
+`file`. In place of `deployment`, it includes:
+
+```json
+{"native_console":{"daemon_source_commit":"RUNNING_DAEMON_COMMIT","assets_sha256":"SERVED_CONSOLE_TREE_DIGEST","http_status":200,"content_type":"text/html; charset=utf-8"}}
+```
+
+Use the running daemon's `ping` source commit, not a candidate binary stamp.
+Qualification requires the evidence checkout to be the running binary's build
+source root, the current source digest to match the retained run, the observed
+body to match that source's `console/index.html`, and access to be exactly
+`https://console.<configured base domain>/`. Login pages, foreign roots, source
+changes, wrong daemon versions, non-HTML/error responses and metadata borrowed
+from other delivery kinds are rejected. Custom edge Console host overrides
+are not supported by this receipt kind. Existing authentication is unchanged.
+
+`assets_sha256` binds the scripts and catalogs as well as the HTML. The native
+collector downloads every tracked static file type served by the edge under
+`console/`, checks its bytes, and
+hashes the sorted repository-relative path, byte count and file SHA-256. The
+server recomputes that digest from its source tree. Identical HTML pointing at
+different scripts or translations cannot qualify. The domain prefix is
+`devcoordinator2-console-assets-v1` followed by a NUL byte; every path, decimal
+byte count and lowercase file hash is followed by a NUL byte.
+
+A source checkout or compiled stamp by itself is insufficient: the passing run,
+retained file hashes, actual response timestamp, and full verification contract
+remain required. Rendered interaction checks still establish advertised behavior;
+matching the index alone does not prove that buttons work or text is translated.
+
 ## Prepare
 
 `review.prepare` / `review_prepare` accepts:
@@ -258,7 +297,7 @@ and CLI `release deliver-evidence --file delivery.json` take:
 {"release_id":"RELEASE_ID","path":"/absolute/registered/worktree","run_id":"RUN_ID","check":"build","artifact":"package","manifest_sha256":"64-hex-digest","source_sha256":"64-hex-digest","target":"linux-cli","kind":"local-executable","verification_file":"delivery.json"}
 ```
 
-Kinds: `artifact | registry-package | local-executable | web-deployment`.
+Kinds: `artifact | registry-package | local-executable | web-deployment | native-console`.
 A retained artifact tree is selected through the existing hash-bound artifact service. Repository,
 manifest, source digest, finished passing run, tree and file hashes must match.
 Focused development validation is sufficient for a preliminary delivery; this

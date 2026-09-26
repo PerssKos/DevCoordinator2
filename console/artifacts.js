@@ -19,10 +19,10 @@ window.DevCoordinatorArtifacts = (() => {
     const dialog = document.createElement('dialog');
     dialog.id = 'test-artifacts-dialog';
     dialog.setAttribute('aria-labelledby', 'artifact-title');
-    dialog.innerHTML = `<div class="dialog-head"><div><h2 id="artifact-title">Evidence files</h2><p class="muted artifact-run-facts">${esc(run.display_name)} · ${esc(run.test)} · <time datetime="${esc(run.started_at)}">${esc(new Date(run.started_at).toLocaleString())}</time></p></div><button class="dialog-close" type="button" aria-label="Close evidence files">×</button></div>
-      <div class="artifact-run-picker"><label class="f">Run<select aria-label="Run" disabled><option value="${esc(run.run_id)}">Latest run · ${esc(new Date(run.started_at).toLocaleString())}</option></select></label><div class="artifact-history-state" role="status"></div></div>
-      <label class="f artifact-bundle"${choices.length < 2 ? ' hidden' : ''}>File collection<select aria-label="File collection">${choices.map((choice, index) => `<option value="${index}">${esc(choice.check)} · ${esc(choice.name)} · ${choice.files} files</option>`).join('')}</select></label>
-      <div class="artifact-workspace"><nav class="artifact-navigation" aria-label="Evidence files"><div class="artifact-files"></div><div class="artifact-page-state" role="status"></div></nav><section class="artifact-preview" aria-label="Selected file"><header><h3 class="artifact-name" tabindex="-1"></h3><button class="btn" type="button" data-artifact-download disabled>Download file</button></header><div class="artifact-file-state" role="status"></div><div class="artifact-content"></div></section></div>`;
+    dialog.innerHTML = `<div class="dialog-head"><div><h2 id="artifact-title"><span data-i18n="artifacts.evidence_files_647770">Evidence files</span></h2><p class="muted artifact-run-facts">${esc(run.display_name)} · ${esc(run.test)} · <time datetime="${esc(run.started_at)}">${esc(new Date(run.started_at).toLocaleString(window.DevCoordinatorI18n.locale))}</time></p></div><button class="dialog-close" type="button" aria-label="Close evidence files" data-i18n-attrs='{"aria-label":"artifacts.close_evidence_files_519ff0"}'>×</button></div>
+      <div class="artifact-run-picker"><label class="f"><span data-i18n="artifacts.run_00d60e">Run</span><select aria-label="Run" disabled data-i18n-attrs='{"aria-label":"artifacts.run_00d60e"}'><option value="${esc(run.run_id)}">Latest run · ${esc(new Date(run.started_at).toLocaleString(window.DevCoordinatorI18n.locale))}</option></select></label><div class="artifact-history-state" role="status"></div></div>
+      <label class="f artifact-bundle"${choices.length < 2 ? ' hidden' : ''}><span data-i18n="artifacts.file_collection_65a537">File collection</span><select aria-label="File collection" data-i18n-attrs='{"aria-label":"artifacts.file_collection_65a537"}'>${choices.map((choice, index) => `<option value="${index}">${esc(choice.check)} · ${esc(choice.name)} · ${choice.files} files</option>`).join('')}</select></label>
+      <div class="artifact-workspace"><nav class="artifact-navigation" aria-label="Evidence files" data-i18n-attrs='{"aria-label":"artifacts.evidence_files_647770"}'><div class="artifact-files"></div><div class="artifact-page-state" role="status"></div></nav><section class="artifact-preview" aria-label="Selected file" data-i18n-attrs='{"aria-label":"artifacts.selected_file_2d7ad2"}'><header><h3 class="artifact-name" tabindex="-1"></h3><button class="btn" type="button" data-artifact-download disabled><span data-i18n="artifacts.download_file_9de414">Download file</span></button></header><div class="artifact-file-state" role="status"></div><div class="artifact-content"></div></section></div>`;
     document.body.appendChild(dialog);
     const presenter = window.DevCoordinatorArtifactContent;
     const query = (selector) => dialog.querySelector(selector);
@@ -65,7 +65,7 @@ window.DevCoordinatorArtifacts = (() => {
     const errorState = (target, error, retry, label = 'Try again') => {
       target.replaceChildren();
       const message = document.createElement('p');
-      message.textContent = error.message;
+      window.DevCoordinatorI18n.bind(message, () => error.message);
       const button = document.createElement('button');
       button.className = 'btn'; button.type = 'button'; button.textContent = label;
       button.addEventListener('click', retry);
@@ -87,7 +87,7 @@ window.DevCoordinatorArtifacts = (() => {
           || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size
           || chunk.offset !== offset || chunk.bytes !== block.length || end > Math.min(entry.size, limit)
           || (block.length === 0 && offset < entry.size) || chunk.next_offset !== (end < entry.size ? end : null)) {
-          throw new Error('The retained file changed or its response was incomplete.');
+          throw window.DevCoordinatorI18n.error("artifacts.the_retained_file_changed_or_its_response_was_in_ffbcca");
         }
         parts.push(block);
         offset = end;
@@ -104,20 +104,20 @@ window.DevCoordinatorArtifacts = (() => {
       const extension = entry.path.split('.').pop().toLowerCase();
       const imageType = imageTypes[extension];
       if (entry.size > FILE_BYTES) {
-        fileState.textContent = 'This file exceeds the 32 MiB browser limit. It remains available through the retained-file command line tools.';
+        window.DevCoordinatorI18n.text(fileState, "artifacts.this_file_exceeds_the_32_mib_browser_limit_it_re_6d2d08");
         return;
       }
       if (!imageType && !textTypes.has(extension)) {
-        fileState.textContent = 'No browser preview for this file type.';
+        window.DevCoordinatorI18n.text(fileState, "artifacts.no_browser_preview_for_this_file_type_9c21ba");
         download.disabled = false;
         return;
       }
-      fileState.textContent = 'Loading file…';
+      window.DevCoordinatorI18n.text(fileState, "artifacts.loading_file_e937ad");
       try {
         const blob = await readFile(entry, imageType ? FILE_BYTES : TEXT_BYTES, version);
         if (!blob) return;
         completeBlob = blob.size === entry.size ? blob : null;
-        fileState.textContent = blob.size < entry.size ? 'Preview limited to 1 MiB. Download the file for the complete content.' : bytes(entry.size);
+        window.DevCoordinatorI18n.bind(fileState, () => (blob.size < entry.size ? window.DevCoordinatorI18n.t("artifacts.preview_limited_to_1_mib_download_the_file_for_t_ee10bd") : bytes(entry.size)));
         if (imageType) {
           const image = document.createElement('img');
           image.alt = entry.displayLabel;
@@ -139,7 +139,7 @@ window.DevCoordinatorArtifacts = (() => {
       }
     };
     const loadPage = async (offset, version) => {
-      pageState.textContent = 'Loading files…';
+      window.DevCoordinatorI18n.text(pageState, "artifacts.loading_files_4aed40");
       try {
         const page = await api('test.artifact.catalog', {
           path: run.worktree_path, run_id: activeRun.run_id, check: collection.check, artifact: collection.name,
@@ -150,7 +150,7 @@ window.DevCoordinatorArtifacts = (() => {
           || page.artifact.sha256 !== collection.sha256 || (manifest && page.manifest_sha256 !== manifest)
           || page.entries.length > 100 || offset + page.entries.length > 4096
           || (page.next_offset != null && (page.next_offset !== offset + page.entries.length || page.next_offset <= offset))) {
-          throw new Error('The retained file catalogue changed or was incomplete.');
+          throw window.DevCoordinatorI18n.error("artifacts.the_retained_file_catalogue_changed_or_was_incom_0d7d20");
         }
         manifest = page.manifest_sha256;
         nextOffset = page.next_offset;
@@ -185,16 +185,16 @@ window.DevCoordinatorArtifacts = (() => {
         pageState.replaceChildren();
         if (nextOffset != null) {
           const more = document.createElement('button');
-          more.className = 'btn'; more.type = 'button'; more.textContent = 'More files';
+          more.className = 'btn'; more.type = 'button'; window.DevCoordinatorI18n.text(more, "artifacts.more_files_594130");
           more.addEventListener('click', () => loadPage(nextOffset, version));
           pageState.append(more);
         }
-        if (!entries.length) pageState.textContent = 'No retained files in this collection.';
+        if (!entries.length) window.DevCoordinatorI18n.text(pageState, "artifacts.no_retained_files_in_this_collection_5f6de1");
         if (!selection && initialFile) {
           const requested = entries.find((entry) => entry.path === initialFile.path);
           if (requested) { initialFile = null; await selectFile(requested, false); }
           else if (nextOffset != null) await loadPage(nextOffset, version);
-          else { initialFile = null; fileState.textContent = 'The selected file is no longer available.'; }
+          else { initialFile = null; window.DevCoordinatorI18n.text(fileState, "artifacts.the_selected_file_is_no_longer_available_056930"); }
         } else if (!selection && entries.length) await selectFile(entries[0], false);
       } catch (error) {
         if (closed || version !== collectionVersion) return;
@@ -207,10 +207,10 @@ window.DevCoordinatorArtifacts = (() => {
       collectionVersion += 1; fileVersion += 1;
       clearPreview(); fileList.replaceChildren(); query('.artifact-name').textContent = '';
       if (collection) loadPage(0, collectionVersion);
-      else pageState.textContent = 'No retained files are available for this run.';
+      else window.DevCoordinatorI18n.text(pageState, "artifacts.no_retained_files_are_available_for_this_run_1cd5fa");
     };
     const updateFacts = () => {
-      query('.artifact-run-facts').textContent = `${run.display_name} · ${activeRun.test} · ${new Date(activeRun.started_at).toLocaleString()}`;
+      window.DevCoordinatorI18n.bind(query('.artifact-run-facts'), () => `${run.display_name} · ${activeRun.test} · ${new Date(activeRun.started_at).toLocaleString(window.DevCoordinatorI18n.locale)}`);
     };
     const renderCollections = () => {
       query('.artifact-bundle').hidden = choices.length < 2;
@@ -229,7 +229,7 @@ window.DevCoordinatorArtifacts = (() => {
         renderCollections();
         return;
       }
-      pageState.textContent = 'Finding retained files…';
+      window.DevCoordinatorI18n.text(pageState, "artifacts.finding_retained_files_652bf1");
       const version = collectionVersion;
       try {
         const checks = new Set();
@@ -240,17 +240,17 @@ window.DevCoordinatorArtifacts = (() => {
           if (closed || version !== collectionVersion) return;
           for (const entry of catalog.entries) {
             const reference = entry.log_ref;
-            if (reference.run_id !== activeRun.run_id) throw new Error('The selected run catalogue changed.');
+            if (reference.run_id !== activeRun.run_id) throw window.DevCoordinatorI18n.error("artifacts.the_selected_run_catalogue_changed_c78ef1");
             if (reference.check && reference.phase === 'check') checks.add(reference.check);
           }
           cursor = catalog.next_cursor;
-          if (cursor && (cursors.has(cursor) || cursors.size >= 4096)) throw new Error('The selected run catalogue could not be fully read.');
+          if (cursor && (cursors.has(cursor) || cursors.size >= 4096)) throw window.DevCoordinatorI18n.error("artifacts.the_selected_run_catalogue_could_not_be_fully_re_48e1d5");
           if (cursor) cursors.add(cursor);
         } while (cursor);
         const catalogs = await Promise.all([...checks].map(async (check) => {
           try {
             const result = await api('test.artifact.catalog', { path: run.worktree_path, run_id: record.run.run_id, check, limit: 100 }, false);
-            if (result.run_id !== record.run.run_id || result.check !== check) throw new Error('The retained file catalogue changed or was incomplete.');
+            if (result.run_id !== record.run.run_id || result.check !== check) throw window.DevCoordinatorI18n.error("artifacts.the_retained_file_catalogue_changed_or_was_incom_0d7d20");
             return result;
           } catch (error) {
             if (error.code === 'test_artifact_not_found' || error.code === 'test_artifact_expired') return null;
@@ -267,7 +267,7 @@ window.DevCoordinatorArtifacts = (() => {
     };
     const loadHistory = async () => {
       const target = query('.artifact-history-state');
-      target.textContent = 'Loading runs…';
+      window.DevCoordinatorI18n.text(target, "artifacts.loading_runs_8438ea");
       const seen = new Set();
       const records = new Map([[run.run_id, { run }]]);
       let before = null;
@@ -275,17 +275,17 @@ window.DevCoordinatorArtifacts = (() => {
         do {
           const history = await api('test.history', { path: run.worktree_path, limit: 50, ...(before ? { before } : {}) }, false);
           if (closed) return;
-          if (!Array.isArray(history.runs) || history.runs.length > 50) throw new Error('Run history could not be fully read.');
+          if (!Array.isArray(history.runs) || history.runs.length > 50) throw window.DevCoordinatorI18n.error("artifacts.run_history_could_not_be_fully_read_437dcf");
           for (const entry of history.runs) records.set(entry.run_id, { run: entry });
           before = history.next_before;
-          if (before && (seen.has(before) || seen.size >= 20)) throw new Error('Run history changed. Try loading it again.');
+          if (before && (seen.has(before) || seen.size >= 20)) throw window.DevCoordinatorI18n.error("artifacts.run_history_changed_try_loading_it_again_e78606");
           if (before) seen.add(before);
         } while (before);
         retainedRuns.clear();
         for (const [identity, record] of records) retainedRuns.set(identity, record);
         const picker = query('.artifact-run-picker select');
         picker.innerHTML = [...retainedRuns.values()].sort((left, right) => right.run.started_at.localeCompare(left.run.started_at))
-          .map((record) => `<option value="${esc(record.run.run_id)}">${esc(new Date(record.run.started_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</option>`).join('');
+          .map((record) => `<option value="${esc(record.run.run_id)}">${esc(new Date(record.run.started_at).toLocaleString(window.DevCoordinatorI18n.locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</option>`).join('');
         picker.value = activeRun.run_id;
         picker.disabled = retainedRuns.size < 2;
         target.textContent = '';
@@ -335,9 +335,9 @@ window.DevCoordinatorArtifacts = (() => {
       let offset = 0;
       let manifest;
       do {
-        if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+        if (signal.aborted) throw window.DevCoordinatorI18n.error("artifacts.screenshot_loading_cancelled_50e74f");
         const catalog = await api('test.artifact.catalog', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, offset, limit: 100, ...(manifest ? { manifest_sha256: manifest } : {}) });
-        if (catalog.run_id !== run.run_id || catalog.check !== collection.check || catalog.artifact?.name !== collection.name || catalog.artifact.sha256 !== collection.sha256 || (manifest && catalog.manifest_sha256 !== manifest) || catalog.entries.length > 100 || (catalog.next_offset != null && catalog.next_offset !== offset + catalog.entries.length)) throw new Error('The retained file catalogue changed.');
+        if (catalog.run_id !== run.run_id || catalog.check !== collection.check || catalog.artifact?.name !== collection.name || catalog.artifact.sha256 !== collection.sha256 || (manifest && catalog.manifest_sha256 !== manifest) || catalog.entries.length > 100 || (catalog.next_offset != null && catalog.next_offset !== offset + catalog.entries.length)) throw window.DevCoordinatorI18n.error("artifacts.the_retained_file_catalogue_changed_f487d8");
         manifest = catalog.manifest_sha256;
         for (const entry of catalog.entries) {
           const mime = imageTypes[entry.path.split('.').pop().toLowerCase()];
@@ -346,21 +346,21 @@ window.DevCoordinatorArtifacts = (() => {
             const parts = [];
             let position = 0;
             do {
-              if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+              if (signal.aborted) throw window.DevCoordinatorI18n.error("artifacts.screenshot_loading_cancelled_50e74f");
               const chunk = await api('test.artifact.file', { path: run.worktree_path, run_id: run.run_id, check: collection.check, artifact: collection.name, manifest_sha256: manifest, file: entry.path, offset: position, max_bytes: CHUNK_BYTES });
               const block = Uint8Array.from(atob(chunk.base64), (character) => character.charCodeAt(0));
               const end = position + block.length;
-              if (chunk.run_id !== run.run_id || chunk.check !== collection.check || chunk.artifact !== collection.name || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size || chunk.offset !== position || chunk.bytes !== block.length || !block.length || end > entry.size || chunk.next_offset !== (end < entry.size ? end : null)) throw new Error('The retained image changed.');
+              if (chunk.run_id !== run.run_id || chunk.check !== collection.check || chunk.artifact !== collection.name || chunk.file !== entry.path || chunk.sha256 !== entry.sha256 || chunk.total_bytes !== entry.size || chunk.offset !== position || chunk.bytes !== block.length || !block.length || end > entry.size || chunk.next_offset !== (end < entry.size ? end : null)) throw window.DevCoordinatorI18n.error("artifacts.the_retained_image_changed_d7ce7f");
               parts.push(block); position = end;
             } while (position < entry.size);
-            if (signal.aborted) throw new Error('Screenshot loading cancelled.');
+            if (signal.aborted) throw window.DevCoordinatorI18n.error("artifacts.screenshot_loading_cancelled_50e74f");
             const url = URL.createObjectURL(new Blob(parts, { type: mime }));
             urls.add(url);
             return url;
           };
           images.push({ native: true, load, label: window.DevCoordinatorArtifactContent.describe(entry.path).title, path: entry.path, check: collection.check, artifact: collection.name });
         }
-        if (catalog.next_offset != null && catalog.next_offset <= offset) throw new Error('The retained file catalogue was incomplete.');
+        if (catalog.next_offset != null && catalog.next_offset <= offset) throw window.DevCoordinatorI18n.error("artifacts.the_retained_file_catalogue_was_incomplete_7988e1");
         offset = catalog.next_offset;
       } while (offset != null && offset < 4096);
     }

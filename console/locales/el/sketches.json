@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Δεν υπάρχουν ακόμη σχόλια για αυτή την επιλογή.",
+  "sketch_set_review_1e4713": "Έλεγχος συνόλου σκίτσων",
+  "close_7d9eb7": "Κλείσιμο",
+  "selection_mode_1935ae": "Λειτουργία επιλογής",
+  "close_set_review_2680d1": "Κλείσιμο ελέγχου συνόλου",
+  "sketch_set_options_62656f": "Επιλογές συνόλου σκίτσων",
+  "current_option_f4a3f8": "Τρέχουσα επιλογή",
+  "comments_355f79": "Σχόλια",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Εξηγήστε γιατί επιλέξατε αυτή την επιλογή ή το σύνολο επιλογών.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Οι επιλογές αποθηκεύονται ως Διατήρηση, Απόρριψη ή Χωρίς απόφαση.",
+  "sketches_a56d78": "Σκίτσα",
+  "review_generated_options_by_set_then_select_one__020509": "Ελέγξτε τις παραγόμενες επιλογές ανά σύνολο και επιλέξτε μία ή περισσότερες για συνέχεια.",
+  "publish_from_a_skill_f33a0e": "Δημοσίευση μέσω δεξιότητας",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Τα σκίτσα δημοσιεύονται από καταχωρισμένη δεξιότητα",
+  "value2_selected_value3_options_b64a24": "{value2} επιλεγμένες · {value3} επιλογές",
+  "value5_sketches_value6_selected_87bdd8": "{value5} σκίτσα · {value6} επιλεγμένα",
+  "value6_rejected_value7_undecided_bbc778": "{value6} απορρίφθηκαν · {value7} χωρίς απόφαση",
+  "reviewer_d29f46": "Ελεγκτής",
+  "option_unavailable_d03e4e": "Η επιλογή δεν είναι διαθέσιμη",
+  "selected_57fd7a": "Επιλεγμένο",
+  "rejected_aea4a0": "Απορρίφθηκε",
+  "undecided_00cc36": "Χωρίς απόφαση",
+  "select_2a7802": "Επιλογή",
+  "reject_ab604a": "Απόρριψη",
+  "leave_undecided_65c5c0": "Διατήρηση χωρίς απόφαση",
+  "set_6ee0eb": "σύνολο",
+  "sets_82c6db": "σύνολα",
+  "no_selection_211f6b": "Καμία επιλογή",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Προσθήκη πλαισίου στην επιλεγμένη επιλογή",
+      "other": "Προσθήκη πλαισίου στις επιλεγμένες επιλογές",
+      "many": "Προσθήκη πλαισίου στις επιλεγμένες επιλογές"
+    }
+  },
+  "review_set_ca242c": "Έλεγχος συνόλου",
+  "open_sketch_3ccc5c": "Άνοιγμα σκίτσου",
+  "single_choice_45a76a": "Μία επιλογή",
+  "choose_multiple_b76dc5": "Πολλαπλή επιλογή",
+  "open_full_review_canvas_26fc95": "Άνοιγμα πλήρους καμβά ελέγχου",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} σύνολο",
+      "other": "{count} σύνολα",
+      "many": "{count} σύνολα"
+    }
+  }
+}

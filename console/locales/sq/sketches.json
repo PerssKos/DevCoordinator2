@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Ende nuk ka komente për këtë alternativë.",
+  "sketch_set_review_1e4713": "Rishikim i grupit të skicave",
+  "close_7d9eb7": "Mbyll",
+  "selection_mode_1935ae": "Modalitet zgjedhjeje",
+  "close_set_review_2680d1": "Mbyll rishikimin e grupit",
+  "sketch_set_options_62656f": "Alternativat e grupit të skicave",
+  "current_option_f4a3f8": "Alternativa aktuale",
+  "comments_355f79": "Komente",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Shpjego pse zgjodhe këtë alternativë ose grup alternativash.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Zgjedhjet ruhen si Mbaj, Refuzo ose I pavendosur.",
+  "sketches_a56d78": "Skica",
+  "review_generated_options_by_set_then_select_one__020509": "Rishiko alternativat e krijuara sipas grupeve dhe zgjidh një ose më shumë për të vazhduar.",
+  "publish_from_a_skill_f33a0e": "Publiko nga një aftësi",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Skicat publikohen nga një aftësi e regjistruar",
+  "value2_selected_value3_options_b64a24": "{value2} të zgjedhura · {value3} alternativa",
+  "value5_sketches_value6_selected_87bdd8": "{value5} skica · {value6} të zgjedhura",
+  "value6_rejected_value7_undecided_bbc778": "{value6} të refuzuara · {value7} të pavendosura",
+  "reviewer_d29f46": "Rishikues",
+  "option_unavailable_d03e4e": "Alternativa nuk është e disponueshme",
+  "selected_57fd7a": "E zgjedhur",
+  "rejected_aea4a0": "E refuzuar",
+  "undecided_00cc36": "E pavendosur",
+  "select_2a7802": "Zgjidh",
+  "reject_ab604a": "Refuzo",
+  "leave_undecided_65c5c0": "Lëre të pavendosur",
+  "set_6ee0eb": "grup",
+  "sets_82c6db": "grupe",
+  "no_selection_211f6b": "Pa zgjedhje",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "Shto kontekst te alternativa e zgjedhur",
+      "other": "Shto kontekst te alternativat e zgjedhura"
+    }
+  },
+  "review_set_ca242c": "Rishiko grupin",
+  "open_sketch_3ccc5c": "Hap skicën",
+  "single_choice_45a76a": "Zgjedhje e vetme",
+  "choose_multiple_b76dc5": "Zgjedhje të shumëfishta",
+  "open_full_review_canvas_26fc95": "Hap kanavacën e plotë të rishikimit",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} grup",
+      "other": "{count} grupe"
+    }
+  }
+}

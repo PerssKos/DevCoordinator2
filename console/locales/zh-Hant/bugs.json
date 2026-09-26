@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "元件",
+  "summary_8e76a9": "摘要",
+  "expected_actual_2457a7": "預期／實際",
+  "steps_1de3df": "步驟",
+  "seen_8894cf": "發現時間",
+  "correlations_f54dae": "關聯",
+  "open_bugs_dce3d4": "未解決缺陷",
+  "report_a_bug_f75e0b": "報告缺陷",
+  "report_b6ce78": "提交報告",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "僅填寫簡短、獨立的記錄：不要包含秘密、原始日誌或私有路徑。",
+  "close_310ff2": "關閉",
+  "expected": "預期結果",
+  "actual": "實際結果"
+}

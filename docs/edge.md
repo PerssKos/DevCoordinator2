@@ -13,6 +13,13 @@ proxy (strips session cookies from upstream traffic, forwards the verified
 identity as `x-devcoordinator2-email` / `x-devcoordinator2-route-id` on
 session-authenticated routes only), and a static file server for the Console.
 
+The edge auth, access-denied, invitation and upstream-error pages use the same
+validated locale metadata as the Console. An explicit `dc2-locale` cookie wins;
+otherwise the edge negotiates the first supported browser language from
+`Accept-Language`, then uses English. A locale is selectable only after its
+catalog is complete and enabled. Runtime identities, route names, instance
+values and diagnostics remain escaped data and never enter catalogs.
+
 ## Behavior
 
 - Route document (`docs/route-document.md`): read from

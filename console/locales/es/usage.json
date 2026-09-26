@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "Leyenda de fases de trabajo",
+  "scrollable_token_chart_83cb1f": "Gráfico de tokens desplazable",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Total de tokens comunicado por el proveedor, por fase de trabajo",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Intervalos UTC apilados. Los valores exactos se muestran después de los gráficos.",
+  "no_classified_token_activity_in_this_window_f460d0": "No hay actividad de tokens clasificada en este período.",
+  "work_activity_bf3178": "Actividad de trabajo",
+  "total_tokens_e7601c": "Total de tokens",
+  "activity_breakdown_7ebc89": "Desglose por actividad",
+  "separate_measurements_they_are_not_added_togethe_329294": "Son mediciones independientes; no se suman.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "No hay resultados de herramientas en este período.",
+  "total_c9b3c3": "Total",
+  "exact_bucket_values_a2a7fe": "Valores exactos por intervalo",
+  "utc_bucket_fbd8d9": "Intervalo UTC",
+  "data_status_87d914": "Estado de los datos",
+  "repository_13d6ff": "Repositorio",
+  "model_requests_888826": "Solicitudes al modelo",
+  "tool_calls_da5122": "Llamadas a herramientas",
+  "execution_time_1069e2": "Tiempo de ejecución",
+  "data_included_217858": "Datos incluidos",
+  "time_breakdown_ca0aca": "Desglose del tiempo",
+  "separate_not_added_together_6dbbe5": "(independientes, no se suman)",
+  "tool_outcomes_3a7a68": "Resultados de herramientas",
+  "data_completeness_c7114d": "Integridad de los datos",
+  "counting_method_7a480a": "Método de recuento",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Total de tokens comunicado por el proveedor; la entrada en caché y el razonamiento están incluidos en ese total.",
+  "schema_value19_taxonomy_value20_cdddf8": "Esquema {value19} · taxonomía {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Los entornos sin datos y los valores no medidos se excluyen, no se cuentan como cero.",
+  "token_subsets_unavailable_4cec86": "Subconjuntos de tokens no disponibles.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} intervalo desconocido",
+      "other": "{count} intervalos desconocidos",
+      "many": "{count} intervalos desconocidos"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Acerca de los entornos Codex",
+  "explain_codex_usage_data_completeness_63247d": "Explicar la integridad de los datos de uso de Codex",
+  "tokens_a039df": "Tokens"
+}

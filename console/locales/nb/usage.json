@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "Forklaring av arbeidsfaser",
+  "scrollable_token_chart_83cb1f": "Rullbart tokendiagram",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "Totalt antall token rapportert av leverandøren, etter arbeidsfase",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stablede UTC-tidsintervaller. Nøyaktige verdier er oppført under diagrammene.",
+  "no_classified_token_activity_in_this_window_f460d0": "Ingen klassifisert tokenaktivitet i denne perioden.",
+  "work_activity_bf3178": "Arbeidsaktivitet",
+  "total_tokens_e7601c": "Totalt antall token",
+  "activity_breakdown_7ebc89": "Aktivitetsfordeling",
+  "separate_measurements_they_are_not_added_togethe_329294": "Separate målinger; de legges ikke sammen.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "Ingen verktøyresultater i denne perioden.",
+  "total_c9b3c3": "Totalt",
+  "exact_bucket_values_a2a7fe": "Nøyaktige verdier per intervall",
+  "utc_bucket_fbd8d9": "UTC-intervall",
+  "data_status_87d914": "Datastatus",
+  "repository_13d6ff": "Kodelager",
+  "model_requests_888826": "Modellforespørsler",
+  "tool_calls_da5122": "Verktøykall",
+  "execution_time_1069e2": "Kjøretid",
+  "data_included_217858": "Inkluderte data",
+  "time_breakdown_ca0aca": "Tidsfordeling",
+  "separate_not_added_together_6dbbe5": "(separate, ikke lagt sammen)",
+  "tool_outcomes_3a7a68": "Verktøyresultater",
+  "data_completeness_c7114d": "Datafullstendighet",
+  "counting_method_7a480a": "Tellemetode",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Totalt antall token rapportert av leverandøren; bufret inndata og resonnering er inkludert i totalen.",
+  "schema_value19_taxonomy_value20_cdddf8": "Skjema {value19} · taksonomi {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Miljøer uten data og umålte verdier utelates i stedet for å behandles som null.",
+  "token_subsets_unavailable_4cec86": "Tokensubsett utilgjengelige.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} ukjent intervall",
+      "other": "{count} ukjente intervaller"
+    }
+  },
+  "about_codex_environments_4a2e3e": "Om Codex-miljøer",
+  "explain_codex_usage_data_completeness_63247d": "Forklar fullstendigheten i Codex-bruksdata",
+  "tokens_a039df": "Token"
+}

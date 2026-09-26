@@ -207,8 +207,8 @@ export async function createEdge(config, { log = console } = {}) {
       clientSecret: config.oidcClientSecret, redirectUri: `${consoleOrigin}/auth/callback`, sessions, log });
   }
   const proxy = createProxy({ log, sessionCookieName: SESSION_COOKIE,
-    renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
-    renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
+    renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
+    renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
   const daemon = createDaemonClient({ socketPath: config.daemonSocket });
   const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log }) : null;
 
@@ -233,7 +233,7 @@ export async function createEdge(config, { log = console } = {}) {
     const rt = url.searchParams.get('rt') || '/';
     if (url.pathname === '/auth/login') {
       if (identityOf(req)) return redirect(res, rt);
-      return writePage(res, pages.renderLogin({ rt, degraded: !oidc.configured }));
+      return writePage(res, pages.forRequest(req).renderLogin({ rt, degraded: !oidc.configured }));
     }
     if (url.pathname === '/auth/google' || url.pathname === '/auth/start') {
       if (host !== config.consoleHost) {
@@ -246,7 +246,7 @@ export async function createEdge(config, { log = console } = {}) {
         return redirect(res, target, { 'set-cookie': flowCookie });
       } catch (error) {
         log.warn?.('sign-in redirect failed', { error: error.message, stack: error.stack });
-        return writePage(res, pages.renderLogin({ rt, error: 'sign-in is not available right now', degraded: true }));
+        return writePage(res, pages.forRequest(req).renderLogin({ rt, error: 'sign-in is not available right now', degraded: true }));
       }
     }
     if (url.pathname === '/auth/callback') {
@@ -263,7 +263,7 @@ export async function createEdge(config, { log = console } = {}) {
         return redirect(res, back || '/', { 'set-cookie': [cookie, 'dc_flow=; Path=/; Max-Age=0'] });
       } catch (error) {
         log.warn?.('sign-in callback failed', { error: error.message });
-        return writePage(res, pages.renderLogin({ rt: '/', error: 'sign-in failed; please try again' }));
+        return writePage(res, pages.forRequest(req).renderLogin({ rt: '/', error: 'sign-in failed; please try again' }));
       }
     }
     if (url.pathname === '/auth/logout') {
@@ -335,14 +335,14 @@ export async function createEdge(config, { log = console } = {}) {
     if (host === config.consoleHost) return handleConsole(req, res, url);
     const doc = store.current();
     const route = doc.routes.find((r) => r.domain === host);
-    if (!route) return writePage(res, pages.renderNotFound({ host }));
+    if (!route) return writePage(res, pages.forRequest(req).renderNotFound({ host }));
     const identity = identityOf(req);
     const expectedOrigin = `${scheme}://${String(req.headers.host || host).toLowerCase()}`;
     const localAgent = trustedLoopbackAgent(req, expectedOrigin, config.trustLocalAgent);
     const decision = authorize(doc, route, identity?.email || null, localAgent);
     if (!decision.allowed) {
       if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname + url.search)}`);
-      return writePage(res, pages.renderDenied({ email: identity.email, resource: host, sessionSet: true }));
+      return writePage(res, pages.forRequest(req).renderDenied({ email: identity.email, resource: host, sessionSet: true }));
     }
     const destination = target(route, host, identity, localAgent);
     try {
