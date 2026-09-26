@@ -1182,7 +1182,7 @@
         "FI"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "fi/common.json"
