@@ -2581,7 +2581,7 @@
         "CH"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "rm/common.json"

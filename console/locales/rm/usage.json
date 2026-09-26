@@ -1,0 +1,40 @@
+{
+  "work_phase_legend_0886c1": "Work fasa legend",
+  "scrollable_token_chart_83cb1f": "Scrollable token diagramm",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "proveditur-rapportà total tokens by work fasa",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stacked UTC temp buckets. exact valurs èn listed davo il charts.",
+  "no_classified_token_activity_in_this_window_f460d0": "na classified token activitad en quest window.",
+  "work_activity_bf3178": "Work activitad",
+  "total_tokens_e7601c": "total tokens",
+  "activity_breakdown_7ebc89": "activitad breakdown",
+  "separate_measurements_they_are_not_added_togethe_329294": "separà mesiras; they èn na agiunt together.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "na instrument resultats en quest window.",
+  "total_c9b3c3": "total",
+  "exact_bucket_values_a2a7fe": "exact bucket valurs",
+  "utc_bucket_fbd8d9": "Rumantsch: UTC bucket",
+  "data_status_87d914": "datas stadi",
+  "repository_13d6ff": "Rumantsch: Repository",
+  "model_requests_888826": "Rumantsch: Model requests",
+  "tool_calls_da5122": "instrument calls",
+  "execution_time_1069e2": "execuziun temp",
+  "data_included_217858": "datas inclu",
+  "time_breakdown_ca0aca": "temp breakdown",
+  "separate_not_added_together_6dbbe5": "(separà, na agiunt together)",
+  "tool_outcomes_3a7a68": "instrument resultats",
+  "data_completeness_c7114d": "datas completeness",
+  "counting_method_7a480a": "Rumantsch: Counting method",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "proveditur-rapportà total tokens; cached entrada ed reasoning èn subsets.",
+  "schema_value19_taxonomy_value20_cdddf8": "schema {value19} · taxonomia {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. ambients that supplied na datas ed unmeasured valurs èn excluded rather than treated as zero.",
+  "token_subsets_unavailable_4cec86": "token subsets indisponibel.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} malconuschent interval",
+      "other": "{count} malconuschent intervals"
+    }
+  },
+  "about_codex_environments_4a2e3e": "sur Codex ambients",
+  "explain_codex_usage_data_completeness_63247d": "declerar Codex utilisaziun datas completeness",
+  "tokens_a039df": "tokens"
+}
