@@ -70,5 +70,36 @@
   "resize_task_navigator_2cc8bc": "작업 탐색기 크기 조정",
   "decisions_7c5ca9": "결정 →",
   "enter_a_line_estimate_7d4502": "줄 수 추정치 입력",
-  "not_scheduled_yet_backlog_0f0d42": "아직 일정 없음 (백로그)"
+  "not_scheduled_yet_backlog_0f0d42": "아직 일정 없음 (백로그)",
+  "elaborateLabel": "설명 요청",
+  "explanationRequested": "“{title}”에 대한 더 명확한 설명을 요청했습니다",
+  "explainTask": "에이전트에게 “{title}”을 더 쉬운 말로 설명해 달라고 요청",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "other": "약 {value}줄"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "other": "작업 {count}개의 규모가 추정되지 않음"
+    }
+  },
+  "unestimatedCount": "미추정: {count}개",
+  "doneSummary": "완료: {done} / {total} ({percent})",
+  "linesDone": "완료한 줄 수: {done} / {total}",
+  "tasksDone": "완료한 작업: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "other": "{value}줄"
+    }
+  },
+  "dropTask": "작업 제외",
+  "dropTaskNamed": "“{title}” 작업 제외",
+  "selectTask": "“{title}” 선택",
+  "dragMoveTask": "“{title}”을 드래그하여 이동",
+  "dragResizeTask": "드래그하여 “{title}”의 추정치 변경",
+  "progressNeedsEstimate": "작업 규모를 추정해야 진행률을 계산할 수 있습니다."
 }

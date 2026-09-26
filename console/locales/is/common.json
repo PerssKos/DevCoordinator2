@@ -281,5 +281,7 @@
   "label_revert_condition": "Skilyrði afturköllunar",
   "label_reason": "Ástæða",
   "label_before": "Fyrir",
-  "label_after": "Eftir"
+  "label_after": "Eftir",
+  "status_preview": "forskoðun",
+  "status_elaboration_needed": "nánari skýringar vantar"
 }

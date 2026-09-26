@@ -142,5 +142,9 @@
   "free": "ελεύθερο",
   "of": "από",
   "one_minute_average": "μέσος όρος ενός λεπτού",
-  "scale": "κλίμακα"
+  "scale": "κλίμακα",
+  "removeTest": "Αφαίρεση κοντέινερ δοκιμής",
+  "removeOrphaned": "Αφαίρεση ορφανού κοντέινερ",
+  "removeTestContainer": "Αφαίρεση κοντέινερ δοκιμής {name}",
+  "removeOrphanedContainer": "Αφαίρεση ορφανού κοντέινερ {name}"
 }

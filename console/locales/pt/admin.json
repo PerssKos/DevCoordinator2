@@ -27,8 +27,13 @@
   "server_aef7de": "Servidor",
   "configured_201582": "configurado",
   "not_configured_9f33f0": "não configurado",
-  "yes_8a7988": "yes",
+  "yes_8a7988": "sim",
   "remove_user_84a18f": "Remover utilizador",
   "revoke_777ac4": "revogar",
-  "remove_grant_8c57bf": "Remover permissão"
+  "remove_grant_8c57bf": "Remover permissão",
+  "removeGrant": "Remover atribuição {role} para {email}",
+  "removeUser": "Remover utilizador {email}",
+  "telegramSummary": "Bot {state} · pendentes: {pending} · última consulta: {time}",
+  "unsubscribe": "Cancelar subscrição de {scope}",
+  "roleAccess": "Apenas acesso"
 }

@@ -26,17 +26,17 @@
   "plan_progress_bfa53d": "Planvoortgang",
   "open_tasks_87cfa1": "Openstaande taken",
   "compared_with_the_previous_matching_period_value_8b4a50": "Vergeleken met de vorige overeenkomende periode ({value1})",
-  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. Planned regels added means {value3}. {value4}. {value5}. {value6}.",
+  "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. Toegevoegde geplande regels betekent {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Vorig {value3}",
-  "aligned_hour": "Aligned hourly bewijs · UTC",
-  "aligned_day": "Aligned daily bewijs · UTC",
-  "aligned_week": "Aligned weekly bewijs · UTC",
+  "aligned_hour": "Per uur uitgelijnd bewijs · UTC",
+  "aligned_day": "Per dag uitgelijnd bewijs · UTC",
+  "aligned_week": "Per week uitgelijnd bewijs · UTC",
   "no_recorded_movement_in_this_period_59cf50": "Geen geregistreerde beweging in deze periode",
   "open_full_plan_303994": "Volledig plan openen →",
   "open_selected_in_plan_a6478f": "Geselecteerde openen in plan",
   "view_progress_c2e39c": "Voortgang bekijken",
-  "green_tasks_087f3a": "Green = taaks",
-  "blue_planned_lines_adfe4a": "Blue = planned regels",
+  "green_tasks_087f3a": "Groen = taken",
+  "blue_planned_lines_adfe4a": "Blauw = geplande regels",
   "solid_above_completed_outlined_below_incoming_333281": "Vol gevuld boven = voltooid · omlijnd onder = inkomend",
   "line_completed_running_total_e033cd": "Lijn = lopend totaal voltooid",
   "likelyRelease": "Waarschijnlijke release: {date}",
@@ -48,27 +48,27 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} taak has no estimate",
-      "other": "{count} taaks have no estimate"
+      "one": "{count} taak heeft geen schatting",
+      "other": "{count} taken hebben geen schatting"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} taak remains",
-      "other": "{count} taaks remain"
+      "one": "Er resteert {count} taak",
+      "other": "Er resteren {count} taken"
     }
   },
   "allEstimated": "Elke resterende taak heeft een schatting",
   "targetRecorded": "Releasedoeldatum vastgelegd",
-  "targetMissing": "Nee release target date is recorded",
-  "provisional": "Deze datum is voorlopig. It becomes more reliable as estimates and delivery bewijs improve.",
-  "reason_no_planned_release": "Plan eerst een release estimating its delivery range.",
-  "reason_insufficient_completion_history": "Meer voltooid werk is nodig before pace can support a release forecast.",
+  "targetMissing": "Er is geen doeldatum voor de release vastgelegd",
+  "provisional": "Deze datum is voorlopig. De betrouwbaarheid neemt toe naarmate schattingen en leveringsbewijs verbeteren.",
+  "reason_no_planned_release": "Plan eerst een release voordat het leveringsbereik kan worden geschat.",
+  "reason_insufficient_completion_history": "Er is meer voltooid werk nodig voordat het tempo een releaseprognose kan onderbouwen.",
   "workInRelease": "Werk in deze release",
   "openPlanWork": "Open planwerk",
   "estimateMissing": "Schatting ontbreekt",
   "estimatedLines": "~{count} regels",
-  "openTasksShown": "Tonening {shown} of {total} open taaks",
+  "openTasksShown": "{shown} van {total} openstaande taken worden getoond",
   "countingSemantics": "Voltooide regels zijn huidige schattingen van geplande taken, geen gemeten Git-wijzigingen. Toegevoegde regels omvatten eerste schattingen en verhogingen; verlagingen en verwijderd werk zijn uitgesloten. Tests gebruiken vastgelegde eindsamenvattingen voor deze repository. Tokentotalen komen van providers; ontbrekende gegevens blijven ontbreken. Prognoses zijn voorlopige bereiken op basis van recent tempo, huidige schattingen, scopewijzigingen en teststabiliteit. Werk zonder schatting gebruikt de mediaan van vastgelegde taakgroottes wanneer beschikbaar."
 }

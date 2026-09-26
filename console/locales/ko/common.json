@@ -281,5 +281,7 @@
   "label_revert_condition": "되돌리기 조건",
   "label_reason": "이유",
   "label_before": "이전",
-  "label_after": "이후"
+  "label_after": "이후",
+  "status_preview": "미리 보기",
+  "status_elaboration_needed": "추가 설명 필요"
 }

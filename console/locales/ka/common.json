@@ -281,5 +281,7 @@
   "label_revert_condition": "უკან დაბრუნების პირობა",
   "label_reason": "მიზეზი",
   "label_before": "მანამდე",
-  "label_after": "შემდეგ"
+  "label_after": "შემდეგ",
+  "status_preview": "წინასწარი ნახვა",
+  "status_elaboration_needed": "საჭიროა დამატებითი განმარტება"
 }

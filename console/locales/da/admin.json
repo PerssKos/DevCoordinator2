@@ -27,8 +27,13 @@
   "server_aef7de": "Server",
   "configured_201582": "konfigureret",
   "not_configured_9f33f0": "not konfigureret",
-  "yes_8a7988": "yes",
+  "yes_8a7988": "ja",
   "remove_user_84a18f": "Fjern bruger",
   "revoke_777ac4": "tilbagekald",
-  "remove_grant_8c57bf": "Fjern tilladelse"
+  "remove_grant_8c57bf": "Fjern tilladelse",
+  "removeGrant": "Fjern tildelingen {role} for {email}",
+  "removeUser": "Fjern brugeren {email}",
+  "telegramSummary": "Bot: {state} · udgående beskeder i kø: {pending} · seneste kontrol: {time}",
+  "unsubscribe": "Afmeld {scope}",
+  "roleAccess": "Kun adgang"
 }

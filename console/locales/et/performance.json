@@ -109,5 +109,10 @@
   "status_unchanged": "Muutust pole",
   "status_inconclusive": "Ebaselge",
   "tokensByActivity": "Tokenid tegevuse järgi",
-  "tokensByKind": "Tokenid plaaniüksuse tüübi järgi"
+  "tokensByKind": "Tokenid plaaniüksuse tüübi järgi",
+  "unattributedWork": "Mõnel tööl puudub salvestatud tulemus.",
+  "reviewScopeTotal": "Ülevaate kogusumma: {tokens}",
+  "periodScopeTotal": "Perioodi kogusumma: {tokens}",
+  "reviewTotalLabel": "Ülevaate kogusumma",
+  "periodTotalLabel": "Perioodi kogusumma"
 }

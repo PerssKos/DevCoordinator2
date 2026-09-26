@@ -140,5 +140,9 @@
   "free": "ledig",
   "of": "av",
   "one_minute_average": "gjennomsnitt over eitt minutt",
-  "scale": "skala"
+  "scale": "skala",
+  "removeTest": "Fjern testbehaldar",
+  "removeOrphaned": "Fjern foreldrelaus behaldar",
+  "removeTestContainer": "Fjern testbehaldar {name}",
+  "removeOrphanedContainer": "Fjern foreldrelaus behaldar {name}"
 }

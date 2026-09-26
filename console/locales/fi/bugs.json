@@ -1,13 +1,15 @@
 {
   "component_ce54f0": "Komponentti",
   "summary_8e76a9": "Yhteenveto",
-  "expected_actual_2457a7": "Odotettu / toteutunut",
+  "expected_actual_2457a7": "Odotettu / todellinen",
   "steps_1de3df": "Vaiheet",
-  "seen_8894cf": "Nähty",
-  "correlations_f54dae": "Korrelaatiot",
-  "open_bugs_dce3d4": "Avoimet virheet",
-  "report_a_bug_f75e0b": "Ilmoita virheestä",
+  "seen_8894cf": "Havaittu",
+  "correlations_f54dae": "Yhteydet",
+  "open_bugs_dce3d4": "Avoimet ohjelmavirheet",
+  "report_a_bug_f75e0b": "Ilmoita ohjelmavirheestä",
   "report_b6ce78": "Ilmoita",
-  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Vain rajatut atomiset tietueet: ei salaisuuksia, raakalokeja tai yksityisiä polkuja.",
-  "close_310ff2": "sulje"
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Vain tiiviitä, erillisiä virheraportteja: ei salaisuuksia, raakalokeja tai yksityisiä polkuja.",
+  "close_310ff2": "sulje",
+  "expected": "Odotettu tulos",
+  "actual": "Todellinen tulos"
 }

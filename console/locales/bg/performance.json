@@ -110,5 +110,10 @@
   "status_unchanged": "Без промяна",
   "status_inconclusive": "Неубедително",
   "tokensByActivity": "Токени по активност",
-  "tokensByKind": "Токени по вид елемент от плана"
+  "tokensByKind": "Токени по вид елемент от плана",
+  "unattributedWork": "Част от работата няма записан резултат.",
+  "reviewScopeTotal": "Общо за прегледа: {tokens}",
+  "periodScopeTotal": "Общо за периода: {tokens}",
+  "reviewTotalLabel": "Общо за прегледа",
+  "periodTotalLabel": "Общо за периода"
 }

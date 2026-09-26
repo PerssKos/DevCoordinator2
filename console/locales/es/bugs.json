@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Informar de un error",
   "report_b6ce78": "Informar",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Solo registros breves e independientes: sin secretos, registros sin procesar ni rutas privadas.",
-  "close_310ff2": "close"
+  "close_310ff2": "cerrar",
+  "expected": "Esperado",
+  "actual": "Real"
 }

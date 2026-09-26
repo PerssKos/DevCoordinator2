@@ -30,5 +30,10 @@
   "yes_8a7988": "yes",
   "remove_user_84a18f": "Remove user",
   "revoke_777ac4": "revoke",
-  "remove_grant_8c57bf": "Remove grant"
+  "remove_grant_8c57bf": "Remove grant",
+  "removeGrant": "Remove {role} grant for {email}",
+  "removeUser": "Remove user {email}",
+  "telegramSummary": "Bot {state} · outbox pending: {pending} · last poll: {time}",
+  "unsubscribe": "Unsubscribe from {scope}",
+  "roleAccess": "Access only"
 }

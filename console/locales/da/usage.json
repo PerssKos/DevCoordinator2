@@ -13,7 +13,7 @@
   "exact_bucket_values_a2a7fe": "Præcise værdier pr. interval",
   "utc_bucket_fbd8d9": "UTC-interval",
   "data_status_87d914": "Datastatus",
-  "repository_13d6ff": "Repository",
+  "repository_13d6ff": "Kodelager",
   "model_requests_888826": "Modelanmodninger",
   "tool_calls_da5122": "Værktøjskald",
   "execution_time_1069e2": "Kørselstid",
@@ -34,7 +34,7 @@
       "other": "{count} ukendte intervaller"
     }
   },
-  "about_codex_environments_4a2e3e": "About Codex miljøer",
+  "about_codex_environments_4a2e3e": "Om Codex-miljøer",
   "explain_codex_usage_data_completeness_63247d": "Forklar fuldstændigheden af Codex-forbrugsdata",
   "tokens_a039df": "Tokens"
 }

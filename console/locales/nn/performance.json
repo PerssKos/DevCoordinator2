@@ -107,5 +107,10 @@
       "other": "{value1} tilordna arbeidsresultat"
     }
   },
-  "review_usage_value1_a681eb": "Bruk i vurderinga · {value1}"
+  "review_usage_value1_a681eb": "Bruk i vurderinga · {value1}",
+  "unattributedWork": "Noko arbeid manglar eit registrert resultat.",
+  "reviewScopeTotal": "Gjennomgang totalt: {tokens}",
+  "periodScopeTotal": "Periode totalt: {tokens}",
+  "reviewTotalLabel": "Totalt for gjennomgang",
+  "periodTotalLabel": "Totalt for periode"
 }

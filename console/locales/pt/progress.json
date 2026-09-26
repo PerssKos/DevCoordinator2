@@ -63,14 +63,14 @@
   },
   "allEstimated": "Todas as tarefas restantes têm uma estimativa",
   "targetRecorded": "Data objetivo do lançamento registada",
-  "targetMissing": "Não release target date is recorded",
+  "targetMissing": "Não está registada uma data-alvo para a versão",
   "provisional": "Esta data é provisória. Torna-se mais fiável à medida que as estimativas e as provas de entrega melhoram.",
   "reason_no_planned_release": "Planeie um lançamento antes de estimar o respetivo intervalo de entrega.",
   "reason_insufficient_completion_history": "É necessário mais trabalho concluído antes de o ritmo permitir uma previsão de lançamento.",
   "workInRelease": "Trabalho neste lançamento",
   "openPlanWork": "Trabalho aberto do plano",
   "estimateMissing": "Estimativa em falta",
-  "estimatedLines": "~{count} lines",
+  "estimatedLines": "~{count} linhas",
   "openTasksShown": "A mostrar {shown} de {total} tarefas abertas",
   "countingSemantics": "As linhas concluídas são estimativas atuais das tarefas planeadas, não alterações Git medidas. As linhas adicionadas incluem estimativas iniciais e aumentos; reduções e trabalho abandonado são excluídos. Os testes usam resumos terminais registados para este repositório. Os totais de tokens provêm dos fornecedores; os dados em falta permanecem em falta. As previsões são intervalos provisórios baseados no ritmo recente, nas estimativas atuais, nas alterações de âmbito e na estabilidade dos testes. O trabalho sem estimativa utiliza a mediana registada quando disponível."
 }

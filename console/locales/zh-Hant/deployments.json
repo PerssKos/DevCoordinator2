@@ -58,5 +58,13 @@
       "one": "{count} 個部署",
       "other": "{count} 個部署"
     }
-  }
+  },
+  "action_start": "啟動",
+  "action_stop": "停止",
+  "action_restart": "重新啟動",
+  "operatorRequired": "需要操作員權限",
+  "refreshAfterApply": "正在套用變更；執行其他執行狀態操作前，請重新整理狀態",
+  "applyRunning": "正在套用變更",
+  "editDomain": "編輯 {name}@{source} 的網域",
+  "repositoryLabel": "儲存庫"
 }

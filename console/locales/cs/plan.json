@@ -70,5 +70,45 @@
   "resize_task_navigator_2cc8bc": "Změnit velikost navigátoru úkolů",
   "decisions_7c5ca9": "Rozhodnutí →",
   "enter_a_line_estimate_7d4502": "Zadejte odhad počtu řádků",
-  "not_scheduled_yet_backlog_0f0d42": "zatím nenaplánováno (zásobník úkolů)"
+  "not_scheduled_yet_backlog_0f0d42": "zatím nenaplánováno (zásobník úkolů)",
+  "elaborateLabel": "Požádat o vysvětlení",
+  "explanationRequested": "Bylo požádáno o jasnější vysvětlení pro {title}",
+  "explainTask": "Požádejte agenta, aby vysvětlil {title} jednodušším jazykem",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} řádek",
+      "few": "~{value} řádky",
+      "many": "~{value} řádku",
+      "other": "~{value} řádků"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} úloha bez odhadu",
+      "few": "{count} úlohy bez odhadu",
+      "many": "{count} úlohy bez odhadu",
+      "other": "{count} úloh bez odhadu"
+    }
+  },
+  "unestimatedCount": "{count} bez odhadu",
+  "doneSummary": "{done} / {total} hotovo ({percent})",
+  "linesDone": "Hotové řádky: {done} / {total}",
+  "tasksDone": "Hotové úlohy: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} řádek",
+      "few": "{value} řádky",
+      "many": "{value} řádku",
+      "other": "{value} řádků"
+    }
+  },
+  "dropTask": "Zahodit úlohu",
+  "dropTaskNamed": "Zahodit úlohu {title}",
+  "selectTask": "Vybrat {title}",
+  "dragMoveTask": "Přetažením {title} jej přesuňte",
+  "dragResizeTask": "Přetažením změňte velikost {title}",
+  "progressNeedsEstimate": "Průběh se vypočítá až po odhadu této práce."
 }

@@ -70,5 +70,36 @@
   "resize_task_navigator_2cc8bc": "調整任務導航器大小",
   "decisions_7c5ca9": "決策 →",
   "enter_a_line_estimate_7d4502": "輸入行數估算",
-  "not_scheduled_yet_backlog_0f0d42": "尚未計劃（待辦）"
+  "not_scheduled_yet_backlog_0f0d42": "尚未計劃（待辦）",
+  "elaborateLabel": "要求說明",
+  "explanationRequested": "已要求對「{title}」提供更清楚的說明",
+  "explainTask": "請代理程式用更易懂的語言解釋「{title}」",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "other": "約 {value} 行"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "other": "{count} 項工作尚未估算"
+    }
+  },
+  "unestimatedCount": "{count} 項尚未估算",
+  "doneSummary": "已完成 {done} / {total}（{percent}）",
+  "linesDone": "已完成行數：{done} / {total}",
+  "tasksDone": "已完成任務：{done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "other": "{value} 行"
+    }
+  },
+  "dropTask": "放棄任務",
+  "dropTaskNamed": "放棄任務「{title}」",
+  "selectTask": "選取「{title}」",
+  "dragMoveTask": "拖曳「{title}」以移動它",
+  "dragResizeTask": "拖曳以調整「{title}」的估算",
+  "progressNeedsEstimate": "估算這項工作後才能計算進度。"
 }

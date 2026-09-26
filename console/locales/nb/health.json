@@ -128,7 +128,7 @@
   "managed_cpu": "Administrert CPU",
   "managed_memory": "Administrert minne",
   "load_range": "Belastning (1 / 5 / 15 minutter)",
-  "swap": "Swap",
+  "swap": "Veksleminne",
   "loading_health": "Laster systemstatus…",
   "host_health_admin_only": "Vertens status er bare tilgjengelig for administratorer.",
   "host_health_unavailable": "Vertens status er ikke tilgjengelig.",
@@ -142,5 +142,9 @@
   "scale": "skala",
   "restore": "Gjenopprett",
   "dismiss": "Skjul",
-  "details_logs": "Detaljar og loggar"
+  "details_logs": "Detaljar og loggar",
+  "removeTest": "Fjern testbeholder",
+  "removeOrphaned": "Fjern foreldreløs beholder",
+  "removeTestContainer": "Fjern testbeholder {name}",
+  "removeOrphanedContainer": "Fjern foreldreløs beholder {name}"
 }

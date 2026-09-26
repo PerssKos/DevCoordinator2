@@ -58,5 +58,13 @@
       "one": "배포 {count}개",
       "other": "배포 {count}개"
     }
-  }
+  },
+  "action_start": "시작",
+  "action_stop": "중지",
+  "action_restart": "다시 시작",
+  "operatorRequired": "운영자 권한이 필요합니다",
+  "refreshAfterApply": "적용 중입니다. 다른 실행 상태 작업을 하기 전에 상태를 새로 고치세요",
+  "applyRunning": "이미 적용 중입니다",
+  "editDomain": "{name}@{source}의 도메인 편집",
+  "repositoryLabel": "저장소"
 }

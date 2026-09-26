@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Could not save repository appearance. Try again.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repositories unavailable. Refresh to retry.",
   "montenegrinLatin": "Montenegrin (Latin)",
-  "montenegrinCyrillic": "Montenegrin (Cyrillic)"
+  "montenegrinCyrillic": "Montenegrin (Cyrillic)",
+  "loadFailed": "The Console could not load. Reload to try again.",
+  "reload": "Reload"
 }

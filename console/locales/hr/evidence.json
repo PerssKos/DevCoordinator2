@@ -78,5 +78,46 @@
   "open_plan_task_4019fe": "Otvori zadatak u planu →",
   "full_page_9d21b6": "Cijela stranica",
   "previous_journey_step_7a544d": "Prethodni korak postupka",
-  "next_journey_step_35037a": "Sljedeći korak postupka"
+  "next_journey_step_35037a": "Sljedeći korak postupka",
+  "annotationSaved": "Bilješka je spremljena",
+  "reviewComment": "Komentar uz ovaj pregled",
+  "attachTo": "Priloži uz",
+  "activeOption": "Aktivna opcija",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Odabrana opcija ({count})",
+      "few": "Odabrane opcije ({count})",
+      "other": "Odabrane opcije ({count})"
+    }
+  },
+  "commentLabel": "Komentar",
+  "commentPlaceholder": "Dodajte komentar o ovoj opciji ili odabranom skupu.",
+  "postComment": "Objavi komentar",
+  "closeReview": "Zatvori pregled",
+  "selectionSummary": "Odabrano: {selected} · Opcije: {total}",
+  "allSketchOptions": "Sve opcije skice",
+  "selectOptionToAnnotate": "Odaberite opciju za bilješku",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Komentar je dodan uz {count} opciju",
+      "few": "Komentar je dodan uz {count} odabrane opcije",
+      "other": "Komentar je dodan uz {count} odabranih opcija"
+    }
+  },
+  "commentFailed": "Dodavanje komentara nije uspjelo: {message}",
+  "sketchChangeWhy": "Zašto se ova skica mijenja?",
+  "reviewedInConsole": "Pregledano u konzoli",
+  "selectedJourneyScreenshot": "Snimka zaslona odabranog korisničkog toka",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Zatražena je {count} promjena",
+      "few": "Zatražene su {count} promjene",
+      "other": "Zatraženo je {count} promjena"
+    }
+  },
+  "noChangesRequested": "Promjene nisu zatražene",
+  "sketchSetUnavailable": "Ovaj skup skica više nije dostupan."
 }

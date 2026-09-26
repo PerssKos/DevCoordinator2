@@ -15,7 +15,7 @@
   "sketches_are_published_by_a_registered_skill_a2ac72": "Эскизы публикуются зарегистрированным навыком",
   "value2_selected_value3_options_b64a24": "Выбрано: {value2} · вариантов: {value3}",
   "value5_sketches_value6_selected_87bdd8": "Эскизов: {value5} · выбрано: {value6}",
-  "value6_rejected_value7_undecided_bbc778": "{value6} rejected · {value7} undecided",
+  "value6_rejected_value7_undecided_bbc778": "Отклонено: {value6} · Не решено: {value7}",
   "reviewer_d29f46": "Проверяющий",
   "option_unavailable_d03e4e": "Вариант недоступен",
   "selected_57fd7a": "Выбрано",

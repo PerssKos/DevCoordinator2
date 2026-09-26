@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Repositorydarstellung konnte nicht gespeichert werden. Versuchen Sie es erneut.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} Repositorys nicht verfügbar. Aktualisieren Sie die Ansicht und versuchen Sie es erneut.",
   "montenegrinLatin": "Montenegrinisch (lateinisch)",
-  "montenegrinCyrillic": "Montenegrinisch (kyrillisch)"
+  "montenegrinCyrillic": "Montenegrinisch (kyrillisch)",
+  "loadFailed": "Konsole konnte nicht geladen werden. Neu laden, um es erneut zu versuchen.",
+  "reload": "Neu laden"
 }

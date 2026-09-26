@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Depo görünümü kaydedilemedi. Tekrar deneyin.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} depo kullanılamıyor. Tekrar denemek için yenileyin.",
   "montenegrinLatin": "Karadağca (Latin)",
-  "montenegrinCyrillic": "Karadağca (Kiril)"
+  "montenegrinCyrillic": "Karadağca (Kiril)",
+  "loadFailed": "Konsol yüklenemedi. Yeniden denemek için sayfayı yenileyin.",
+  "reload": "Yenile"
 }

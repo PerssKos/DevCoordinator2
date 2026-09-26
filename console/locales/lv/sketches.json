@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "Šim variantam vēl nav komentāru.",
+  "sketch_set_review_1e4713": "Skiču kopas pārskatīšana",
+  "close_7d9eb7": "Aizvērt",
+  "selection_mode_1935ae": "Atlases režīms",
+  "close_set_review_2680d1": "Aizvērt kopas pārskatīšanu",
+  "sketch_set_options_62656f": "Skiču kopas varianti",
+  "current_option_f4a3f8": "Pašreizējais variants",
+  "comments_355f79": "Komentāri",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "Paskaidrojiet, kāpēc izvēlējāties šo variantu vai variantu kopu.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Izvēles tiek saglabātas kā «Paturēt», «Noraidīt» vai «Nav izlemts».",
+  "sketches_a56d78": "Skices",
+  "review_generated_options_by_set_then_select_one__020509": "Pārskatiet ģenerētos variantus pa kopām, pēc tam atlasiet vienu vai vairākus turpmākajam darbam.",
+  "publish_from_a_skill_f33a0e": "Publicēt ar prasmi",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Skices publicē reģistrēta prasme",
+  "value2_selected_value3_options_b64a24": "Atlasīti: {value2} · Varianti: {value3}",
+  "value5_sketches_value6_selected_87bdd8": "Skices: {value5} · Atlasītas: {value6}",
+  "value6_rejected_value7_undecided_bbc778": "Noraidīti: {value6} · Nav izlemts: {value7}",
+  "reviewer_d29f46": "Pārskatītājs",
+  "option_unavailable_d03e4e": "Variants nav pieejams",
+  "selected_57fd7a": "Atlasīts",
+  "rejected_aea4a0": "Noraidīts",
+  "undecided_00cc36": "Nav izlemts",
+  "select_2a7802": "Atlasīt",
+  "reject_ab604a": "Noraidīt",
+  "leave_undecided_65c5c0": "Atstāt neizlemtu",
+  "set_6ee0eb": "kopa",
+  "sets_82c6db": "kopas",
+  "no_selection_211f6b": "Nav atlases",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "zero": "Pievienot kontekstu atlasītajiem variantiem",
+      "one": "Pievienot kontekstu atlasītajam variantam",
+      "other": "Pievienot kontekstu atlasītajiem variantiem"
+    }
+  },
+  "review_set_ca242c": "Pārskatīt kopu",
+  "open_sketch_3ccc5c": "Atvērt skici",
+  "single_choice_45a76a": "Viena izvēle",
+  "choose_multiple_b76dc5": "Izvēlēties vairākus",
+  "open_full_review_canvas_26fc95": "Atvērt pilno pārskatīšanas audeklu",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "zero": "{count} kopu",
+      "one": "{count} kopa",
+      "other": "{count} kopas"
+    }
+  }
+}

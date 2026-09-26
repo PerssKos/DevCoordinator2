@@ -47,28 +47,65 @@
   "put_first_79c815": "metti per primo",
   "move_6ecc3d": "Sposta",
   "runs_on_server_port_value2_e42376": "in esecuzione sulla porta del server {value2}",
-  "move_value1_c26f36": "Move: {value1}",
+  "move_value1_c26f36": "Sposta: {value1}",
   "add_estimate_c87fb7": "Aggiungi stima",
-  "resize_2956e0": "Resize",
+  "resize_2956e0": "Ridimensiona",
   "not_scheduled_yet_6e4794": "Non ancora pianificato",
-  "fit_9f872e": "Fit",
-  "show_0df6f1": "Show",
-  "hide_ac20a5": "Hide",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
+  "fit_9f872e": "Adatta",
+  "show_0df6f1": "Mostra",
+  "hide_ac20a5": "Nascondi",
+  "job_5e8c99": "attività",
+  "jobs_5d9a17": "attività",
   "change_estimate_6ae15e": "Modifica stima",
   "not_scheduled_yet_333719": "non ancora pianificato",
-  "plan_64879f": "plan",
+  "plan_64879f": "piano",
   "decisions_3183d3": "decisioni",
-  "selected_task_details_a9a7eb": "Selezionato task details",
+  "selected_task_details_a9a7eb": "Dettagli dell’attività selezionata",
   "request_preview_1e9b91": "Richiedi anteprima",
   "open_the_app_397f86": "Apri l’app ↗",
   "drag_to_move_task_41b0d9": "Trascina per spostare l’attività",
   "drag_to_resize_estimate_2d023d": "Trascina per ridimensionare la stima",
   "not_estimated_dbbcf5": "Non stimato",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Sequenza temporale interattiva del piano. Scorri orizzontalmente o usa i controlli per spostarti e ingrandire.",
-  "resize_task_navigator_2cc8bc": "Resize navigatore delle attività",
+  "resize_task_navigator_2cc8bc": "Ridimensiona il navigatore delle attività",
   "decisions_7c5ca9": "Decisioni →",
-  "enter_a_line_estimate_7d4502": "Inserisci a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "non ancora pianificato (backlog)"
+  "enter_a_line_estimate_7d4502": "Inserisci una stima del numero di righe",
+  "not_scheduled_yet_backlog_0f0d42": "non ancora pianificato (backlog)",
+  "elaborateLabel": "Chiedi chiarimenti",
+  "explanationRequested": "È stata richiesta una spiegazione più chiara per {title}",
+  "explainTask": "Chiedi all’agente di spiegare {title} con parole più semplici",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} riga",
+      "other": "~{value} righe",
+      "many": "~{value} righe"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} attività non stimata",
+      "other": "{count} attività non stimate",
+      "many": "{count} attività non stimate"
+    }
+  },
+  "unestimatedCount": "Senza stima: {count}",
+  "doneSummary": "{done} / {total} completati ({percent})",
+  "linesDone": "Righe completate: {done} / {total}",
+  "tasksDone": "Attività completate: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} riga",
+      "other": "{value} righe",
+      "many": "{value} righe"
+    }
+  },
+  "dropTask": "Abbandona attività",
+  "dropTaskNamed": "Abbandona attività {title}",
+  "selectTask": "Seleziona {title}",
+  "dragMoveTask": "Trascina {title} per spostarlo",
+  "dragResizeTask": "Trascina per ridimensionare {title}",
+  "progressNeedsEstimate": "L’avanzamento viene calcolato solo dopo aver stimato questo lavoro."
 }

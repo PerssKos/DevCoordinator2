@@ -70,5 +70,45 @@
   "resize_task_navigator_2cc8bc": "Изменить размер навигатора задач",
   "decisions_7c5ca9": "Решения →",
   "enter_a_line_estimate_7d4502": "Введите оценку в строках",
-  "not_scheduled_yet_backlog_0f0d42": "пока не запланировано (бэклог)"
+  "not_scheduled_yet_backlog_0f0d42": "пока не запланировано (бэклог)",
+  "elaborateLabel": "Запросить пояснение",
+  "explanationRequested": "Запрошено более понятное объяснение для «{title}»",
+  "explainTask": "Попросить агента объяснить «{title}» простыми словами",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} строка",
+      "few": "~{value} строки",
+      "many": "~{value} строк",
+      "other": "~{value} строки"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} задача без оценки",
+      "few": "{count} задачи без оценки",
+      "many": "{count} задач без оценки",
+      "other": "{count} задачи без оценки"
+    }
+  },
+  "unestimatedCount": "{count} без оценки",
+  "doneSummary": "Готово: {done} / {total} ({percent})",
+  "linesDone": "Готовые строки: {done} / {total}",
+  "tasksDone": "Готовые задачи: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} строка",
+      "few": "{value} строки",
+      "many": "{value} строк",
+      "other": "{value} строки"
+    }
+  },
+  "dropTask": "Отказаться от задачи",
+  "dropTaskNamed": "Отказаться от задачи «{title}»",
+  "selectTask": "Выбрать «{title}»",
+  "dragMoveTask": "Перетащите «{title}», чтобы переместить",
+  "dragResizeTask": "Перетащите, чтобы изменить размер «{title}»",
+  "progressNeedsEstimate": "Прогресс рассчитывается только после оценки этой работы."
 }

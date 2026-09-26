@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Nie można zapisać wyglądu repozytorium. Spróbuj ponownie.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repozytoriów niedostępnych. Odśwież, aby spróbować ponownie.",
   "montenegrinLatin": "czarnogórski (łaciński)",
-  "montenegrinCyrillic": "czarnogórski (cyrylica)"
+  "montenegrinCyrillic": "czarnogórski (cyrylica)",
+  "loadFailed": "Nie udało się wczytać konsoli. Odśwież stronę, aby spróbować ponownie.",
+  "reload": "Odśwież"
 }

@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Muuda ülesannete navigeerija suurust",
   "decisions_7c5ca9": "Otsused →",
   "enter_a_line_estimate_7d4502": "Sisesta hinnanguline ridade arv",
-  "not_scheduled_yet_backlog_0f0d42": "veel ajastamata (ootel tööd)"
+  "not_scheduled_yet_backlog_0f0d42": "veel ajastamata (ootel tööd)",
+  "elaborateLabel": "Küsi selgitust",
+  "explanationRequested": "{title} kohta on küsitud selgemat selgitust",
+  "explainTask": "Palu agendil selgitada {title} lihtsamate sõnadega",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} rida",
+      "other": "~{value} rida"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} hindamata töö",
+      "other": "{count} hindamata tööd"
+    }
+  },
+  "unestimatedCount": "{count} hindamata",
+  "doneSummary": "Valmis: {done} / {total} ({percent})",
+  "linesDone": "Valmis read: {done} / {total}",
+  "tasksDone": "Valmis tööd: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} rida",
+      "other": "{value} rida"
+    }
+  },
+  "dropTask": "Loobu tööst",
+  "dropTaskNamed": "Loobu tööst {title}",
+  "selectTask": "Vali {title}",
+  "dragMoveTask": "Lohista {title} teisaldamiseks",
+  "dragResizeTask": "Lohista {title} suuruse muutmiseks",
+  "progressNeedsEstimate": "Edenemist ei arvutata enne, kui töö on hinnatud."
 }

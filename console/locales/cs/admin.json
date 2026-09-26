@@ -30,5 +30,10 @@
   "yes_8a7988": "ano",
   "remove_user_84a18f": "Odebrat uživatele",
   "revoke_777ac4": "odvolat",
-  "remove_grant_8c57bf": "Odebrat oprávnění"
+  "remove_grant_8c57bf": "Odebrat oprávnění",
+  "removeGrant": "Odebrat oprávnění {role} uživateli {email}",
+  "removeUser": "Odebrat uživatele {email}",
+  "telegramSummary": "Bot: {state} · čekající odchozí zprávy: {pending} · poslední kontrola: {time}",
+  "unsubscribe": "Zrušit odběr {scope}",
+  "roleAccess": "Pouze přístup"
 }

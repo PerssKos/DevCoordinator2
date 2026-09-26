@@ -60,5 +60,13 @@
       "many": "{count} utplasseringer"
     }
   },
-  "my_app_4c9a75": "my-app"
+  "my_app_4c9a75": "my-app",
+  "action_start": "Start",
+  "action_stop": "Stopp",
+  "action_restart": "Start på nytt",
+  "operatorRequired": "Operatørtilgang kreves",
+  "refreshAfterApply": "Endringene tas i bruk; oppdater status før neste livssyklushandling",
+  "applyRunning": "Endringene er allerede i ferd med å tas i bruk",
+  "editDomain": "Rediger domene for {name}@{source}",
+  "repositoryLabel": "Kodelager"
 }

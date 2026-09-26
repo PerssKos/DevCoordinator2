@@ -3,6 +3,14 @@ export function canonicalLocale(value) {
   try { return new Intl.Locale(String(value)).baseName; } catch { return null; }
 }
 
+// Different Intl services may support different language sets. Keep a declared
+// fallback order instead of inheriting the browser or server's default locale.
+export function intlLocales(locale, manifest) {
+  const declared = manifest.locales.find(entry => entry.tag === locale)?.intlFallbacks;
+  const fallbacks = Array.isArray(declared) ? declared.filter(tag => typeof tag === 'string' && canonicalLocale(tag)) : [];
+  return [...new Set([locale, ...fallbacks, manifest.sourceLocale])];
+}
+
 export function matchLocale(value, locales) {
   const tag = canonicalLocale(value);
   if (!tag) return null;
@@ -102,8 +110,8 @@ export function createCatalog(manifest, read) {
     const source = cache.get(`${manifest.sourceLocale}/${namespace}`)?.[key];
     const translated = cache.get(`${locale}/${namespace}`)?.[key];
     if (source == null) throw new Error(`Unknown message: ${id}`);
-    try { return formatMessage(translated ?? source, params, translated == null ? manifest.sourceLocale : locale); }
-    catch { return formatMessage(source, params, manifest.sourceLocale); }
+    try { return formatMessage(translated ?? source, params, intlLocales(translated == null ? manifest.sourceLocale : locale, manifest)); }
+    catch { return formatMessage(source, params, intlLocales(manifest.sourceLocale, manifest)); }
   }
   function sourceKey(namespace, value, prefix = '') {
     return Object.entries(cache.get(`${manifest.sourceLocale}/${namespace}`) || {}).find(([key, text]) => key.startsWith(prefix) && text === value)?.[0] ?? null;

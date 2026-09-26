@@ -3,7 +3,7 @@ import path from 'node:path';
 
 // Synthetic translations stay in the browser fixture. They deliberately differ
 // from English so this journey tests bindings rather than catalog content quality.
-export async function verifyLocalization({ page, check, baseUrl, output, theme, viewport }) {
+export async function verifyLocalization({ page, daemon, check, baseUrl, output, theme, viewport }) {
   const verify = (name, pass, detail = '') => check(`Localization ${theme} ${viewport.width}: ${name}`, pass, detail);
   const manifest = JSON.parse(await fs.readFile(new URL('./locales/manifest.json', import.meta.url)));
   const languages = ['en','uk','ru','de','fr','zh-Hans','zh-Hant','ja','ko'];
@@ -96,5 +96,36 @@ export async function verifyLocalization({ page, check, baseUrl, output, theme, 
   await dialog.locator('[data-presentation-cancel]').click();
   await page.locator('.who #language-toggle').waitFor();
   verify('selector returns to header after modal closes', await page.locator('#language-toggle').count() === 1);
+  await page.goto(`${baseUrl}#/deployments`);
+  const firstDeployment = page.locator('.deployment-record').first();
+  await firstDeployment.waitFor();
+  await firstDeployment.evaluate(node => { node.dataset.identityProof = 'retained'; });
+  await page.locator('#language-toggle').click();
+  await page.locator('#language-menu input').fill('uk');
+  await page.locator('.language-option[data-locale=uk]').first().click();
+  await page.waitForFunction(() => document.documentElement.lang === 'uk');
+  verify('deployment language switch preserves the deployment nodes', await page.locator('.deployment-record[data-identity-proof=retained]').count() === 1);
+  verify('deployment lifecycle labels update without changing commands', await page.locator('[data-cmd="deployment.start"]').evaluateAll(nodes => nodes.length > 0 && nodes.every(node => node.textContent === '[uk] Start')));
+  verify('deployment accessibility descriptions update', (await firstDeployment.locator('[data-edit-domain]').getAttribute('aria-label')).startsWith('[uk]'));
+  await page.goto(`${baseUrl}#/health`);
+  const healthSearch=page.locator('[data-hi-repo-search]');
+  await healthSearch.fill('repo');
+  const healthDetails=page.locator('.hi-repo-details').first();
+  await healthDetails.locator('summary').click();
+  const expandedRepository=await healthDetails.getAttribute('data-hi-repo');
+  await page.locator('[data-hi-range="7d"]').click();
+  await page.waitForFunction(()=>document.querySelectorAll('#hi-history svg').length>0);
+  const healthCalls=daemon.calls.filter(call=>call.operation.startsWith('health.')).length;
+  const healthScroll=await healthSearch.evaluate(node=>{node.dataset.identityProof='retained';node.focus({preventScroll:true});node.setSelectionRange(1,3);window.scrollTo(0,200);return {x:scrollX,y:scrollY};});
+  await page.evaluate(()=>window.DevCoordinatorI18n.setLocale('fr'));
+  verify('Health language switch retains search input, query, focus and selection', await healthSearch.evaluate(node=>node.dataset.identityProof==='retained'&&node.value==='repo'&&node===document.activeElement&&node.selectionStart===1&&node.selectionEnd===3));
+  verify('Health language switch retains expanded checkout and history range', await page.locator(`.hi-repo-details[data-hi-repo="${expandedRepository}"]`).evaluate(node=>node.open) && await page.locator('[data-hi-range="7d"]').getAttribute('aria-pressed')==='true');
+  verify('Health language switch retains scroll position', await page.evaluate(position=>Math.abs(scrollX-position.x)<=1&&Math.abs(scrollY-position.y)<=1,healthScroll));
+  verify('Health language switch uses existing data without another request', daemon.calls.filter(call=>call.operation.startsWith('health.')).length===healthCalls);
+  await page.route('**/app.js', route => route.abort());
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#main p')?.textContent.includes('[fr] The Console could not load.'));
+  verify('startup failure and reload action use the selected language', (await page.locator('#main button').innerText()) === '[fr] Reload');
+  await page.unroute('**/app.js');
   verify('no page errors', errors.length === 0, errors.join('; '));
 }

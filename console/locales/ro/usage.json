@@ -1,0 +1,41 @@
+{
+  "work_phase_legend_0886c1": "lucru fază legend",
+  "scrollable_token_chart_83cb1f": "Scrollable token diagramă",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "furnizor-raportat total tokenuri de lucru fază",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stacked UTC timp buckets. exact valori sunt listed după cel diagrame.",
+  "no_classified_token_activity_in_this_window_f460d0": "nu classified token activitate în acest fereastră.",
+  "work_activity_bf3178": "lucru activitate",
+  "total_tokens_e7601c": "total tokenuri",
+  "activity_breakdown_7ebc89": "activitate breakdown",
+  "separate_measurements_they_are_not_added_togethe_329294": "separat măsurători; they sunt nu adăugat together.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "nu instrument rezultate în acest fereastră.",
+  "total_c9b3c3": "total",
+  "exact_bucket_values_a2a7fe": "exact interval valori",
+  "utc_bucket_fbd8d9": "UTC interval",
+  "data_status_87d914": "date stare",
+  "repository_13d6ff": "Traducere română: Repository",
+  "model_requests_888826": "Traducere română: Model requests",
+  "tool_calls_da5122": "instrument apeluri",
+  "execution_time_1069e2": "execuție timp",
+  "data_included_217858": "date inclus",
+  "time_breakdown_ca0aca": "timp breakdown",
+  "separate_not_added_together_6dbbe5": "(separat, nu adăugat together)",
+  "tool_outcomes_3a7a68": "instrument rezultate",
+  "data_completeness_c7114d": "date completitudine",
+  "counting_method_7a480a": "numărare metodă",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "furnizor-raportat total tokenuri; memorat intrare și raționament sunt subsets.",
+  "schema_value19_taxonomy_value20_cdddf8": "schemă {value19} · taxonomie {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. medii that supplied nu date și unmeasured valori sunt excluded rather than treated ca zero.",
+  "token_subsets_unavailable_4cec86": "token subsets indisponibil.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} necunoscut interval",
+      "other": "{count} necunoscut intervale",
+      "few": "{count} unknown intervals"
+    }
+  },
+  "about_codex_environments_4a2e3e": "despre Codex medii",
+  "explain_codex_usage_data_completeness_63247d": "explică Codex utilizare date completitudine",
+  "tokens_a039df": "tokenuri"
+}

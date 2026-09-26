@@ -58,5 +58,13 @@
       "one": "{count} 个部署",
       "other": "{count} 个部署"
     }
-  }
+  },
+  "action_start": "启动",
+  "action_stop": "停止",
+  "action_restart": "重启",
+  "operatorRequired": "需要操作员权限",
+  "refreshAfterApply": "正在应用更改；执行其他运行操作前，请刷新状态",
+  "applyRunning": "正在应用更改",
+  "editDomain": "编辑 {name}@{source} 的域名",
+  "repositoryLabel": "仓库"
 }

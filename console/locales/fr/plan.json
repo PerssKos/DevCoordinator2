@@ -54,21 +54,58 @@
   "fit_9f872e": "Ajuster",
   "show_0df6f1": "Afficher",
   "hide_ac20a5": "Masquer",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
-  "change_estimate_6ae15e": "Modification estimate",
+  "job_5e8c99": "tâche",
+  "jobs_5d9a17": "tâches",
+  "change_estimate_6ae15e": "Modifier l’estimation",
   "not_scheduled_yet_333719": "pas encore planifié",
   "plan_64879f": "plan",
   "decisions_3183d3": "décisions",
-  "selected_task_details_a9a7eb": "Sélectionné task details",
+  "selected_task_details_a9a7eb": "Détails de la tâche sélectionnée",
   "request_preview_1e9b91": "Demander un aperçu",
-  "open_the_app_397f86": "Ouvrir the app ↗",
+  "open_the_app_397f86": "Ouvrir l’application ↗",
   "drag_to_move_task_41b0d9": "Faire glisser pour déplacer la tâche",
   "drag_to_resize_estimate_2d023d": "Faire glisser pour redimensionner l’estimation",
   "not_estimated_dbbcf5": "Non estimé",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Chronologie interactive du plan. Faites défiler horizontalement ou utilisez les commandes pour déplacer et zoomer.",
-  "resize_task_navigator_2cc8bc": "Redimensionner task navigator",
+  "resize_task_navigator_2cc8bc": "Redimensionner le navigateur de tâches",
   "decisions_7c5ca9": "Décisions →",
   "enter_a_line_estimate_7d4502": "Saisissez une estimation en lignes",
-  "not_scheduled_yet_backlog_0f0d42": "pas encore planifié (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "pas encore planifié (backlog)",
+  "elaborateLabel": "Demander des précisions",
+  "explanationRequested": "Une explication plus claire a été demandée pour {title}",
+  "explainTask": "Demander à l’agent d’expliquer {title} dans un langage plus simple",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} ligne",
+      "other": "~{value} lignes",
+      "many": "~{value} lignes"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} tâche non estimée",
+      "other": "{count} tâches non estimées",
+      "many": "{count} tâches non estimées"
+    }
+  },
+  "unestimatedCount": "Sans estimation : {count}",
+  "doneSummary": "Terminé : {done} / {total} ({percent})",
+  "linesDone": "Lignes terminées : {done} / {total}",
+  "tasksDone": "Tâches terminées : {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} ligne",
+      "other": "{value} lignes",
+      "many": "{value} lignes"
+    }
+  },
+  "dropTask": "Abandonner la tâche",
+  "dropTaskNamed": "Abandonner la tâche {title}",
+  "selectTask": "Sélectionner {title}",
+  "dragMoveTask": "Faire glisser {title} pour le déplacer",
+  "dragResizeTask": "Faire glisser pour redimensionner {title}",
+  "progressNeedsEstimate": "La progression n’est calculée qu’une fois ce travail estimé."
 }

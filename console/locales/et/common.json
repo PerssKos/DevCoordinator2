@@ -281,5 +281,7 @@
   "label_revert_condition": "Tagasivõtmise tingimus",
   "label_reason": "Põhjus",
   "label_before": "Enne",
-  "label_after": "Pärast"
+  "label_after": "Pärast",
+  "status_preview": "Eelvaade",
+  "status_elaboration_needed": "Selgitus on vajalik"
 }

@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Raporto një gabim",
   "report_b6ce78": "Raporto",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Vetëm regjistrime atomike të kufizuara: pa sekrete, regjistra të papërpunuar ose shtigje private.",
-  "close_310ff2": "mbyll"
+  "close_310ff2": "mbyll",
+  "expected": "E pritshme",
+  "actual": "Faktike"
 }

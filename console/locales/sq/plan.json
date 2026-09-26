@@ -6,23 +6,23 @@
   "now_building_f780a4": "Po ndërtohet tani",
   "progress_466482": "Përparim",
   "open_tasks_87cfa1": "Detyra të hapura",
-  "actions_ff8059": "Actions",
-  "size_1af851": "Size",
+  "actions_ff8059": "Veprime",
+  "size_1af851": "Madhësi",
   "not_estimated_yet_2a73ea": "Ende pa vlerësim",
   "shown_in_the_non_proportional_chart_band_e2fd9f": "Shfaqet në zonën joproporcionale të grafikut.",
   "no_explanation_recorded_81eb6c": "Nuk ka shpjegim të regjistruar.",
   "why_it_matters_b8bda6": "Pse ka rëndësi",
-  "release_e020e3": "Release",
+  "release_e020e3": "Version",
   "preview_requested_the_agent_will_put_the_current_cb6569": "Parapamja u kërkua. Agjenti do ta publikojë punën aktuale; lidhja shfaqet kur versioni i parapamjes të jetë gati.",
   "timeline_controls_f8f6dc": "Kontrollet e kronologjisë",
   "select_tasks_96e36b": "Zgjidh detyrat",
   "pan_timeline_881955": "Zhvendos kronologjinë",
   "zoom_controls_6af7d7": "Kontrollet e zmadhimit",
   "zoom_out_bc7b63": "Zvogëlo",
-  "zoom_in_0e47f0": "Zoom in",
+  "zoom_in_0e47f0": "Zmadho",
   "fit_the_whole_timeline_9cdb1c": "Përshtat të gjithë kronologjinë",
   "fit_timeline_ff3a42": "Përshtat kronologjinë",
-  "tasks_b3a60e": "Tasks",
+  "tasks_b3a60e": "Detyra",
   "est_lines_642941": "Rreshta të vlerësuar",
   "plan_fa8ed0": "Plan",
   "estimated_lines_of_code_f4fd5b": "Rreshta të vlerësuar kodi",
@@ -33,19 +33,19 @@
   "only_the_newest_finished_tasks_are_shown_everyth_e411bf": "Shfaqen vetëm detyrat më të fundit të përfunduara; gjithçka ruhet përgjithmonë.",
   "ask_for_a_change_f445fc": "Kërko ndryshim",
   "your_request_becomes_a_task_in_this_plan_f67841": "Kërkesa jote bëhet detyrë në këtë plan.",
-  "close_7d9eb7": "Close",
+  "close_7d9eb7": "Mbyll",
   "what_you_want_4cc94b": "Çfarë dëshiron",
   "why_it_matters_optional_4061bc": "Pse ka rëndësi (opsionale)",
   "send_to_the_agent_d147f6": "Dërgo te agjenti",
-  "cancel_19766e": "Cancel",
+  "cancel_19766e": "Anulo",
   "the_export_button_gives_an_error_39250f": "Butoni i eksportit jep gabim",
   "estimated_code_and_test_lines_5b58d6": "Rreshta kodi dhe testesh të vlerësuar",
   "include_test_code_and_fixtures_do_not_turn_test__6da1bb": "Përfshi kodin dhe të dhënat e testit. Mos e kthe kohën e testimit ose hetimit në rreshta të sajuar; kjo punë kërkon një vlerësim të veçantë në orë.",
   "save_estimate_5286c4": "Ruaj vlerësimin",
   "requested_2d9e28": "U kërkua",
-  "move_to_ab270d": "move to",
+  "move_to_ab270d": "zhvendos te",
   "put_first_79c815": "vendose të parën",
-  "move_6ecc3d": "Move",
+  "move_6ecc3d": "Zhvendos",
   "runs_on_server_port_value2_e42376": "ekzekutohet në portën e serverit {value2}",
   "move_value1_c26f36": "Lëviz: {value1}",
   "add_estimate_c87fb7": "Shto vlerësim",
@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Ndrysho madhësinë e navigatorit të detyrave",
   "decisions_7c5ca9": "Vendime →",
   "enter_a_line_estimate_7d4502": "Fut vlerësim rreshtash",
-  "not_scheduled_yet_backlog_0f0d42": "ende nuk është planifikuar (prapambetje)"
+  "not_scheduled_yet_backlog_0f0d42": "ende nuk është planifikuar (prapambetje)",
+  "elaborateLabel": "Kërko sqarim",
+  "explanationRequested": "Kërkohet një shpjegim më i qartë për {title}",
+  "explainTask": "Kërkoji agjentit të shpjegojë {title} me gjuhë më të thjeshtë",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} rresht",
+      "other": "~{value} rreshta"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} detyrë pa vlerësim",
+      "other": "{count} detyra pa vlerësim"
+    }
+  },
+  "unestimatedCount": "{count} pa vlerësim",
+  "doneSummary": "{done} / {total} përfunduar ({percent})",
+  "linesDone": "Rreshta të përfunduar: {done} / {total}",
+  "tasksDone": "Detyra të përfunduara: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} rresht",
+      "other": "{value} rreshta"
+    }
+  },
+  "dropTask": "Hiq dorë nga detyra",
+  "dropTaskNamed": "Hiq dorë nga detyra {title}",
+  "selectTask": "Zgjidh {title}",
+  "dragMoveTask": "Tërhiq {title} për ta lëvizur",
+  "dragResizeTask": "Tërhiq për të ndryshuar madhësinë e {title}",
+  "progressNeedsEstimate": "Ecuria llogaritet vetëm pasi kjo punë të vlerësohet."
 }

@@ -90,7 +90,7 @@
   "not_configured_dd1841": "Non configurato",
   "loading_related_concept_3e5563": "Caricamento del concetto correlato…",
   "remove_related_concept_value1_5732bb": "Rimuovi il concetto correlato {value1}",
-  "add_value1_470600": "Add {value1}",
+  "add_value1_470600": "Aggiungi {value1}",
   "return_to_the_current_glossary_6c061f": "Torna al glossario corrente",
   "all_concepts_acc74b": "← Tutti i concetti",
   "term_translation_or_meaning_5ac09b": "Termine, traduzione o significato",
@@ -98,15 +98,15 @@
   "remove_language_24782c": "Rimuovi lingua",
   "view_this_revision_549815": "Visualizza questa revisione",
   "inspect_the_shared_glossary_2e75d7": "Esamina il glossario condiviso",
-  "label_shared": "Shared",
+  "label_shared": "Condiviso",
   "label_inherited": "Ereditato",
   "label_local": "Specifico del progetto",
   "label_specialized": "Specializzazione del progetto",
   "label_mandatory": "Obbligatorio",
-  "label_default": "Default",
+  "label_default": "Predefinito",
   "label_guideline": "Linea guida",
-  "label_draft": "Draft",
+  "label_draft": "Bozza",
   "label_approved": "Approvato",
   "label_deprecated": "Obsoleto",
-  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Inserisci a new language tag, such as en, ru or pt-BR."
+  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Inserisci un nuovo codice lingua, ad esempio en, ru o pt-BR."
 }

@@ -110,5 +110,10 @@
   "status_unchanged": "Без промене",
   "status_inconclusive": "Неодлучно",
   "tokensByActivity": "Токени по активности",
-  "tokensByKind": "Токени по врсти ставке плана"
+  "tokensByKind": "Токени по врсти ставке плана",
+  "unattributedWork": "Део рада нема забележен резултат.",
+  "reviewScopeTotal": "Укупно за преглед: {tokens}",
+  "periodScopeTotal": "Укупно за период: {tokens}",
+  "reviewTotalLabel": "Укупно за преглед",
+  "periodTotalLabel": "Укупно за период"
 }

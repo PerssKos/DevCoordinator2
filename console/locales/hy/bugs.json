@@ -1,13 +1,15 @@
 {
   "component_ce54f0": "Բաղադրիչ",
-  "summary_8e76a9": "Summary",
+  "summary_8e76a9": "Ամփոփում",
   "expected_actual_2457a7": "Սպասվող / փաստացի",
-  "steps_1de3df": "Steps",
-  "seen_8894cf": "Seen",
+  "steps_1de3df": "Քայլեր",
+  "seen_8894cf": "Դիտվել է",
   "correlations_f54dae": "Կապեր",
   "open_bugs_dce3d4": "Բաց սխալներ",
   "report_a_bug_f75e0b": "Հաղորդել սխալի մասին",
-  "report_b6ce78": "Report",
+  "report_b6ce78": "Հաղորդել",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Միայն սահմանափակ ատոմային գրառումներ․ գաղտնիքներ, չմշակված մատյաններ կամ մասնավոր ուղիներ չկան։",
-  "close_310ff2": "close"
+  "close_310ff2": "փակել",
+  "expected": "Սպասվող",
+  "actual": "Փաստացի"
 }

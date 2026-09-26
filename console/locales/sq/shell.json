@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Pamja e depos nuk u ruajt. Provo përsëri.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} depo nuk janë të disponueshme. Përditëso dhe provo përsëri.",
   "montenegrinLatin": "Malazeze (latinisht)",
-  "montenegrinCyrillic": "Malazeze (cirilik)"
+  "montenegrinCyrillic": "Malazeze (cirilik)",
+  "loadFailed": "Konsola nuk mund të ngarkohej. Ringarkojeni për të provuar përsëri.",
+  "reload": "Ringarko"
 }

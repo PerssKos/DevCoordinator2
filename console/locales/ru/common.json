@@ -197,7 +197,7 @@
   "comment_failed_value1_19ac4b": "Не удалось добавить комментарий: {value1}",
   "sketch_selection_saved_3e6e70": "Выбор эскиза сохранён",
   "selection_failed_value1_7204fa": "Не удалось сохранить выбор: {value1}",
-  "value1_server_wide_health_is_administrator_only_e001e0": "{value1} (server-wide health is administrator-only)",
+  "value1_server_wide_health_is_administrator_only_e001e0": "{value1} (состояние всего сервера доступно только администраторам)",
   "no_repositories_visible_to_you_40cf12": "Вам не видны репозитории.",
   "no_containers_on_this_host_f76304": "На этом хосте нет контейнеров.",
   "no_provider_reported_total_tokens_in_this_window_b714e4": "В этом окне нет общего числа токенов, сообщённого провайдером.",
@@ -287,5 +287,7 @@
   "label_revert_condition": "Условие отката",
   "label_reason": "Причина",
   "label_before": "До",
-  "label_after": "После"
+  "label_after": "После",
+  "status_preview": "Предпросмотр",
+  "status_elaboration_needed": "Требуется пояснение"
 }

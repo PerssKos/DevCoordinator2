@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Signaler une anomalie",
   "report_b6ce78": "Signaler",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Uniquement des entrées courtes et autonomes : aucun secret, journal brut ou chemin privé.",
-  "close_310ff2": "close"
+  "close_310ff2": "fermer",
+  "expected": "Attendu",
+  "actual": "Réel"
 }

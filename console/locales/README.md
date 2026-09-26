@@ -27,8 +27,14 @@ To add a language, add its canonical tag, English/native names, direction,
 one to three representative speaking countries, and namespace file arrays.
 Country flags are supplementary and do not identify a language. Use licensed
 local flag assets. Begin with `status: "draft"`. Translate all required fragments
-and run `node scripts/locales/validate.mjs --all` for complete rollout admission.
+and run `node scripts/locales/validate.mjs --locale TAG` for that locale, then
+`node scripts/locales/validate.mjs --all` for complete rollout admission.
 Ordinary validation checks enabled locales and explicitly reports drafts.
+An optional `intlFallbacks` array declares formatting and sorting fallbacks for
+languages missing from an Intl service. The selected language is tried first
+and English last; the browser or server default never decides the fallback.
+Romansh explicitly falls back to English collation where native collation is
+unavailable. Missing English-fallback messages keep English plural grammar.
 Linguistic review is separate from key parity; copying English into a locale is
 not a completed translation. Keep the locale draft until review is complete.
 Run `node scripts/locales/audit-content.mjs --locale TAG` to find exact English
@@ -37,7 +43,9 @@ to review mixed-language phrases and partial substitutions. Review every
 candidate in context; technical identifiers and brand names may remain, but a
 mixed-language sentence must be rewritten in the target language. These audits
 are admission evidence alongside rendered route checks, not replacements for
-linguistic review.
+linguistic review. The contamination check includes narrow regression guards
+for observed German donor fragments; it is not a general language detector.
+Read every namespace and every plural branch before admitting a locale.
 
 The first rollout covers nationally official/co-official written languages in
 the agreed Council of Europe scope, plus Russian and four East Asian entries.

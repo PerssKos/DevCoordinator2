@@ -1,7 +1,7 @@
 {
   "no_comments_on_this_option_yet_801c78": "Encara no hi ha comentaris sobre aquesta opció.",
   "sketch_set_review_1e4713": "Revisió del conjunt d’esbossos",
-  "close_7d9eb7": "Close",
+  "close_7d9eb7": "Tanca",
   "selection_mode_1935ae": "Mode de selecció",
   "close_set_review_2680d1": "Tanca la revisió del conjunt",
   "sketch_set_options_62656f": "Opcions del conjunt d’esbossos",
@@ -21,11 +21,11 @@
   "selected_57fd7a": "Seleccionat",
   "rejected_aea4a0": "Rebutjat",
   "undecided_00cc36": "Sense decidir",
-  "select_2a7802": "Select",
-  "reject_ab604a": "Reject",
+  "select_2a7802": "Selecciona",
+  "reject_ab604a": "Rebutja",
   "leave_undecided_65c5c0": "Deixa sense decidir",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
+  "set_6ee0eb": "conjunt",
+  "sets_82c6db": "conjunts",
   "no_selection_211f6b": "Cap selecció",
   "selectedOptionContext": {
     "argument": "count",
@@ -43,9 +43,9 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets",
-      "many": "{count} sets"
+      "one": "{count} conjunt",
+      "many": "{count} conjunts",
+      "other": "{count} conjunts"
     }
   }
 }

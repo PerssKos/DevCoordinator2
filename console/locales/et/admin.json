@@ -30,5 +30,10 @@
   "yes_8a7988": "jah",
   "remove_user_84a18f": "Eemalda kasutaja",
   "revoke_777ac4": "Tühista",
-  "remove_grant_8c57bf": "Eemalda õigus"
+  "remove_grant_8c57bf": "Eemalda õigus",
+  "removeGrant": "Eemalda rolli {role} määramine aadressilt {email}",
+  "removeUser": "Eemalda kasutaja {email}",
+  "telegramSummary": "Bot {state} · väljundjärjekorras ootel: {pending} · viimane küsitlus: {time}",
+  "unsubscribe": "Loobu tellimusest {scope}",
+  "roleAccess": "Ainult juurdepääs"
 }

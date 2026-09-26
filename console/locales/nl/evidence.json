@@ -58,8 +58,8 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps"
+      "one": "{value7} stap",
+      "other": "{value7} stappen"
     }
   },
   "viewport_280503": "weergavegebied",
@@ -73,9 +73,47 @@
   "test_run_fe9e2f": "Testuitvoering",
   "release_proof_17fa7c": "Releasebewijs",
   "diagnostic_only_3425ba": "Alleen diagnose",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Bewerken",
   "open_plan_task_4019fe": "Open Plan taak →",
   "full_page_9d21b6": "Volledige pagina",
   "previous_journey_step_7a544d": "Vorige stap in gebruikersroute",
-  "next_journey_step_35037a": "Volgende stap in gebruikersroute"
+  "next_journey_step_35037a": "Volgende stap in gebruikersroute",
+  "annotationSaved": "Annotatie opgeslagen",
+  "reviewComment": "Opmerking bij deze beoordeling",
+  "attachTo": "Koppelen aan",
+  "activeOption": "Actieve optie",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Geselecteerde optie ({count})",
+      "other": "Geselecteerde opties ({count})"
+    }
+  },
+  "commentLabel": "Opmerking",
+  "commentPlaceholder": "Voeg een opmerking toe over deze optie of geselecteerde set.",
+  "postComment": "Opmerking plaatsen",
+  "closeReview": "Beoordeling sluiten",
+  "selectionSummary": "Geselecteerd: {selected} · Opties: {total}",
+  "allSketchOptions": "Alle schetsopties",
+  "selectOptionToAnnotate": "Selecteer een optie om te annoteren",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Opmerking toegevoegd aan {count} optie",
+      "other": "Opmerking toegevoegd aan {count} geselecteerde opties"
+    }
+  },
+  "commentFailed": "Plaatsen van de opmerking mislukt: {message}",
+  "sketchChangeWhy": "Waarom wordt deze schets gewijzigd?",
+  "reviewedInConsole": "Beoordeeld in de console",
+  "selectedJourneyScreenshot": "Geselecteerde schermafbeelding van de gebruikersreis",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} wijziging gevraagd",
+      "other": "{count} wijzigingen gevraagd"
+    }
+  },
+  "noChangesRequested": "Geen wijzigingen gevraagd",
+  "sketchSetUnavailable": "Deze schetsset is niet meer beschikbaar."
 }

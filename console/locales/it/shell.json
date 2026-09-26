@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Impossibile salvare l’aspetto del repository. Riprova.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repository non disponibili. Aggiorna per riprovare.",
   "montenegrinLatin": "Montenegrino (latino)",
-  "montenegrinCyrillic": "Montenegrino (cirillico)"
+  "montenegrinCyrillic": "Montenegrino (cirillico)",
+  "loadFailed": "Impossibile caricare la console. Ricarica per riprovare.",
+  "reload": "Ricarica"
 }

@@ -60,5 +60,13 @@
       "other": "{count} dağıtım",
       "many": "{count} dağıtım"
     }
-  }
+  },
+  "action_start": "Başlat",
+  "action_stop": "Durdur",
+  "action_restart": "Yeniden başlat",
+  "operatorRequired": "Operatör erişimi gerekli",
+  "refreshAfterApply": "Uygulama sürüyor; başka bir yaşam döngüsü işleminden önce durumu yenileyin",
+  "applyRunning": "Uygulama zaten sürüyor",
+  "editDomain": "{name}@{source} için etki alanını düzenle",
+  "repositoryLabel": "Depo"
 }

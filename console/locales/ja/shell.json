@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "リポジトリの表示設定を保存できませんでした。もう一度お試しください。",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "利用できないリポジトリは {value1} 件です。更新して再試行してください。",
   "montenegrinLatin": "モンテネグロ語（ラテン文字）",
-  "montenegrinCyrillic": "モンテネグロ語（キリル文字）"
+  "montenegrinCyrillic": "モンテネグロ語（キリル文字）",
+  "loadFailed": "コンソールを読み込めませんでした。再読み込みしてお試しください。",
+  "reload": "再読み込み"
 }

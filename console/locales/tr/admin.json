@@ -30,5 +30,10 @@
   "yes_8a7988": "evet",
   "remove_user_84a18f": "Kullanıcıyı kaldır",
   "revoke_777ac4": "İptal et",
-  "remove_grant_8c57bf": "İzni kaldır"
+  "remove_grant_8c57bf": "İzni kaldır",
+  "removeGrant": "{email} için {role} yetkisini kaldır",
+  "removeUser": "{email} kullanıcısını kaldır",
+  "telegramSummary": "Bot {state} · bekleyen giden kutusu: {pending} · son yoklama: {time}",
+  "unsubscribe": "{scope} aboneliğinden çık",
+  "roleAccess": "Yalnızca erişim"
 }

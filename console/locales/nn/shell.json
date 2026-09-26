@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Kunne ikkje lagre utsjånaden til kodelageret. Prøv igjen.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} kodelager er utilgjengelege. Oppdater for å prøve igjen.",
   "montenegrinLatin": "Montenegrinsk (latinsk)",
-  "montenegrinCyrillic": "Montenegrinsk (kyrillisk)"
+  "montenegrinCyrillic": "Montenegrinsk (kyrillisk)",
+  "loadFailed": "Konsollen kunne ikkje lastast. Last sida på nytt for å prøve igjen.",
+  "reload": "Last på nytt"
 }

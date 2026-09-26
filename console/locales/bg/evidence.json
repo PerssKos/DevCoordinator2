@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "Отвори задачата в плана →",
   "full_page_9d21b6": "Цяла страница",
   "previous_journey_step_7a544d": "Предишна стъпка от сценария",
-  "next_journey_step_35037a": "Следваща стъпка от сценария"
+  "next_journey_step_35037a": "Следваща стъпка от сценария",
+  "annotationSaved": "Анотацията е запазена",
+  "reviewComment": "Коментар към този преглед",
+  "attachTo": "Прикачи към",
+  "activeOption": "Активна опция",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Избрана опция ({count})",
+      "other": "Избрани опции ({count})"
+    }
+  },
+  "commentLabel": "Коментар",
+  "commentPlaceholder": "Добавете коментар за тази опция или избрания набор.",
+  "postComment": "Публикуване на коментар",
+  "closeReview": "Затваряне на прегледа",
+  "selectionSummary": "Избрани: {selected} · Опции: {total}",
+  "allSketchOptions": "Всички опции на скицата",
+  "selectOptionToAnnotate": "Изберете опция за анотация",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Коментарът е добавен към {count} опция",
+      "other": "Коментарът е добавен към {count} избрани опции"
+    }
+  },
+  "commentFailed": "Коментарът не бе добавен: {message}",
+  "sketchChangeWhy": "Защо тази скица се променя?",
+  "reviewedInConsole": "Прегледано в конзолата",
+  "selectedJourneyScreenshot": "Избрана екранна снимка на потребителския път",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Заявена е {count} промяна",
+      "other": "Заявени са {count} промени"
+    }
+  },
+  "noChangesRequested": "Няма заявени промени",
+  "sketchSetUnavailable": "Този набор от скици вече не е наличен."
 }

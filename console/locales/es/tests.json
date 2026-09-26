@@ -101,7 +101,7 @@
   "stop_run_b7ec68": "Detener ejecución",
   "run_again_3e310b": "Ejecutar de nuevo",
   "not_recorded_b37c78": "No registrado",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value1} de {value2}",
   "loading_screenshot_e0fd7b": "Cargando captura…",
   "preview_value1_cb5dab": "Vista previa {value1}",
   "browse_all_value1_screenshots_81fcf6": {
@@ -120,7 +120,7 @@
   "details_45989d": "Detalles",
   "previous_screenshot_af9be1": "Captura anterior",
   "next_screenshot_fd250f": "Siguiente captura",
-  "open_in_viewer_comment_ad9420": "Abrir en el visor / comment",
+  "open_in_viewer_comment_ad9420": "Abrir en el visor / comentar",
   "screenshot_loading_cancelled_50e74f": "Carga de captura cancelada.",
   "the_screenshot_changed_while_loading_94fe13": "La captura cambió durante la carga.",
   "the_screenshot_response_was_incomplete_4d7952": "La respuesta de la captura estaba incompleta.",

@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "Åpne planoppgave →",
   "full_page_9d21b6": "Hel side",
   "previous_journey_step_7a544d": "Forrige trinn i forløpet",
-  "next_journey_step_35037a": "Neste trinn i forløpet"
+  "next_journey_step_35037a": "Neste trinn i forløpet",
+  "annotationSaved": "Merknad lagret",
+  "reviewComment": "Kommenter denne gjennomgangen",
+  "attachTo": "Knytt til",
+  "activeOption": "Aktivt alternativ",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valgt alternativ ({count})",
+      "other": "Valgte alternativer ({count})"
+    }
+  },
+  "commentLabel": "Kommentar",
+  "commentPlaceholder": "Legg til en kommentar om dette alternativet eller det valgte settet.",
+  "postComment": "Publiser kommentar",
+  "closeReview": "Lukk gjennomgang",
+  "selectionSummary": "Valgt: {selected} · Alternativer: {total}",
+  "allSketchOptions": "Alle skissealternativer",
+  "selectOptionToAnnotate": "Velg et alternativ å annotere",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Kommentar lagt til {count} alternativ",
+      "other": "Kommentar lagt til {count} valgte alternativer"
+    }
+  },
+  "commentFailed": "Kunne ikke legge til kommentaren: {message}",
+  "sketchChangeWhy": "Hvorfor endres denne skissen?",
+  "reviewedInConsole": "Gjennomgått i konsollen",
+  "selectedJourneyScreenshot": "Skjermbilde av valgt brukerreise",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} endring forespurt",
+      "other": "{count} endringer forespurt"
+    }
+  },
+  "noChangesRequested": "Ingen endringer forespurt",
+  "sketchSetUnavailable": "Dette skissesettet er ikke lenger tilgjengelig."
 }

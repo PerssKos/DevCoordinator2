@@ -25,7 +25,7 @@
   "the_selected_run_catalogue_could_not_be_fully_re_48e1d5": "Impossible de lire entièrement le catalogue de l’exécution sélectionnée.",
   "run_history_could_not_be_fully_read_437dcf": "Impossible de lire entièrement l’historique des exécutions.",
   "run_history_changed_try_loading_it_again_e78606": "L’historique des exécutions a changé. Essayez de le charger à nouveau.",
-  "screenshot_loading_cancelled_50e74f": "Capture d’écran loading cancelled.",
+  "screenshot_loading_cancelled_50e74f": "Le chargement de la capture d’écran a été annulé.",
   "the_retained_file_catalogue_changed_f487d8": "Le catalogue des fichiers conservés a changé.",
   "the_retained_image_changed_d7ce7f": "L’image conservée a changé.",
   "the_retained_file_catalogue_was_incomplete_7988e1": "Le catalogue des fichiers conservés était incomplet."

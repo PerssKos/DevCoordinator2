@@ -28,39 +28,47 @@
   "no_measured_components_6f4369": "Brak zmierzonych komponentów.",
   "domain_value1_value2_ee9534": "Domena: {value1}@{value2}",
   "compose_value3_service_87ae79": "Usługa Compose {value3}",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "prev_value1_8d66fe": "(poprzednio {value1})",
+  "logs_value1_306798": "Dzienniki: {value1}",
   "deployment_aee50b": "wdrożenie",
   "deployments_01366d": "wdrożenies",
   "expand_workers_c57c47": "Rozwiń procesy robocze",
   "collapse_workers_7a9ec3": "Zwiń procesy robocze",
   "exact_recorded_container_a9b79f": " · dokładnie zarejestrowany kontener",
   "external_855e84": " · zewnętrzne",
-  "never_6497e4": "never",
+  "never_6497e4": "nigdy",
   "containerCount": {
     "argument": "count",
     "forms": {
       "one": "{count} kontener",
       "few": "{count} kontenery",
       "many": "{count} kontenerów",
-      "other": "{count} kontenerów"
+      "other": "{count} kontenera"
     }
   },
-  "apply_97a5e4": "apply",
-  "workers_7a1ec9": "Workers",
+  "apply_97a5e4": "zastosuj",
+  "workers_7a1ec9": "Procesy robocze",
   "my_app_4c9a75": "my-app",
   "lowercase_dns_label_3dbe17": "etykieta DNS małymi literami",
-  "logs_98f38f": "logs",
+  "logs_98f38f": "dzienniki",
   "rollback_da2548": "wycofaj",
-  "remove_deployment_keep_data_b46030": "Usuń wdrożenie — keep data",
-  "remove_deployment_and_delete_data_9fe36e": "Usuń wdrożenie and delete data",
+  "remove_deployment_keep_data_b46030": "Usuń wdrożenie — zachowaj dane",
+  "remove_deployment_and_delete_data_9fe36e": "Usuń wdrożenie i jego dane",
   "deploymentCount": {
     "argument": "count",
     "forms": {
       "one": "{count} wdrożenie",
-      "other": "{count} wdrożenies",
-      "many": "{count} wdrożenies",
-      "few": "{count} wdrożenies"
+      "few": "{count} wdrożenia",
+      "many": "{count} wdrożeń",
+      "other": "{count} wdrożenia"
     }
-  }
+  },
+  "action_start": "Uruchom",
+  "action_stop": "Zatrzymaj",
+  "action_restart": "Uruchom ponownie",
+  "operatorRequired": "Wymagane są uprawnienia operatora",
+  "refreshAfterApply": "Trwa wdrażanie; odśwież stan przed kolejną operacją cyklu życia",
+  "applyRunning": "Wdrażanie już trwa",
+  "editDomain": "Edytuj domenę dla {name}@{source}",
+  "repositoryLabel": "Repozytorium"
 }

@@ -79,5 +79,49 @@
   "open_plan_task_4019fe": "Otevřít úkol v plánu →",
   "full_page_9d21b6": "Celá stránka",
   "previous_journey_step_7a544d": "Předchozí krok scénáře",
-  "next_journey_step_35037a": "Další krok scénáře"
+  "next_journey_step_35037a": "Další krok scénáře",
+  "annotationSaved": "Anotace uložena",
+  "reviewComment": "Komentář k této kontrole",
+  "attachTo": "Připojit k",
+  "activeOption": "Aktivní možnost",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Vybraná možnost ({count})",
+      "few": "Vybrané možnosti ({count})",
+      "many": "Vybrané možnosti ({count})",
+      "other": "Vybrané možnosti ({count})"
+    }
+  },
+  "commentLabel": "Komentář",
+  "commentPlaceholder": "Přidejte komentář k této možnosti nebo vybrané sadě.",
+  "postComment": "Odeslat komentář",
+  "closeReview": "Zavřít kontrolu",
+  "selectionSummary": "Vybráno: {selected} · Možnosti: {total}",
+  "allSketchOptions": "Všechny možnosti náčrtu",
+  "selectOptionToAnnotate": "Vyberte možnost k anotaci",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Komentář byl přidán k {count} možnosti",
+      "few": "Komentář byl přidán ke {count} vybraným možnostem",
+      "many": "Komentář byl přidán k {count} vybrané možnosti",
+      "other": "Komentář byl přidán k {count} vybraným možnostem"
+    }
+  },
+  "commentFailed": "Komentář se nepodařilo přidat: {message}",
+  "sketchChangeWhy": "Proč se tento náčrt mění?",
+  "reviewedInConsole": "Zkontrolováno v konzoli",
+  "selectedJourneyScreenshot": "Vybraný snímek obrazovky uživatelské cesty",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Požadována {count} změna",
+      "few": "Požadovány {count} změny",
+      "many": "Požadováno {count} změny",
+      "other": "Požadováno {count} změn"
+    }
+  },
+  "noChangesRequested": "Nejsou požadovány žádné změny",
+  "sketchSetUnavailable": "Tato sada náčrtů již není dostupná."
 }

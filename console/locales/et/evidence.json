@@ -78,5 +78,43 @@
   "open_plan_task_4019fe": "Ava plaaniülesanne →",
   "full_page_9d21b6": "Kogu leht",
   "previous_journey_step_7a544d": "Eelmine teekonna samm",
-  "next_journey_step_35037a": "Järgmine teekonna samm"
+  "next_journey_step_35037a": "Järgmine teekonna samm",
+  "annotationSaved": "Märge salvestatud",
+  "reviewComment": "Selle ülevaate kommentaar",
+  "attachTo": "Lisa juurde",
+  "activeOption": "Aktiivne variant",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valitud variant ({count})",
+      "other": "Valitud variandid ({count})"
+    }
+  },
+  "commentLabel": "Kommentaar",
+  "commentPlaceholder": "Lisa kommentaar selle variandi või valitud variantide kogumi kohta.",
+  "postComment": "Postita kommentaar",
+  "closeReview": "Sulge ülevaade",
+  "selectionSummary": "Valitud: {selected} · Valikud: {total}",
+  "allSketchOptions": "Kõik visandivariandid",
+  "selectOptionToAnnotate": "Vali variant, millele märkus lisada",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Kommentaar lisati {count} variandile",
+      "other": "Kommentaar lisati {count} valitud variandile"
+    }
+  },
+  "commentFailed": "Kommentaari lisamine ebaõnnestus: {message}",
+  "sketchChangeWhy": "Miks seda visandit muudetakse?",
+  "reviewedInConsole": "Konsoolis üle vaadatud",
+  "selectedJourneyScreenshot": "Valitud kasutajateekonna ekraanipilt",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Taotleti {count} muudatust",
+      "other": "Taotleti {count} muudatust"
+    }
+  },
+  "noChangesRequested": "Muudatusi ei taotletud",
+  "sketchSetUnavailable": "See visandikogum pole enam saadaval."
 }

@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Hoidla välimust ei saanud salvestada. Proovi uuesti.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} hoidlat pole saadaval. Uuesti proovimiseks värskenda.",
   "montenegrinLatin": "Montenegro (ladina kiri)",
-  "montenegrinCyrillic": "Montenegro (kirillitsa)"
+  "montenegrinCyrillic": "Montenegro (kirillitsa)",
+  "loadFailed": "Konsooli ei saanud laadida. Proovi uuesti lehte värskendades.",
+  "reload": "Laadi uuesti"
 }

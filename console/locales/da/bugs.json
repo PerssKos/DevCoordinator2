@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Rapportér en fejl",
   "report_b6ce78": "Rapportér",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Kun korte, selvstændige poster: ingen hemmeligheder, rå logs eller private stier.",
-  "close_310ff2": "close"
+  "close_310ff2": "luk",
+  "expected": "Forventet",
+  "actual": "Faktisk"
 }

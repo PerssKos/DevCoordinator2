@@ -20,13 +20,13 @@
   "download_file_to_read_the_complete_data_6918f5": "Download het bestand om alle gegevens te lezen.",
   "this_file_could_not_be_shown_as_readable_data_th_21c7d8": "Dit bestand kon niet als leesbare gegevens worden getoond. Het origineel kan worden gedownload.",
   "the_retained_file_changed_or_its_response_was_in_ffbcca": "Het bewaarde bestand is gewijzigd of het antwoord was onvolledig.",
-  "the_retained_file_catalogue_changed_or_was_incom_0d7d20": "The retained file catalogus gewijzigd or was incomplete.",
-  "the_selected_run_catalogue_changed_c78ef1": "The geselecteerd run catalogus gewijzigd.",
+  "the_retained_file_catalogue_changed_or_was_incom_0d7d20": "De catalogus van bewaarde bestanden is gewijzigd of was onvolledig.",
+  "the_selected_run_catalogue_changed_c78ef1": "De catalogus van de geselecteerde uitvoering is gewijzigd.",
   "the_selected_run_catalogue_could_not_be_fully_re_48e1d5": "De catalogus van de geselecteerde uitvoering kon niet volledig worden gelezen.",
-  "run_history_could_not_be_fully_read_437dcf": "Run history kon niet volledig worden gelezen.",
+  "run_history_could_not_be_fully_read_437dcf": "De uitvoeringsgeschiedenis kon niet volledig worden gelezen.",
   "run_history_changed_try_loading_it_again_e78606": "De uitvoeringsgeschiedenis is gewijzigd. Probeer opnieuw te laden.",
-  "screenshot_loading_cancelled_50e74f": "Screenshot loading geannuleerd.",
-  "the_retained_file_catalogue_changed_f487d8": "The retained file catalogus gewijzigd.",
+  "screenshot_loading_cancelled_50e74f": "Het laden van de schermafbeelding is geannuleerd.",
+  "the_retained_file_catalogue_changed_f487d8": "De catalogus van bewaarde bestanden is gewijzigd.",
   "the_retained_image_changed_d7ce7f": "De bewaarde afbeelding is gewijzigd.",
   "the_retained_file_catalogue_was_incomplete_7988e1": "De catalogus van bewaarde bestanden was onvolledig."
 }

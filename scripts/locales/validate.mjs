@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { duplicateKeys } from './json-members.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { messageParameters } from '../../console/i18n-core.mjs';
+import { messageParameters, canonicalLocale, intlLocales } from '../../console/i18n-core.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const dir = path.join(root, 'console/locales');
 const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json')));
@@ -34,7 +34,7 @@ async function read(entry, namespace) {
       const patterns = typeof value === 'string' ? [value] : Object.values(value?.forms || {});
       check(patterns.length > 0 && patterns.every(text => typeof text === 'string' && text.trim() && !/<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?>/i.test(text)), `${file}: empty or HTML message ${key}`);
       if (typeof value === 'object' && value?.forms) {
-        const categories = new Intl.PluralRules(entry.tag, { type: value.type || 'cardinal' }).resolvedOptions().pluralCategories;
+        const categories = new Intl.PluralRules(intlLocales(entry.tag, manifest), { type: value.type || 'cardinal' }).resolvedOptions().pluralCategories;
         check(categories.every(category => Object.hasOwn(value.forms,category)), `${file}: missing plural category ${key}`);
       }
       all[key] = value;
@@ -49,6 +49,7 @@ for (const ns of manifest.namespaces) namespaces.set(ns, await read(source,ns));
 for (const entry of manifest.locales) {
   check(!tags.has(entry.tag), `Duplicate locale ${entry.tag}`); tags.add(entry.tag);
   check(['ltr','rtl'].includes(entry.direction), `${entry.tag}: invalid direction`);
+  check(entry.intlFallbacks === undefined || (Array.isArray(entry.intlFallbacks) && entry.intlFallbacks.every(tag => typeof tag === 'string' && canonicalLocale(tag))), `${entry.tag}: invalid Intl fallback list`);
   check(entry.nativeName && entry.englishName, `${entry.tag}: missing display names`);
   check(['draft','enabled'].includes(entry.status), `${entry.tag}: invalid status`);
   check(entry.countries.length >= 1 && entry.countries.length <= 3 && new Set(entry.countries).size === entry.countries.length, `${entry.tag}: flag count`);

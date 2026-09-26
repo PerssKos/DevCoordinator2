@@ -113,5 +113,10 @@
   "status_unchanged": "Beze změny",
   "status_inconclusive": "Neprůkazné",
   "tokensByActivity": "Tokeny podle činnosti",
-  "tokensByKind": "Tokeny podle typu položky plánu"
+  "tokensByKind": "Tokeny podle typu položky plánu",
+  "unattributedWork": "Některá práce nemá zaznamenaný výsledek.",
+  "reviewScopeTotal": "Celkem za kontrolu: {tokens}",
+  "periodScopeTotal": "Celkem za období: {tokens}",
+  "reviewTotalLabel": "Celkem za kontrolu",
+  "periodTotalLabel": "Celkem za období"
 }

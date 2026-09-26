@@ -281,5 +281,7 @@
   "label_revert_condition": "Vilkår for tilbakerulling",
   "label_reason": "Grunn",
   "label_before": "Før",
-  "label_after": "Etter"
+  "label_after": "Etter",
+  "status_preview": "Førehandsvising",
+  "status_elaboration_needed": "Forklaring trengst"
 }

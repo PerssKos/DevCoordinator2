@@ -9,7 +9,7 @@
   "activity_breakdown_7ebc89": "Ակտիվության բաժանում",
   "separate_measurements_they_are_not_added_togethe_329294": "Առանձին չափումներ են․ դրանք չեն գումարվում։",
   "no_tool_outcomes_in_this_window_4f3fa4": "Այս պատուհանում գործիքների արդյունքներ չկան։",
-  "total_c9b3c3": "Total",
+  "total_c9b3c3": "Ընդամենը",
   "exact_bucket_values_a2a7fe": "Խմբերի ճշգրիտ արժեքներ",
   "utc_bucket_fbd8d9": "UTC խումբ",
   "data_status_87d914": "Տվյալների կարգավիճակ",
@@ -23,7 +23,7 @@
   "tool_outcomes_3a7a68": "Գործիքների արդյունքներ",
   "data_completeness_c7114d": "Տվյալների ամբողջականություն",
   "counting_method_7a480a": "Հաշվարկման եղանակ",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Մատակարարի հաղորդած ընդհանուր token-ներ․ քեշավորված մուտքն ու reasoning-ը ենթաբազմություններ են։",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Մատակարարի հաղորդած թոքենների ընդհանուր քանակը․ քեշավորված մուտքի և դատողության թոքենները դրա ենթաբազմություններն են։",
   "schema_value19_taxonomy_value20_cdddf8": "Սխեմա {value19} · տաքսոնոմիա {value20}",
   "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}։ Տվյալներ չտրամադրած միջավայրերը և չչափված արժեքները բացառվում են և չեն համարվում զրո։",
   "token_subsets_unavailable_4cec86": "Token-ների ենթաբազմություններն անհասանելի են",
@@ -37,5 +37,5 @@
   },
   "about_codex_environments_4a2e3e": "Codex-ի միջավայրերի մասին",
   "explain_codex_usage_data_completeness_63247d": "Բացատրել Codex-ի օգտագործման տվյալների ամբողջականությունը",
-  "tokens_a039df": "Tokens"
+  "tokens_a039df": "Թոքեններ"
 }

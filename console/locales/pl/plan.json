@@ -47,28 +47,68 @@
   "put_first_79c815": "umieść na początku",
   "move_6ecc3d": "Przenieś",
   "runs_on_server_port_value2_e42376": "działa na porcie serwera {value2}",
-  "move_value1_c26f36": "Move: {value1}",
+  "move_value1_c26f36": "Przenieś: {value1}",
   "add_estimate_c87fb7": "Dodaj oszacowanie",
-  "resize_2956e0": "Resize",
-  "not_scheduled_yet_6e4794": "Niet scheduled yet",
-  "fit_9f872e": "Fit",
-  "show_0df6f1": "Show",
-  "hide_ac20a5": "Hide",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
+  "resize_2956e0": "Zmień rozmiar",
+  "not_scheduled_yet_6e4794": "Jeszcze nie zaplanowano",
+  "fit_9f872e": "Dopasuj",
+  "show_0df6f1": "Pokaż",
+  "hide_ac20a5": "Ukryj",
+  "job_5e8c99": "zadanie",
+  "jobs_5d9a17": "zadania",
   "change_estimate_6ae15e": "Zmień oszacowanie",
   "not_scheduled_yet_333719": "jeszcze nie zaplanowano",
   "plan_64879f": "plan",
   "decisions_3183d3": "decyzje",
-  "selected_task_details_a9a7eb": "Wybrano zadanie details",
-  "request_preview_1e9b91": "Request pprzegląd",
-  "open_the_app_397f86": "Otwórz the app ↗",
-  "drag_to_move_task_41b0d9": "Drag to move zadanie",
+  "selected_task_details_a9a7eb": "Szczegóły wybranego zadania",
+  "request_preview_1e9b91": "Poproś o podgląd",
+  "open_the_app_397f86": "Otwórz aplikację ↗",
+  "drag_to_move_task_41b0d9": "Przeciągnij, aby przenieść zadanie",
   "drag_to_resize_estimate_2d023d": "Przeciągnij, aby zmienić oszacowanie",
-  "not_estimated_dbbcf5": "Niet estimated",
+  "not_estimated_dbbcf5": "Bez oszacowania",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Interaktywna oś czasu planu. Przewijaj poziomo lub używaj elementów sterujących do przesuwania i powiększania",
-  "resize_task_navigator_2cc8bc": "Resize zadanie navigator",
+  "resize_task_navigator_2cc8bc": "Zmień rozmiar nawigatora zadań",
   "decisions_7c5ca9": "Decyzje →",
   "enter_a_line_estimate_7d4502": "Wprowadź oszacowanie wierszy",
-  "not_scheduled_yet_backlog_0f0d42": "jeszcze nie zaplanowano (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "jeszcze nie zaplanowano (backlog)",
+  "elaborateLabel": "Poproś o wyjaśnienie",
+  "explanationRequested": "Poproszono o jaśniejsze wyjaśnienie dla {title}",
+  "explainTask": "Poproś agenta o wyjaśnienie {title} prostszym językiem",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} linia",
+      "few": "~{value} linie",
+      "many": "~{value} linii",
+      "other": "~{value} linii"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} zadanie bez oszacowania",
+      "few": "{count} zadania bez oszacowania",
+      "many": "{count} zadań bez oszacowania",
+      "other": "{count} zadania bez oszacowania"
+    }
+  },
+  "unestimatedCount": "{count} nieoszacowanych",
+  "doneSummary": "{done} / {total} ukończonych ({percent})",
+  "linesDone": "Ukończone linie: {done} / {total}",
+  "tasksDone": "Ukończone zadania: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} linia",
+      "few": "{value} linie",
+      "many": "{value} linii",
+      "other": "{value} linii"
+    }
+  },
+  "dropTask": "Zrezygnuj z zadania",
+  "dropTaskNamed": "Zrezygnuj z zadania {title}",
+  "selectTask": "Wybierz {title}",
+  "dragMoveTask": "Przeciągnij {title}, aby go przenieść",
+  "dragResizeTask": "Przeciągnij, aby zmienić rozmiar {title}",
+  "progressNeedsEstimate": "Postęp jest obliczany dopiero po oszacowaniu tej pracy."
 }

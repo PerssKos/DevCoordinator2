@@ -22,10 +22,10 @@
   "rejected_aea4a0": "Rifiutato",
   "undecided_00cc36": "Non deciso",
   "select_2a7802": "Seleziona",
-  "reject_ab604a": "Reject",
+  "reject_ab604a": "Rifiuta",
   "leave_undecided_65c5c0": "Lascia non deciso",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
+  "set_6ee0eb": "insieme",
+  "sets_82c6db": "insiemi",
   "no_selection_211f6b": "Nessuna selezione",
   "selectedOptionContext": {
     "argument": "count",

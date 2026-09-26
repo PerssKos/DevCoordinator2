@@ -278,5 +278,7 @@
   "label_revert_condition": "元に戻す条件",
   "label_reason": "理由",
   "label_before": "変更前",
-  "label_after": "変更後"
+  "label_after": "変更後",
+  "status_preview": "プレビュー",
+  "status_elaboration_needed": "詳しい説明が必要"
 }

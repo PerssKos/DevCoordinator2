@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Teata veast",
   "report_b6ce78": "Teata",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Ainult piiratud mahuga iseseisvad kirjed: ära lisa saladusi, töötlemata logisid ega privaatseid failiteid.",
-  "close_310ff2": "sulge"
+  "close_310ff2": "sulge",
+  "expected": "Oodatav",
+  "actual": "Tegelik"
 }

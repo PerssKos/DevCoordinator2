@@ -107,5 +107,10 @@
   "status_unchanged": "Ingen endring",
   "status_inconclusive": "Ikke entydig",
   "tokensByActivity": "Token etter aktivitet",
-  "tokensByKind": "Token etter plantype"
+  "tokensByKind": "Token etter plantype",
+  "unattributedWork": "Noe arbeid mangler et registrert resultat.",
+  "reviewScopeTotal": "Gjennomgang totalt: {tokens}",
+  "periodScopeTotal": "Periode totalt: {tokens}",
+  "reviewTotalLabel": "Totalt for gjennomgang",
+  "periodTotalLabel": "Totalt for periode"
 }

@@ -30,8 +30,8 @@
   "unknownIntervals": {
     "argument": "count",
     "forms": {
-      "one": "{count} unknown interval",
-      "other": "{count} unknown intervals"
+      "one": "{count} unbekanntes Intervall",
+      "other": "{count} unbekannte Intervalle"
     }
   },
   "about_codex_environments_4a2e3e": "Über Codex-Umgebungen",

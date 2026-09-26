@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Zgłoś błąd",
   "report_b6ce78": "Zgłoś",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Tylko krótkie, samodzielne zapisy: bez sekretów, surowych dzienników i prywatnych ścieżek.",
-  "close_310ff2": "close"
+  "close_310ff2": "zamknij",
+  "expected": "Oczekiwane",
+  "actual": "Rzeczywiste"
 }

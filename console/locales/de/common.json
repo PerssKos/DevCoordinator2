@@ -95,8 +95,8 @@
   "hide_subtasks_07f203": "Unteraufgaben ausblenden",
   "value1_lines_ba1a2e": "~{value1} Zeilen",
   "local_25bf8e": "lokal",
-  "expandRepository": "Ausklappen {name} repository",
-  "collapseRepository": "Einklappen {name} repository",
+  "expandRepository": "Repository {name} ausklappen",
+  "collapseRepository": "Repository {name} einklappen",
   "expandTaskDetails": "Details der ausgewählten Aufgabe ausklappen",
   "collapseTaskDetails": "Details der ausgewählten Aufgabe einklappen",
   "showSubtasks": "Unteraufgaben von {name} anzeigen",
@@ -106,15 +106,15 @@
   "expandWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Ausklappen {count} worker for {name}",
-      "other": "Ausklappen {count} workers for {name}"
+      "one": "{count} Worker für {name} ausklappen",
+      "other": "{count} Worker für {name} ausklappen"
     }
   },
   "collapseWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Einklappen {count} worker for {name}",
-      "other": "Einklappen {count} workers for {name}"
+      "one": "{count} Worker für {name} einklappen",
+      "other": "{count} Worker für {name} einklappen"
     }
   },
   "tasksNeedExplanation": {
@@ -171,7 +171,7 @@
   "no_deployments_have_been_applied_yet_f5fd2a": "Es wurden noch keine Bereitstellungen angewendet.",
   "enter_a_whole_number_of_at_least_1_1387e8": "Geben Sie eine ganze Zahl von mindestens 1 ein.",
   "no_retained_logs_for_this_run_b39d59": "Für diesen Lauf sind keine aufbewahrten Protokolle vorhanden.",
-  "enter_a_positive_age_and_a_whole_number_case_dep_0607ec": "Geben Sie ein positives Alter und eine ganzzahlige Falldichte ein.",
+  "enter_a_positive_age_and_a_whole_number_case_dep_0607ec": "Geben Sie eine positive Aufbewahrungsdauer und eine ganze Anzahl aufzubewahrender Läufe pro Testfall ein.",
   "feedback_task_created_9a6d46": "Aufgabe aus Feedback erstellt",
   "enter_a_label_6eeb5d": "Geben Sie eine Beschriftung ein.",
   "generation_record_unavailable_value1_b601a8": "Erzeugungsnachweis nicht verfügbar: {value1}",
@@ -198,9 +198,9 @@
   "no_open_work_remains_in_this_release_49931b": "In diesem Release ist keine offene Arbeit mehr vorhanden.",
   "no_open_work_is_recorded_58a7e0": "Es ist keine offene Arbeit aufgezeichnet.",
   "no_repositories_are_available_for_progress_analy_994af5": "Für die Fortschrittsanalyse sind keine Repositorys verfügbar.",
-  "no_open_bugs_ca3d5d": "Nein open bugs.",
+  "no_open_bugs_ca3d5d": "Keine offenen Fehler.",
   "no_users_5bf761": "Keine Benutzer.",
-  "no_plan_yet_the_agent_will_publish_tasks_and_rel_52af00": "Neinch kein Plan. Sobald die Planung beginnt, veröffentlicht der Agent hier Aufgaben und Releases.",
+  "no_plan_yet_the_agent_will_publish_tasks_and_rel_52af00": "Noch kein Plan vorhanden. Sobald die Planung beginnt, veröffentlicht der Agent hier Aufgaben und Releases.",
   "could_not_request_elaboration_value1_b910db": "Konkretisierung konnte nicht angefordert werden: {value1}",
   "estimate_updated_to_value1_lines_d5443e": "Schätzung auf {value1} Zeilen aktualisiert",
   "resize_failed_value1_d279e7": "Größenänderung fehlgeschlagen: {value1}",
@@ -238,7 +238,7 @@
   "activity_completion_handoff": "Abschlussübergabe",
   "activity_review_feedback": "Prüfungsfeedback",
   "activity_coordination": "Koordination",
-  "activity_accounting_overhead": "Buchhaltungsaufwand",
+  "activity_accounting_overhead": "Aufwand für die Nutzungserfassung",
   "activity_mixed": "Gemischt",
   "activity_unknown": "Unbekannt",
   "activity_unattributed": "Nicht zugeordnet",
@@ -269,8 +269,8 @@
   "label_model_requests": "Modellanfragen",
   "label_tool_calls": "Werkzeugaufrufe",
   "label_execution_time": "Ausführungszeit",
-  "label_request_to_delivery_wall": "Wandzeit von Anfrage bis Lieferung",
-  "label_execution_wall_union": "Vereinigte Ausführungszeit",
+  "label_request_to_delivery_wall": "Verstrichene Zeit von Anfrage bis Lieferung",
+  "label_execution_wall_union": "Ausführungsdauer ohne Mehrfachzählung überlappender Zeiten",
   "label_summed_agent_active": "Summierte aktive Agentenzeit",
   "label_hypothesis": "Hypothese",
   "label_rationale": "Begründung",
@@ -281,5 +281,7 @@
   "label_revert_condition": "Rücksetzbedingung",
   "label_reason": "Grund",
   "label_before": "Vorher",
-  "label_after": "Nachher"
+  "label_after": "Nachher",
+  "status_preview": "Vorschau",
+  "status_elaboration_needed": "Erklärung erforderlich"
 }

@@ -30,5 +30,10 @@
   "yes_8a7988": "はい",
   "remove_user_84a18f": "ユーザーを削除",
   "revoke_777ac4": "取り消す",
-  "remove_grant_8c57bf": "権限を削除"
+  "remove_grant_8c57bf": "権限を削除",
+  "removeGrant": "{email} の {role} 権限を削除",
+  "removeUser": "ユーザー {email} を削除",
+  "telegramSummary": "ボット：{state}・送信待ち：{pending}・最終確認：{time}",
+  "unsubscribe": "{scope} の購読を解除",
+  "roleAccess": "アクセスのみ"
 }

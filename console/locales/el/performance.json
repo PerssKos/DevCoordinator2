@@ -107,5 +107,10 @@
   "status_unchanged": "Χωρίς αλλαγή",
   "status_inconclusive": "Χωρίς οριστικό συμπέρασμα",
   "tokensByActivity": "Token ανά δραστηριότητα",
-  "tokensByKind": "Token ανά τύπο στοιχείου πλάνου"
+  "tokensByKind": "Token ανά τύπο στοιχείου πλάνου",
+  "unattributedWork": "Μέρος της εργασίας δεν έχει καταγεγραμμένο αποτέλεσμα.",
+  "reviewScopeTotal": "Σύνολο αξιολόγησης: {tokens}",
+  "periodScopeTotal": "Σύνολο περιόδου: {tokens}",
+  "reviewTotalLabel": "Σύνολο αξιολόγησης",
+  "periodTotalLabel": "Σύνολο περιόδου"
 }

@@ -60,5 +60,13 @@
       "other": "{count} разгръщания",
       "many": "{count} разгръщания"
     }
-  }
+  },
+  "action_start": "Стартиране",
+  "action_stop": "Спиране",
+  "action_restart": "Рестартиране",
+  "operatorRequired": "Изисква се достъп на оператор",
+  "refreshAfterApply": "Прилагането е в ход; обновете статуса преди друга операция от жизнения цикъл",
+  "applyRunning": "Прилагането вече е в ход",
+  "editDomain": "Редактиране на домейна за {name}@{source}",
+  "repositoryLabel": "Репозитория"
 }

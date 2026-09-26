@@ -1,7 +1,7 @@
 {
   "none_140bed": "yoxdur",
   "e_mail_2550d9": "E-poçt",
-  "administrator_e7d3e7": "Administrator",
+  "administrator_e7d3e7": "İnzibatçı",
   "grants_b3e1c9": "İcazələr",
   "last_seen_21fd79": "Son görünmə",
   "expires_f6725f": "Müddəti bitir",
@@ -16,7 +16,7 @@
   "set_grant_35d1bf": "İcazə təyin et",
   "invitations_14210e": "Dəvətlər",
   "none_552e42": "(yoxdur)",
-  "administrator_4194d1": "administrator",
+  "administrator_4194d1": "inzibatçı",
   "invite_1fd9ae": "Dəvət et",
   "telegram_acdd1e": "Telegram",
   "link_code_04a3f4": "bağlantı kodu",
@@ -30,5 +30,10 @@
   "yes_8a7988": "bəli",
   "remove_user_84a18f": "İstifadəçini sil",
   "revoke_777ac4": "Geri götür",
-  "remove_grant_8c57bf": "İcazəni sil"
+  "remove_grant_8c57bf": "İcazəni sil",
+  "removeGrant": "{email} üçün {role} icazəsini sil",
+  "removeUser": "{email} istifadəçisini sil",
+  "telegramSummary": "Bot: {state} · gözləyən çıxış mesajları: {pending} · son yoxlama: {time}",
+  "unsubscribe": "{scope} abunəliyini dayandır",
+  "roleAccess": "Yalnız giriş"
 }

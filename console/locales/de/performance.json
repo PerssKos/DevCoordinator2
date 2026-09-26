@@ -107,5 +107,10 @@
   "status_unchanged": "Keine Änderung",
   "status_inconclusive": "Nicht schlüssig",
   "tokensByActivity": "Tokens nach Aktivität",
-  "tokensByKind": "Tokens nach Planeintragstyp"
+  "tokensByKind": "Tokens nach Planeintragstyp",
+  "unattributedWork": "Ein Teil der Arbeit hat kein aufgezeichnetes Ergebnis.",
+  "reviewScopeTotal": "Gesamtsumme der Prüfung: {tokens}",
+  "periodScopeTotal": "Gesamtsumme des Zeitraums: {tokens}",
+  "reviewTotalLabel": "Gesamtsumme der Prüfung",
+  "periodTotalLabel": "Gesamtsumme des Zeitraums"
 }

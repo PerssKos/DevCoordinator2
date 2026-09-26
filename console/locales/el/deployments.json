@@ -58,5 +58,13 @@
       "one": "{count} ανάπτυξη",
       "other": "{count} αναπτύξεις"
     }
-  }
+  },
+  "action_start": "Έναρξη",
+  "action_stop": "Διακοπή",
+  "action_restart": "Επανεκκίνηση",
+  "operatorRequired": "Απαιτείται πρόσβαση χειριστή",
+  "refreshAfterApply": "Η εφαρμογή βρίσκεται σε εξέλιξη· ανανεώστε την κατάσταση πριν από άλλη ενέργεια κύκλου ζωής",
+  "applyRunning": "Η εφαρμογή βρίσκεται ήδη σε εξέλιξη",
+  "editDomain": "Επεξεργασία τομέα για {name}@{source}",
+  "repositoryLabel": "Αποθετήριο"
 }

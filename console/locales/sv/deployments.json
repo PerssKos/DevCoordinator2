@@ -28,35 +28,43 @@
   "no_measured_components_6f4369": "Inga uppmätta komponenter.",
   "domain_value1_value2_ee9534": "Domän: {value1}@{value2}",
   "compose_value3_service_87ae79": "Compose-tjänst {value3}",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "prev_value1_8d66fe": "(föregående {value1})",
+  "logs_value1_306798": "Loggar: {value1}",
   "deployment_aee50b": "driftsättning",
-  "deployments_01366d": "driftsättnings",
-  "expand_workers_c57c47": "Udvid workers",
-  "collapse_workers_7a9ec3": "Fold sammen workers",
+  "deployments_01366d": "driftsättningar",
+  "expand_workers_c57c47": "Expandera arbetsprocesser",
+  "collapse_workers_7a9ec3": "Fäll ihop arbetsprocesser",
   "exact_recorded_container_a9b79f": " · exakt registrerad behållare",
   "external_855e84": " · extern",
-  "never_6497e4": "never",
+  "never_6497e4": "aldrig",
   "containerCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} behållare",
-      "other": "{count} behållares"
+      "one": "{count} container",
+      "other": "{count} containrar"
     }
   },
-  "apply_97a5e4": "apply",
-  "workers_7a1ec9": "Workers",
+  "apply_97a5e4": "tillämpa",
+  "workers_7a1ec9": "Arbetsprocesser",
   "my_app_4c9a75": "my-app",
   "lowercase_dns_label_3dbe17": "DNS-etikett med små bokstäver",
-  "logs_98f38f": "logs",
+  "logs_98f38f": "loggar",
   "rollback_da2548": "återställning",
-  "remove_deployment_keep_data_b46030": "Fjern implementering — behold data",
-  "remove_deployment_and_delete_data_9fe36e": "Fjern implementering og slet data",
+  "remove_deployment_keep_data_b46030": "Ta bort driftsättning — behåll data",
+  "remove_deployment_and_delete_data_9fe36e": "Ta bort driftsättning och radera data",
   "deploymentCount": {
     "argument": "count",
     "forms": {
       "one": "{count} driftsättning",
-      "other": "{count} driftsättnings"
+      "other": "{count} driftsättningar"
     }
-  }
+  },
+  "action_start": "Starta",
+  "action_stop": "Stoppa",
+  "action_restart": "Starta om",
+  "operatorRequired": "Operatörsåtkomst krävs",
+  "refreshAfterApply": "Ändringarna tillämpas; uppdatera status före nästa livscykelåtgärd",
+  "applyRunning": "Ändringarna håller redan på att tillämpas",
+  "editDomain": "Redigera domän för {name}@{source}",
+  "repositoryLabel": "Kodförråd"
 }

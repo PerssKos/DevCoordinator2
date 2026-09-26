@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Endre storleiken på oppgåvenavigatoren",
   "decisions_7c5ca9": "Avgjerder →",
   "enter_a_line_estimate_7d4502": "Skriv inn eit linjeestimat",
-  "not_scheduled_yet_backlog_0f0d42": "ikkje planlagt enno (oppgåvekø)"
+  "not_scheduled_yet_backlog_0f0d42": "ikkje planlagt enno (oppgåvekø)",
+  "elaborateLabel": "Be om forklaring",
+  "explanationRequested": "Ei tydelegare forklaring er etterspurd for {title}",
+  "explainTask": "Be agenten forklare {title} med enklare språk",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} linje",
+      "other": "~{value} linjer"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} jobb utan estimat",
+      "other": "{count} jobbar utan estimat"
+    }
+  },
+  "unestimatedCount": "{count} utan estimat",
+  "doneSummary": "{done} / {total} ferdig ({percent})",
+  "linesDone": "Ferdige linjer: {done} / {total}",
+  "tasksDone": "Ferdige jobbar: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} linje",
+      "other": "{value} linjer"
+    }
+  },
+  "dropTask": "Forkast jobb",
+  "dropTaskNamed": "Forkast jobb {title}",
+  "selectTask": "Vel {title}",
+  "dragMoveTask": "Dra {title} for å flytte han",
+  "dragResizeTask": "Dra for å endre storleiken på {title}",
+  "progressNeedsEstimate": "Framdrift blir ikkje rekna ut før arbeidet er estimert."
 }

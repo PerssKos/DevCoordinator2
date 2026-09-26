@@ -50,7 +50,7 @@
   "move_value1_c26f36": "Verplaatsen: {value1}",
   "add_estimate_c87fb7": "Schatting toevoegen",
   "resize_2956e0": "Grootte wijzigen",
-  "not_scheduled_yet_6e4794": "Neet scheduled yet",
+  "not_scheduled_yet_6e4794": "Nog niet gepland",
   "fit_9f872e": "Passend maken",
   "show_0df6f1": "Tonen",
   "hide_ac20a5": "Verbergen",
@@ -60,15 +60,49 @@
   "not_scheduled_yet_333719": "nog niet gepland",
   "plan_64879f": "plan",
   "decisions_3183d3": "besluiten",
-  "selected_task_details_a9a7eb": "Geselecteerd taak details",
+  "selected_task_details_a9a7eb": "Details van de geselecteerde taak",
   "request_preview_1e9b91": "Voorbeeld aanvragen",
   "open_the_app_397f86": "App openen ↗",
-  "drag_to_move_task_41b0d9": "Drag to move taak",
+  "drag_to_move_task_41b0d9": "Sleep om de taak te verplaatsen",
   "drag_to_resize_estimate_2d023d": "Slepen om schatting te wijzigen",
-  "not_estimated_dbbcf5": "Neet estimated",
+  "not_estimated_dbbcf5": "Niet geschat",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Interactieve plantijdlijn. Scroll horizontaal of gebruik de tijdlijnbediening om te verschuiven en zoomen.",
   "resize_task_navigator_2cc8bc": "Grootte wijzigen taaknavigator",
   "decisions_7c5ca9": "Besluiten →",
-  "enter_a_line_estimate_7d4502": "Voer in a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "nog niet gepland (backlog)"
+  "enter_a_line_estimate_7d4502": "Voer een schatting van het aantal regels in",
+  "not_scheduled_yet_backlog_0f0d42": "nog niet gepland (backlog)",
+  "elaborateLabel": "Uitleg vragen",
+  "explanationRequested": "Een duidelijkere uitleg is gevraagd voor {title}",
+  "explainTask": "Vraag de agent om {title} in eenvoudigere taal uit te leggen",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} regel",
+      "other": "~{value} regels"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} taak zonder schatting",
+      "other": "{count} taken zonder schatting"
+    }
+  },
+  "unestimatedCount": "{count} zonder schatting",
+  "doneSummary": "{done} / {total} voltooid ({percent})",
+  "linesDone": "Voltooide regels: {done} / {total}",
+  "tasksDone": "Voltooide taken: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} regel",
+      "other": "{value} regels"
+    }
+  },
+  "dropTask": "Taak laten vervallen",
+  "dropTaskNamed": "Taak {title} laten vervallen",
+  "selectTask": "{title} selecteren",
+  "dragMoveTask": "Sleep {title} om te verplaatsen",
+  "dragResizeTask": "Sleep om {title} te vergroten of verkleinen",
+  "progressNeedsEstimate": "Voortgang wordt pas berekend nadat dit werk is geschat."
 }

@@ -70,5 +70,36 @@
   "resize_task_navigator_2cc8bc": "タスクナビゲーターのサイズを変更",
   "decisions_7c5ca9": "決定 →",
   "enter_a_line_estimate_7d4502": "行数の見積もりを入力",
-  "not_scheduled_yet_backlog_0f0d42": "未スケジュール（バックログ）"
+  "not_scheduled_yet_backlog_0f0d42": "未スケジュール（バックログ）",
+  "elaborateLabel": "詳しい説明を依頼",
+  "explanationRequested": "「{title}」について、より分かりやすい説明を依頼済みです",
+  "explainTask": "「{title}」を分かりやすく説明するようエージェントに依頼",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "other": "約 {value} 行"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "other": "{count} 件の作業が未見積もり"
+    }
+  },
+  "unestimatedCount": "未見積もり：{count}",
+  "doneSummary": "完了：{done} / {total}（{percent}）",
+  "linesDone": "完了行数：{done} / {total}",
+  "tasksDone": "完了タスク：{done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "other": "{value} 行"
+    }
+  },
+  "dropTask": "タスクを取り下げる",
+  "dropTaskNamed": "タスク「{title}」を取り下げる",
+  "selectTask": "「{title}」を選択",
+  "dragMoveTask": "「{title}」をドラッグして移動",
+  "dragResizeTask": "ドラッグして「{title}」の見積もりを変更",
+  "progressNeedsEstimate": "この作業の見積もりが入力されるまで、進捗は計算されません。"
 }

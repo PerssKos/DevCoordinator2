@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "无法保存仓库外观，请重试。",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} 个仓库不可用。请刷新后重试。",
   "montenegrinLatin": "黑山语（拉丁字母）",
-  "montenegrinCyrillic": "黑山语（西里尔字母）"
+  "montenegrinCyrillic": "黑山语（西里尔字母）",
+  "loadFailed": "控制台无法加载。请刷新页面重试。",
+  "reload": "刷新"
 }

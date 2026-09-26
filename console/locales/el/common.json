@@ -281,5 +281,7 @@
   "label_revert_condition": "Συνθήκη επαναφοράς",
   "label_reason": "Αιτία",
   "label_before": "Πριν",
-  "label_after": "Μετά"
+  "label_after": "Μετά",
+  "status_preview": "Προεπισκόπηση",
+  "status_elaboration_needed": "Απαιτείται εξήγηση"
 }

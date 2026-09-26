@@ -284,5 +284,7 @@
   "label_revert_condition": "Condizione per annullare la modifica",
   "label_reason": "Motivo",
   "label_before": "Prima",
-  "label_after": "Dopo"
+  "label_after": "Dopo",
+  "status_preview": "Anteprima",
+  "status_elaboration_needed": "Spiegazione richiesta"
 }

@@ -58,5 +58,13 @@
       "one": "デプロイ {count} 件",
       "other": "デプロイ {count} 件"
     }
-  }
+  },
+  "action_start": "起動",
+  "action_stop": "停止",
+  "action_restart": "再起動",
+  "operatorRequired": "オペレーター権限が必要です",
+  "refreshAfterApply": "適用中です。次の起動・停止操作の前に状態を更新してください",
+  "applyRunning": "すでに適用中です",
+  "editDomain": "{name}@{source} のドメインを編集",
+  "repositoryLabel": "リポジトリ"
 }

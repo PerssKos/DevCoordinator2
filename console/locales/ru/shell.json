@@ -80,6 +80,8 @@
   "current_repository_value1_35de51": "Текущий репозиторий: {value1}",
   "could_not_save_repository_appearance_try_again_955cdd": "Не удалось сохранить оформление репозитория. Попробуйте ещё раз.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "Недоступно репозиториев: {value1}. Обновите страницу и повторите попытку.",
-  "montenegrinLatin": "Montenegrin (Latin)",
-  "montenegrinCyrillic": "Montenegrin (Cyrillic)"
+  "montenegrinLatin": "Черногорский (латиница)",
+  "montenegrinCyrillic": "Черногорский (кириллица)",
+  "loadFailed": "Не удалось загрузить консоль. Перезагрузите страницу, чтобы повторить попытку.",
+  "reload": "Перезагрузить"
 }

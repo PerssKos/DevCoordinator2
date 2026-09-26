@@ -106,15 +106,15 @@
   "expandWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Expand {count} worker for {name}",
-      "other": "Expand {count} workers for {name}"
+      "one": "Näytä tietovaraston {name} suorittaja ({count})",
+      "other": "Näytä tietovaraston {name} suorittajat ({count})"
     }
   },
   "collapseWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Collapse {count} worker for {name}",
-      "other": "Collapse {count} workers for {name}"
+      "one": "Piilota tietovaraston {name} suorittaja ({count})",
+      "other": "Piilota tietovaraston {name} suorittajat ({count})"
     }
   },
   "tasksNeedExplanation": {
@@ -167,18 +167,18 @@
   "error_conflict": "Tietue muuttui. Lataa se uudelleen ennen uutta yritystä.",
   "error_request": "Pyyntöä ei voitu suorittaa.",
   "no_visual_evidence_is_available_for_this_run_it__4f1873": "Tälle suoritukselle ei ole visuaalista todistetta. Se on saattanut vanhentua.",
-  "value1_failed_value2_23ce24": "{value1} failed: {value2}",
+  "value1_failed_value2_23ce24": "{value1} epäonnistui: {value2}",
   "no_deployments_have_been_applied_for_this_reposi_720c5a": "Tälle tietovarastolle ei ole otettu käyttöön käyttöönottoja.",
   "no_deployments_have_been_applied_yet_f5fd2a": "Käyttöönottoja ei ole vielä otettu käyttöön.",
-  "enter_a_whole_number_of_at_least_1_1387e8": "Enter a whole number of at least 1.",
+  "enter_a_whole_number_of_at_least_1_1387e8": "Anna kokonaisluku, joka on vähintään 1.",
   "no_retained_logs_for_this_run_b39d59": "Tälle suoritukselle ei ole säilytettyjä lokeja.",
-  "enter_a_positive_age_and_a_whole_number_case_dep_0607ec": "Enter a positive age and a whole-number case depth.",
-  "feedback_task_created_9a6d46": "Feedback task created",
-  "enter_a_label_6eeb5d": "Enter a label.",
-  "generation_record_unavailable_value1_b601a8": "Generation record unavailable: {value1}",
-  "sketch_decision_saved_e11ab3": "Sketch decision saved",
-  "decision_failed_value1_c85449": "Decision failed: {value1}",
-  "annotation_deleted_792946": "Annotation deleted",
+  "enter_a_positive_age_and_a_whole_number_case_dep_0607ec": "Anna positiivinen säilytysaika ja tapauskohtainen säilytysmäärä kokonaislukuna.",
+  "feedback_task_created_9a6d46": "Palautetehtävä luotu",
+  "enter_a_label_6eeb5d": "Anna tunniste.",
+  "generation_record_unavailable_value1_b601a8": "Luontitiedot eivät ole saatavilla: {value1}",
+  "sketch_decision_saved_e11ab3": "Luonnosta koskeva päätös tallennettu",
+  "decision_failed_value1_c85449": "Päätöksen tallentaminen epäonnistui: {value1}",
+  "annotation_deleted_792946": "Merkintä poistettu",
   "this_screenshot_is_not_available_for_this_run_4a0278": "Tämä kuvakaappaus ei ole saatavilla tälle suoritukselle.",
   "visual_evidence_was_invalid_and_could_not_be_ope_8db452": "Visuaalinen todiste oli virheellinen eikä sitä voitu avata.",
   "this_run_did_not_publish_visual_journey_evidence_8370da": "Tämä suoritus ei julkaissut visuaalista polkutodistetta.",
@@ -282,5 +282,7 @@
   "label_revert_condition": "Palautusehto",
   "label_reason": "Syy",
   "label_before": "Ennen",
-  "label_after": "Jälkeen"
+  "label_after": "Jälkeen",
+  "status_preview": "esikatselu",
+  "status_elaboration_needed": "tarvitsee tarkemman kuvauksen"
 }

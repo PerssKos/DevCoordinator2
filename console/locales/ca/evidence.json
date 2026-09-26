@@ -2,7 +2,7 @@
   "new_feedback_16ca40": "Comentari nou",
   "suggestion_527f6b": "Suggeriment",
   "describe_what_should_change_051892": "Descriu què hauria de canviar",
-  "cancel_19766e": "Cancel",
+  "cancel_19766e": "Cancel·la",
   "create_feedback_task_efe49d": "Crea una tasca de comentaris",
   "passed_436fe7": "Superat",
   "review_aff076": "Revisió",
@@ -58,25 +58,66 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps",
-      "many": "{value7} steps"
+      "one": "{value7} pas",
+      "many": "{value7} passos",
+      "other": "{value7} passos"
     }
   },
   "viewport_280503": "Àrea de visualització",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Conserva",
+  "reject_ab604a": "Rebutja",
   "undecided_00cc36": "Sense decidir",
   "visual_feedback_a19903": "Comentaris visuals",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
+  "reopen_a886d1": "Torna a obrir",
+  "resolve_c8f193": "Resol",
   "route_unavailable_21a43f": "Ruta no disponible",
   "test_run_fe9e2f": "Execució de prova",
   "release_proof_17fa7c": "Prova del lliurament",
   "diagnostic_only_3425ba": "Només diagnòstic",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Edita",
   "open_plan_task_4019fe": "Obre la tasca del pla →",
   "full_page_9d21b6": "Pàgina completa",
   "previous_journey_step_7a544d": "Pas anterior del recorregut",
-  "next_journey_step_35037a": "Pas següent del recorregut"
+  "next_journey_step_35037a": "Pas següent del recorregut",
+  "annotationSaved": "Anotació desada",
+  "reviewComment": "Comenta aquesta revisió",
+  "attachTo": "Adjunta a",
+  "activeOption": "Opció activa",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "many": "Opcions seleccionades ({count})",
+      "one": "Opció seleccionada ({count})",
+      "other": "Opcions seleccionades ({count})"
+    }
+  },
+  "commentLabel": "Comentari",
+  "commentPlaceholder": "Afegeix un comentari sobre aquesta opció o conjunt seleccionat.",
+  "postComment": "Publica el comentari",
+  "closeReview": "Tanca la revisió",
+  "selectionSummary": "Seleccionades: {selected} · Opcions: {total}",
+  "allSketchOptions": "Totes les opcions de l’esbós",
+  "selectOptionToAnnotate": "Selecciona una opció per anotar",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "many": "Comentari afegit a {count} opcions seleccionades",
+      "one": "Comentari afegit a {count} opció",
+      "other": "Comentari afegit a {count} opcions seleccionades"
+    }
+  },
+  "commentFailed": "No s’ha pogut afegir el comentari: {message}",
+  "sketchChangeWhy": "Per què es canvia aquest esbós?",
+  "reviewedInConsole": "Revisat a la consola",
+  "selectedJourneyScreenshot": "Captura de pantalla del recorregut d’usuari seleccionat",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "many": "S’han sol·licitat {count} canvis",
+      "one": "S’ha sol·licitat {count} canvi",
+      "other": "S’han sol·licitat {count} canvis"
+    }
+  },
+  "noChangesRequested": "No s’han sol·licitat canvis",
+  "sketchSetUnavailable": "Aquest conjunt d’esbossos ja no està disponible."
 }

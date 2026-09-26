@@ -1,13 +1,15 @@
 {
-  "component_ce54f0": "Hluti",
+  "component_ce54f0": "Eining",
   "summary_8e76a9": "Samantekt",
   "expected_actual_2457a7": "Vænt / raunverulegt",
   "steps_1de3df": "Skref",
-  "seen_8894cf": "Sést",
-  "correlations_f54dae": "Tengsl",
+  "seen_8894cf": "Séð",
+  "correlations_f54dae": "Tengingar",
   "open_bugs_dce3d4": "Opnar villur",
   "report_a_bug_f75e0b": "Tilkynna villu",
-  "report_b6ce78": "Tilkynning",
-  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Aðeins afmörkuð atómfærslur: engin leyndarmál, hráir annálar eða einkaslóðir.",
-  "close_310ff2": "Loka"
+  "report_b6ce78": "Tilkynna",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Aðeins stuttar, afmarkaðar færslur: engin leyndarmál, hráir annálar eða einkaslóðir.",
+  "close_310ff2": "loka",
+  "expected": "Vænt niðurstaða",
+  "actual": "Raunveruleg niðurstaða"
 }

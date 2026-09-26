@@ -27,8 +27,13 @@
   "server_aef7de": "Servidor",
   "configured_201582": "configurat",
   "not_configured_9f33f0": "no configurat",
-  "yes_8a7988": "yes",
+  "yes_8a7988": "sí",
   "remove_user_84a18f": "Elimina l’usuari",
-  "revoke_777ac4": "revoke",
-  "remove_grant_8c57bf": "Elimina la concessió"
+  "revoke_777ac4": "revoca",
+  "remove_grant_8c57bf": "Elimina la concessió",
+  "removeGrant": "Suprimeix el permís {role} de {email}",
+  "removeUser": "Suprimeix l’usuari {email}",
+  "telegramSummary": "Bot: {state} · missatges de sortida pendents: {pending} · última consulta: {time}",
+  "unsubscribe": "Cancel·la la subscripció a {scope}",
+  "roleAccess": "Només accés"
 }

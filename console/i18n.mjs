@@ -1,4 +1,4 @@
-import { createCatalog, negotiateLocale, recentLocales, browserLocales, matchLocale, localeCookie } from './i18n-core.mjs';
+import { createCatalog, negotiateLocale, recentLocales, browserLocales, matchLocale, localeCookie, intlLocales } from './i18n-core.mjs';
 const read = async file => {
   const response = await fetch(`/locales/${file}`, { cache: 'no-cache' });
   if (!response.ok) throw new Error('Language file unavailable');
@@ -18,7 +18,7 @@ try { recent = JSON.parse(stored('dc2-recent-locales', '[]')); } catch {}
 if (!Array.isArray(recent)) recent = [];
 let menu, trigger;
 const t = (id, params) => catalog.message(locale, id, params);
-const fmt = (kind, options, value) => new Intl[kind](locale, options).format(value);
+const fmt = (kind, options, value) => new Intl[kind](intlLocales(locale, manifest), options).format(value);
 function clearStaticBinding(element, attribute) {
   if (!attribute) element.removeAttribute('data-i18n');
   else if (element.dataset.i18nAttrs) {
@@ -33,8 +33,8 @@ export const i18n = {
   number: (value, options = {}) => value == null ? '—' : fmt('NumberFormat', options, value),
   percent: (value, options = {}) => value == null ? '—' : fmt('NumberFormat', { style: 'percent', maximumFractionDigits: 1, ...options }, value),
   date: (value, options = {}) => value == null ? '—' : fmt('DateTimeFormat', options, new Date(value)),
-  relative: (value, unit) => new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(value, unit),
-  compare: (a, b) => new Intl.Collator(locale).compare(a, b),
+  relative: (value, unit) => new Intl.RelativeTimeFormat(intlLocales(locale, manifest), { numeric: 'auto' }).format(value, unit),
+  compare: (a, b) => new Intl.Collator(intlLocales(locale, manifest)).compare(a, b),
   // Explicit product label adapters only; never pass user-authored data here.
   label(value, namespace = 'common') {
     const key = catalog.sourceKey(namespace, value, 'label_');
@@ -154,7 +154,7 @@ function refresh(root) {
 function displayName(tag, type = 'language') {
   if (type === 'language' && tag.startsWith('cnr-')) return t(tag.endsWith('Latn') ? 'shell.montenegrinLatin' : 'shell.montenegrinCyrillic');
   try {
-    const name = new Intl.DisplayNames([locale], { type }).of(tag);
+    const name = new Intl.DisplayNames(intlLocales(locale, manifest), { type }).of(tag);
     if (name && name !== tag) return name;
   } catch {}
   return manifest.locales.find(entry => entry.tag === tag)?.englishName || tag;

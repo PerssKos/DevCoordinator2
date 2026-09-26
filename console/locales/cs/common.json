@@ -287,5 +287,7 @@
   "label_revert_condition": "Podmínka vrácení změny",
   "label_reason": "Důvod",
   "label_before": "Před",
-  "label_after": "Po"
+  "label_after": "Po",
+  "status_preview": "Náhled",
+  "status_elaboration_needed": "Vyžadováno vysvětlení"
 }

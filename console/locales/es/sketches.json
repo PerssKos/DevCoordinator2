@@ -22,10 +22,10 @@
   "rejected_aea4a0": "Rechazado",
   "undecided_00cc36": "Sin decidir",
   "select_2a7802": "Seleccionar",
-  "reject_ab604a": "Reject",
+  "reject_ab604a": "Rechazar",
   "leave_undecided_65c5c0": "Dejar sin decidir",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
+  "set_6ee0eb": "conjunto",
+  "sets_82c6db": "conjuntos",
   "no_selection_211f6b": "Sin selección",
   "selectedOptionContext": {
     "argument": "count",
@@ -43,9 +43,9 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets",
-      "many": "{count} sets"
+      "one": "{count} conjunto",
+      "many": "{count} conjuntos",
+      "other": "{count} conjuntos"
     }
   }
 }

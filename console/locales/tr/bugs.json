@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Hata bildir",
   "report_b6ce78": "Bildir",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Yalnızca sınırlı atomik kayıtlar: gizli bilgiler, ham günlükler veya özel yollar yok.",
-  "close_310ff2": "kapat"
+  "close_310ff2": "kapat",
+  "expected": "Beklenen",
+  "actual": "Gerçek"
 }

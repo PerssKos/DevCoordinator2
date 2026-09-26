@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Kodarkivets utseende kunde inte sparas. Försök igen.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} kodarkiv är inte tillgängliga. Uppdatera för att försöka igen.",
   "montenegrinLatin": "Montenegrinska (latinsk skrift)",
-  "montenegrinCyrillic": "Montenegrinska (kyrillisk skrift)"
+  "montenegrinCyrillic": "Montenegrinska (kyrillisk skrift)",
+  "loadFailed": "Konsolen kunde inte läsas in. Läs in sidan igen för att försöka på nytt.",
+  "reload": "Läs in igen"
 }

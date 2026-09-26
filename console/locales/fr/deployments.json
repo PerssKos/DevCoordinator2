@@ -60,5 +60,13 @@
       "many": "{count} déploiements",
       "other": "{count} déploiements"
     }
-  }
+  },
+  "action_start": "Démarrer",
+  "action_stop": "Arrêter",
+  "action_restart": "Redémarrer",
+  "operatorRequired": "Accès opérateur requis",
+  "refreshAfterApply": "Application en cours ; actualisez l’état avant une autre action du cycle de vie",
+  "applyRunning": "Application déjà en cours",
+  "editDomain": "Modifier le domaine de {name}@{source}",
+  "repositoryLabel": "Dépôt"
 }

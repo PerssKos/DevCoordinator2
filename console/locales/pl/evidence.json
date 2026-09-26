@@ -58,26 +58,70 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps",
-      "many": "{value7} steps",
-      "few": "{value7} steps"
+      "one": "{value7} krok",
+      "few": "{value7} kroki",
+      "many": "{value7} kroków",
+      "other": "{value7} kroku"
     }
   },
   "viewport_280503": "obszar widoku",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Zachowaj",
+  "reject_ab604a": "Odrzuć",
   "undecided_00cc36": "Niezdecydowane",
   "visual_feedback_a19903": "Opinie wizualne",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
+  "reopen_a886d1": "Otwórz ponownie",
+  "resolve_c8f193": "Rozwiąż",
   "route_unavailable_21a43f": "Trasa niedostępna",
   "test_run_fe9e2f": "Uruchomienie testu",
   "release_proof_17fa7c": "Dowód wydania",
   "diagnostic_only_3425ba": "Tylko diagnostyka",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Edytuj",
   "open_plan_task_4019fe": "Otwórz Plan zadanie →",
   "full_page_9d21b6": "Cała strona",
-  "previous_journey_step_7a544d": "Poprzedni journey step",
-  "next_journey_step_35037a": "Następny journey step"
+  "previous_journey_step_7a544d": "Poprzedni krok ścieżki użytkownika",
+  "next_journey_step_35037a": "Następny krok ścieżki użytkownika",
+  "annotationSaved": "Adnotacja zapisana",
+  "reviewComment": "Komentarz do przeglądu",
+  "attachTo": "Dołącz do",
+  "activeOption": "Aktywna opcja",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Wybrana opcja ({count})",
+      "few": "Wybrane opcje ({count})",
+      "many": "Wybrane opcje ({count})",
+      "other": "Wybrane opcje ({count})"
+    }
+  },
+  "commentLabel": "Komentarz",
+  "commentPlaceholder": "Dodaj komentarz do tej opcji lub wybranego zestawu.",
+  "postComment": "Opublikuj komentarz",
+  "closeReview": "Zamknij przegląd",
+  "selectionSummary": "Wybrane: {selected} · Opcje: {total}",
+  "allSketchOptions": "Wszystkie opcje szkicu",
+  "selectOptionToAnnotate": "Wybierz opcję do adnotacji",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Dodano komentarz do {count} opcji",
+      "few": "Dodano komentarz do {count} wybranych opcji",
+      "many": "Dodano komentarz do {count} wybranych opcji",
+      "other": "Dodano komentarz do {count} wybranej opcji"
+    }
+  },
+  "commentFailed": "Nie udało się dodać komentarza: {message}",
+  "sketchChangeWhy": "Dlaczego ten szkic jest zmieniany?",
+  "reviewedInConsole": "Sprawdzono w konsoli",
+  "selectedJourneyScreenshot": "Wybrany zrzut ekranu ścieżki użytkownika",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Zażądano {count} zmiany",
+      "few": "Zażądano {count} zmian",
+      "many": "Zażądano {count} zmian",
+      "other": "Zażądano {count} zmiany"
+    }
+  },
+  "noChangesRequested": "Nie zażądano zmian",
+  "sketchSetUnavailable": "Ten zestaw szkiców nie jest już dostępny."
 }

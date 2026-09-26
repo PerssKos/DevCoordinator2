@@ -30,5 +30,10 @@
   "yes_8a7988": "예",
   "remove_user_84a18f": "사용자 제거",
   "revoke_777ac4": "취소",
-  "remove_grant_8c57bf": "권한 제거"
+  "remove_grant_8c57bf": "권한 제거",
+  "removeGrant": "{email}의 {role} 권한 제거",
+  "removeUser": "사용자 {email} 제거",
+  "telegramSummary": "봇: {state} · 전송 대기: {pending} · 마지막 확인: {time}",
+  "unsubscribe": "{scope} 구독 취소",
+  "roleAccess": "접근만"
 }

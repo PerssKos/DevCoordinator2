@@ -23,7 +23,7 @@
   "tool_outcomes_3a7a68": "Alət nəticələri",
   "data_completeness_c7114d": "Məlumat tamlığı",
   "counting_method_7a480a": "Sayma üsulu",
-  "provider_reported_total_tokens_cached_input_and__9908f6": "Provayderin bildirdiyi ümumi tokenlər; keşlənmiş giriş və reasoning bunların alt dəstləridir.",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "Provayderin bildirdiyi ümumi token sayı; keşlənmiş giriş və mühakimə tokenləri bu cəmin alt çoxluqlarıdır.",
   "schema_value19_taxonomy_value20_cdddf8": "Sxem {value19} · taksonomiya {value20}",
   "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. Məlumat verməyən mühitlər və ölçülməmiş dəyərlər xaric edilir, sıfır kimi qəbul olunmur.",
   "token_subsets_unavailable_4cec86": "Token alt dəstləri əlçatan deyil",

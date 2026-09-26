@@ -63,24 +63,24 @@
   "no_revisions_yet_db4f96": "Nog geen revisies.",
   "earlier_revisions_e54f55": "Eerdere revisies",
   "more_projects_11f22c": "Meer projecten",
-  "viewing_revision_value1_dbea46": "Viewing revisie {value1}.",
-  "shared_source_at_revision_value2_ae6fdc": "Gedeeld source at revisie {value2}",
+  "viewing_revision_value1_dbea46": "Revisie {value1} wordt weergegeven.",
+  "shared_source_at_revision_value2_ae6fdc": "Gedeelde bron bij revisie {value2}",
   "languages_value1_65b60d": "Talen: {value1}",
   "revision_value2_value3_4b8597": "Revisie {value2} · {value3}",
   "shared_revision_value1_value2_projects_9f53bb": {
     "argument": "value2",
     "forms": {
-      "one": "Gedeeld revisie {value1} · {value2} project",
-      "other": "Gedeeld revisie {value1} · {value2} projects"
+      "one": "Gedeelde revisie {value1} · {value2} project",
+      "other": "Gedeelde revisie {value1} · {value2} projecten"
     }
   },
   "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Dit project gebruikt gedeelde revisie {value1}. Revisie {value2} is beschikbaar.",
-  "adopt_revision_value4_d99ca6": "Adopt revisie {value4}",
+  "adopt_revision_value4_d99ca6": "Revisie {value4} overnemen",
   "guidance_and_languages_952865": "Richtlijnen en talen",
   "view_guidance_169578": "Richtlijnen bekijken",
-  "no_concepts_on_this_page_6766a7": "Nee concepts on this page.",
-  "no_concepts_match_these_filters_272f2a": "Nee concepts match these filters.",
-  "no_concepts_yet_6baf89": "Nee concepts yet.",
+  "no_concepts_on_this_page_6766a7": "Geen begrippen op deze pagina.",
+  "no_concepts_match_these_filters_272f2a": "Geen begrippen komen overeen met deze filters.",
+  "no_concepts_yet_6baf89": "Er zijn nog geen begrippen.",
   "a_shared_glossary_revision_is_available_to_adopt_be2c66": " Er is een gedeelde woordenlijstversie beschikbaar om over te nemen.",
   "specialize_for_project_c6a546": "Voor project specialiseren",
   "edit_concept_09e204": "Begrip bewerken",
@@ -91,11 +91,11 @@
   "remove_related_concept_value1_5732bb": "Gerelateerd begrip verwijderen {value1}",
   "add_value1_470600": "Toevoegen {value1}",
   "return_to_the_current_glossary_6c061f": "Terug naar de huidige woordenlijst",
-  "all_concepts_acc74b": "← Alle concepts",
+  "all_concepts_acc74b": "← Alle begrippen",
   "term_translation_or_meaning_5ac09b": "Term, vertaling of betekenis",
-  "reviewed_for_this_meaning_f79fab": "Beoordeeld for this meaning",
+  "reviewed_for_this_meaning_f79fab": "Beoordeeld voor deze betekenis",
   "remove_language_24782c": "Taal verwijderen",
-  "view_this_revision_549815": "View this revisie",
+  "view_this_revision_549815": "Deze revisie bekijken",
   "inspect_the_shared_glossary_2e75d7": "Gedeelde woordenlijst bekijken",
   "label_shared": "Gedeeld",
   "label_inherited": "Overgeërfd",
@@ -107,5 +107,5 @@
   "label_draft": "Concept",
   "label_approved": "Goedgekeurd",
   "label_deprecated": "Verouderd",
-  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Voer in a new language tag, such as en, ru or pt-BR."
+  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Voer een nieuwe taalcode in, zoals en, ru of pt-BR."
 }

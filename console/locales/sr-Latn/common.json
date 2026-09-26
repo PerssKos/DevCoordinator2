@@ -284,5 +284,7 @@
   "label_revert_condition": "Uslov vraćanja",
   "label_reason": "Razlog",
   "label_before": "Pre",
-  "label_after": "Posle"
+  "label_after": "Posle",
+  "status_preview": "Pregled pre objavljivanja",
+  "status_elaboration_needed": "Potrebno objašnjenje"
 }

@@ -28,15 +28,15 @@
   "no_measured_components_6f4369": "Geen gemeten onderdelen.",
   "domain_value1_value2_ee9534": "Domein: {value1}@{value2}",
   "compose_value3_service_87ae79": "Compose-service {value3}",
-  "prev_value1_8d66fe": "(prev {value1})",
+  "prev_value1_8d66fe": "(vorige {value1})",
   "logs_value1_306798": "Logs: {value1}",
   "deployment_aee50b": "implementatie",
   "deployments_01366d": "implementaties",
-  "expand_workers_c57c47": "Uitvouwen workers",
-  "collapse_workers_7a9ec3": "Samenvouwen workers",
+  "expand_workers_c57c47": "Werkprocessen uitvouwen",
+  "collapse_workers_7a9ec3": "Werkprocessen samenvouwen",
   "exact_recorded_container_a9b79f": " · exact geregistreerde container",
   "external_855e84": " · extern",
-  "never_6497e4": "never",
+  "never_6497e4": "nooit",
   "containerCount": {
     "argument": "count",
     "forms": {
@@ -45,7 +45,7 @@
     }
   },
   "apply_97a5e4": "toepassen",
-  "workers_7a1ec9": "Workers",
+  "workers_7a1ec9": "Werkprocessen",
   "my_app_4c9a75": "my-app",
   "lowercase_dns_label_3dbe17": "kleine DNS-label",
   "logs_98f38f": "logboeken",
@@ -58,5 +58,13 @@
       "one": "{count} implementatie",
       "other": "{count} implementaties"
     }
-  }
+  },
+  "action_start": "Starten",
+  "action_stop": "Stoppen",
+  "action_restart": "Herstarten",
+  "operatorRequired": "Operator-toegang vereist",
+  "refreshAfterApply": "Toepassing bezig; vernieuw de status vóór een volgende levenscyclusactie",
+  "applyRunning": "Toepassing is al bezig",
+  "editDomain": "Domein voor {name}@{source} bewerken",
+  "repositoryLabel": "Repository"
 }

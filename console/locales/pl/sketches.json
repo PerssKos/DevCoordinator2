@@ -13,41 +13,41 @@
   "review_generated_options_by_set_then_select_one__020509": "Przejrzyj wygenerowane warianty według zestawów, a następnie wybierz jeden lub więcej do dalszej pracy.",
   "publish_from_a_skill_f33a0e": "Opublikuj z umiejętności",
   "sketches_are_published_by_a_registered_skill_a2ac72": "Szkice publikuje zarejestrowana umiejętność",
-  "value2_selected_value3_options_b64a24": "{value2} wybrano · {value3} options",
+  "value2_selected_value3_options_b64a24": "Wybrano: {value2} · Opcje: {value3}",
   "value5_sketches_value6_selected_87bdd8": "{value5} szkice · {value6} wybrano",
-  "value6_rejected_value7_undecided_bbc778": "{value6} odrzucono · {value7} undecided",
+  "value6_rejected_value7_undecided_bbc778": "Odrzucono: {value6} · Nierozstrzygnięte: {value7}",
   "reviewer_d29f46": "Recenzent",
   "option_unavailable_d03e4e": "Opcja niedostępna",
   "selected_57fd7a": "Wybrano",
   "rejected_aea4a0": "Odrzucono",
   "undecided_00cc36": "Niezdecydowane",
   "select_2a7802": "Wybierz",
-  "reject_ab604a": "Reject",
+  "reject_ab604a": "Odrzuć",
   "leave_undecided_65c5c0": "Pozostaw niezdecydowane",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
-  "no_selection_211f6b": "Nie selection",
+  "set_6ee0eb": "zestaw",
+  "sets_82c6db": "zestawy",
+  "no_selection_211f6b": "Nic nie wybrano",
   "selectedOptionContext": {
     "argument": "count",
     "forms": {
-      "one": "Add context to the wybrano option",
-      "other": "Add context to the wybrano options",
-      "many": "Add context to the wybrano options",
-      "few": "Add context to the wybrano options"
+      "one": "Dodaj kontekst do wybranej opcji",
+      "few": "Dodaj kontekst do wybranych opcji",
+      "many": "Dodaj kontekst do wybranych opcji",
+      "other": "Dodaj kontekst do wybranych opcji"
     }
   },
   "review_set_ca242c": "Przejrzyj zestaw",
   "open_sketch_3ccc5c": "Otwórz szkic",
   "single_choice_45a76a": "Pojedynczy wybór",
   "choose_multiple_b76dc5": "Wybór wielu",
-  "open_full_review_canvas_26fc95": "Otwórz full przegląd canvas",
+  "open_full_review_canvas_26fc95": "Otwórz pełny obszar przeglądu",
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets",
-      "many": "{count} sets",
-      "few": "{count} sets"
+      "one": "{count} zestaw",
+      "few": "{count} zestawy",
+      "many": "{count} zestawów",
+      "other": "{count} zestawu"
     }
   }
 }

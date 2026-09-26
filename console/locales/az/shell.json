@@ -2,7 +2,7 @@
   "repository_appearance_c85fe7": "Reponun görünüşü",
   "name_in_console_ddff94": "Console-da ad",
   "icon_a35abc": "İşarə",
-  "the_repository_and_its_checkout_paths_stay_uncha_592111": "Repo və onun checkout yolları dəyişməz qalır.",
+  "the_repository_and_its_checkout_paths_stay_uncha_592111": "Repozitoriya və onun işçi nüsxələrinin yolları dəyişməz qalır.",
   "use_defaults_41d83b": "Standartlardan istifadə et",
   "cancel_19766e": "Ləğv et",
   "save_1509f5": "Saxla",
@@ -50,7 +50,7 @@
   "noMatchingRepositories": "Uyğun repo yoxdur.",
   "checkouts": "Checkout-lar",
   "selected": "Seçilmiş",
-  "useCheckout": "Bu checkout-un plan və qeydlərindən istifadə et",
+  "useCheckout": "Bu işçi nüsxənin planından və qeydlərindən istifadə et",
   "view_plan": "Plan",
   "view_progress": "Gediş",
   "view_usage": "İstifadə",
@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Repo görünüşünü saxlamaq alınmadı. Yenidən cəhd edin.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repo əlçatan deyil. Yenidən cəhd etmək üçün yeniləyin.",
   "montenegrinLatin": "Monteneqro dili (latın)",
-  "montenegrinCyrillic": "Monteneqro dili (kiril)"
+  "montenegrinCyrillic": "Monteneqro dili (kiril)",
+  "loadFailed": "Konsol yüklənmədi. Yenidən cəhd etmək üçün səhifəni yeniləyin.",
+  "reload": "Yenidən yüklə"
 }

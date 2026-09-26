@@ -106,17 +106,15 @@
   "expandWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Разшири {count} служител за {name}",
-      "other": "Разшири {count} служители за {name}",
-      "many": "Разшири {count} служители за {name}"
+      "one": "Разгъни {count} работен процес за {name}",
+      "other": "Разгъни {count} работни процеса за {name}"
     }
   },
   "collapseWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Свий {count} служител за {name}",
-      "other": "Свий {count} служители за {name}",
-      "many": "Свий {count} служители за {name}"
+      "one": "Свий {count} работен процес за {name}",
+      "other": "Свий {count} работни процеса за {name}"
     }
   },
   "tasksNeedExplanation": {
@@ -284,5 +282,7 @@
   "label_revert_condition": "Условие за връщане",
   "label_reason": "Причина",
   "label_before": "Преди",
-  "label_after": "След"
+  "label_after": "След",
+  "status_preview": "предварителен преглед",
+  "status_elaboration_needed": "Необходимо е обяснение"
 }

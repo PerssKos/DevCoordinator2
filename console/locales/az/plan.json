@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Tapşırıq naviqatorunu ölçüləndir",
   "decisions_7c5ca9": "Qərarlar →",
   "enter_a_line_estimate_7d4502": "Sətir qiymətləndirməsi daxil edin",
-  "not_scheduled_yet_backlog_0f0d42": "hələ planlaşdırılmayıb (gözləyən işlər)"
+  "not_scheduled_yet_backlog_0f0d42": "hələ planlaşdırılmayıb (gözləyən işlər)",
+  "elaborateLabel": "İzah istə",
+  "explanationRequested": "{title} üçün daha aydın izah tələb olunub",
+  "explainTask": "Agentdən {title} barədə daha sadə dillə izah istə",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} sətir",
+      "other": "~{value} sətir"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} qiymətləndirilməmiş iş",
+      "other": "{count} qiymətləndirilməmiş iş"
+    }
+  },
+  "unestimatedCount": "{count} qiymətləndirilməyib",
+  "doneSummary": "Tamamlanan: {done} / {total} ({percent})",
+  "linesDone": "Tamamlanan sətirlər: {done} / {total}",
+  "tasksDone": "Tamamlanan işlər: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} sətir",
+      "other": "{value} sətir"
+    }
+  },
+  "dropTask": "Tapşırıqdan imtina et",
+  "dropTaskNamed": "{title} tapşırığından imtina et",
+  "selectTask": "{title} seç",
+  "dragMoveTask": "{title} tapşırığını köçürmək üçün sürükləyin",
+  "dragResizeTask": "{title} ölçüsünü dəyişmək üçün sürükləyin",
+  "progressNeedsEstimate": "Bu iş qiymətləndirilməyənədək irəliləyiş hesablanmır."
 }

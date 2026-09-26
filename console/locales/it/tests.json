@@ -101,7 +101,7 @@
   "stop_run_b7ec68": "Interrompi esecuzione",
   "run_again_3e310b": "Esegui di nuovo",
   "not_recorded_b37c78": "Non registrato",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "value1_of_value2_882c45": "{value1} di {value2}",
   "loading_screenshot_e0fd7b": "Caricamento della schermata…",
   "preview_value1_cb5dab": "Anteprima {value1}",
   "browse_all_value1_screenshots_81fcf6": {
@@ -120,11 +120,11 @@
   "details_45989d": "Dettagli",
   "previous_screenshot_af9be1": "Schermata precedente",
   "next_screenshot_fd250f": "Schermata successiva",
-  "open_in_viewer_comment_ad9420": "Apri nel visualizzatore / comment",
-  "screenshot_loading_cancelled_50e74f": "Screenshot loading annullato.",
-  "the_screenshot_changed_while_loading_94fe13": "The screenshot cambiato durante il caricamento.",
+  "open_in_viewer_comment_ad9420": "Apri nel visualizzatore / commenta",
+  "screenshot_loading_cancelled_50e74f": "Caricamento dello screenshot annullato.",
+  "the_screenshot_changed_while_loading_94fe13": "Lo screenshot è cambiato durante il caricamento.",
   "the_screenshot_response_was_incomplete_4d7952": "La risposta della schermata era incompleta.",
-  "screenshots_could_not_be_read_92f171": "Screenshots non è stato possibile leggere.",
+  "screenshots_could_not_be_read_92f171": "Impossibile leggere gli screenshot.",
   "screenshot_could_not_be_previewed_11a0c5": "Impossibile visualizzare l’anteprima della schermata.",
   "a_newer_run_is_available_refresh_to_view_it_c113b3": "È disponibile un’esecuzione più recente. Aggiorna per visualizzarla."
 }

@@ -110,5 +110,10 @@
   "status_unchanged": "Bez promene",
   "status_inconclusive": "Neodlučno",
   "tokensByActivity": "Tokeni po aktivnosti",
-  "tokensByKind": "Tokeni po vrsti stavke plana"
+  "tokensByKind": "Tokeni po vrsti stavke plana",
+  "unattributedWork": "Dio rada nema zabilježen rezultat.",
+  "reviewScopeTotal": "Ukupno za reviziju: {tokens}",
+  "periodScopeTotal": "Ukupno za period: {tokens}",
+  "reviewTotalLabel": "Ukupno za reviziju",
+  "periodTotalLabel": "Ukupno za period"
 }

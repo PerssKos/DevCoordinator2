@@ -58,24 +58,62 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps"
+      "one": "{value7} trin",
+      "other": "{value7} trin"
     }
   },
   "viewport_280503": "visningsområde",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Behold",
+  "reject_ab604a": "Afvis",
   "undecided_00cc36": "Uafklaret",
   "visual_feedback_a19903": "Visuel feedback",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
+  "reopen_a886d1": "Genåbn",
+  "resolve_c8f193": "Løs",
   "route_unavailable_21a43f": "Rute utilgængelig",
   "test_run_fe9e2f": "Testkørsel",
   "release_proof_17fa7c": "Udgivelsesbevis",
   "diagnostic_only_3425ba": "Kun diagnostik",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Rediger",
   "open_plan_task_4019fe": "Åbn planopgave →",
   "full_page_9d21b6": "Hel side",
   "previous_journey_step_7a544d": "Forrige trin i forløbet",
-  "next_journey_step_35037a": "Næste trin i forløbet"
+  "next_journey_step_35037a": "Næste trin i forløbet",
+  "annotationSaved": "Anmærkning gemt",
+  "reviewComment": "Kommentér denne gennemgang",
+  "attachTo": "Vedhæft til",
+  "activeOption": "Aktivt forslag",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valgt forslag ({count})",
+      "other": "Valgte forslag ({count})"
+    }
+  },
+  "commentLabel": "Kommentar",
+  "commentPlaceholder": "Tilføj en kommentar til dette forslag eller det valgte sæt.",
+  "postComment": "Send kommentar",
+  "closeReview": "Luk gennemgang",
+  "selectionSummary": "Valgt: {selected} · Forslag: {total}",
+  "allSketchOptions": "Alle skitseforslag",
+  "selectOptionToAnnotate": "Vælg et forslag, der skal annoteres",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Kommentar føjet til {count} forslag",
+      "other": "Kommentar føjet til {count} valgte forslag"
+    }
+  },
+  "commentFailed": "Kommentaren kunne ikke tilføjes: {message}",
+  "sketchChangeWhy": "Hvorfor ændres denne skitse?",
+  "reviewedInConsole": "Gennemgået i konsollen",
+  "selectedJourneyScreenshot": "Skærmbillede af valgt brugerrejse",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Der er anmodet om {count} ændring",
+      "other": "Der er anmodet om {count} ændringer"
+    }
+  },
+  "noChangesRequested": "Der er ikke anmodet om ændringer",
+  "sketchSetUnavailable": "Dette skitsesæt er ikke længere tilgængeligt."
 }

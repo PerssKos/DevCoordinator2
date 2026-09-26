@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Външният вид на хранилището не може да бъде запазен. Опитайте отново.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} хранилища не са налични. Обновете, за да опитате отново.",
   "montenegrinLatin": "Черногорски (латиница)",
-  "montenegrinCyrillic": "Черногорски (кирилица)"
+  "montenegrinCyrillic": "Черногорски (кирилица)",
+  "loadFailed": "Конзолата не можа да се зареди. Обновете, за да опитате отново.",
+  "reload": "Обновяване"
 }

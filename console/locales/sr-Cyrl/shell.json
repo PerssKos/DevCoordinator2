@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Изглед спремишта није могуће сачувати. Покушајте поново.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} спремишта нису доступна. Освежите за нови покушај.",
   "montenegrinLatin": "Црногорски (латиница)",
-  "montenegrinCyrillic": "Црногорски (ћирилица)"
+  "montenegrinCyrillic": "Црногорски (ћирилица)",
+  "loadFailed": "Конзола није могла да се учита. Поново учитајте страницу.",
+  "reload": "Поново учитај"
 }

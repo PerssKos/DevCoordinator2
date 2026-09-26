@@ -278,5 +278,7 @@
   "label_revert_condition": "回滾條件",
   "label_reason": "原因",
   "label_before": "之前",
-  "label_after": "之後"
+  "label_after": "之後",
+  "status_preview": "預覽",
+  "status_elaboration_needed": "需要進一步說明"
 }

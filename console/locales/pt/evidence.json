@@ -58,25 +58,66 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps",
-      "many": "{value7} steps"
+      "one": "{value7} passo",
+      "many": "{value7} passos",
+      "other": "{value7} passos"
     }
   },
   "viewport_280503": "área visível",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Manter",
+  "reject_ab604a": "Rejeitar",
   "undecided_00cc36": "Por decidir",
   "visual_feedback_a19903": "Feedback visual",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
+  "reopen_a886d1": "Reabrir",
+  "resolve_c8f193": "Resolver",
   "route_unavailable_21a43f": "Rota indisponível",
   "test_run_fe9e2f": "Execução de teste",
   "release_proof_17fa7c": "Prova de lançamento",
   "diagnostic_only_3425ba": "Apenas diagnóstico",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Editar",
   "open_plan_task_4019fe": "Abrir tarefa do plano →",
   "full_page_9d21b6": "Página inteira",
   "previous_journey_step_7a544d": "Passo anterior do percurso",
-  "next_journey_step_35037a": "Passo seguinte do percurso"
+  "next_journey_step_35037a": "Passo seguinte do percurso",
+  "annotationSaved": "Anotação guardada",
+  "reviewComment": "Comentar esta revisão",
+  "attachTo": "Anexar a",
+  "activeOption": "Opção ativa",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "many": "Opções selecionadas ({count})",
+      "one": "Opção selecionada ({count})",
+      "other": "Opções selecionadas ({count})"
+    }
+  },
+  "commentLabel": "Comentário",
+  "commentPlaceholder": "Adicione um comentário sobre esta opção ou conjunto selecionado.",
+  "postComment": "Publicar comentário",
+  "closeReview": "Fechar revisão",
+  "selectionSummary": "Selecionadas: {selected} · Opções: {total}",
+  "allSketchOptions": "Todas as opções do esboço",
+  "selectOptionToAnnotate": "Selecione uma opção para anotar",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "many": "Comentário adicionado a {count} opções selecionadas",
+      "one": "Comentário adicionado a {count} opção",
+      "other": "Comentário adicionado a {count} opções selecionadas"
+    }
+  },
+  "commentFailed": "Falha no comentário: {message}",
+  "sketchChangeWhy": "Porque está este esboço a ser alterado?",
+  "reviewedInConsole": "Revisto na consola",
+  "selectedJourneyScreenshot": "Captura de ecrã do percurso do utilizador selecionado",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "many": "{count} alterações solicitadas",
+      "one": "{count} alteração solicitada",
+      "other": "{count} alterações solicitadas"
+    }
+  },
+  "noChangesRequested": "Nenhuma alteração solicitada",
+  "sketchSetUnavailable": "Este conjunto de esboços já não está disponível."
 }

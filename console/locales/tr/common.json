@@ -284,5 +284,7 @@
   "label_revert_condition": "Geri alma koşulu",
   "label_reason": "Neden",
   "label_before": "Önce",
-  "label_after": "Sonra"
+  "label_after": "Sonra",
+  "status_preview": "Önizleme",
+  "status_elaboration_needed": "Açıklama gerekli"
 }

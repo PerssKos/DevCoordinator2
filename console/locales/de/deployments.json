@@ -58,5 +58,13 @@
       "one": "{count} Bereitstellung",
       "other": "{count} Bereitstellungen"
     }
-  }
+  },
+  "action_start": "Starten",
+  "action_stop": "Stoppen",
+  "action_restart": "Neu starten",
+  "operatorRequired": "Bedienerzugriff erforderlich",
+  "refreshAfterApply": "Anwendung läuft; Status vor einer weiteren Aktion aktualisieren",
+  "applyRunning": "Anwendung läuft bereits",
+  "editDomain": "Domain für {name}@{source} bearbeiten",
+  "repositoryLabel": "Repository"
 }

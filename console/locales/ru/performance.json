@@ -113,5 +113,10 @@
   "status_unchanged": "Без изменений",
   "status_inconclusive": "Неопределённо",
   "tokensByActivity": "Токены по активности",
-  "tokensByKind": "Токены by Plan item kind"
+  "tokensByKind": "Токены по типам элементов плана",
+  "unattributedWork": "Для части работы нет записанного результата.",
+  "reviewScopeTotal": "Итого по проверке: {tokens}",
+  "periodScopeTotal": "Итого за период: {tokens}",
+  "reviewTotalLabel": "Итого по проверке",
+  "periodTotalLabel": "Итого за период"
 }

@@ -30,5 +30,10 @@
   "yes_8a7988": "是",
   "remove_user_84a18f": "移除使用者",
   "revoke_777ac4": "撤銷",
-  "remove_grant_8c57bf": "移除授權"
+  "remove_grant_8c57bf": "移除授權",
+  "removeGrant": "移除 {email} 的{role}權限",
+  "removeUser": "移除使用者 {email}",
+  "telegramSummary": "機器人{state} · 待傳送：{pending} · 上次輪詢：{time}",
+  "unsubscribe": "取消訂閱 {scope}",
+  "roleAccess": "僅存取"
 }

@@ -30,5 +30,10 @@
   "yes_8a7988": "да",
   "remove_user_84a18f": "Премахни потребителя",
   "revoke_777ac4": "Отмени",
-  "remove_grant_8c57bf": "Премахни разрешението"
+  "remove_grant_8c57bf": "Премахни разрешението",
+  "removeGrant": "Премахване на ролята {role} за {email}",
+  "removeUser": "Премахване на потребителя {email}",
+  "telegramSummary": "Бот {state} · чакащи в изходящата опашка: {pending} · последна проверка: {time}",
+  "unsubscribe": "Отписване от {scope}",
+  "roleAccess": "Само достъп"
 }

@@ -53,7 +53,7 @@
   "date_99c40a": "Fecha",
   "review_decision_beaf31": "Decisión de la revisión",
   "status_920e41": "Estado",
-  "no_performance_reviews_have_been_recorded_for_th_5e849a": "No se han registrado revisiónes de eficiencia para este repositorio.",
+  "no_performance_reviews_have_been_recorded_for_th_5e849a": "No se han registrado revisiones de eficiencia para este repositorio.",
   "load_earlier_reviews_48a029": "Cargar revisiónes anteriores",
   "choose_a_start_date_on_or_before_the_end_date_89966f": "Elija una fecha inicial que no sea posterior a la final.",
   "open_delivered_result_93d4e9": "Abrir resultado entregado",
@@ -72,21 +72,21 @@
     "argument": "value1",
     "forms": {
       "one": "{value1} revisión",
-      "other": "{value1} revisións",
-      "many": "{value1} revisións"
+      "many": "{value1} revisiones",
+      "other": "{value1} revisiones"
     }
   },
   "activity_38da15": "Actividad",
   "partial_27f7a4": " (parcial)",
   "review_usage_c39675": "Uso de la revisión",
   "overview_usage_83f004": "Uso del resumen",
-  "review_c97ace": "review",
-  "period_514cb1": "period",
+  "review_c97ace": "revisión",
+  "period_514cb1": "periodo",
   "outcome_no_longer_available_a63b43": "Resultado ya no disponible",
-  "unknown_kind_2a60d8": "Desconocido kind",
+  "unknown_kind_2a60d8": "Tipo desconocido",
   "review_in_progress_bf2daa": " · Revisión en curso",
   "incomplete_measurement_3407ad": "Medición incompleta",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "Total de {value1}: {value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
@@ -101,7 +101,7 @@
   "kind_improvement": "Mejora",
   "kind_goal": "Objetivo",
   "kind_stub": "Trabajo sin terminar",
-  "kind_unknown": "Desconocido kind",
+  "kind_unknown": "Tipo desconocido",
   "kind_unattributed": "Sin atribuir",
   "status_proposed": "Propuesto",
   "status_applied": "Aplicado",
@@ -110,5 +110,10 @@
   "status_unchanged": "Sin cambios",
   "status_inconclusive": "No concluyente",
   "tokensByActivity": "Tokens por actividad",
-  "tokensByKind": "Tokens por tipo de elemento del plan"
+  "tokensByKind": "Tokens por tipo de elemento del plan",
+  "unattributedWork": "Parte del trabajo no tiene un resultado registrado.",
+  "reviewScopeTotal": "Total de la revisión: {tokens}",
+  "periodScopeTotal": "Total del periodo: {tokens}",
+  "reviewTotalLabel": "Total de la revisión",
+  "periodTotalLabel": "Total del periodo"
 }

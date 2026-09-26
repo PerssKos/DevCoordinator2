@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Nahlásit chybu",
   "report_b6ce78": "Nahlásit",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Pouze krátké samostatné záznamy: žádná tajemství, surové protokoly ani soukromé cesty.",
-  "close_310ff2": "zavřít"
+  "close_310ff2": "zavřít",
+  "expected": "Očekávané",
+  "actual": "Skutečné"
 }

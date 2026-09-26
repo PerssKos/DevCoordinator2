@@ -110,5 +110,10 @@
   "status_unchanged": "Değişiklik yok",
   "status_inconclusive": "Kesin değil",
   "tokensByActivity": "Etkinliğe göre tokenlar",
-  "tokensByKind": "Plan öğesi türüne göre tokenlar"
+  "tokensByKind": "Plan öğesi türüne göre tokenlar",
+  "unattributedWork": "Çalışmanın bir kısmı kayıtlı bir sonuca sahip değil.",
+  "reviewScopeTotal": "İnceleme toplamı: {tokens}",
+  "periodScopeTotal": "Dönem toplamı: {tokens}",
+  "reviewTotalLabel": "İnceleme toplamı",
+  "periodTotalLabel": "Dönem toplamı"
 }

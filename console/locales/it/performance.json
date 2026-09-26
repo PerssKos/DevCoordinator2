@@ -80,13 +80,13 @@
   "partial_27f7a4": " (parziale)",
   "review_usage_c39675": "Utilizzo della revisione",
   "overview_usage_83f004": "Utilizzo della panoramica",
-  "review_c97ace": "review",
-  "period_514cb1": "period",
+  "review_c97ace": "revisione",
+  "period_514cb1": "periodo",
   "outcome_no_longer_available_a63b43": "Risultato non più disponibile",
-  "unknown_kind_2a60d8": "Sconosciuto kind",
+  "unknown_kind_2a60d8": "Tipo sconosciuto",
   "review_in_progress_bf2daa": " · Revisione in corso",
   "incomplete_measurement_3407ad": "Misurazione incompleta",
-  "value1_total_value2_value3_0a3988": "{value1} total: {value2}{value3}",
+  "value1_total_value2_value3_0a3988": "Totale {value1}: {value2}{value3}",
   "value1_attributed_outcomes_6e3dca": {
     "argument": "value1",
     "forms": {
@@ -101,7 +101,7 @@
   "kind_improvement": "Miglioramento",
   "kind_goal": "Obiettivo",
   "kind_stub": "Lavoro incompleto",
-  "kind_unknown": "Sconosciuto kind",
+  "kind_unknown": "Tipo sconosciuto",
   "kind_unattributed": "Non attribuito",
   "status_proposed": "Proposto",
   "status_applied": "Applicato",
@@ -110,5 +110,10 @@
   "status_unchanged": "Nessuna modifica",
   "status_inconclusive": "Non conclusivo",
   "tokensByActivity": "Token per attività",
-  "tokensByKind": "Token per tipo di elemento del piano"
+  "tokensByKind": "Token per tipo di elemento del piano",
+  "unattributedWork": "Parte del lavoro non ha un risultato registrato.",
+  "reviewScopeTotal": "Totale revisione: {tokens}",
+  "periodScopeTotal": "Totale periodo: {tokens}",
+  "reviewTotalLabel": "Totale revisione",
+  "periodTotalLabel": "Totale periodo"
 }

@@ -58,5 +58,13 @@
       "one": "{count} deployment",
       "other": "{count} deployments"
     }
-  }
+  },
+  "action_start": "Start",
+  "action_stop": "Stop",
+  "action_restart": "Restart",
+  "operatorRequired": "Operator access required",
+  "refreshAfterApply": "Apply in progress; refresh status before another lifecycle action",
+  "applyRunning": "Apply already in progress",
+  "editDomain": "Edit domain for {name}@{source}",
+  "repositoryLabel": "Repository"
 }

@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "無法儲存倉庫外觀，請重試。",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} 個儲存庫無法使用。請重新整理後重試。",
   "montenegrinLatin": "黑山語（拉丁字母）",
-  "montenegrinCyrillic": "黑山語（西里爾字母）"
+  "montenegrinCyrillic": "黑山語（西里爾字母）",
+  "loadFailed": "主控台無法載入。請重新整理頁面再試。",
+  "reload": "重新整理"
 }

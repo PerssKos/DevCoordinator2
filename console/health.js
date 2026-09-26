@@ -6,10 +6,13 @@
       try { return window.DevCoordinatorI18n?.t(`health.${key}`, params) || fallback; } catch { return fallback; }
     };
     const safe = (key, fallback, params = {}) => esc(tr(key, fallback, params));
+    const stateLabel = value => { try { return window.DevCoordinatorI18n.t('common.status_' + String(value).replaceAll('-', '_')); } catch { return value; } };
     const s = { expanded: false, selected: null, view: 'attention', query: '', range: '24h', reports: null, reportError: null, repos: [], repoQuery: '', sort: 'cpu_percent', expandedRepos: new Set(), epoch: 0, incidentRead: 0 };
     const main = () => document.querySelector('#main');
     const phone = matchMedia('(max-width: 760px)');
     const ranges = { '24h': [1440, 288], '7d': [10080, 336], '30d': [43200, 360] };
+    let summaryResult, repositoryError;
+    const history = new Map();
     const date = (v) => v && !Number.isNaN(Date.parse(v))
       ? (window.DevCoordinatorI18n?.date ? window.DevCoordinatorI18n.date(v) : new Date(v).toLocaleString())
       : tr('unavailable','Unavailable');
@@ -40,7 +43,7 @@
         ${section('user', tr('agent_response','Agent response'), i.agent_response || tr('response_history_unavailable','Response history is unavailable.'))}
         ${section('flag', tr('why_it_needs_you','Why it needs you'), i.escalation_reason || tr('escalation_reason_unavailable','Escalation reason is unavailable.'))}
         ${section('tool', tr('next_step','Next step'), i.next_step || tr('next_step_unavailable','A next step has not been recorded.'))}
-        <div class="hi-incident-actions">${action}<button class="btn" type="button" data-hi-disposition="${dismissed ? 'escalated' : 'dismissed'}"${dismissed && !i.condition_active ? ' disabled title="This occurrence has recovered"' : ''}>${dismissed ? tr('restore','Restore') : tr('dismiss','Dismiss')}</button></div>
+        <div class="hi-incident-actions">${action}<button class="btn" type="button" data-hi-disposition="${dismissed ? 'escalated' : 'dismissed'}"${dismissed && !i.condition_active ? ' disabled data-i18n-attrs=\'{"title":"health.occurrence_recovered"}\'' : ''}>${dismissed ? tr('restore','Restore') : tr('dismiss','Dismiss')}</button></div>
         <div class="hi-action-result" role="status" aria-live="polite"></div>
         ${!i.condition_active ? `<p class="hi-recovered">${safe('condition_recovered','The observed condition has recovered.')}</p>` : ''}
         <details class="hi-technical"><summary>${i.deployment_id ? tr('details_logs','Details & logs') : tr('details','Details')}</summary><dl><div><dt>${safe('detected','Detected')}</dt><dd>${esc(date(i.opened_at))}</dd></div><div><dt>${safe('last_observed','Last observed')}</dt><dd>${esc(date(i.last_seen_at))}</dd></div><div><dt>${safe('response_recorded','Response recorded')}</dt><dd>${esc(date(i.updated_at))}</dd></div>${i.component ? `<div><dt>${safe('component','Component')}</dt><dd>${esc(i.component)}</dd></div>` : ''}</dl>${i.deployment_id ? `<a href="#/deployments/${encodeURIComponent(i.deployment_id)}">${safe('open_component_logs','Open component logs')}</a>` : ''}</details>
@@ -169,7 +172,7 @@
     function deploymentCounts(deployments) {
       const counts = new Map();
       deployments.forEach(d => counts.set(d.state,(counts.get(d.state)||0)+1));
-      return [...counts].map(([state,count]) => badge(`${count} ${state}`,state==='running'?'ok':['failed','degraded'].includes(state)?'warn':'')).join(' ');
+      return [...counts].map(([state,count]) => badge(`${window.DevCoordinatorI18n.number(count)} ${stateLabel(state)}`,state==='running'?'ok':['failed','degraded'].includes(state)?'warn':'')).join(' ');
     }
     function deploymentLinks(row) {
       const groups = new Map();
@@ -181,14 +184,14 @@
       return [...groups.values()].map(group => {
         group.sort((a,b)=>String(b.updated_at||'').localeCompare(String(a.updated_at||'')));
         const d=group[0];
-        return `<li><a href="#/deployments/${encodeURIComponent(d.deployment_id)}">${group.length>1?tr('latest','Latest '):''}${esc(d.name)}</a>${badge(`${group.length} ${d.state}`)}<span class="muted">${esc(d.source)}</span></li>`;
+        return `<li><a href="#/deployments/${encodeURIComponent(d.deployment_id)}">${group.length>1?tr('latest','Latest '):''}${esc(d.name)}</a>${badge(`${window.DevCoordinatorI18n.number(group.length)} ${stateLabel(d.state)}`)}<span class="muted">${esc(d.source)}</span></li>`;
       }).join('');
     }
     function drawRepositories() {
       const root = main()?.querySelector('#hi-repository-rows');
       if (!root) return;
       const groups = repositoryRows();
-      root.innerHTML = groups.map(g => `<article class="hi-repo-row"><div class="hi-repo-name"><strong>${esc(g.name)}</strong>${g.rows.length>1?`<span>${g.rows.length} ${safe('checkouts','checkouts')}</span>`:''}</div><div data-label="CPU">${pct(g.cpu_percent)}</div><div data-label="Memory">${bytes(g.memory_bytes)}</div><div data-label="Storage">${bytes(g.storage_bytes)}${g.storageNote?`<small>${g.storageNote}</small>`:''}</div><div class="hi-repo-deployments">${deploymentCounts(g.deployments)||`<span class="muted">${safe('no_deployments_9790ef','No deployments')}</span>`}</div><details class="hi-repo-details" data-hi-repo="${esc(g.key)}"${s.expandedRepos.has(g.key)?' open':''}><summary>${safe('checkouts_deployments','Checkouts & deployments')}</summary>${g.rows.map(r=>`<div class="hi-checkout"><strong>${esc(r.display_name)}</strong><p>${esc(r.root_path||tr('root_unavailable','Root unavailable'))}</p><small>CPU ${pct(r.cpu_percent)} · Memory ${bytes(r.memory_bytes)} · Storage ${bytes(r.storage_bytes)}</small><ul>${deploymentLinks(r)}</ul></div>`).join('')}</details></article>`).join('') || `<p class="hi-empty">${safe('no_repositories_match','No repositories match this view.')}</p>`;
+      root.innerHTML = groups.map(g => `<article class="hi-repo-row"><div class="hi-repo-name"><strong>${esc(g.name)}</strong>${g.rows.length>1?`<span>${g.rows.length} ${safe('checkouts','checkouts')}</span>`:''}</div><div data-label="${esc(tr('cpu_db9a4c','CPU'))}">${pct(g.cpu_percent)}</div><div data-label="${esc(tr('memory_c3963a','Memory'))}">${bytes(g.memory_bytes)}</div><div data-label="${esc(tr('storage_a69c4d','Storage'))}">${bytes(g.storage_bytes)}${g.storageNote?`<small>${g.storageNote}</small>`:''}</div><div class="hi-repo-deployments">${deploymentCounts(g.deployments)||`<span class="muted">${safe('no_deployments_9790ef','No deployments')}</span>`}</div><details class="hi-repo-details" data-hi-repo="${esc(g.key)}"${s.expandedRepos.has(g.key)?' open':''}><summary>${safe('checkouts_deployments','Checkouts & deployments')}</summary>${g.rows.map(r=>`<div class="hi-checkout"><strong>${esc(r.display_name)}</strong><p>${esc(r.root_path||tr('root_unavailable','Root unavailable'))}</p><small>${safe('cpu_db9a4c','CPU')} ${pct(r.cpu_percent)} · ${safe('memory_c3963a','Memory')} ${bytes(r.memory_bytes)} · ${safe('storage_a69c4d','Storage')} ${bytes(r.storage_bytes)}</small><ul>${deploymentLinks(r)}</ul></div>`).join('')}</details></article>`).join('') || `<p class="hi-empty">${safe('no_repositories_match','No repositories match this view.')}</p>`;
       root.querySelectorAll('[data-hi-repo]').forEach(d=>d.ontoggle=()=>d.open?s.expandedRepos.add(d.dataset.hiRepo):s.expandedRepos.delete(d.dataset.hiRepo));
       main().querySelectorAll('[data-hi-sort]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.hiSort===s.sort)));
     }
@@ -210,9 +213,15 @@
       try {
         const results=await Promise.all(['cpu_percent','memory_used','storage_bytes'].map(metric=>api('health.history',{subject_kind:'host',subject_id:'host',metric,minutes,points})));
         if(epoch!==s.epoch||range!==s.range)return;
-        const el=main()?.querySelector('#hi-history');
-        if(el)el.innerHTML=results.map((r,i)=>chart(r.points,i?pctBytes:pct,[tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')][i], { scale: tr('scale','scale'), now: tr('now_ed5eb9','now') })).join('');
-      } catch(e){ if(e.code==='stale')return;const el=main()?.querySelector('#hi-history');if(el){el.innerHTML=fault(tr('history_unavailable','History unavailable.') + ' '+e.message,'history');bindRetries(el);} }
+        history.set(range, {results});
+        drawHistory();
+      } catch(e){ if(e.code==='stale'||epoch!==s.epoch||range!==s.range)return;history.set(range,{error:e});drawHistory(); }
+    }
+    function drawHistory() {
+      const el=main()?.querySelector('#hi-history'), saved=history.get(s.range);
+      if(!el||!saved)return;
+      if(saved.error){el.innerHTML=fault(tr('history_unavailable','History unavailable.')+' '+saved.error.message,'history');bindRetries(el);return;}
+      el.innerHTML=saved.results.map((r,i)=>chart(r.points,i?pctBytes:pct,[tr('cpu_db9a4c','CPU'),tr('memory_c3963a','Memory'),tr('storage_a69c4d','Storage')][i], {scale:tr('scale','scale'),now:tr('now_ed5eb9','now')})).join('');
     }
     const pctBytes = n => bytes(n);
     function attribution(data) {
@@ -223,6 +232,8 @@
     function bindRetries(root) { root.querySelectorAll('[data-hi-retry]').forEach(b=>b.onclick=()=>b.dataset.hiRetry==='incidents'?loadIncidents():b.dataset.hiRetry==='history'?loadHistory():show()); }
     async function show() {
       const epoch=++s.epoch;
+      summaryResult=null;
+      history.clear();
       main().innerHTML=`<div class="health-dashboard">${heading()}<p role="status">${safe('loading_health','Loading Health…')}</p><div class="skeleton"></div></div>`;
       const results=await Promise.allSettled([api('health.summary',{}),api('health.repositories',{}),api('health.incidents',{view:s.view,limit:20})]);
       if(epoch!==s.epoch||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
@@ -230,17 +241,43 @@
       s.reports=reports.status==='fulfilled'?reports.value:null;
       s.reportError=reports.status==='rejected'?reports.reason.message:null;
       s.repos=repos.status==='fulfilled'?repos.value.repositories:[];
+      summaryResult=summary;
+      repositoryError=repos.status==='rejected'?repos.reason:null;
+      drawDashboard();
+      if(summary.status==='fulfilled')await loadHistory();
+    }
+    function drawDashboard() {
+      const summary=summaryResult;
       const summaryMarkup=summary.status==='fulfilled'?hostMarkup(summary.value.host):fault((summary.reason.code==='permission_denied'?tr('host_health_admin_only','Host health is administrator-only.') + ' ':tr('host_health_unavailable','Host health unavailable.') + ' ')+summary.reason.message,'all');
-      main().innerHTML=`<div class="health-dashboard">${heading()}${incidentsMarkup()}${summaryMarkup}<section class="hi-repositories" data-ui-region="health-repositories"><div class="hi-repositories-heading"><h2 id="hi-repositories-heading" tabindex="-1">${safe('resources_by_repository','Resources by repository')}</h2><label><span class="sr-only">${safe('search_repositories','Search repositories')}</span><input type="search" data-hi-repo-search placeholder="${esc(tr('find_repository','Find repository'))}" value="${esc(s.repoQuery)}"></label></div><div class="hi-repo-head"><span>${safe('repository_13d6ff','Repository')}</span>${['cpu_percent','memory_bytes','storage_bytes'].map((k,i)=>`<button type="button" data-hi-sort="${k}" aria-pressed="${s.sort===k}">${['CPU','Memory','Storage'][i]}</button>`).join('')}<span>${safe('deployments_842a46','Deployments')}</span></div>${repos.status==='rejected'?fault(tr('repository_resources_unavailable','Repository resources unavailable.') + ' '+repos.reason.message,'all'):''}<div id="hi-repository-rows"></div></section>${summary.status==='fulfilled'?attribution(summary.value):''}</div>`;
+      main().innerHTML=`<div class="health-dashboard">${heading()}${incidentsMarkup()}${summaryMarkup}<section class="hi-repositories" data-ui-region="health-repositories"><div class="hi-repositories-heading"><h2 id="hi-repositories-heading" tabindex="-1">${safe('resources_by_repository','Resources by repository')}</h2><label><span class="sr-only">${safe('search_repositories','Search repositories')}</span><input type="search" data-hi-repo-search placeholder="${esc(tr('find_repository','Find repository'))}" value="${esc(s.repoQuery)}"></label></div><div class="hi-repo-head"><span>${safe('repository_13d6ff','Repository')}</span>${['cpu_percent','memory_bytes','storage_bytes'].map((k,i)=>`<button type="button" data-hi-sort="${k}" aria-pressed="${s.sort===k}">${safe(['cpu_db9a4c','memory_c3963a','storage_a69c4d'][i],['CPU','Memory','Storage'][i])}</button>`).join('')}<span>${safe('deployments_842a46','Deployments')}</span></div>${repositoryError?fault(tr('repository_resources_unavailable','Repository resources unavailable.') + ' '+repositoryError.message,'all'):''}<div id="hi-repository-rows"></div></section>${summary.status==='fulfilled'?attribution(summary.value):''}</div>`;
       main().querySelector('[data-hi-refresh]').onclick=show;
       main().querySelectorAll('[data-hi-sort]').forEach(b=>b.onclick=()=>{s.sort=b.dataset.hiSort;drawRepositories();});
       main().querySelector('[data-hi-repo-search]').oninput=e=>{s.repoQuery=e.target.value;drawRepositories();};
       main().querySelectorAll('[data-hi-range]').forEach(b=>b.onclick=()=>{s.range=b.dataset.hiRange;main().querySelectorAll('[data-hi-range]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));loadHistory();});
       drawIncidents();drawRepositories();bindRetries(main());
-      if(summary.status==='fulfilled')await loadHistory();
+      drawHistory();
     }
     document.addEventListener('dc2:localechange', () => {
-      if (location.hash.startsWith('#/health') && !location.hash.includes('/containers')) show();
+      if(!summaryResult||!main()?.querySelector('.health-dashboard')||!location.hash.startsWith('#/health')||location.hash.includes('/containers'))return;
+      const root=main(), focused=document.activeElement, scroll={x:scrollX,y:scrollY};
+      const inputs=[...root.querySelectorAll('input[data-hi-search],input[data-hi-repo-search]')];
+      const expanded=[...root.querySelectorAll('details[open]')].map(node=>node.dataset.hiRepo ? `[data-hi-repo="${CSS.escape(node.dataset.hiRepo)}"]` : node.classList.contains('hi-attribution') ? '.hi-attribution' : '.hi-technical');
+      const selected=inputs.includes(focused) ? {start:focused.selectionStart,end:focused.selectionEnd,direction:focused.selectionDirection} : null;
+      const focusAttribute=root.contains(focused) ? [...focused.attributes].find(attribute=>attribute.name.startsWith('data-hi-')) : null;
+      const focusSelector=focusAttribute ? `[${focusAttribute.name}="${CSS.escape(focusAttribute.value)}"]` : null;
+      const inboxScroll=root.querySelector('.hi-inbox')?.scrollTop;
+      drawDashboard();
+      // Keep the actual search controls, their drafts, selection and focus.
+      for(const input of inputs){
+        const selector=input.hasAttribute('data-hi-search')?'[data-hi-search]':'[data-hi-repo-search]';
+        const replacement=root.querySelector(selector);
+        if(replacement){input.placeholder=replacement.placeholder;replacement.replaceWith(input);}
+      }
+      expanded.forEach(selector=>{const node=root.querySelector(selector);if(node)node.open=true;});
+      if(selected){focused.focus({preventScroll:true});focused.setSelectionRange(selected.start,selected.end,selected.direction);}
+      else if(focusSelector)root.querySelector(focusSelector)?.focus({preventScroll:true});
+      const inbox=root.querySelector('.hi-inbox');if(inbox&&inboxScroll!=null)inbox.scrollTop=inboxScroll;
+      scrollTo(scroll.x,scroll.y);
     });
     return {show};
   }

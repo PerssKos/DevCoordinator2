@@ -13,7 +13,7 @@
   "save_domain_080d60": "Salva dominio",
   "cancel_19766e": "Annulla",
   "edit_262121": "modifica",
-  "imported_from_the_live_host_start_stop_restart_a_cd3182": "Importato dall’host in esecuzione. Le operazioni di avvio, arresto, riavvio e consultazione dei registri riguardano i contenitori registrati in modo preciso. Le modifiche alla configurazione (applicazione, ripristino, rimozione) richiedono l’adozione dell’insieme di servizi tramite la configurazione del repository.",
+  "imported_from_the_live_host_start_stop_restart_a_cd3182": "Importato dall’host in esecuzione. Avvio, arresto, riavvio e registri operano sui contenitori registrati. Le modifiche alla configurazione richiedono l’adozione dello stack tramite la configurazione dell’archivio.",
   "apply_is_still_running_closing_this_page_does_no_83d405": "L’applicazione è ancora in corso. Chiudere questa pagina non la annulla. Aggiorna lo stato al termine; nel frattempo le altre azioni del ciclo di vita restano indisponibili.",
   "route_port_2c38fa": "Porta di instradamento",
   "expires_f6725f": "Scadenza",
@@ -28,15 +28,15 @@
   "no_measured_components_6f4369": "Nessun componente misurato.",
   "domain_value1_value2_ee9534": "Dominio: {value1}@{value2}",
   "compose_value3_service_87ae79": "Servizio Compose {value3}",
-  "prev_value1_8d66fe": "(prev {value1})",
-  "logs_value1_306798": "Logs: {value1}",
+  "prev_value1_8d66fe": "(precedente {value1})",
+  "logs_value1_306798": "Registri: {value1}",
   "deployment_aee50b": "distribuzione",
   "deployments_01366d": "distribuzioni",
-  "expand_workers_c57c47": "Espandi workers",
-  "collapse_workers_7a9ec3": "Comprimi workers",
+  "expand_workers_c57c47": "Espandi processi di lavoro",
+  "collapse_workers_7a9ec3": "Comprimi processi di lavoro",
   "exact_recorded_container_a9b79f": " · contenitore registrato esattamente",
   "external_855e84": " · esterno",
-  "never_6497e4": "never",
+  "never_6497e4": "mai",
   "containerCount": {
     "argument": "count",
     "forms": {
@@ -48,7 +48,7 @@
   "apply_97a5e4": "applica",
   "workers_7a1ec9": "Worker",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS etichetta",
+  "lowercase_dns_label_3dbe17": "etichetta DNS in minuscolo",
   "logs_98f38f": "registri",
   "rollback_da2548": "rollback",
   "remove_deployment_keep_data_b46030": "Rimuovi distribuzione — conserva dati",
@@ -60,5 +60,13 @@
       "many": "{count} distribuzioni",
       "other": "{count} distribuzioni"
     }
-  }
+  },
+  "action_start": "Avvia",
+  "action_stop": "Arresta",
+  "action_restart": "Riavvia",
+  "operatorRequired": "Accesso operatore richiesto",
+  "refreshAfterApply": "Applicazione in corso; aggiorna lo stato prima di un’altra azione del ciclo di vita",
+  "applyRunning": "Applicazione già in corso",
+  "editDomain": "Modifica dominio per {name}@{source}",
+  "repositoryLabel": "Repository"
 }

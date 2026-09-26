@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Αλλαγή μεγέθους πλοηγού εργασιών",
   "decisions_7c5ca9": "Αποφάσεις →",
   "enter_a_line_estimate_7d4502": "Εισαγάγετε εκτίμηση αριθμού γραμμών",
-  "not_scheduled_yet_backlog_0f0d42": "δεν έχει προγραμματιστεί ακόμη (εκκρεμότητα)"
+  "not_scheduled_yet_backlog_0f0d42": "δεν έχει προγραμματιστεί ακόμη (εκκρεμότητα)",
+  "elaborateLabel": "Ζητήστε διευκρίνιση",
+  "explanationRequested": "Ζητήθηκε σαφέστερη εξήγηση για το {title}",
+  "explainTask": "Ζητήστε από τον πράκτορα να εξηγήσει το «{title}» με απλούστερη γλώσσα",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} γραμμή",
+      "other": "~{value} γραμμές"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} εργασία χωρίς εκτίμηση",
+      "other": "{count} εργασίες χωρίς εκτίμηση"
+    }
+  },
+  "unestimatedCount": "{count} χωρίς εκτίμηση",
+  "doneSummary": "Ολοκληρώθηκαν: {done} / {total} ({percent})",
+  "linesDone": "Ολοκληρωμένες γραμμές: {done} / {total}",
+  "tasksDone": "Ολοκληρωμένες εργασίες: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} γραμμή",
+      "other": "{value} γραμμές"
+    }
+  },
+  "dropTask": "Απόρριψη εργασίας",
+  "dropTaskNamed": "Απόρριψη εργασίας {title}",
+  "selectTask": "Επιλογή {title}",
+  "dragMoveTask": "Σύρετε το {title} για μετακίνηση",
+  "dragResizeTask": "Σύρετε για αλλαγή μεγέθους του {title}",
+  "progressNeedsEstimate": "Η πρόοδος δεν υπολογίζεται μέχρι να εκτιμηθεί αυτή η εργασία."
 }

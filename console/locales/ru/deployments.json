@@ -49,7 +49,7 @@
   "apply_97a5e4": "применить",
   "workers_7a1ec9": "Рабочие процессы",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS label",
+  "lowercase_dns_label_3dbe17": "строчная DNS-метка",
   "logs_98f38f": "журналы",
   "rollback_da2548": "откатить",
   "remove_deployment_keep_data_b46030": "Удалить развёртывание — сохранить данные",
@@ -62,5 +62,13 @@
       "many": "{count} развёртываний",
       "other": "{count} развёртывания"
     }
-  }
+  },
+  "action_start": "Запустить",
+  "action_stop": "Остановить",
+  "action_restart": "Перезапустить",
+  "operatorRequired": "Требуются права оператора",
+  "refreshAfterApply": "Изменения применяются; обновите статус перед следующей операцией жизненного цикла",
+  "applyRunning": "Применение изменений уже выполняется",
+  "editDomain": "Изменить домен для {name}@{source}",
+  "repositoryLabel": "Репозиторий"
 }

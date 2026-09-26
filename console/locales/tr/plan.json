@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Görev gezgininin boyutunu değiştir",
   "decisions_7c5ca9": "Kararlar →",
   "enter_a_line_estimate_7d4502": "Satır sayısı tahmini girin",
-  "not_scheduled_yet_backlog_0f0d42": "henüz zamanlanmadı (bekleyen işler)"
+  "not_scheduled_yet_backlog_0f0d42": "henüz zamanlanmadı (bekleyen işler)",
+  "elaborateLabel": "Açıklama iste",
+  "explanationRequested": "{title} için daha açık bir açıklama istendi",
+  "explainTask": "Temsilciden {title} konusunu daha sade bir dille açıklamasını iste",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} satır",
+      "other": "~{value} satır"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "Tahmin edilmemiş {count} iş",
+      "other": "Tahmin edilmemiş {count} iş"
+    }
+  },
+  "unestimatedCount": "{count} tahmin edilmedi",
+  "doneSummary": "Tamamlanan: {done} / {total} ({percent})",
+  "linesDone": "Tamamlanan satırlar: {done} / {total}",
+  "tasksDone": "Tamamlanan işler: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} satır",
+      "other": "{value} satır"
+    }
+  },
+  "dropTask": "İşi bırak",
+  "dropTaskNamed": "{title} işini bırak",
+  "selectTask": "{title} seç",
+  "dragMoveTask": "Taşımak için {title} öğesini sürükleyin",
+  "dragResizeTask": "{title} öğesini yeniden boyutlandırmak için sürükleyin",
+  "progressNeedsEstimate": "Bu iş tahmin edilene kadar ilerleme hesaplanmaz."
 }

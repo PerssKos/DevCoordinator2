@@ -141,5 +141,9 @@
   "free": "vaba",
   "of": "/",
   "one_minute_average": "Ühe minuti keskmine",
-  "scale": "skaala"
+  "scale": "skaala",
+  "removeTest": "Eemalda testikonteiner",
+  "removeOrphaned": "Eemalda orvuks jäänud konteiner",
+  "removeTestContainer": "Eemalda testikonteiner {name}",
+  "removeOrphanedContainer": "Eemalda orvuks jäänud konteiner {name}"
 }

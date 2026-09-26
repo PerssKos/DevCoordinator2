@@ -47,28 +47,62 @@
   "put_first_79c815": "placera först",
   "move_6ecc3d": "Flytta",
   "runs_on_server_port_value2_e42376": "körs på serverport {value2}",
-  "move_value1_c26f36": "Move: {value1}",
+  "move_value1_c26f36": "Flytta: {value1}",
   "add_estimate_c87fb7": "Lägg till uppskattning",
-  "resize_2956e0": "Resize",
-  "not_scheduled_yet_6e4794": "Nejt scheduled yet",
-  "fit_9f872e": "Fit",
-  "show_0df6f1": "Show",
-  "hide_ac20a5": "Hide",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
+  "resize_2956e0": "Ändra storlek",
+  "not_scheduled_yet_6e4794": "Inte schemalagt ännu",
+  "fit_9f872e": "Anpassa",
+  "show_0df6f1": "Visa",
+  "hide_ac20a5": "Dölj",
+  "job_5e8c99": "uppgift",
+  "jobs_5d9a17": "uppgifter",
   "change_estimate_6ae15e": "Ändra uppskattning",
-  "not_scheduled_yet_333719": "endnu ikke planlagt",
+  "not_scheduled_yet_333719": "inte schemalagt ännu",
   "plan_64879f": "plan",
   "decisions_3183d3": "beslut",
-  "selected_task_details_a9a7eb": "Valgt task details",
+  "selected_task_details_a9a7eb": "Detaljer för den valda uppgiften",
   "request_preview_1e9b91": "Begär förhandsvisning",
   "open_the_app_397f86": "Öppna appen ↗",
   "drag_to_move_task_41b0d9": "Dra för att flytta uppgiften",
   "drag_to_resize_estimate_2d023d": "Dra för att ändra uppskattningen",
-  "not_estimated_dbbcf5": "Nejt estimated",
+  "not_estimated_dbbcf5": "Inte uppskattat",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Interaktiv plantidslinje. Rulla horisontellt eller använd tidslinjekontrollerna för att panorera och zooma.",
   "resize_task_navigator_2cc8bc": "Ändra storlek på uppgiftnavigatorn",
   "decisions_7c5ca9": "Beslut →",
-  "enter_a_line_estimate_7d4502": "Indtast a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "endnu ikke planlagt (backlog)"
+  "enter_a_line_estimate_7d4502": "Ange ett uppskattat antal rader",
+  "not_scheduled_yet_backlog_0f0d42": "inte schemalagt ännu (arbetskö)",
+  "elaborateLabel": "Be om förtydligande",
+  "explanationRequested": "En tydligare förklaring har begärts för {title}",
+  "explainTask": "Be agenten förklara {title} med enklare språk",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} rad",
+      "other": "~{value} rader"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} oestimerad uppgift",
+      "other": "{count} oestimerade uppgifter"
+    }
+  },
+  "unestimatedCount": "{count} utan uppskattning",
+  "doneSummary": "{done} / {total} klara ({percent})",
+  "linesDone": "Klara rader: {done} / {total}",
+  "tasksDone": "Klara uppgifter: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} rad",
+      "other": "{value} rader"
+    }
+  },
+  "dropTask": "Avstå från uppgiften",
+  "dropTaskNamed": "Avstå från uppgiften {title}",
+  "selectTask": "Välj {title}",
+  "dragMoveTask": "Dra {title} för att flytta den",
+  "dragResizeTask": "Dra för att ändra storlek på {title}",
+  "progressNeedsEstimate": "Förlopp beräknas först när arbetet har uppskattats."
 }

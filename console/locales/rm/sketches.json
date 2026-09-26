@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "na commentaris sin quest opziun anc.",
+  "sketch_set_review_1e4713": "skizza set revista",
+  "close_7d9eb7": "serrar",
+  "selection_mode_1935ae": "tscherna mode",
+  "close_set_review_2680d1": "serrar set revista",
+  "sketch_set_options_62656f": "skizza set opziuns",
+  "current_option_f4a3f8": "actual opziun",
+  "comments_355f79": "commentaris",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "declerar why ti chose quest opziun ni set da opziuns.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "tschernas salvar as tegnair, refusar, ni indecis.",
+  "sketches_a56d78": "skizzas",
+  "review_generated_options_by_set_then_select_one__020509": "revista generated opziuns by set, then tscherner ina ni several a carry forward.",
+  "publish_from_a_skill_f33a0e": "publitgar da ina skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "skizzas èn publitgà by ina registrà skill",
+  "value2_selected_value3_options_b64a24": "{value2} tschernì · {value3} opziuns",
+  "value5_sketches_value6_selected_87bdd8": "{value5} skizzas · {value6} tschernì",
+  "value6_rejected_value7_undecided_bbc778": "{value6} refusà · {value7} indecis",
+  "reviewer_d29f46": "revistader",
+  "option_unavailable_d03e4e": "opziun indisponibel",
+  "selected_57fd7a": "tschernì",
+  "rejected_aea4a0": "refusà",
+  "undecided_00cc36": "indecis",
+  "select_2a7802": "tscherner",
+  "reject_ab604a": "refusar",
+  "leave_undecided_65c5c0": "laschar indecis",
+  "set_6ee0eb": "Rumantsch: set",
+  "sets_82c6db": "Rumantsch: sets",
+  "no_selection_211f6b": "na tscherna",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "agidà context a il tschernì opziun",
+      "other": "agidà context a il tschernì opziuns"
+    }
+  },
+  "review_set_ca242c": "revista set",
+  "open_sketch_3ccc5c": "avrir skizza",
+  "single_choice_45a76a": "singul tscherna",
+  "choose_multiple_b76dc5": "tscherna pliras",
+  "open_full_review_canvas_26fc95": "avrir entir revista canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} set",
+      "other": "{count} sets"
+    }
+  }
+}

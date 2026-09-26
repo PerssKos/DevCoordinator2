@@ -70,5 +70,45 @@
   "resize_task_navigator_2cc8bc": "Змінити ширину навігатора завдань",
   "decisions_7c5ca9": "Рішення →",
   "enter_a_line_estimate_7d4502": "Введіть оцінку рядків",
-  "not_scheduled_yet_backlog_0f0d42": "ще не заплановано (черга)"
+  "not_scheduled_yet_backlog_0f0d42": "ще не заплановано (черга)",
+  "elaborateLabel": "Пояснити",
+  "explanationRequested": "Для завдання «{title}» запитано зрозуміліше пояснення",
+  "explainTask": "Попросити агента пояснити завдання «{title}» простішими словами",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} рядок",
+      "few": "~{value} рядки",
+      "many": "~{value} рядків",
+      "other": "~{value} рядка"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} завдання без оцінки",
+      "few": "{count} завдання без оцінки",
+      "many": "{count} завдань без оцінки",
+      "other": "{count} завдання без оцінки"
+    }
+  },
+  "unestimatedCount": "Без оцінки: {count}",
+  "doneSummary": "Виконано: {done} / {total} ({percent})",
+  "linesDone": "Виконано рядків: {done} / {total}",
+  "tasksDone": "Виконано завдань: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} рядок",
+      "few": "{value} рядки",
+      "many": "{value} рядків",
+      "other": "{value} рядка"
+    }
+  },
+  "dropTask": "Скасувати завдання",
+  "dropTaskNamed": "Скасувати завдання «{title}»",
+  "selectTask": "Вибрати «{title}»",
+  "dragMoveTask": "Перетягніть «{title}», щоб перемістити",
+  "dragResizeTask": "Перетягніть, щоб змінити оцінку «{title}»",
+  "progressNeedsEstimate": "Прогрес обчислюється після оцінювання цієї роботи."
 }

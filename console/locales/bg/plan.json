@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Промени размера на навигатора за задачи",
   "decisions_7c5ca9": "Решения →",
   "enter_a_line_estimate_7d4502": "Въведете оценка за броя редове",
-  "not_scheduled_yet_backlog_0f0d42": "все още не е насрочено (чакаща работа)"
+  "not_scheduled_yet_backlog_0f0d42": "все още не е насрочено (чакаща работа)",
+  "elaborateLabel": "Поискайте пояснение",
+  "explanationRequested": "Поискано е по-ясно обяснение за {title}",
+  "explainTask": "Помолете агента да обясни {title} с по-прост език",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} ред",
+      "other": "~{value} реда"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} задача без оценка",
+      "other": "{count} задачи без оценка"
+    }
+  },
+  "unestimatedCount": "{count} без оценка",
+  "doneSummary": "Завършено: {done} / {total} ({percent})",
+  "linesDone": "Завършени редове: {done} / {total}",
+  "tasksDone": "Завършени задачи: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} ред",
+      "other": "{value} реда"
+    }
+  },
+  "dropTask": "Отхвърляне на задача",
+  "dropTaskNamed": "Отхвърляне на задача {title}",
+  "selectTask": "Избиране на {title}",
+  "dragMoveTask": "Плъзнете {title}, за да го преместите",
+  "dragResizeTask": "Плъзнете, за да преоразмерите {title}",
+  "progressNeedsEstimate": "Напредъкът не се изчислява, докато работата не бъде оценена."
 }

@@ -28,19 +28,19 @@
   "compared_with_the_previous_matching_period_value_8b4a50": "W porównaniu z poprzednim pasującym okresem ({value1})",
   "value2_planned_lines_added_means_value3_value4_v_765cc7": "{value2}. Dodane wiersze planowane oznaczają {value3}. {value4}. {value5}. {value6}.",
   "previous_value3_11ac0f": "Poprzedni {value3}",
-  "aligned_hour": "Aligned hourly dowody · UTC",
-  "aligned_day": "Aligned daily dowody · UTC",
-  "aligned_week": "Aligned weekly dowody · UTC",
+  "aligned_hour": "Dowody wyrównane godzinowo · UTC",
+  "aligned_day": "Dowody wyrównane dziennie · UTC",
+  "aligned_week": "Dowody wyrównane tygodniowo · UTC",
   "no_recorded_movement_in_this_period_59cf50": "W tym okresie nie zarejestrowano zmian",
   "open_full_plan_303994": "Otwórz pełny plan →",
-  "open_selected_in_plan_a6478f": "Otwórz wybrano in plan",
+  "open_selected_in_plan_a6478f": "Otwórz wybraną pozycję w planie",
   "view_progress_c2e39c": "Wyświetl postęp",
-  "green_tasks_087f3a": "Green = zadań",
+  "green_tasks_087f3a": "Zielony = zadania",
   "blue_planned_lines_adfe4a": "Niebieski = planowane wiersze",
   "solid_above_completed_outlined_below_incoming_333281": "Pełne powyżej = ukończone · konturowe poniżej = nadchodzące",
   "line_completed_running_total_e033cd": "Linia = bieżąca suma ukończonej pracy",
   "likelyRelease": "Prawdopodobne wydanie: {date}",
-  "releaseUnavailable": "Wydanie date not available",
+  "releaseUnavailable": "Data wydania jest niedostępna",
   "confidence_low": "Niska pewność · {percent}",
   "confidence_medium": "Średnia pewność · {percent}",
   "confidence_high": "Wysoka pewność · {percent}",
@@ -48,31 +48,31 @@
   "unestimatedTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} zadanie has no oszacowanie",
-      "other": "{count} zadań have no oszacowanie",
-      "many": "{count} zadań have no oszacowanie",
-      "few": "{count} zadań have no oszacowanie"
+      "one": "{count} zadanie nie ma oszacowania",
+      "few": "{count} zadania nie mają oszacowania",
+      "many": "{count} zadań nie ma oszacowania",
+      "other": "{count} zadania nie ma oszacowania"
     }
   },
   "remainingTasks": {
     "argument": "count",
     "forms": {
-      "one": "{count} zadanie remains",
-      "other": "{count} zadań remain",
-      "many": "{count} zadań remain",
-      "few": "{count} zadań remain"
+      "one": "Pozostało {count} zadanie",
+      "few": "Pozostały {count} zadania",
+      "many": "Pozostało {count} zadań",
+      "other": "Pozostało {count} zadania"
     }
   },
-  "allEstimated": "Every remaining zadanie has an oszacowanie",
-  "targetRecorded": "Wydanie target date recorded",
-  "targetMissing": "Nie wydanie target date is recorded",
+  "allEstimated": "Każde pozostałe zadanie ma oszacowanie",
+  "targetRecorded": "Zapisano docelową datę wydania",
+  "targetMissing": "Nie zapisano docelowej daty wydania",
   "provisional": "Ta data jest wstępna. Stanie się bardziej wiarygodna wraz z poprawą oszacowań i dowodów dostarczenia.",
-  "reason_no_planned_release": "Plan a wydanie before estimating its delivery range.",
-  "reason_insufficient_completion_history": "More completed work is needed before pace can support a wydanie forecast.",
+  "reason_no_planned_release": "Zaplanuj wydanie, zanim oszacujesz zakres dat dostarczenia.",
+  "reason_insufficient_completion_history": "Potrzeba więcej ukończonej pracy, aby tempo pozwoliło prognozować wydanie.",
   "workInRelease": "Praca w tym wydaniu",
-  "openPlanWork": "Otwórz plan work",
+  "openPlanWork": "Otwórz pracę w planie",
   "estimateMissing": "Brak oszacowania",
-  "estimatedLines": "~{count} lines",
-  "openTasksShown": "Showing {shown} of {total} open zadań",
+  "estimatedLines": "~{count} wierszy",
+  "openTasksShown": "Wyświetlono {shown} z {total} otwartych zadań",
   "countingSemantics": "Ukończone wiersze to bieżące oszacowania zaplanowanych zadań, a nie zmierzone zmiany Git. Dodane wiersze obejmują początkowe oszacowania i ich zwiększenia; zmniejszenia oraz odrzucona praca są wykluczone. Testy korzystają z zapisanych podsumowań końcowych tego repozytorium. Sumy tokenów pochodzą od dostawców; brakujące dane pozostają brakujące. Prognozy są wstępnymi zakresami opartymi na ostatnim tempie ukończeń, bieżących oszacowaniach, zmianach zakresu i stabilności testów. Dla pracy bez oszacowania używana jest mediana zapisanych rozmiarów zadań, jeśli jest dostępna."
 }

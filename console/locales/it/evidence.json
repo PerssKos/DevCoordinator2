@@ -64,19 +64,60 @@
     }
   },
   "viewport_280503": "area di visualizzazione",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Mantieni",
+  "reject_ab604a": "Rifiuta",
   "undecided_00cc36": "Non deciso",
   "visual_feedback_a19903": "Feedback visivo",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
+  "reopen_a886d1": "Riapri",
+  "resolve_c8f193": "Risolvi",
   "route_unavailable_21a43f": "Percorso non disponibile",
   "test_run_fe9e2f": "Esecuzione di test",
   "release_proof_17fa7c": "Prova del rilascio",
   "diagnostic_only_3425ba": "Solo diagnostica",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Modifica",
   "open_plan_task_4019fe": "Apri attività del piano →",
   "full_page_9d21b6": "Pagina intera",
   "previous_journey_step_7a544d": "Passaggio precedente del percorso",
-  "next_journey_step_35037a": "Passaggio successivo del percorso"
+  "next_journey_step_35037a": "Passaggio successivo del percorso",
+  "annotationSaved": "Annotazione salvata",
+  "reviewComment": "Commenta questa revisione",
+  "attachTo": "Allega a",
+  "activeOption": "Opzione attiva",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "many": "Opzioni selezionate ({count})",
+      "one": "Opzione selezionata ({count})",
+      "other": "Opzioni selezionate ({count})"
+    }
+  },
+  "commentLabel": "Commento",
+  "commentPlaceholder": "Aggiungi un commento su questa opzione o sul set selezionato.",
+  "postComment": "Pubblica commento",
+  "closeReview": "Chiudi revisione",
+  "selectionSummary": "Selezionate: {selected} · Opzioni: {total}",
+  "allSketchOptions": "Tutte le opzioni dello schizzo",
+  "selectOptionToAnnotate": "Seleziona un’opzione da annotare",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "many": "Commento aggiunto a {count} opzioni selezionate",
+      "one": "Commento aggiunto a {count} opzione",
+      "other": "Commento aggiunto a {count} opzioni selezionate"
+    }
+  },
+  "commentFailed": "Impossibile aggiungere il commento: {message}",
+  "sketchChangeWhy": "Perché questo schizzo viene modificato?",
+  "reviewedInConsole": "Revisionato nella console",
+  "selectedJourneyScreenshot": "Screenshot del percorso utente selezionato",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "many": "Richieste {count} modifiche",
+      "one": "Richiesta {count} modifica",
+      "other": "Richieste {count} modifiche"
+    }
+  },
+  "noChangesRequested": "Nessuna modifica richiesta",
+  "sketchSetUnavailable": "Questo set di schizzi non è più disponibile."
 }

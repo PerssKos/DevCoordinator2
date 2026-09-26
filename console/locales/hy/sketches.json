@@ -1,7 +1,7 @@
 {
   "no_comments_on_this_option_yet_801c78": "Այս տարբերակի վերաբերյալ դեռ մեկնաբանություններ չկան։",
   "sketch_set_review_1e4713": "Էսքիզների հավաքածուի վերանայում",
-  "close_7d9eb7": "Close",
+  "close_7d9eb7": "Փակել",
   "selection_mode_1935ae": "Ընտրության ռեժիմ",
   "close_set_review_2680d1": "Փակել հավաքածուի վերանայումը",
   "sketch_set_options_62656f": "Էսքիզների հավաքածուի տարբերակներ",
@@ -11,8 +11,8 @@
   "selections_save_as_keep_reject_or_undecided_e5bbd4": "Ընտրությունները պահպանվում են որպես Պահել, Մերժել կամ Չորոշված։",
   "sketches_a56d78": "Էսքիզներ",
   "review_generated_options_by_set_then_select_one__020509": "Վերանայեք ստեղծված տարբերակներն ըստ հավաքածուի, ապա ընտրեք մեկը կամ մի քանիսը՝ շարունակելու համար։",
-  "publish_from_a_skill_f33a0e": "Հրապարակել skill-ից",
-  "sketches_are_published_by_a_registered_skill_a2ac72": "Էսքիզները հրապարակվում են գրանցված skill-ի կողմից",
+  "publish_from_a_skill_f33a0e": "Հրապարակել հմտության միջոցով",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Էսքիզները հրապարակվում են գրանցված հմտության միջոցով",
   "value2_selected_value3_options_b64a24": "Ընտրված է {value2} · {value3} տարբերակ",
   "value5_sketches_value6_selected_87bdd8": "{value5} էսքիզ · ընտրված է {value6}",
   "value6_rejected_value7_undecided_bbc778": "մերժված՝ {value6} · չորոշված՝ {value7}",
@@ -21,11 +21,11 @@
   "selected_57fd7a": "Ընտրված",
   "rejected_aea4a0": "Մերժված",
   "undecided_00cc36": "Չորոշված",
-  "select_2a7802": "Select",
-  "reject_ab604a": "Reject",
+  "select_2a7802": "Ընտրել",
+  "reject_ab604a": "Մերժել",
   "leave_undecided_65c5c0": "Թողնել չորոշված",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
+  "set_6ee0eb": "հավաքածու",
+  "sets_82c6db": "հավաքածուներ",
   "no_selection_211f6b": "Ընտրություն չկա",
   "selectedOptionContext": {
     "argument": "count",
@@ -39,12 +39,12 @@
   "open_sketch_3ccc5c": "Բացել էսքիզը",
   "single_choice_45a76a": "Մեկ ընտրություն",
   "choose_multiple_b76dc5": "Ընտրել մի քանիսը",
-  "open_full_review_canvas_26fc95": "Բացել վերանայման ամբողջական canvas-ը",
+  "open_full_review_canvas_26fc95": "Բացել վերանայման ամբողջական տարածքը",
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count} հավաքածու",
+      "other": "{count} հավաքածու"
     }
   }
 }

@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "Opne planoppgåve →",
   "full_page_9d21b6": "Heil side",
   "previous_journey_step_7a544d": "Førre steg i forløpet",
-  "next_journey_step_35037a": "Neste steg i forløpet"
+  "next_journey_step_35037a": "Neste steg i forløpet",
+  "annotationSaved": "Merknad lagra",
+  "reviewComment": "Kommenter denne gjennomgangen",
+  "attachTo": "Knytt til",
+  "activeOption": "Aktivt alternativ",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valt alternativ ({count})",
+      "other": "Valde alternativ ({count})"
+    }
+  },
+  "commentLabel": "Kommentar",
+  "commentPlaceholder": "Legg til ein kommentar om dette alternativet eller det valde settet.",
+  "postComment": "Publiser kommentar",
+  "closeReview": "Lukk gjennomgang",
+  "selectionSummary": "Valde: {selected} · Alternativ: {total}",
+  "allSketchOptions": "Alle skissealternativ",
+  "selectOptionToAnnotate": "Vel eit alternativ å leggje ein merknad til",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Kommentar lagd til {count} alternativ",
+      "other": "Kommentar lagd til {count} valde alternativ"
+    }
+  },
+  "commentFailed": "Kunne ikkje leggje til kommentaren: {message}",
+  "sketchChangeWhy": "Kvifor blir denne skissa endra?",
+  "reviewedInConsole": "Gjennomgått i konsollen",
+  "selectedJourneyScreenshot": "Skjermbilete av vald brukarferd",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} endring førespurd",
+      "other": "{count} endringar førespurde"
+    }
+  },
+  "noChangesRequested": "Ingen endringar førespurde",
+  "sketchSetUnavailable": "Dette skissesettet er ikkje lenger tilgjengeleg."
 }

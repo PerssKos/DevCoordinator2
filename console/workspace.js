@@ -186,7 +186,7 @@ window.DevCoordinatorWorkspace = (() => {
       const tabs = [['plan', 'Plan & progress'], ['deployments', 'Deployments'], ['tests', 'Tests'], ['sketches', 'Sketches'], ['decisions', 'Decisions'], ['glossary', 'Glossary']];
       aspects.innerHTML = selectedId ? tabs.map(([view, label]) => `<a href="${href(view, selectedId)}"${(view === currentView || view === 'plan' && workViews.has(currentView)) ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup(view === "plan" ? "shell.planProgress" : "shell.view_" + view)}</a>`).join('') : '';
       workNavigation.hidden = !selectedId || !workViews.has(currentView);
-      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? [['plan', 'Plan'], ...(canOperate() ? [['progress', 'Progress'], ['usage', 'Usage']] : []), ...(identity()?.administrator ? [['performance', 'Performance']] : [])].map(([view, label]) => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${label}</a>`).join('') : '';
+      workNavigation.innerHTML = selectedId && workViews.has(currentView) ? ['plan', ...(canOperate() ? ['progress', 'usage'] : []), ...(identity()?.administrator ? ['performance'] : [])].map(view => `<a href="${href(view, selectedId)}"${view === currentView ? ' aria-current="page"' : ''}>${window.DevCoordinatorI18n.markup('shell.view_' + view)}</a>`).join('') : '';
       paintNavigation();
     }
 

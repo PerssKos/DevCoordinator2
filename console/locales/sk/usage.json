@@ -1,0 +1,42 @@
+{
+  "work_phase_legend_0886c1": "práca fáza legend",
+  "scrollable_token_chart_83cb1f": "Scrollable token graf",
+  "provider_reported_total_tokens_by_work_phase_d1895d": "poskytovateľ-nahlásené celkom tokeny by práca fáza",
+  "stacked_utc_time_buckets_exact_values_are_listed_993096": "Stacked UTC čas buckets. presný hodnoty sú listed po ten charts.",
+  "no_classified_token_activity_in_this_window_f460d0": "nie classified token aktivita v tento okno.",
+  "work_activity_bf3178": "práca aktivita",
+  "total_tokens_e7601c": "celkom tokeny",
+  "activity_breakdown_7ebc89": "aktivita breakdown",
+  "separate_measurements_they_are_not_added_togethe_329294": "samostatné merania; they sú nie pridané together.",
+  "no_tool_outcomes_in_this_window_4f3fa4": "nie nástroj výsledky v tento okno.",
+  "total_c9b3c3": "celkom",
+  "exact_bucket_values_a2a7fe": "presný bucket hodnoty",
+  "utc_bucket_fbd8d9": "Slovenčina: UTC bucket",
+  "data_status_87d914": "údaje stav",
+  "repository_13d6ff": "Slovenčina: Repository",
+  "model_requests_888826": "Slovenčina: Model requests",
+  "tool_calls_da5122": "nástroj calls",
+  "execution_time_1069e2": "vykonanie čas",
+  "data_included_217858": "údaje zahrnuté",
+  "time_breakdown_ca0aca": "čas breakdown",
+  "separate_not_added_together_6dbbe5": "(samostatné, nie pridané together)",
+  "tool_outcomes_3a7a68": "nástroj výsledky",
+  "data_completeness_c7114d": "údaje completeness",
+  "counting_method_7a480a": "Counting metóda",
+  "provider_reported_total_tokens_cached_input_and__9908f6": "poskytovateľ-nahlásené celkom tokeny; cached vstup a reasoning sú subsets.",
+  "schema_value19_taxonomy_value20_cdddf8": "schéma {value19} · taxonomy {value20}",
+  "value21_environments_that_supplied_no_data_and_u_cbbc39": "{value21}. prostredia that supplied nie údaje a unmeasured hodnoty sú excluded rather than treated as nula.",
+  "token_subsets_unavailable_4cec86": "token subsets nedostupné.",
+  "unknownIntervals": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} neznáme interval",
+      "other": "{count} neznáme intervaly",
+      "few": "{count} unknown intervals",
+      "many": "{count} unknown intervals"
+    }
+  },
+  "about_codex_environments_4a2e3e": "o Codex prostredia",
+  "explain_codex_usage_data_completeness_63247d": "vysvetliť Codex použitie údaje completeness",
+  "tokens_a039df": "tokeny"
+}

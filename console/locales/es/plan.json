@@ -47,20 +47,20 @@
   "put_first_79c815": "colocar primero",
   "move_6ecc3d": "Mover",
   "runs_on_server_port_value2_e42376": "se ejecuta en el puerto del servidor {value2}",
-  "move_value1_c26f36": "Move: {value1}",
+  "move_value1_c26f36": "Mover: {value1}",
   "add_estimate_c87fb7": "Añadir estimación",
-  "resize_2956e0": "Resize",
+  "resize_2956e0": "Cambiar tamaño",
   "not_scheduled_yet_6e4794": "Aún no programado",
-  "fit_9f872e": "Fit",
-  "show_0df6f1": "Show",
-  "hide_ac20a5": "Hide",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
+  "fit_9f872e": "Ajustar",
+  "show_0df6f1": "Mostrar",
+  "hide_ac20a5": "Ocultar",
+  "job_5e8c99": "tarea",
+  "jobs_5d9a17": "tareas",
   "change_estimate_6ae15e": "Cambiar estimación",
   "not_scheduled_yet_333719": "aún no programado",
   "plan_64879f": "plan",
   "decisions_3183d3": "decisiones",
-  "selected_task_details_a9a7eb": "Seleccionado task details",
+  "selected_task_details_a9a7eb": "Detalles de la tarea seleccionada",
   "request_preview_1e9b91": "Solicitar vista previa",
   "open_the_app_397f86": "Abrir la aplicación ↗",
   "drag_to_move_task_41b0d9": "Arrastrar para mover la tarea",
@@ -69,6 +69,43 @@
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Línea de tiempo interactiva del plan. Desplácese horizontalmente o use los controles para desplazar y ampliar.",
   "resize_task_navigator_2cc8bc": "Cambiar tamaño del navegador de tareas",
   "decisions_7c5ca9": "Decisiones →",
-  "enter_a_line_estimate_7d4502": "Introduzca a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "aún no programado (pendiente)"
+  "enter_a_line_estimate_7d4502": "Introduzca una estimación del número de líneas",
+  "not_scheduled_yet_backlog_0f0d42": "aún no programado (pendiente)",
+  "elaborateLabel": "Pedir aclaración",
+  "explanationRequested": "Se ha solicitado una explicación más clara para {title}",
+  "explainTask": "Pide al agente que explique {title} con un lenguaje más sencillo",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} línea",
+      "other": "~{value} líneas",
+      "many": "~{value} líneas"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} tarea sin estimar",
+      "other": "{count} tareas sin estimar",
+      "many": "{count} tareas sin estimar"
+    }
+  },
+  "unestimatedCount": "{count} sin estimar",
+  "doneSummary": "{done} / {total} completadas ({percent})",
+  "linesDone": "Líneas completadas: {done} / {total}",
+  "tasksDone": "Tareas completadas: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} línea",
+      "other": "{value} líneas",
+      "many": "{value} líneas"
+    }
+  },
+  "dropTask": "Descartar tarea",
+  "dropTaskNamed": "Descartar tarea {title}",
+  "selectTask": "Seleccionar {title}",
+  "dragMoveTask": "Arrastra {title} para moverla",
+  "dragResizeTask": "Arrastra para cambiar el tamaño de {title}",
+  "progressNeedsEstimate": "El progreso no se calcula hasta que se estima este trabajo."
 }

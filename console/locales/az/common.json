@@ -39,7 +39,7 @@
   "status_requested": "önizləmə istənilib",
   "status_delivered": "çatdırılıb",
   "status_your_request": "sizin sorğunuz",
-  "status_administrator": "administrator",
+  "status_administrator": "inzibatçı",
   "status_viewer": "izləyici",
   "status_operator": "operator",
   "status_open": "açıq",
@@ -284,5 +284,7 @@
   "label_revert_condition": "Geri qaytarma şərti",
   "label_reason": "Səbəb",
   "label_before": "Əvvəl",
-  "label_after": "Sonra"
+  "label_after": "Sonra",
+  "status_preview": "Önizləmə",
+  "status_elaboration_needed": "İzah tələb olunur"
 }

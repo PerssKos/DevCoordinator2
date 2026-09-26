@@ -60,5 +60,13 @@
       "other": "{count} käyttöönottoa",
       "many": "{count} käyttöönottoa"
     }
-  }
+  },
+  "action_start": "Käynnistä",
+  "action_stop": "Pysäytä",
+  "action_restart": "Käynnistä uudelleen",
+  "operatorRequired": "Tarvitaan operaattorin käyttöoikeus",
+  "refreshAfterApply": "Muutoksia otetaan käyttöön. Päivitä tila ennen seuraavaa käynnistys- tai pysäytystoimintoa.",
+  "applyRunning": "Muutosten käyttöönotto on jo käynnissä",
+  "editDomain": "Muokkaa käyttöönoton {name}@{source} verkkotunnusta",
+  "repositoryLabel": "Tietovarasto"
 }

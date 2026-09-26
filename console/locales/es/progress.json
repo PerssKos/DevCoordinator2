@@ -64,13 +64,13 @@
   "allEstimated": "Todas las tareas restantes tienen una estimación",
   "targetRecorded": "Fecha objetivo de lanzamiento registrada",
   "targetMissing": "No hay fecha objetivo de lanzamiento registrada",
-  "provisional": "Esta fecha es provisional. It becomes more reliable as estimates and delivery evidence improve.",
+  "provisional": "Esta fecha es provisional. Será más fiable a medida que mejoren las estimaciones y las pruebas de entrega.",
   "reason_no_planned_release": "Planifique un lanzamiento antes de estimar su intervalo de entrega.",
   "reason_insufficient_completion_history": "Se necesita más trabajo completado antes de que el ritmo permita prever un lanzamiento.",
   "workInRelease": "Trabajo en este lanzamiento",
   "openPlanWork": "Trabajo abierto del plan",
   "estimateMissing": "Falta estimación",
-  "estimatedLines": "~{count} lines",
+  "estimatedLines": "~{count} líneas",
   "openTasksShown": "Se muestran {shown} de {total} tareas abiertas",
   "countingSemantics": "Las líneas completadas son estimaciones actuales de tareas planificadas, no cambios de Git medidos. Las líneas añadidas incluyen estimaciones iniciales e incrementos; se excluyen reducciones y trabajo descartado. Las pruebas usan resúmenes terminales registrados para este repositorio. Los totales de tokens proceden de proveedores; los datos ausentes siguen ausentes. Las previsiones son rangos provisionales basados en el ritmo reciente, las estimaciones actuales, cambios de alcance y estabilidad de las pruebas. El trabajo sin estimación usa la mediana registrada cuando está disponible."
 }

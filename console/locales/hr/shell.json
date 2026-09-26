@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Izgled spremišta nije moguće spremiti. Pokušajte ponovno.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} spremišta nisu dostupna. Osvježite za novi pokušaj.",
   "montenegrinLatin": "Crnogorski (latinica)",
-  "montenegrinCyrillic": "Crnogorski (ćirilica)"
+  "montenegrinCyrillic": "Crnogorski (ćirilica)",
+  "loadFailed": "Konzolu nije bilo moguće učitati. Ponovno učitajte stranicu da pokušate opet.",
+  "reload": "Ponovno učitaj"
 }

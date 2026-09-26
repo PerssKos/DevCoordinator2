@@ -110,5 +110,10 @@
   "status_unchanged": "Dəyişiklik yoxdur",
   "status_inconclusive": "Nəticəsiz",
   "tokensByActivity": "Fəaliyyətə görə tokenlər",
-  "tokensByKind": "Plan elementinin növünə görə tokenlər"
+  "tokensByKind": "Plan elementinin növünə görə tokenlər",
+  "unattributedWork": "İşin bir hissəsinin qeyd olunmuş nəticəsi yoxdur.",
+  "reviewScopeTotal": "Baxış cəmi: {tokens}",
+  "periodScopeTotal": "Dövr cəmi: {tokens}",
+  "reviewTotalLabel": "Baxış üzrə cəm",
+  "periodTotalLabel": "Dövr üzrə cəm"
 }

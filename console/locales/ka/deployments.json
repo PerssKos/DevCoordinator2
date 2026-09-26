@@ -34,29 +34,37 @@
   "deployments_01366d": "განთავსებები",
   "expand_workers_c57c47": "მუშაკების გაშლა",
   "collapse_workers_7a9ec3": "მუშაკების შეკუმშვა",
-  "exact_recorded_container_a9b79f": " · exact recorded container",
-  "external_855e84": " · external",
-  "never_6497e4": "never",
+  "exact_recorded_container_a9b79f": " · ზუსტად ჩაწერილი კონტეინერი",
+  "external_855e84": " · გარე",
+  "never_6497e4": "არასდროს",
   "containerCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} container",
-      "other": "{count} containers"
+      "one": "{count} კონტეინერი",
+      "other": "{count} კონტეინერი"
     }
   },
-  "apply_97a5e4": "apply",
-  "workers_7a1ec9": "Workers",
+  "apply_97a5e4": "გამოყენება",
+  "workers_7a1ec9": "სამუშაო პროცესები",
   "my_app_4c9a75": "my-app",
-  "lowercase_dns_label_3dbe17": "lowercase DNS label",
-  "logs_98f38f": "logs",
-  "rollback_da2548": "rollback",
-  "remove_deployment_keep_data_b46030": "Remove deployment — keep data",
-  "remove_deployment_and_delete_data_9fe36e": "Remove deployment and delete data",
+  "lowercase_dns_label_3dbe17": "DNS-ის პატარა ასოებით დაწერილი იარლიყი",
+  "logs_98f38f": "ჟურნალები",
+  "rollback_da2548": "უკან დაბრუნება",
+  "remove_deployment_keep_data_b46030": "განთავსების წაშლა — მონაცემების შენარჩუნება",
+  "remove_deployment_and_delete_data_9fe36e": "განთავსებისა და მონაცემების წაშლა",
   "deploymentCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} deployment",
-      "other": "{count} deployments"
+      "one": "{count} განთავსება",
+      "other": "{count} განთავსება"
     }
-  }
+  },
+  "action_start": "გაშვება",
+  "action_stop": "შეჩერება",
+  "action_restart": "ხელახლა გაშვება",
+  "operatorRequired": "საჭიროა ოპერატორის უფლება",
+  "refreshAfterApply": "მიმდინარეობს ცვლილებების გამოყენება. შემდეგ გაშვებამდე ან შეჩერებამდე განაახლეთ მდგომარეობა.",
+  "applyRunning": "ცვლილებების გამოყენება უკვე მიმდინარეობს",
+  "editDomain": "{name}@{source}-ის დომენის შეცვლა",
+  "repositoryLabel": "რეპოზიტორია"
 }

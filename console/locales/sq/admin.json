@@ -1,5 +1,5 @@
 {
-  "none_140bed": "none",
+  "none_140bed": "asnjë",
   "e_mail_2550d9": "Email",
   "administrator_e7d3e7": "Administrator",
   "grants_b3e1c9": "Leje",
@@ -30,5 +30,10 @@
   "yes_8a7988": "po",
   "remove_user_84a18f": "Hiq përdoruesin",
   "revoke_777ac4": "revoko",
-  "remove_grant_8c57bf": "Hiq lejen"
+  "remove_grant_8c57bf": "Hiq lejen",
+  "removeGrant": "Hiq lejen {role} për {email}",
+  "removeUser": "Hiq përdoruesin {email}",
+  "telegramSummary": "Boti: {state} · mesazhe dalëse në pritje: {pending} · kontrolli i fundit: {time}",
+  "unsubscribe": "Çregjistrohu nga {scope}",
+  "roleAccess": "Vetëm qasje"
 }

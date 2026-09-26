@@ -78,5 +78,46 @@
   "open_plan_task_4019fe": "Otvori zadatak plana →",
   "full_page_9d21b6": "Cela stranica",
   "previous_journey_step_7a544d": "Prethodni korak postupka",
-  "next_journey_step_35037a": "Sledeći korak postupka"
+  "next_journey_step_35037a": "Sledeći korak postupka",
+  "annotationSaved": "Аннотација је сачувана",
+  "reviewComment": "Коментар о овој ревизији",
+  "attachTo": "Приложи уз",
+  "activeOption": "Активна опција",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Изабрана опција ({count})",
+      "few": "Изабране опције ({count})",
+      "other": "Изабраних опција ({count})"
+    }
+  },
+  "commentLabel": "Коментар",
+  "commentPlaceholder": "Додајте коментар овој опцији или изабраном скупу.",
+  "postComment": "Објави коментар",
+  "closeReview": "Затвори ревизију",
+  "selectionSummary": "Изабрано: {selected} · Опције: {total}",
+  "allSketchOptions": "Све опције скице",
+  "selectOptionToAnnotate": "Изаберите опцију за аннотацију",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Коментар је додат уз {count} опцију",
+      "few": "Коментар је додат уз {count} изабране опције",
+      "other": "Коментар је додат уз {count} изабраних опција"
+    }
+  },
+  "commentFailed": "Додавање коментара није успјело: {message}",
+  "sketchChangeWhy": "Зашто се ова скица мијења?",
+  "reviewedInConsole": "Прегледано у конзоли",
+  "selectedJourneyScreenshot": "Снимак екрана изабраног корисничког тока",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Затражена је {count} промјена",
+      "few": "Затражене су {count} промјене",
+      "other": "Затражено је {count} промјена"
+    }
+  },
+  "noChangesRequested": "Промјене нијесу затражене",
+  "sketchSetUnavailable": "Овај скуп скица више није доступан."
 }

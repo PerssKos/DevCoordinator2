@@ -70,17 +70,17 @@
   "shared_revision_value1_value2_projects_9f53bb": {
     "argument": "value2",
     "forms": {
-      "one": "Delt revision {value1} · {value2} project",
-      "other": "Delt revision {value1} · {value2} projects"
+      "one": "Delt revision {value1} · {value2} projekt",
+      "other": "Delt revision {value1} · {value2} projekter"
     }
   },
   "this_project_uses_shared_revision_value1_revisio_c1cf8c": "Dette projekt bruger den delte revision {value1}. Revision {value2} er tilgængelig.",
   "adopt_revision_value4_d99ca6": "Overtag revision {value4}",
   "guidance_and_languages_952865": "Retningslinjer og sprog",
   "view_guidance_169578": "Vis retningslinjer",
-  "no_concepts_on_this_page_6766a7": "Nej concepts on this page.",
-  "no_concepts_match_these_filters_272f2a": "Nej concepts match these filters.",
-  "no_concepts_yet_6baf89": "Nej concepts yet.",
+  "no_concepts_on_this_page_6766a7": "Der er ingen begreber på denne side.",
+  "no_concepts_match_these_filters_272f2a": "Ingen begreber matcher disse filtre.",
+  "no_concepts_yet_6baf89": "Der er endnu ingen begreber.",
   "a_shared_glossary_revision_is_available_to_adopt_be2c66": " En delt revision af ordlisten kan overtages.",
   "specialize_for_project_c6a546": "Specialiser til projektet",
   "edit_concept_09e204": "Rediger begreb",
@@ -88,24 +88,24 @@
   "needs_language_review_70a971": "Kræver sproglig gennemgang",
   "not_configured_dd1841": "Nejt konfigureret",
   "loading_related_concept_3e5563": "Indlæser relateret begreb…",
-  "remove_related_concept_value1_5732bb": "Fjern related concept {value1}",
-  "add_value1_470600": "Add {value1}",
+  "remove_related_concept_value1_5732bb": "Fjern relateret begreb {value1}",
+  "add_value1_470600": "Tilføj {value1}",
   "return_to_the_current_glossary_6c061f": "Vend tilbage til den aktuelle ordliste",
   "all_concepts_acc74b": "← Alle begreber",
   "term_translation_or_meaning_5ac09b": "Term, oversættelse eller betydning",
   "reviewed_for_this_meaning_f79fab": "Gennemgået for denne betydning",
-  "remove_language_24782c": "Fjern language",
+  "remove_language_24782c": "Fjern sprog",
   "view_this_revision_549815": "Vis denne revision",
   "inspect_the_shared_glossary_2e75d7": "Undersøg den fælles ordliste",
-  "label_shared": "Shared",
+  "label_shared": "Delt",
   "label_inherited": "Nedarvet",
   "label_local": "Projektspecifikt",
   "label_specialized": "Projektspecialisering",
   "label_mandatory": "Påkrævet",
-  "label_default": "Default",
+  "label_default": "Standard",
   "label_guideline": "Retningslinje",
   "label_draft": "Kladde",
   "label_approved": "Godkendt",
   "label_deprecated": "Forældet",
-  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Indtast a new language tag, such as en, ru or pt-BR."
+  "enter_a_new_language_tag_such_as_en_ru_or_pt_br_02e966": "Indtast en ny sprogkode, f.eks. en, ru eller pt-BR."
 }

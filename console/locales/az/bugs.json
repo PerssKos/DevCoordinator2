@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Xəta barədə məlumat ver",
   "report_b6ce78": "Bildir",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Yalnız məhdud həcmli, ayrıca qeydlər: məxfi məlumat, xam jurnal və ya şəxsi yol daxil etməyin.",
-  "close_310ff2": "bağla"
+  "close_310ff2": "bağla",
+  "expected": "Gözlənilən",
+  "actual": "Faktiki"
 }

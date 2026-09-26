@@ -78,5 +78,43 @@
   "open_plan_task_4019fe": "Άνοιγμα εργασίας πλάνου →",
   "full_page_9d21b6": "Πλήρης σελίδα",
   "previous_journey_step_7a544d": "Προηγούμενο βήμα σεναρίου",
-  "next_journey_step_35037a": "Επόμενο βήμα σεναρίου"
+  "next_journey_step_35037a": "Επόμενο βήμα σεναρίου",
+  "annotationSaved": "Η επισήμανση αποθηκεύτηκε",
+  "reviewComment": "Σχόλιο για αυτή την αξιολόγηση",
+  "attachTo": "Επισύναψη σε",
+  "activeOption": "Ενεργή επιλογή",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Επιλεγμένη επιλογή ({count})",
+      "other": "Επιλεγμένες επιλογές ({count})"
+    }
+  },
+  "commentLabel": "Σχόλιο",
+  "commentPlaceholder": "Προσθέστε σχόλιο για αυτή την επιλογή ή το επιλεγμένο σύνολο.",
+  "postComment": "Δημοσίευση σχολίου",
+  "closeReview": "Κλείσιμο αξιολόγησης",
+  "selectionSummary": "Επιλεγμένα: {selected} · Επιλογές: {total}",
+  "allSketchOptions": "Όλες οι επιλογές σκίτσου",
+  "selectOptionToAnnotate": "Επιλέξτε μια επιλογή για επισήμανση",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Το σχόλιο προστέθηκε σε {count} επιλογή",
+      "other": "Το σχόλιο προστέθηκε σε {count} επιλεγμένες επιλογές"
+    }
+  },
+  "commentFailed": "Η προσθήκη σχολίου απέτυχε: {message}",
+  "sketchChangeWhy": "Γιατί αλλάζει αυτό το σκίτσο;",
+  "reviewedInConsole": "Ελέγχθηκε στην κονσόλα",
+  "selectedJourneyScreenshot": "Επιλεγμένο στιγμιότυπο οθόνης της διαδρομής χρήστη",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Ζητήθηκε {count} αλλαγή",
+      "other": "Ζητήθηκαν {count} αλλαγές"
+    }
+  },
+  "noChangesRequested": "Δεν ζητήθηκαν αλλαγές",
+  "sketchSetUnavailable": "Αυτό το σύνολο σκίτσων δεν είναι πλέον διαθέσιμο."
 }

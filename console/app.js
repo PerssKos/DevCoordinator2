@@ -100,7 +100,7 @@ function until(iso) {
 function badge(text, kind) {
   const cls = kind || ({ running: 'ok', healthy: 'ok', passed: 'ok', stopped: '', degraded: 'warn', unhealthy: 'bad', failed: 'bad', 'timed-out': 'bad', cancelled: '', interrupted: 'warn', superseded: '', applying: 'warn', unknown: '', none: '' }[text] ?? '');
   const key = 'status_' + String(text).replaceAll(/[^a-zA-Z0-9]/g, '_');
-  const known = ["running","healthy","passed","stopped","degraded","unhealthy","failed","timed-out","cancelled","interrupted","superseded","applying","unknown","none","observed","host","critical","warning","active","complete","partial","unavailable","pending","planned","in_progress","done","dropped","requested","delivered","your request","administrator","viewer","operator","open","resolved","deleted","checked","expired","draft","approved","deprecated","keep","reject","undecided","Earlier visual run"].includes(text);
+  const known = ["running","healthy","passed","stopped","degraded","unhealthy","failed","timed-out","cancelled","interrupted","superseded","applying","unknown","none","observed","host","critical","warning","active","complete","partial","unavailable","pending","planned","in_progress","done","dropped","requested","delivered","your request","administrator","viewer","operator","open","resolved","deleted","checked","expired","draft","approved","deprecated","keep","reject","undecided","Earlier visual run","preview","elaboration needed"].includes(text);
   return `<span class="badge ${cls}">${known ? window.DevCoordinatorI18n.markup('common.' + key) : esc(text)}</span>`;
 }
 
@@ -366,8 +366,8 @@ function setupTopNavigation() {
 function lifecycleButtons(id, component, cls = 'btn btn-small', deploymentState = null) {
   const args = component ? { deployment_id: id, component } : { deployment_id: id };
   const canOperate = state.who?.administrator || ['operator', 'administrator'].includes(state.who?.grants?.[id]);
-  const blocked = !canOperate ? ' disabled aria-disabled="true" title="Operator access required"' : deploymentState === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress; refresh status before another lifecycle action"' : '';
-  return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'${blocked}>${a}</button>`).join('');
+  const blocked = !canOperate ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.operatorRequired"}\'' : deploymentState === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.refreshAfterApply"}\'' : '';
+  return ['start', 'stop', 'restart'].map((a) => `<button class="${cls}" data-cmd="deployment.${a}" data-args='${esc(JSON.stringify(args))}'${blocked}>${window.DevCoordinatorI18n.markup('deployments.action_' + a)}</button>`).join('');
 }
 
 // --- Deployments ---------------------------------------------------------
@@ -442,7 +442,7 @@ function deploymentRecord(deployment, admin) {
     </div>
     <div class="deployment-record-status" aria-label="Deployment status" data-i18n-attrs='{"aria-label":"deployments.deployment_status_a62786"}'>${badge(deployment.state)} ${health} ${deployment.observed_only ? badge('observed') : ''}</div>
     <div class="deployment-record-body"><dl class="deployment-record-facts deployment-record-endpoint">
-      <div><dt><span data-i18n="deployments.domain_79fa33">Domain</span></dt><dd><span class="deployment-domain">${domain}</span>${admin ? ` <button class="btn btn-small deployment-domain-edit" data-edit-domain="${esc(deployment.deployment_id)}" aria-label="Edit domain for ${esc(deployment.name)}@${esc(deployment.source)}"><span data-i18n="deployments.edit_262121">edit</span></button>` : ''}</dd></div>
+      <div><dt><span data-i18n="deployments.domain_79fa33">Domain</span></dt><dd><span class="deployment-domain">${domain}</span>${admin ? ` <button class="btn btn-small deployment-domain-edit" data-edit-domain="${esc(deployment.deployment_id)}" ${window.DevCoordinatorI18n.computedAttribute("aria-label", () => window.DevCoordinatorI18n.t("deployments.editDomain", { name: deployment.name, source: deployment.source }))}><span data-i18n="deployments.edit_262121">edit</span></button>` : ''}</dd></div>
       <div><dt><span data-i18n="deployments.port_72e9a5">Port</span></dt><dd>${deployment.route_port ?? '—'}</dd></div>
     </dl>
     <dl class="deployment-record-facts deployment-record-runtime">
@@ -450,7 +450,7 @@ function deploymentRecord(deployment, admin) {
       <div><dt><span data-i18n="deployments.updated_3a5ecc">Updated</span></dt><dd>${window.DevCoordinatorI18n.computedMarkup(() => ago(deployment.updated_at))}</dd></div>
     </dl>
     <div class="deployment-record-actions"><span><span data-i18n="deployments.actions_ff8059">Actions</span></span><div class="actions">${lifecycleButtons(deployment.deployment_id, null, 'btn btn-small', deployment.state)}
-      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}><span data-i18n="deployments.apply_97a5e4">apply</span></button>` : ''}</div></div></div>
+      ${!deployment.observed_only && admin ? `<button class="btn btn-small" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: deployment.deployment_id }))}'${deployment.state === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.applyRunning"}\'' : ''}><span data-i18n="deployments.apply_97a5e4">apply</span></button>` : ''}</div></div></div>
   </article>`;
 }
 
@@ -784,12 +784,12 @@ const viewDeployment = guard(async (id) => {
     return [componentRow, ...serviceRows];
   }).join('');
   main.innerHTML = `${pageHeading('Deployments', '#/deployments', `${d.name}@${d.source}`, ` ${badge(d.state)} ${d.health && d.health !== d.state ? badge(d.health) : ''}`)}
-    <p class="muted">${d.repository_name ? `Repository: <strong>${esc(d.repository_name)}</strong> ` : ''}<span class="mono">${esc(d.repository_id || '')}</span></p>
-    <div class="grid"><div class="tile"><div class="k">Domain ${admin ? "<button class=\"btn btn-small\" id=\"edit-domain\"><span data-i18n=\"deployments.edit_262121\">edit</span></button>" : ''}</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div>${d.public ? "<div class=\"muted\"><span data-i18n=\"deployments.public_no_sign_in_014496\">public (no sign-in)</span></div>" : ''}</div><div class="tile"><div class="k"><span data-i18n="deployments.route_port_2c38fa">Route port</span></div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k"><span data-i18n="deployments.generation_40536d">Generation</span></div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">${window.DevCoordinatorI18n.markup("deployments.prev_value1_8d66fe", {value1: d.previous_generation})}</span>` : ''}</div></div><div class="tile"><div class="k"><span data-i18n="deployments.expires_f6725f">Expires</span></div><div class="v">${(d.ttl_expires_at ? esc(d.ttl_expires_at) : window.DevCoordinatorI18n.markup("deployments.never_6497e4"))}</div></div></div>
+    <p class="muted">${d.repository_name ? `<span data-i18n="deployments.repositoryLabel"></span>: <strong>${esc(d.repository_name)}</strong> ` : ''}<span class="mono">${esc(d.repository_id || '')}</span></p>
+    <div class="grid"><div class="tile"><div class="k"><span data-i18n="deployments.domain_79fa33">Domain</span> ${admin ? "<button class=\"btn btn-small\" id=\"edit-domain\"><span data-i18n=\"deployments.edit_262121\">edit</span></button>" : ''}</div><div class="v">${d.domain ? esc(d.domain) : '—'}</div>${d.public ? "<div class=\"muted\"><span data-i18n=\"deployments.public_no_sign_in_014496\">public (no sign-in)</span></div>" : ''}</div><div class="tile"><div class="k"><span data-i18n="deployments.route_port_2c38fa">Route port</span></div><div class="v">${d.route_port ?? '—'}</div></div><div class="tile"><div class="k"><span data-i18n="deployments.generation_40536d">Generation</span></div><div class="v">${d.current_generation ?? '—'}${d.previous_generation ? ` <span class="muted">${window.DevCoordinatorI18n.markup("deployments.prev_value1_8d66fe", {value1: d.previous_generation})}</span>` : ''}</div></div><div class="tile"><div class="k"><span data-i18n="deployments.expires_f6725f">Expires</span></div><div class="v">${(d.ttl_expires_at ? esc(d.ttl_expires_at) : window.DevCoordinatorI18n.markup("deployments.never_6497e4"))}</div></div></div>
     ${obs ? "<p class=\"notice muted\"><span data-i18n=\"deployments.imported_from_the_live_host_start_stop_restart_a_cd3182\">Imported from the live host. Start, stop, restart, and logs act on the exact recorded containers. Configuration changes (apply, rollback, remove) require adopting the stack through repository configuration.</span></p>" : ''}
     ${d.state === 'applying' ? "<p class=\"notice\"><span data-i18n=\"deployments.apply_is_still_running_closing_this_page_does_no_83d405\">Apply is still running. Closing this page does not cancel it. Refresh status after it finishes; other lifecycle actions stay unavailable meanwhile.</span></p>" : ''}
     <div class="actions" style="margin:12px 0">${lifecycleButtons(id, null, 'btn', d.state)}
-      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply already in progress"' : ''}><span data-i18n="deployments.apply_97a5e4">apply</span></button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}><span data-i18n="deployments.rollback_da2548">rollback</span></button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: false }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}><span data-i18n="deployments.remove_deployment_keep_data_b46030">Remove deployment — keep data</span></button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: true }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" title="Apply in progress"' : ''}><span data-i18n="deployments.remove_deployment_and_delete_data_9fe36e">Remove deployment and delete data</span></button>` : ''}</div>
+      ${!obs && admin ? `<button class="btn" data-cmd="deployment.apply" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.applyRunning"}\'' : ''}><span data-i18n="deployments.apply_97a5e4">apply</span></button><button class="btn" data-cmd="deployment.rollback" data-args='${esc(JSON.stringify({ deployment_id: id }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.applyRunning"}\'' : ''}><span data-i18n="deployments.rollback_da2548">rollback</span></button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: false }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.applyRunning"}\'' : ''}><span data-i18n="deployments.remove_deployment_keep_data_b46030">Remove deployment — keep data</span></button><button class="btn btn-danger" data-cmd="deployment.remove" data-args='${esc(JSON.stringify({ deployment_id: id, delete_data: true }))}'${d.state === 'applying' ? ' disabled aria-disabled="true" data-i18n-attrs=\'{"title":"deployments.applyRunning"}\'' : ''}><span data-i18n="deployments.remove_deployment_and_delete_data_9fe36e">Remove deployment and delete data</span></button>` : ''}</div>
     <h2><span data-i18n="deployments.components_a150ce">Components</span></h2><div class="tablewrap"><table><thead><tr><th><span data-i18n="deployments.component_ce54f0">Component</span></th><th><span data-i18n="deployments.state_a3b50c">State</span></th><th><span data-i18n="deployments.gen_ca0aad">Gen</span></th><th><span data-i18n="deployments.port_72e9a5">Port</span></th><th><span data-i18n="deployments.restarts_4fdc8b">Restarts</span></th><th><span data-i18n="deployments.binding_164c69">Binding</span></th><th><span data-i18n="deployments.error_54a0e8">Error</span></th><th><span data-i18n="deployments.actions_ff8059">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>
     <div id="logs"></div><h2>Usage ${seg(Object.keys(RANGES), state.usageRange, 'usage-range')}</h2><div id="usage">${skeleton(2)}</div>`;
   bind(main);
@@ -823,7 +823,8 @@ const viewDeployment = guard(async (id) => {
 // --- Tests ---------------------------------------------------------------
 const TEST_TIERS = ['development', 'pre-merge', 'release'];
 function testTierLabel(tier) {
-  return ({ development: 'Development', 'pre-merge': 'Pre-merge', release: 'Release' }[tier] || window.DevCoordinatorI18n.t("common.unavailable_ca1844"));
+  const key = { development: 'development_21b6a7', 'pre-merge': 'pre_merge_175f55', release: 'release_e020e3' }[tier];
+  return window.DevCoordinatorI18n.t(key ? 'tests.' + key : 'common.unavailable_ca1844');
 }
 function testCapacityAdjustment(adjustment) {
   if (!adjustment) return "<p class=\"muted\"><span data-i18n=\"tests.no_adjustment_recorded_45c3ac\">No adjustment recorded.</span></p>";
@@ -2965,8 +2966,10 @@ function coverageText(coverage, compact = false) {
   if (coverage.unavailable_reasons?.indexing) return window.DevCoordinatorI18n.t("common.updating_usage_data_c2a58f");
   if (coverage.state === 'complete') {
     const total = configured || included;
-    if (compact) return window.DevCoordinatorI18n.t("common.all_value1_environments_included_e48e29", {value1: total});
-    return window.DevCoordinatorI18n.t("common.all_value1_configured_codex_value2_included_22dccd", {value1: total, value2: total === 1 ? 'environment' : 'environments'});
+    // Keep the noun inside the locale catalog. Passing the English
+    // “environment/environments” as a parameter made an otherwise translated
+    // coverage sentence switch languages and broke plural grammar.
+    return window.DevCoordinatorI18n.t("common.all_value1_environments_included_e48e29", {value1: total});
   }
   if (coverage.state === 'partial') {
     if (compact) return window.DevCoordinatorI18n.t("common.value1_of_value2_environments_included_8432b4", {value1: included, value2: configured});
@@ -3539,7 +3542,7 @@ const viewBugs = guard(async () => {
   main.innerHTML = `${pageHeading('Bugs', '#/bugs')}${skeleton()}`;
   const { bugs } = await api('bug.list', {});
   main.innerHTML = `${pageHeading('Bugs', '#/bugs')}<h2><span data-i18n="bugs.open_bugs_dce3d4">Open bugs</span></h2>${bugs.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="bugs.component_ce54f0">Component</span></th><th><span data-i18n="bugs.summary_8e76a9">Summary</span></th><th><span data-i18n="bugs.expected_actual_2457a7">Expected / actual</span></th><th><span data-i18n="bugs.steps_1de3df">Steps</span></th><th><span data-i18n="bugs.seen_8894cf">Seen</span></th><th><span data-i18n="bugs.correlations_f54dae">Correlations</span></th><th></th></tr></thead><tbody>${bugs.map((b) => `<tr><td>${esc(b.component)}</td><td class="wrap"><strong>${esc(b.summary)}</strong><div class="muted mono">${esc(b.bug_id)} · ${esc(b.reporter)}</div></td><td class="wrap">${esc(b.expected)}<br><span class="muted">${esc(b.actual)}</span></td><td class="wrap">${esc(b.steps)}</td><td>${b.occurrences}× · ${window.DevCoordinatorI18n.computedMarkup(() => ago(b.last_seen_at))}</td><td class="mono wrap">${esc(Object.entries(b.correlations || {}).map(([k, v]) => `${k}=${v}`).join(' ') || '—')}</td><td><button class="btn btn-small" data-cmd="bug.close" data-args='${esc(JSON.stringify({ bug_id: b.bug_id }))}'><span data-i18n="bugs.close_310ff2">close</span></button></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_open_bugs_ca3d5d"))}
-    <h2><span data-i18n="bugs.report_a_bug_f75e0b">Report a bug</span></h2><form class="inline" id="bug-form">${['component', 'summary', 'expected', 'actual', 'steps'].map((f) => `<label class="f">${f}<${f === 'steps' ? 'textarea' : 'input'} name="${f}" required ${f === 'steps' ? '></textarea>' : '>'}</label>`).join('')}<button class="btn" type="submit"><span data-i18n="bugs.report_b6ce78">Report</span></button></form><p class="muted"><span data-i18n="bugs.bounded_atomic_records_only_no_secrets_raw_logs__2abc9d">Bounded atomic records only: no secrets, raw logs, or private paths.</span></p>`;
+    <h2><span data-i18n="bugs.report_a_bug_f75e0b">Report a bug</span></h2><form class="inline" id="bug-form">${['component', 'summary', 'expected', 'actual', 'steps'].map((f) => `<label class="f">${window.DevCoordinatorI18n.markup("bugs." + ({component:"component_ce54f0",summary:"summary_8e76a9",expected:"expected",actual:"actual",steps:"steps_1de3df"}[f]))}<${f === 'steps' ? 'textarea' : 'input'} name="${f}" required ${f === 'steps' ? '></textarea>' : '>'}</label>`).join('')}<button class="btn" type="submit"><span data-i18n="bugs.report_b6ce78">Report</span></button></form><p class="muted"><span data-i18n="bugs.bounded_atomic_records_only_no_secrets_raw_logs__2abc9d">Bounded atomic records only: no secrets, raw logs, or private paths.</span></p>`;
   bind(main);
   $('#bug-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -3550,18 +3553,22 @@ const viewBugs = guard(async () => {
 });
 
 // --- Administration ------------------------------------------------------
+function adminRole(role) {
+  return role === 'access' ? window.DevCoordinatorI18n.t('admin.roleAccess') : ['viewer', 'operator', 'administrator'].includes(role) ? window.DevCoordinatorI18n.t('common.status_' + role) : role;
+}
+
 const viewAdmin = guard(async () => {
   main.innerHTML = `${pageHeading('Administration', '#/admin')}${skeleton(6)}`;
   const [users, deployments, telegram] = await Promise.all([api('user.list', {}), api('deployment.list', {}), api('telegram.list', {})]);
   const depOptions = deployments.deployments.map((d) => `<option value="${esc(d.deployment_id)}">${esc(d.name)}@${esc(d.source)}</option>`).join('');
-  const roleOptions = users.roles.map((r) => `<option>${esc(r)}</option>`).join('');
+  const roleOptions = users.roles.map((r) => `<option value="${esc(r)}" data-i18n="${r === 'access' ? 'admin.roleAccess' : 'common.status_' + esc(r)}">${esc(r)}</option>`).join('');
   main.innerHTML = `${pageHeading('Administration', '#/admin')}
-    <h2><span data-i18n="admin.users_6b0cc9">Users</span></h2>${users.users.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.administrator_e7d3e7">Administrator</span></th><th><span data-i18n="admin.grants_b3e1c9">Grants</span></th><th><span data-i18n="admin.last_seen_21fd79">Last seen</span></th><th></th></tr></thead><tbody>${users.users.map((u) => `<tr><td class="wrap mono">${esc(u.email)}</td><td>${u.administrator ? badge('administrator', 'ok') : ''}</td><td class="wrap">${u.grants.map((g) => `<span class="badge">${esc(g.role)}</span> <span class="mono">${esc(g.deployment_id)}</span> <button class="btn btn-small" data-cmd="grant.remove" data-args='${esc(JSON.stringify({ email: u.email, deployment_id: g.deployment_id }))}' aria-label="Remove ${esc(g.role)} grant for ${esc(u.email)}"><span data-i18n="admin.remove_grant_8c57bf">Remove grant</span></button>`).join('<br>') || "<span class=\"muted\"><span data-i18n=\"admin.none_140bed\">none</span></span>"}</td><td>${window.DevCoordinatorI18n.computedMarkup(() => ago(u.last_seen_at))}</td><td><button class="btn btn-small btn-danger" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: u.email }))}' aria-label="Remove user ${esc(u.email)}"><span data-i18n="admin.remove_user_84a18f">Remove user</span></button></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_users_5bf761"))}
+    <h2><span data-i18n="admin.users_6b0cc9">Users</span></h2>${users.users.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.administrator_e7d3e7">Administrator</span></th><th><span data-i18n="admin.grants_b3e1c9">Grants</span></th><th><span data-i18n="admin.last_seen_21fd79">Last seen</span></th><th></th></tr></thead><tbody>${users.users.map((u) => `<tr><td class="wrap mono">${esc(u.email)}</td><td>${u.administrator ? badge('administrator', 'ok') : ''}</td><td class="wrap">${u.grants.map((g) => `<span class="badge">${window.DevCoordinatorI18n.computedMarkup(() => adminRole(g.role))}</span> <span class="mono">${esc(g.deployment_id)}</span> <button class="btn btn-small" data-cmd="grant.remove" data-args='${esc(JSON.stringify({ email: u.email, deployment_id: g.deployment_id }))}' ${window.DevCoordinatorI18n.computedAttribute("aria-label", () => window.DevCoordinatorI18n.t("admin.removeGrant", {role: adminRole(g.role), email: u.email}))}><span data-i18n="admin.remove_grant_8c57bf">Remove grant</span></button>`).join('<br>') || "<span class=\"muted\"><span data-i18n=\"admin.none_140bed\">none</span></span>"}</td><td>${window.DevCoordinatorI18n.computedMarkup(() => ago(u.last_seen_at))}</td><td><button class="btn btn-small btn-danger" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: u.email }))}' ${window.DevCoordinatorI18n.computedAttribute("aria-label", () => window.DevCoordinatorI18n.t("admin.removeUser", {email: u.email}))}><span data-i18n="admin.remove_user_84a18f">Remove user</span></button></td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_users_5bf761"))}
     <form class="inline" id="grant-form"><label class="f"><span data-i18n="admin.e_mail_39e074">e-mail</span><input name="email" required></label><label class="f"><span data-i18n="admin.deployment_aee50b">deployment</span><select name="deployment_id" required>${depOptions}</select></label><label class="f"><span data-i18n="admin.role_4b168d">role</span><select name="role">${roleOptions}</select></label><button class="btn" type="submit"><span data-i18n="admin.set_grant_35d1bf">Set grant</span></button></form>
-    <h2><span data-i18n="admin.invitations_14210e">Invitations</span></h2>${users.invitations.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.administrator_e7d3e7">Administrator</span></th><th><span data-i18n="admin.grants_b3e1c9">Grants</span></th><th><span data-i18n="admin.expires_f6725f">Expires</span></th><th></th></tr></thead><tbody>${users.invitations.map((i) => `<tr><td class="mono wrap">${esc(i.email)}</td><td>${i.administrator ? window.DevCoordinatorI18n.markup("admin.yes_8a7988") : ''}</td><td class="wrap mono">${esc(i.grants.map((g) => `${g.role}:${g.deployment_id}`).join(' ') || '—')}</td><td>${esc(i.expires_at)}</td><td><button class="btn btn-small" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: i.email }))}'><span data-i18n="admin.revoke_777ac4">revoke</span></button></td></tr>`).join('')}</tbody></table></div>` : "<p class=\"muted\"><span data-i18n=\"admin.no_outstanding_invitations_2642d9\">No outstanding invitations.</span></p>"}
+    <h2><span data-i18n="admin.invitations_14210e">Invitations</span></h2>${users.invitations.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.administrator_e7d3e7">Administrator</span></th><th><span data-i18n="admin.grants_b3e1c9">Grants</span></th><th><span data-i18n="admin.expires_f6725f">Expires</span></th><th></th></tr></thead><tbody>${users.invitations.map((i) => `<tr><td class="mono wrap">${esc(i.email)}</td><td>${i.administrator ? window.DevCoordinatorI18n.markup("admin.yes_8a7988") : ''}</td><td class="wrap mono">${window.DevCoordinatorI18n.computedMarkup(() => i.grants.map((g) => `${adminRole(g.role)}:${g.deployment_id}`).join(' ') || '—')}</td><td>${esc(i.expires_at)}</td><td><button class="btn btn-small" data-cmd="user.remove" data-args='${esc(JSON.stringify({ email: i.email }))}'><span data-i18n="admin.revoke_777ac4">revoke</span></button></td></tr>`).join('')}</tbody></table></div>` : "<p class=\"muted\"><span data-i18n=\"admin.no_outstanding_invitations_2642d9\">No outstanding invitations.</span></p>"}
     <form class="inline" id="invite-form"><label class="f"><span data-i18n="admin.e_mail_39e074">e-mail</span><input name="email" type="email" required></label><label class="f"><span data-i18n="admin.deployment_aee50b">deployment</span><select name="deployment_id"><option value="" data-i18n="admin.none_552e42">(none)</option>${depOptions}</select></label><label class="f"><span data-i18n="admin.role_4b168d">role</span><select name="role">${roleOptions}</select></label><label class="f"><span data-i18n="admin.administrator_4194d1">administrator</span><input type="checkbox" name="administrator"></label><button class="btn" type="submit"><span data-i18n="admin.invite_1fd9ae">Invite</span></button></form>
-    <h2><span data-i18n="admin.telegram_acdd1e">Telegram</span></h2><p class="muted">Bot ${(telegram.configured ? window.DevCoordinatorI18n.markup("admin.configured_201582") : window.DevCoordinatorI18n.markup("admin.not_configured_9f33f0"))} · outbox pending ${telegram.outbox_pending} · last poll ${window.DevCoordinatorI18n.computedMarkup(() => ago(telegram.last_poll_at))} ${telegram.last_error ? `· <span class="badge bad">${esc(telegram.last_error)}</span>` : ''}</p>
-    ${telegram.chats.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.chat_460b3a">Chat</span></th><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.subscriptions_a151f2">Subscriptions</span></th><th></th></tr></thead><tbody>${telegram.chats.map((c) => `<tr><td>${c.chat_id} <span class="muted">${esc(c.label || '')}</span></td><td class="mono wrap">${esc(c.email)}</td><td class="wrap">${c.subscriptions.map((s) => `<span class="badge">${esc(s)}</span> <button class="btn btn-small" data-cmd="telegram.unsubscribe" data-args='${esc(JSON.stringify({ chat_id: c.chat_id, scope: s }))}'>×</button>`).join(' ') || "<span class=\"muted\"><span data-i18n=\"admin.none_140bed\">none</span></span>"}</td><td></td></tr>`).join('')}</tbody></table></div>` : "<p class=\"muted\"><span data-i18n=\"admin.no_linked_chats_send_start_to_the_bot_to_get_a_l_1b08a7\">No linked chats. Send /start to the bot to get a link code.</span></p>"}
+    <h2><span data-i18n="admin.telegram_acdd1e">Telegram</span></h2><p class="muted">${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.t("admin.telegramSummary", {state: window.DevCoordinatorI18n.t(telegram.configured ? "admin.configured_201582" : "admin.not_configured_9f33f0"), pending: window.DevCoordinatorI18n.number(telegram.outbox_pending), time: ago(telegram.last_poll_at)}))} ${telegram.last_error ? `· <span class="badge bad">${esc(telegram.last_error)}</span>` : ''}</p>
+    ${telegram.chats.length ? `<div class="tablewrap"><table><thead><tr><th><span data-i18n="admin.chat_460b3a">Chat</span></th><th><span data-i18n="admin.e_mail_2550d9">E-mail</span></th><th><span data-i18n="admin.subscriptions_a151f2">Subscriptions</span></th><th></th></tr></thead><tbody>${telegram.chats.map((c) => `<tr><td>${c.chat_id} <span class="muted">${esc(c.label || '')}</span></td><td class="mono wrap">${esc(c.email)}</td><td class="wrap">${c.subscriptions.map((s) => `<span class="badge">${esc(s)}</span> <button class="btn btn-small" data-cmd="telegram.unsubscribe" data-args='${esc(JSON.stringify({ chat_id: c.chat_id, scope: s }))}' ${window.DevCoordinatorI18n.computedAttribute("aria-label", () => window.DevCoordinatorI18n.t("admin.unsubscribe", {scope:s}))}>×</button>`).join(' ') || "<span class=\"muted\"><span data-i18n=\"admin.none_140bed\">none</span></span>"}</td><td></td></tr>`).join('')}</tbody></table></div>` : "<p class=\"muted\"><span data-i18n=\"admin.no_linked_chats_send_start_to_the_bot_to_get_a_l_1b08a7\">No linked chats. Send /start to the bot to get a link code.</span></p>"}
     <form class="inline" id="link-form"><label class="f"><span data-i18n="admin.link_code_04a3f4">link code</span><input name="code" required></label><label class="f"><span data-i18n="admin.e_mail_39e074">e-mail</span><input name="email" type="email" required></label><button class="btn" type="submit"><span data-i18n="admin.link_chat_1e7f5a">Link chat</span></button></form>
     <form class="inline" id="sub-form"><label class="f"><span data-i18n="admin.chat_id_d6a2bb">chat id</span><input name="chat_id" type="number" required></label><label class="f"><span data-i18n="admin.scope_5f161c">scope</span><input name="scope" placeholder="server | deployment:&lt;id&gt; | repository:&lt;id&gt;" required></label><button class="btn" type="submit"><span data-i18n="admin.subscribe_cc0e38">Subscribe</span></button></form>
     <h2><span data-i18n="admin.server_aef7de">Server</span></h2><div id="server" class="muted">${skeleton(1)}</div>`;
@@ -3579,8 +3586,14 @@ const viewAdmin = guard(async () => {
 
 // --- Plan (completion ledger, releases, previews) ------------------------
 function locN(n) { return Number(n).toLocaleString(window.DevCoordinatorI18n.locale); }
-function loc(n) { return n == null ? '' : `~${locN(n)} lines`; }
-const PLAN_WORDS = { planned: 'planned', in_progress: 'being built', done: 'done', dropped: 'dropped', requested: 'preview requested', delivered: 'delivered' };
+function loc(n) { return n == null ? '' : window.DevCoordinatorI18n.t('plan.estimatedLines', {count:n, value:locN(n)}); }
+function planEstimateText(row) {
+  if (!row.isParent) return loc(row.task.estimated_loc) || window.DevCoordinatorI18n.t('plan.not_estimated_dbbcf5');
+  return [row.subtreeLoc ? loc(row.subtreeLoc) : '', row.unsizedCount ? window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:row.unsizedCount}) : ''].filter(Boolean).join(' + ');
+}
+function planDoneText(progress) {
+  return window.DevCoordinatorI18n.t('plan.doneSummary', {done:locN(progress.done), total:locN(progress.total), percent:window.DevCoordinatorI18n.percent(progress.percent / 100, {maximumFractionDigits:0})});
+}
 const PLAN_BADGE = { done: 'ok', delivered: 'ok', in_progress: 'warn', requested: 'warn' };
 function planBadge(status) { return badge(status, PLAN_BADGE[status] ?? ''); }
 function planElaborationMark(task) {
@@ -3588,11 +3601,9 @@ function planElaborationMark(task) {
 }
 function planElaborationButton(task, context = '') {
   const requested = !!task.elaboration_needed;
-  const label = requested ? 'Requested' : 'Elaborate';
-  const explanation = requested
-    ? `A clearer explanation has been requested for ${task.title}`
-    : `Ask the agent to explain ${task.title} in simpler language`;
-  return `<button class="btn btn-small plan-elaborate ${esc(context)}" type="button" data-elaborate-task="${esc(task.task_id)}" data-ui-continuation-anchor aria-label="${esc(explanation)}" title="${esc(explanation)}"${requested ? ' aria-disabled="true"' : ''}>${planIcon('message-plus')}<span class="plan-elaborate-label">${label}</span></button>`;
+  const key = requested ? 'plan.explanationRequested' : 'plan.explainTask';
+  const explanation = window.DevCoordinatorI18n.t(key, {title:task.title});
+  return `<button class="btn btn-small plan-elaborate ${esc(context)}" type="button" data-elaborate-task="${esc(task.task_id)}" data-ui-continuation-anchor aria-label="${esc(explanation)}" title="${esc(explanation)}" data-i18n-attrs='${esc(JSON.stringify({'aria-label':key,title:key}))}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'${requested ? ' aria-disabled="true"' : ''}>${planIcon('message-plus')}<span class="plan-elaborate-label">${window.DevCoordinatorI18n.markup(requested ? 'plan.requested_2d9e28' : 'plan.elaborateLabel')}</span></button>`;
 }
 
 const viewPlanPicker = guard(async (kind) => {
@@ -3689,21 +3700,21 @@ function planSelectionTray(selectedRow, releaseById, admin) {
   const progress = planRowProgress(selectedRow);
   const estimateButton = canEstimate
     ? `<button class="btn btn-small" type="button" data-resize-task="${esc(task.task_id)}">${planIcon('arrow-right')}${(task.estimated_loc == null ? window.DevCoordinatorI18n.markup("plan.add_estimate_c87fb7") : window.DevCoordinatorI18n.markup("plan.resize_2956e0"))}</button>` : '';
-  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}Move</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' aria-label="Drop task ${esc(task.title)}">${planIcon('trash')}Drop task</button>` : ''}` : '';
+  const actionButtons = admin ? `${planElaborationButton(task, 'plan-elaborate-tray')}${movable ? `<button class="btn btn-small" type="button" data-move-task="${esc(task.task_id)}">${planIcon('arrows-move')}${window.DevCoordinatorI18n.markup('plan.move_6ecc3d')}</button>` : ''}${estimateButton}${editable ? `<button class="btn btn-small btn-danger" data-cmd="task.update" data-args='${esc(JSON.stringify({ task_id: task.task_id, status: 'dropped' }))}' aria-label="${esc(window.DevCoordinatorI18n.t('plan.dropTaskNamed', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.dropTaskNamed"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'>${planIcon('trash')}${window.DevCoordinatorI18n.markup('plan.dropTask')}</button>` : ''}` : '';
   const actions = actionButtons ? `<div class="plan-selection-actions"><span class="plan-selection-label"><span data-i18n="plan.actions_ff8059">Actions</span></span><div class="actions">${actionButtons}</div></div>` : '';
-  const estimateText = selectedRow.unsizedCount
-    ? (selectedRow.isParent ? `${selectedRow.subtreeLoc ? `${loc(selectedRow.subtreeLoc)} + ` : ''}${selectedRow.unsizedCount} ${selectedRow.unsizedCount === 1 ? 'job' : 'jobs'} not estimated` : 'Not estimated yet')
-    : esc(loc(progress.total));
+  const estimateText = () => selectedRow.unsizedCount
+    ? (selectedRow.isParent ? [selectedRow.subtreeLoc ? loc(selectedRow.subtreeLoc) : '', window.DevCoordinatorI18n.t('plan.unestimatedJobs', {count:selectedRow.unsizedCount})].filter(Boolean).join(' + ') : window.DevCoordinatorI18n.t('plan.not_estimated_yet_2a73ea'))
+    : loc(progress.total);
   const progressBlock = selectedRow.isUnsized
     ? `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.size_1af851">Size</span></span><strong><span data-i18n="plan.not_estimated_yet_2a73ea">Not estimated yet</span></strong><span class="muted"><span data-i18n="plan.shown_in_the_non_proportional_chart_band_e2fd9f">Shown in the non-proportional chart band.</span></span></div>`
-    : `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.progress_466482">Progress</span></span><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(progress.done))} / ${window.DevCoordinatorI18n.computedMarkup(() => locN(progress.total))} done (${progress.percent}%)</strong><progress max="${Math.max(progress.total, 1)}" value="${progress.done}"></progress></div>`;
+    : `<div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.progress_466482">Progress</span></span><strong>${window.DevCoordinatorI18n.computedMarkup(() => planDoneText(progress))}</strong><progress max="${Math.max(progress.total, 1)}" value="${progress.done}"></progress></div>`;
   return `<section class="plan-selection${state.planSelectionCollapsed ? ' collapsed' : ''}" data-ui-region="selected-task" aria-label="Selected task details" data-i18n-attrs='{"aria-label":"plan.selected_task_details_a9a7eb"}'>
-    <div class="plan-selection-heading"><span class="plan-selection-grip">${planIcon('grip-vertical')}</span><strong data-ui-continuation-anchor>${esc(task.title)}</strong><span class="plan-selection-status">${planBadge(task.status)}${planElaborationMark(task)}</span><span class="muted">${estimateText}</span></div>
+    <div class="plan-selection-heading"><span class="plan-selection-grip">${planIcon('grip-vertical')}</span><strong data-ui-continuation-anchor>${esc(task.title)}</strong><span class="plan-selection-status">${planBadge(task.status)}${planElaborationMark(task)}</span><span class="muted">${window.DevCoordinatorI18n.computedMarkup(estimateText)}</span></div>
     ${progressBlock}
     <div class="plan-selection-detail plan-selection-impact"><span class="plan-selection-label"><span data-i18n="plan.why_it_matters_b8bda6">Why it matters</span></span><span>${task.impact ? esc(task.impact) : "<span class=\"muted\"><span data-i18n=\"plan.no_explanation_recorded_81eb6c\">No explanation recorded.</span></span>"}</span></div>
     <div class="plan-selection-detail"><span class="plan-selection-label"><span data-i18n="plan.release_e020e3">Release</span></span><span>${release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794")}</span>${release ? planBadge(release.status) : ''}</div>
     ${actions}
-    <button class="plan-selection-toggle" type="button" data-plan-selection-toggle aria-expanded="${!state.planSelectionCollapsed}" aria-label="${state.planSelectionCollapsed ? 'Expand' : 'Collapse'} selected task details">${planIcon(state.planSelectionCollapsed ? 'chevron-up' : 'chevron-down')}</button>
+    <button class="plan-selection-toggle" type="button" data-plan-selection-toggle aria-expanded="${!state.planSelectionCollapsed}" aria-label="${esc(window.DevCoordinatorI18n.t(state.planSelectionCollapsed ? 'common.expandTaskDetails' : 'common.collapseTaskDetails'))}" data-i18n-attrs='${esc(JSON.stringify({"aria-label":state.planSelectionCollapsed ? 'common.expandTaskDetails' : 'common.collapseTaskDetails'}))}'>${planIcon(state.planSelectionCollapsed ? 'chevron-up' : 'chevron-down')}</button>
   </section>`;
 }
 
@@ -3764,16 +3775,18 @@ const viewPlan = guard(async (repoId) => {
     const where = release?.url && /^https:\/\//.test(release.url)
       ? `<a class="plan-release-location" ${locationStyle} href="${esc(release.url)}" target="_blank" rel="noopener"><span data-i18n="plan.open_the_app_397f86">Open the app ↗</span></a>`
       : (release?.status === 'delivered' && release.port ? `<span class="plan-release-location" ${locationStyle}>${window.DevCoordinatorI18n.markup("plan.runs_on_server_port_value2_e42376", {value2: String(release.port)})}</span>` : '');
-    const measuredProgress = release
-      ? (release.loc_total ? `${locN(release.loc_done)} / ${locN(release.loc_total)} lines done` : `${release.tasks_done} / ${release.tasks_total} tasks done`)
-      : `${locN(group.end - group.start)} lines`;
-    const progress = `${measuredProgress}${group.unsizedCount ? ` · ${group.unsizedCount} not estimated` : ''}`;
+    const progress = () => {
+      const measured = release
+        ? window.DevCoordinatorI18n.t(release.loc_total ? 'plan.linesDone' : 'plan.tasksDone', {done:locN(release.loc_total ? release.loc_done : release.tasks_done), total:locN(release.loc_total || release.tasks_total)})
+        : window.DevCoordinatorI18n.t('plan.lineCount', {count:group.end - group.start, value:locN(group.end - group.start)});
+      return measured + (group.unsizedCount ? ' · ' + window.DevCoordinatorI18n.t('plan.unestimatedCount', {count:group.unsizedCount}) : '');
+    };
     const releaseBar = total && group.end > group.start
       ? `<div class="grelbar ${release?.status === 'delivered' ? 'delivered' : ''}" style="left:${pctOf(group.start)};width:${pctOf(group.end - group.start)}"><span>${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</span></div>`
       : '';
     return `<div class="grow grel"${droppable ? ` data-drop-release="${release ? esc(release.release_id) : ''}"` : ''}>
       <div class="glabel">
-        <div class="plan-release-copy"><strong title="${release ? esc(release.name) : 'Not scheduled yet'}">${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress)}">${esc(progress)}</span></span></div>
+        <div class="plan-release-copy"><strong title="${esc(release ? release.name : window.DevCoordinatorI18n.t('plan.not_scheduled_yet_6e4794'))}" ${window.DevCoordinatorI18n.computedAttribute("title", () => release ? release.name : window.DevCoordinatorI18n.t("plan.not_scheduled_yet_6e4794"))}>${(release ? esc(release.name) : window.DevCoordinatorI18n.markup("plan.not_scheduled_yet_6e4794"))}</strong><span class="plan-release-meta">${release ? planBadge(release.status) : ''}${release?.kind === 'preview' && release.status !== 'requested' ? ` ${badge('preview')}` : ''}<span class="muted" title="${esc(progress())}" ${window.DevCoordinatorI18n.computedAttribute("title", progress)}>${window.DevCoordinatorI18n.computedMarkup(progress)}</span></span></div>
       </div>
       <div class="gtrack">${releaseBar}${where}</div>
     </div>`;
@@ -3789,27 +3802,25 @@ const viewPlan = guard(async (repoId) => {
     const selected = task.task_id === state.planSelectedTaskId;
     const progress = planRowProgress(row);
     const collapse = row.isParent
-      ? `<button class="plan-tree-toggle" type="button" data-collapse="${esc(task.task_id)}" data-ui-continuation-anchor aria-expanded="${!row.collapsed}" aria-label="${row.collapsed ? 'Show' : 'Hide'} subtasks of ${esc(task.title)}" title="${row.collapsed ? 'Show subtasks' : 'Hide subtasks'}">${planIcon(row.collapsed ? 'chevron-right' : 'chevron-down')}</button>`
+      ? `<button class="plan-tree-toggle" type="button" data-collapse="${esc(task.task_id)}" data-ui-continuation-anchor aria-expanded="${!row.collapsed}" aria-label="${esc(window.DevCoordinatorI18n.t(row.collapsed ? 'common.showSubtasks' : 'common.hideSubtasks', {name:task.title}))}" title="${esc(window.DevCoordinatorI18n.t(row.collapsed ? 'common.show_subtasks_fa0ff9' : 'common.hide_subtasks_07f203'))}" data-i18n-attrs='${esc(JSON.stringify({"aria-label":row.collapsed ? 'common.showSubtasks' : 'common.hideSubtasks',title:row.collapsed ? 'common.show_subtasks_fa0ff9' : 'common.hide_subtasks_07f203'}))}' data-i18n-args='${esc(JSON.stringify({name:task.title}))}'>${planIcon(row.collapsed ? 'chevron-right' : 'chevron-down')}</button>`
       : '<span class="plan-tree-toggle-spacer" aria-hidden="true"></span>';
     const drag = movable
-      ? `<span class="plan-drag-handle" draggable="true" data-drag-task="${esc(task.task_id)}" title="Drag to move task" aria-label="Drag ${esc(task.title)} to move it" data-i18n-attrs='{"title":"plan.drag_to_move_task_41b0d9"}'>${planIcon('grip-vertical')}</span>`
+      ? `<span class="plan-drag-handle" draggable="true" data-drag-task="${esc(task.task_id)}" title="Drag to move task" aria-label="${esc(window.DevCoordinatorI18n.t('plan.dragMoveTask', {title:task.title}))}" data-i18n-attrs='{"title":"plan.drag_to_move_task_41b0d9","aria-label":"plan.dragMoveTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'>${planIcon('grip-vertical')}</span>`
       : '<span class="plan-drag-spacer" aria-hidden="true"></span>';
-    const metaLoc = row.isParent
-      ? `${row.subtreeLoc ? loc(row.subtreeLoc) : ''}${row.subtreeLoc && row.unsizedCount ? ' + ' : ''}${row.unsizedCount ? `${row.unsizedCount} not estimated` : ''}`
-      : (loc(task.estimated_loc) || 'not estimated');
-    const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="Select ${esc(task.title)}"`;
-    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(PLAN_WORDS[task.status] || task.status)}" data-hover-loc="${esc(metaLoc)}" data-hover-progress="${esc(row.isUnsized ? 'Progress is not calculated until this work is estimated.' : `${locN(progress.done)} / ${locN(progress.total)} done (${progress.percent}%)`)}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
+    const metaLoc = () => planEstimateText(row);
+    const common = `role="button" tabindex="0" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.selectTask', {title:task.title}))}" data-i18n-attrs='{"aria-label":"plan.selectTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'`;
+    const hover = `data-hover-task="${esc(task.task_id)}" data-hover-title="${esc(task.title)}" data-hover-status="${esc(task.status)}" data-hover-loc="${esc(metaLoc())}" data-hover-progress="${esc(row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(progress))}" data-hover-elaboration="${task.elaboration_needed ? 'true' : 'false'}"`;
     const sizedBar = row.width ? (row.isParent
       ? `<div class="gbar parent${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common}><span class="gdone" style="width:${progress.percent}%"></span></div>`
       : `<div class="gbar ${esc(task.status)}${selected ? ' selected' : ''}" style="left:${pctOf(row.start)};width:${pctOf(row.width)}" ${common} ${hover}>
           <span class="gdone" style="width:${progress.percent}%"></span><span class="gbar-label">${esc(task.title)}</span>
-          ${pointerResizable ? `<button type="button" class="gresize" data-resize-handle="${esc(task.task_id)}" aria-label="Drag to resize ${esc(task.title)}" title="Drag to resize estimate" data-i18n-attrs='{"title":"plan.drag_to_resize_estimate_2d023d"}'></button>` : ''}
+          ${pointerResizable ? `<button type="button" class="gresize" data-resize-handle="${esc(task.task_id)}" aria-label="${esc(window.DevCoordinatorI18n.t('plan.dragResizeTask', {title:task.title}))}" title="Drag to resize estimate" data-i18n-attrs='{"title":"plan.drag_to_resize_estimate_2d023d","aria-label":"plan.dragResizeTask"}' data-i18n-args='${esc(JSON.stringify({title:task.title}))}'></button>` : ''}
         </div>`) : '';
-    const unsizedBar = row.unsizedCount ? `<div class="gbar unsized ${row.isParent ? 'parent ' : ''}${esc(task.status)}${selected ? ' selected' : ''}" style="left:${unsizedLeft};width:${unsizedWidth}" ${common} ${hover}><span class="gbar-label">${row.isParent ? `${row.unsizedCount} not estimated` : esc(task.title)}</span></div>` : '';
+    const unsizedBar = row.unsizedCount ? `<div class="gbar unsized ${row.isParent ? 'parent ' : ''}${esc(task.status)}${selected ? ' selected' : ''}" style="left:${unsizedLeft};width:${unsizedWidth}" ${common} ${hover}><span class="gbar-label">${row.isParent ? window.DevCoordinatorI18n.markup('plan.unestimatedCount', {count:row.unsizedCount}) : esc(task.title)}</span></div>` : '';
     const bar = `${sizedBar}${unsizedBar}`;
     return `<div class="grow gtask${row.hidden ? ' ghidden' : ''}${selected ? ' selected' : ''}" data-task-row="${esc(task.task_id)}">
       <div class="glabel" style="--task-depth:${row.depth}">${drag}${collapse}<button type="button" class="plan-task-select" data-select-task="${esc(task.task_id)}" aria-pressed="${selected}">
-        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" title="${esc(`${metaLoc} · ${PLAN_WORDS[task.status] || task.status}`)}"><span title="${esc(metaLoc)}">${esc(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
+        <span class="plan-task-title">${esc(task.title)}</span><span class="plan-task-meta" ${window.DevCoordinatorI18n.computedAttribute("title", () => `${metaLoc()} · ${window.DevCoordinatorI18n.t("common.status_" + task.status)}`)}><span title="${esc(metaLoc())}" ${window.DevCoordinatorI18n.computedAttribute("title", metaLoc)}>${window.DevCoordinatorI18n.computedMarkup(metaLoc)}</span>${planBadge(task.status)}${task.kind === 'user_feedback' ? ` ${badge('your request')}` : ''}</span>
       </button>${admin ? planElaborationButton(task, 'plan-elaborate-row') : (task.elaboration_needed ? planElaborationMark(task) : '')}</div>
       <div class="gtrack">${bar}</div>
     </div>`;
@@ -3829,7 +3840,7 @@ const viewPlan = guard(async (repoId) => {
     <button class="plan-tool${state.planMode === 'pan' ? ' active' : ''}" type="button" data-plan-mode="pan" aria-pressed="${state.planMode === 'pan'}" title="Pan timeline" data-i18n-attrs='{"title":"plan.pan_timeline_881955"}'>${planIcon('hand-stop')}<span class="sr-only"><span data-i18n="plan.pan_timeline_881955">Pan timeline</span></span></button>
     <span class="plan-tool-group" aria-label="Zoom controls" data-i18n-attrs='{"aria-label":"plan.zoom_controls_6af7d7"}'><button class="plan-tool" type="button" data-plan-zoom="out" title="Zoom out" data-i18n-attrs='{"title":"plan.zoom_out_bc7b63"}'>${planIcon('minus')}<span class="sr-only"><span data-i18n="plan.zoom_out_bc7b63">Zoom out</span></span></button><output id="plan-zoom-value" aria-live="polite">${state.planFit ? window.DevCoordinatorI18n.markup("plan.fit_9f872e") : `${Math.round(state.planZoom * 100)}%`}</output><button class="plan-tool" type="button" data-plan-zoom="in" title="Zoom in" data-i18n-attrs='{"title":"plan.zoom_in_0e47f0"}'>${planIcon('plus')}<span class="sr-only"><span data-i18n="plan.zoom_in_0e47f0">Zoom in</span></span></button></span>
     <button class="plan-tool" type="button" data-plan-zoom="fit" title="Fit the whole timeline" data-i18n-attrs='{"title":"plan.fit_the_whole_timeline_9cdb1c"}'>${planIcon('focus-centered')}<span class="sr-only"><span data-i18n="plan.fit_timeline_ff3a42">Fit timeline</span></span></button>
-    <button class="plan-tool plan-nav-tool" type="button" data-plan-nav-toggle data-ui-continuation-anchor aria-pressed="${state.planNavigatorCollapsed}" title="${state.planNavigatorCollapsed ? 'Show' : 'Hide'} task navigator">${planIcon(navigatorIcon)}<span class="sr-only">${state.planNavigatorCollapsed ? window.DevCoordinatorI18n.markup("plan.show_0df6f1") : window.DevCoordinatorI18n.markup("plan.hide_ac20a5")} task navigator</span></button>
+    <button class="plan-tool plan-nav-tool" type="button" data-plan-nav-toggle data-ui-continuation-anchor aria-pressed="${state.planNavigatorCollapsed}" title="${esc(window.DevCoordinatorI18n.t(state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'))}" data-i18n-attrs='${esc(JSON.stringify({title:state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'}))}'>${planIcon(navigatorIcon)}<span class="sr-only">${window.DevCoordinatorI18n.markup(state.planNavigatorCollapsed ? "common.showTaskNavigator" : "common.hideTaskNavigator")}</span></button>
   </div>`;
   const chartWidth = planCanvasWidth(total);
   const gantt = `<div class="plan-workspace${state.planNavigatorCollapsed ? ' navigator-collapsed' : ''}" style="--glabel:${state.planNavigatorCollapsed ? 0 : state.planNavigatorWidth}px;--chart-width:${chartWidth}px" data-ui-region="plan-primary">
@@ -3854,7 +3865,7 @@ const viewPlan = guard(async (repoId) => {
 
   const contextHeader = `<section class="plan-context" data-ui-region="plan-context">
     <div class="plan-identity"><h1>${destinationLink('Plan', '#/plan')}</h1><span class="plan-slash" aria-hidden="true">/</span>${projectPicker(projects, repoId, (id) => `#/plan/${id}`, 'plan')}</div>
-    <div class="plan-total-progress"><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(doneLoc))}</strong><span> <span data-i18n="plan.lines_done_e590ac">lines done</span></span></div><progress max="${Math.max(total, 1)}" value="${doneLoc}"></progress><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(total))}</strong><span> <span data-i18n="plan.lines_planned_38bf57">lines planned</span></span>${unsizedCount ? `<small>${unsizedCount} ${(unsizedCount === 1 ? window.DevCoordinatorI18n.markup("plan.job_5e8c99") : window.DevCoordinatorI18n.markup("plan.jobs_5d9a17"))} not estimated</small>` : ''}</div></div>
+    <div class="plan-total-progress"><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(doneLoc))}</strong><span> <span data-i18n="plan.lines_done_e590ac">lines done</span></span></div><progress max="${Math.max(total, 1)}" value="${doneLoc}"></progress><div><strong>${window.DevCoordinatorI18n.computedMarkup(() => locN(total))}</strong><span> <span data-i18n="plan.lines_planned_38bf57">lines planned</span></span>${unsizedCount ? `<small>${window.DevCoordinatorI18n.markup("plan.unestimatedJobs", {count:unsizedCount})}</small>` : ''}</div></div>
     <div class="plan-context-actions"><a href="#/decisions/${esc(repoId)}"><span data-i18n="plan.decisions_7c5ca9">Decisions →</span></a>${admin ? `<button class="btn" type="button" data-plan-feedback>${planIcon('message-plus')}Ask for a change</button>` : ''}${requestControl}</div>
   </section>`;
 
@@ -3866,7 +3877,7 @@ const viewPlan = guard(async (repoId) => {
   bind(main);
   bindProjectPicker(main);
   bindMoveButtons(main, model);
-  bindPlanWorkspace(main, model, { groups, total, unsizedCount, sizedShare, releaseById, admin });
+  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin });
   $('[data-plan-feedback]', main)?.addEventListener('click', () => openFeedbackDialog(repoId));
   if (admin) bindGanttDrag(main, model);
 });
@@ -3933,11 +3944,10 @@ function syncPlanElaboration(root, model, task, initiator = null) {
     mark.innerHTML = badge('elaboration needed', 'warn');
   });
   root.querySelectorAll(`[data-elaborate-task="${CSS.escape(task.task_id)}"]`).forEach((button) => {
-    const explanation = `A clearer explanation has been requested for ${task.title}`;
     button.disabled = false;
     button.setAttribute('aria-disabled', 'true');
-    button.setAttribute('aria-label', explanation);
-    button.title = explanation;
+    window.DevCoordinatorI18n.text(button, 'plan.explanationRequested', {title:task.title}, 'aria-label');
+    window.DevCoordinatorI18n.text(button, 'plan.explanationRequested', {title:task.title}, 'title');
     button.innerHTML = `${planIcon('message-plus')}<span class="plan-elaborate-label"><span data-i18n="plan.requested_2d9e28">Requested</span></span>`;
   });
   root.querySelectorAll(`[data-hover-task="${CSS.escape(task.task_id)}"]`).forEach((bar) => {
@@ -4128,7 +4138,7 @@ function bindPlanWorkspace(root, model, layout) {
     workspace.classList.toggle('navigator-collapsed', state.planNavigatorCollapsed);
     button.setAttribute('aria-pressed', String(state.planNavigatorCollapsed));
     window.DevCoordinatorI18n.bind(button, () => window.DevCoordinatorI18n.t(state.planNavigatorCollapsed ? 'common.showTaskNavigator' : 'common.hideTaskNavigator'), "title");
-    button.innerHTML = `${planIcon(state.planNavigatorCollapsed ? 'layout-sidebar-left-expand' : 'layout-sidebar-left-collapse')}<span class="sr-only">${(state.planNavigatorCollapsed ? window.DevCoordinatorI18n.markup("plan.show_0df6f1") : window.DevCoordinatorI18n.markup("plan.hide_ac20a5"))} task navigator</span>`;
+    button.innerHTML = `${planIcon(state.planNavigatorCollapsed ? 'layout-sidebar-left-expand' : 'layout-sidebar-left-collapse')}<span class="sr-only">${window.DevCoordinatorI18n.markup(state.planNavigatorCollapsed ? "common.showTaskNavigator" : "common.hideTaskNavigator")}</span>`;
     applyScale(false);
     button.focus({ preventScroll: true });
   }));
@@ -4244,9 +4254,14 @@ function bindPlanWorkspace(root, model, layout) {
   }
 
   root.querySelectorAll('[data-hover-task]').forEach((bar) => {
+    const row = layout.rows.find(row => row.task.task_id === bar.dataset.hoverTask);
+    if (row) {
+      window.DevCoordinatorI18n.bind(bar, () => planEstimateText(row), 'data-hover-loc');
+      window.DevCoordinatorI18n.bind(bar, () => row.isUnsized ? window.DevCoordinatorI18n.t('plan.progressNeedsEstimate') : planDoneText(planRowProgress(row)), 'data-hover-progress');
+    }
     const show = () => {
       if (!tooltip) return;
-      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${esc(bar.dataset.hoverLoc)}</span><span>${esc(bar.dataset.hoverProgress)}</span>`;
+      tooltip.innerHTML = `<strong>${esc(bar.dataset.hoverTitle)}</strong>${planBadge(bar.dataset.hoverStatus)}${bar.dataset.hoverElaboration === 'true' ? badge('elaboration needed', 'warn') : ''}<span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverLoc)}</span><span>${window.DevCoordinatorI18n.computedMarkup(() => bar.dataset.hoverProgress)}</span>`;
       tooltip.hidden = false;
       requestAnimationFrame(() => {
         const anchor = bar.getBoundingClientRect(); const box = tooltip.getBoundingClientRect();

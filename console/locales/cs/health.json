@@ -144,5 +144,9 @@
   "free": "volné",
   "of": "z",
   "one_minute_average": "průměr za 1 minutu",
-  "scale": "měřítko"
+  "scale": "měřítko",
+  "removeTest": "Odebrat testovací kontejner",
+  "removeOrphaned": "Odebrat osiřelý kontejner",
+  "removeTestContainer": "Odebrat testovací kontejner {name}",
+  "removeOrphanedContainer": "Odebrat osiřelý kontejner {name}"
 }

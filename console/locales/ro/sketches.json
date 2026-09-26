@@ -1,0 +1,51 @@
+{
+  "no_comments_on_this_option_yet_801c78": "nu comentarii pe acest opțiune încă.",
+  "sketch_set_review_1e4713": "schiță set revizuire",
+  "close_7d9eb7": "închide",
+  "selection_mode_1935ae": "selecție mod",
+  "close_set_review_2680d1": "închide set revizuire",
+  "sketch_set_options_62656f": "schiță set opțiuni",
+  "current_option_f4a3f8": "curent opțiune",
+  "comments_355f79": "comentarii",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "explică de ce dumneavoastră chose acest opțiune sau set de opțiuni.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "selecții salvează ca păstrează, respinge, sau nedecis.",
+  "sketches_a56d78": "schițe",
+  "review_generated_options_by_set_then_select_one__020509": "revizuire generated opțiuni de set, then selectează un sau several la carry forward.",
+  "publish_from_a_skill_f33a0e": "publică din un abilitate",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "schițe sunt publicat de un înregistrat abilitate",
+  "value2_selected_value3_options_b64a24": "{value2} selectat · {value3} opțiuni",
+  "value5_sketches_value6_selected_87bdd8": "{value5} schițe · {value6} selectat",
+  "value6_rejected_value7_undecided_bbc778": "{value6} respins · {value7} nedecis",
+  "reviewer_d29f46": "revizor",
+  "option_unavailable_d03e4e": "opțiune indisponibil",
+  "selected_57fd7a": "selectat",
+  "rejected_aea4a0": "respins",
+  "undecided_00cc36": "nedecis",
+  "select_2a7802": "selectează",
+  "reject_ab604a": "respinge",
+  "leave_undecided_65c5c0": "lasă nedecis",
+  "set_6ee0eb": "Traducere română: set",
+  "sets_82c6db": "seturi",
+  "no_selection_211f6b": "nu selecție",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "adaugă context la cel selectat opțiune",
+      "other": "adaugă context la cel selectat opțiuni",
+      "few": "Add context to the selected options"
+    }
+  },
+  "review_set_ca242c": "revizuire set",
+  "open_sketch_3ccc5c": "deschide schiță",
+  "single_choice_45a76a": "unic alegere",
+  "choose_multiple_b76dc5": "alege multiple",
+  "open_full_review_canvas_26fc95": "deschide complet revizuire pânză",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} set",
+      "other": "{count} seturi",
+      "few": "{count} sets"
+    }
+  }
+}

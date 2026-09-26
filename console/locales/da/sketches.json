@@ -13,25 +13,25 @@
   "review_generated_options_by_set_then_select_one__020509": "Gennemgå de genererede muligheder efter sæt, og vælg en eller flere til videre arbejde.",
   "publish_from_a_skill_f33a0e": "Udgiv fra en færdighed",
   "sketches_are_published_by_a_registered_skill_a2ac72": "Skitsen udgives af en registreret færdighed",
-  "value2_selected_value3_options_b64a24": "{value2} valgt · {value3} options",
+  "value2_selected_value3_options_b64a24": "{value2} valgt · {value3} forslag",
   "value5_sketches_value6_selected_87bdd8": "{value5} skitser · {value6} valgt",
-  "value6_rejected_value7_undecided_bbc778": "{value6} afvist · {value7} undecided",
+  "value6_rejected_value7_undecided_bbc778": "{value6} afvist · {value7} uafklaret",
   "reviewer_d29f46": "Gennemser",
   "option_unavailable_d03e4e": "Mulighed utilgængelig",
   "selected_57fd7a": "Valgt",
   "rejected_aea4a0": "Afvist",
   "undecided_00cc36": "Uafklaret",
   "select_2a7802": "Vælg",
-  "reject_ab604a": "Reject",
+  "reject_ab604a": "Afvis",
   "leave_undecided_65c5c0": "Lad stå uafklaret",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
-  "no_selection_211f6b": "Nej selection",
+  "set_6ee0eb": "sæt",
+  "sets_82c6db": "sæt",
+  "no_selection_211f6b": "Intet valgt",
   "selectedOptionContext": {
     "argument": "count",
     "forms": {
-      "one": "Add context to the valgt option",
-      "other": "Add context to the valgt options"
+      "one": "Tilføj kontekst til det valgte forslag",
+      "other": "Tilføj kontekst til de valgte forslag"
     }
   },
   "review_set_ca242c": "Gennemgå sæt",
@@ -42,8 +42,8 @@
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count} sæt",
+      "other": "{count} sæt"
     }
   }
 }

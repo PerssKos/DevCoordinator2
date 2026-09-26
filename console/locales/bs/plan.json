@@ -70,5 +70,42 @@
   "resize_task_navigator_2cc8bc": "Promijeni veličinu navigatora zadataka",
   "decisions_7c5ca9": "Odluke →",
   "enter_a_line_estimate_7d4502": "Unesite procjenu redova",
-  "not_scheduled_yet_backlog_0f0d42": "još nije zakazano (zaostatak)"
+  "not_scheduled_yet_backlog_0f0d42": "još nije zakazano (zaostatak)",
+  "elaborateLabel": "Zatraži pojašnjenje",
+  "explanationRequested": "Zatraženo je jasnije objašnjenje za {title}",
+  "explainTask": "Zamolite agenta da objasni {title} jednostavnijim jezikom",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} red",
+      "few": "~{value} reda",
+      "other": "~{value} redova"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} zadatak bez procjene",
+      "few": "{count} zadatka bez procjene",
+      "other": "{count} zadataka bez procjene"
+    }
+  },
+  "unestimatedCount": "{count} bez procjene",
+  "doneSummary": "Završeno: {done} / {total} ({percent})",
+  "linesDone": "Završeni redovi: {done} / {total}",
+  "tasksDone": "Završeni zadaci: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} red",
+      "few": "{value} reda",
+      "other": "{value} redova"
+    }
+  },
+  "dropTask": "Odbaci zadatak",
+  "dropTaskNamed": "Odbaci zadatak {title}",
+  "selectTask": "Odaberi {title}",
+  "dragMoveTask": "Prevucite {title} da ga pomjerite",
+  "dragResizeTask": "Prevucite da promijenite veličinu {title}",
+  "progressNeedsEstimate": "Napredak se računa tek nakon procjene ovog rada."
 }

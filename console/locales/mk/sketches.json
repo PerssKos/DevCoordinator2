@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "не коментари на ова опција сè.",
+  "sketch_set_review_1e4713": "скица сет преглед",
+  "close_7d9eb7": "затвори",
+  "selection_mode_1935ae": "избор mode",
+  "close_set_review_2680d1": "затвори сет преглед",
+  "sketch_set_options_62656f": "скица сет опции",
+  "current_option_f4a3f8": "тековно опција",
+  "comments_355f79": "коментари",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "објасни зошто you chose ова опција или сет од опции.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "избори зачувај as задржи, одбиј, или неодлучено.",
+  "sketches_a56d78": "скици",
+  "review_generated_options_by_set_then_select_one__020509": "преглед generated опции by сет, then избери еден или several до carry forward.",
+  "publish_from_a_skill_f33a0e": "објави од еден skill",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "скици се објавено by еден регистрирано skill",
+  "value2_selected_value3_options_b64a24": "{value2} избрано · {value3} опции",
+  "value5_sketches_value6_selected_87bdd8": "{value5} скици · {value6} избрано",
+  "value6_rejected_value7_undecided_bbc778": "{value6} одбиено · {value7} неодлучено",
+  "reviewer_d29f46": "прегледувач",
+  "option_unavailable_d03e4e": "опција недостапно",
+  "selected_57fd7a": "избрано",
+  "rejected_aea4a0": "одбиено",
+  "undecided_00cc36": "неодлучено",
+  "select_2a7802": "избери",
+  "reject_ab604a": "одбиј",
+  "leave_undecided_65c5c0": "остави неодлучено",
+  "set_6ee0eb": "сет",
+  "sets_82c6db": "сети",
+  "no_selection_211f6b": "не избор",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "додај контекст до тој избрано опција",
+      "other": "додај контекст до тој избрано опции"
+    }
+  },
+  "review_set_ca242c": "преглед сет",
+  "open_sketch_3ccc5c": "отвори скица",
+  "single_choice_45a76a": "единечно избор",
+  "choose_multiple_b76dc5": "избери повеќе",
+  "open_full_review_canvas_26fc95": "отвори целосно преглед canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} сет",
+      "other": "{count} сети"
+    }
+  }
+}

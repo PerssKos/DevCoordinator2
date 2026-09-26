@@ -80,6 +80,8 @@
   "current_repository_value1_35de51": "Repositorio actual: {value1}",
   "could_not_save_repository_appearance_try_again_955cdd": "No se pudo guardar la apariencia del repositorio. Inténtelo de nuevo.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} repositorios no disponibles. Actualice para volver a intentarlo.",
-  "montenegrinLatin": "Montenegrin (Latin)",
-  "montenegrinCyrillic": "Montenegrin (Cyrillic)"
+  "montenegrinLatin": "Montenegrino (latino)",
+  "montenegrinCyrillic": "Montenegrino (cirílico)",
+  "loadFailed": "No se pudo cargar la consola. Recarga para intentarlo de nuevo.",
+  "reload": "Recargar"
 }

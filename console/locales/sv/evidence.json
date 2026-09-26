@@ -58,24 +58,62 @@
   "value7_steps_531b1f": {
     "argument": "value7",
     "forms": {
-      "one": "{value7} step",
-      "other": "{value7} steps"
+      "one": "{value7} steg",
+      "other": "{value7} steg"
     }
   },
   "viewport_280503": "visningsområde",
-  "keep_183f00": "Keep",
-  "reject_ab604a": "Reject",
+  "keep_183f00": "Behåll",
+  "reject_ab604a": "Avvisa",
   "undecided_00cc36": "Obestämd",
   "visual_feedback_a19903": "Visuell återkoppling",
-  "reopen_a886d1": "Reopen",
-  "resolve_c8f193": "Resolve",
-  "route_unavailable_21a43f": "Rute utilgængelig",
-  "test_run_fe9e2f": "Testkørsel",
+  "reopen_a886d1": "Öppna igen",
+  "resolve_c8f193": "Lös",
+  "route_unavailable_21a43f": "Sökvägen är inte tillgänglig",
+  "test_run_fe9e2f": "Testkörning",
   "release_proof_17fa7c": "Utgåvebevis",
   "diagnostic_only_3425ba": "Endast diagnostik",
-  "edit_464c4f": "Edit",
+  "edit_464c4f": "Redigera",
   "open_plan_task_4019fe": "Öppna planuppgift →",
   "full_page_9d21b6": "Hela sidan",
   "previous_journey_step_7a544d": "Föregående steg i användarflödet",
-  "next_journey_step_35037a": "Nästa steg i användarflödet"
+  "next_journey_step_35037a": "Nästa steg i användarflödet",
+  "annotationSaved": "Anteckning sparad",
+  "reviewComment": "Kommentera denna granskning",
+  "attachTo": "Bifoga till",
+  "activeOption": "Aktivt alternativ",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Valt alternativ ({count})",
+      "other": "Valda alternativ ({count})"
+    }
+  },
+  "commentLabel": "Kommentar",
+  "commentPlaceholder": "Lägg till en kommentar om detta alternativ eller den valda uppsättningen.",
+  "postComment": "Publicera kommentar",
+  "closeReview": "Stäng granskning",
+  "selectionSummary": "Valda: {selected} · Alternativ: {total}",
+  "allSketchOptions": "Alla skissalternativ",
+  "selectOptionToAnnotate": "Välj ett alternativ att lägga en anteckning på",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Kommentar tillagd för {count} alternativ",
+      "other": "Kommentar tillagd för {count} valda alternativ"
+    }
+  },
+  "commentFailed": "Det gick inte att lägga till kommentaren: {message}",
+  "sketchChangeWhy": "Varför ändras denna skiss?",
+  "reviewedInConsole": "Granskad i konsolen",
+  "selectedJourneyScreenshot": "Skärmbild av vald användarresa",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} ändring begärd",
+      "other": "{count} ändringar begärda"
+    }
+  },
+  "noChangesRequested": "Inga ändringar begärda",
+  "sketchSetUnavailable": "Den här skissuppsättningen är inte längre tillgänglig."
 }

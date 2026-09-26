@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponents",
+  "summary_8e76a9": "Kopsavilkums",
+  "expected_actual_2457a7": "Sagaidītais / faktiskais",
+  "steps_1de3df": "Soļi",
+  "seen_8894cf": "Novērots",
+  "correlations_f54dae": "Saistības",
+  "open_bugs_dce3d4": "Atvērtās kļūdas",
+  "report_a_bug_f75e0b": "Ziņot par kļūdu",
+  "report_b6ce78": "Ziņot",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Tikai ierobežota apjoma, nedalāmi ieraksti: bez noslēpumiem, neapstrādātiem žurnāliem vai privātiem ceļiem.",
+  "close_310ff2": "aizvērt",
+  "expected": "Sagaidītais",
+  "actual": "Faktiskais"
+}

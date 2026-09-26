@@ -141,5 +141,9 @@
   "free": "boş",
   "of": "/",
   "one_minute_average": "bir dakikalık ortalama",
-  "scale": "ölçek"
+  "scale": "ölçek",
+  "removeTest": "Test kapsayıcısını kaldır",
+  "removeOrphaned": "Yetim kapsayıcıyı kaldır",
+  "removeTestContainer": "Test kapsayıcısını kaldır: {name}",
+  "removeOrphanedContainer": "Yetim kapsayıcıyı kaldır: {name}"
 }

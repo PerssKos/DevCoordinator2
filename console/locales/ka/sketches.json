@@ -21,29 +21,29 @@
   "selected_57fd7a": "არჩეულია",
   "rejected_aea4a0": "უარყოფილია",
   "undecided_00cc36": "გადაუწყვეტელი",
-  "select_2a7802": "Select",
-  "reject_ab604a": "Reject",
-  "leave_undecided_65c5c0": "Leave undecided",
-  "set_6ee0eb": "set",
-  "sets_82c6db": "sets",
-  "no_selection_211f6b": "No selection",
+  "select_2a7802": "არჩევა",
+  "reject_ab604a": "უარყოფა",
+  "leave_undecided_65c5c0": "გადაუწყვეტლად დატოვება",
+  "set_6ee0eb": "ნაკრები",
+  "sets_82c6db": "ნაკრებები",
+  "no_selection_211f6b": "არჩევანი არ არის",
   "selectedOptionContext": {
     "argument": "count",
     "forms": {
-      "one": "Add context to the selected option",
-      "other": "Add context to the selected options"
+      "one": "არჩეული ვარიანტისთვის კონტექსტის დამატება",
+      "other": "არჩეული ვარიანტებისთვის კონტექსტის დამატება"
     }
   },
-  "review_set_ca242c": "Review set",
-  "open_sketch_3ccc5c": "Open sketch",
-  "single_choice_45a76a": "Single choice",
-  "choose_multiple_b76dc5": "Choose multiple",
-  "open_full_review_canvas_26fc95": "Open full review canvas",
+  "review_set_ca242c": "ნაკრების მიმოხილვა",
+  "open_sketch_3ccc5c": "ესკიზის გახსნა",
+  "single_choice_45a76a": "ერთი არჩევანი",
+  "choose_multiple_b76dc5": "რამდენიმეს არჩევა",
+  "open_full_review_canvas_26fc95": "მიმოხილვის სრული ტილოს გახსნა",
   "setCount": {
     "argument": "count",
     "forms": {
-      "one": "{count} set",
-      "other": "{count} sets"
+      "one": "{count} ნაკრები",
+      "other": "{count} ნაკრები"
     }
   }
 }

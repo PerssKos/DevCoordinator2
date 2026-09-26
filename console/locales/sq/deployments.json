@@ -16,14 +16,14 @@
   "imported_from_the_live_host_start_stop_restart_a_cd3182": "Importuar nga hosti aktiv. Nisja, ndalimi, rinisja dhe regjistrat veprojnë mbi kontejnerët e regjistruar. Ndryshimet e konfigurimit kërkojnë marrjen e kontrollit përmes konfigurimit të depos.",
   "apply_is_still_running_closing_this_page_does_no_83d405": "Zbatimi vazhdon. Mbyllja e kësaj faqeje nuk e anulon. Rifresko gjendjen pas përfundimit; veprimet e tjera mbeten të padisponueshme.",
   "route_port_2c38fa": "Porta e rrugës",
-  "expires_f6725f": "Expires",
+  "expires_f6725f": "Skadon",
   "components_a150ce": "Komponentë",
   "component_ce54f0": "Komponent",
-  "state_a3b50c": "State",
-  "gen_ca0aad": "Gen",
+  "state_a3b50c": "Gjendje",
+  "gen_ca0aad": "Gjenerim",
   "restarts_4fdc8b": "Rinisje",
-  "binding_164c69": "Binding",
-  "error_54a0e8": "Error",
+  "binding_164c69": "Lidhje",
+  "error_54a0e8": "Gabim",
   "untrusted_log_text_192942": "Tekst regjistri i pabesueshëm",
   "no_measured_components_6f4369": "Nuk ka komponentë të matur.",
   "domain_value1_value2_ee9534": "Domeni: {value1}@{value2}",
@@ -58,5 +58,13 @@
       "one": "{count} implementim",
       "other": "{count} implementime"
     }
-  }
+  },
+  "action_start": "Nis",
+  "action_stop": "Ndalo",
+  "action_restart": "Rinis",
+  "operatorRequired": "Kërkohet qasje operatori",
+  "refreshAfterApply": "Ndryshimet po zbatohen; rifreskoni gjendjen para një veprimi tjetër të ciklit të jetës",
+  "applyRunning": "Zbatimi i ndryshimeve është tashmë në vijim",
+  "editDomain": "Redakto domenin për {name}@{source}",
+  "repositoryLabel": "Depo"
 }

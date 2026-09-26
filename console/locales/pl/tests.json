@@ -101,20 +101,20 @@
   "database_setup_7a9e87": "Konfiguracja bazy danych",
   "stop_run_b7ec68": "Zatrzymaj uruchomienie",
   "run_again_3e310b": "Uruchom ponownie",
-  "not_recorded_b37c78": "Niet recorded",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "not_recorded_b37c78": "Nie zapisano",
+  "value1_of_value2_882c45": "{value1} z {value2}",
   "loading_screenshot_e0fd7b": "Ładowanie zrzut ekranu…",
   "preview_value1_cb5dab": "Pprzegląd {value1}",
   "browse_all_value1_screenshots_81fcf6": {
     "argument": "value1",
     "forms": {
-      "one": "Browse the {value1} zrzut ekranu",
-      "other": "Browse all {value1} zrzut ekranus",
-      "many": "Browse all {value1} zrzut ekranus",
-      "few": "Browse all {value1} zrzut ekranus"
+      "one": "Przeglądaj {value1} zrzut ekranu",
+      "few": "Przeglądaj wszystkie {value1} zrzuty ekranu",
+      "many": "Przeglądaj wszystkie {value1} zrzutów ekranu",
+      "other": "Przeglądaj zrzuty ekranu: {value1}"
     }
   },
-  "earlier_run_value1_68bdba": "Earlier uruchomienie · {value1}",
+  "earlier_run_value1_68bdba": "Wcześniejsze uruchomienie · {value1}",
   "value1_test_results_293210": "{value1} wyniki testów",
   "test_results_3ea600": "Wyniki testów",
   "updates_paused_value1_11b351": "Aktualizacje wstrzymane: {value1}",
@@ -122,11 +122,11 @@
   "details_45989d": "Szczegóły",
   "previous_screenshot_af9be1": "Poprzedni zrzut ekranu",
   "next_screenshot_fd250f": "Następny zrzut ekranu",
-  "open_in_viewer_comment_ad9420": "Otwórz in viewer / comment",
-  "screenshot_loading_cancelled_50e74f": "Zrzut ekranu loading cancelled.",
-  "the_screenshot_changed_while_loading_94fe13": "The zrzut ekranu changed while loading.",
-  "the_screenshot_response_was_incomplete_4d7952": "The zrzut ekranu response was incomplete.",
-  "screenshots_could_not_be_read_92f171": "Zrzut ekranus could not be read.",
-  "screenshot_could_not_be_previewed_11a0c5": "Zrzut ekranu could not be pprzegląded.",
+  "open_in_viewer_comment_ad9420": "Otwórz w przeglądarce dowodów / skomentuj",
+  "screenshot_loading_cancelled_50e74f": "Anulowano wczytywanie zrzutu ekranu.",
+  "the_screenshot_changed_while_loading_94fe13": "Zrzut ekranu zmienił się podczas wczytywania.",
+  "the_screenshot_response_was_incomplete_4d7952": "Odpowiedź zawierająca zrzut ekranu była niepełna.",
+  "screenshots_could_not_be_read_92f171": "Nie udało się odczytać zrzutów ekranu.",
+  "screenshot_could_not_be_previewed_11a0c5": "Nie udało się wyświetlić podglądu zrzutu ekranu.",
   "a_newer_run_is_available_refresh_to_view_it_c113b3": "Dostępne jest nowsze uruchomienie. Odśwież, aby je zobaczyć."
 }

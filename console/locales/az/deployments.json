@@ -60,5 +60,13 @@
       "other": "{count} yerləşdirmə",
       "many": "{count} yerləşdirmə"
     }
-  }
+  },
+  "action_start": "Başlat",
+  "action_stop": "Dayandır",
+  "action_restart": "Yenidən başlat",
+  "operatorRequired": "Operator girişi tələb olunur",
+  "refreshAfterApply": "Dəyişikliklər tətbiq edilir; növbəti həyat dövrü əməliyyatından əvvəl vəziyyəti yeniləyin",
+  "applyRunning": "Dəyişikliklərin tətbiqi artıq davam edir",
+  "editDomain": "{name}@{source} üçün domeni redaktə et",
+  "repositoryLabel": "Repozitoriya"
 }

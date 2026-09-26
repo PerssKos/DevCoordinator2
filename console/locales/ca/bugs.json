@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Informa d’un error",
   "report_b6ce78": "Informa",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Només registres atòmics limitats: sense secrets, registres en brut ni camins privats.",
-  "close_310ff2": "close"
+  "close_310ff2": "tanca",
+  "expected": "Esperat",
+  "actual": "Real"
 }

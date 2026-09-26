@@ -281,5 +281,7 @@
   "label_revert_condition": "Revert condition",
   "label_reason": "Reason",
   "label_before": "Before",
-  "label_after": "After"
+  "label_after": "After",
+  "status_preview": "preview",
+  "status_elaboration_needed": "elaboration needed"
 }

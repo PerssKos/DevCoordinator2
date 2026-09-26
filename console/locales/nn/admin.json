@@ -30,5 +30,10 @@
   "yes_8a7988": "ja",
   "remove_user_84a18f": "Fjern brukar",
   "revoke_777ac4": "trekk tilbake",
-  "remove_grant_8c57bf": "Fjern tilgang"
+  "remove_grant_8c57bf": "Fjern tilgang",
+  "removeGrant": "Fjern tilgangen {role} for {email}",
+  "removeUser": "Fjern brukaren {email}",
+  "telegramSummary": "Bot: {state} · utgåande meldingar i kø: {pending} · siste kontroll: {time}",
+  "unsubscribe": "Avslutt abonnementet på {scope}",
+  "roleAccess": "Berre tilgang"
 }

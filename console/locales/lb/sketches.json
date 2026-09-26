@@ -1,0 +1,49 @@
+{
+  "no_comments_on_this_option_yet_801c78": "nee Kommentaren op dëst Optioun nach.",
+  "sketch_set_review_1e4713": "Skizz Set Iwwerpréiwung",
+  "close_7d9eb7": "zoumaachen",
+  "selection_mode_1935ae": "Auswiel Modus",
+  "close_set_review_2680d1": "zoumaachen Set Iwwerpréiwung",
+  "sketch_set_options_62656f": "Skizz Set Optiounen",
+  "current_option_f4a3f8": "aktuell Optioun",
+  "comments_355f79": "Kommentaren",
+  "explain_why_you_chose_this_option_or_set_of_opti_15e84b": "erklären firwat you chose dëst Optioun oder Set vun Optiounen.",
+  "selections_save_as_keep_reject_or_undecided_e5bbd4": "Auswielen späicheren wéi behalen, refuséieren, oder onentscheet.",
+  "sketches_a56d78": "Skizzen",
+  "review_generated_options_by_set_then_select_one__020509": "Iwwerpréiwung generated Optiounen vun Set, then auswielen eng oder several zu carry forward.",
+  "publish_from_a_skill_f33a0e": "verëffentlechen vun eng Fäegkeet",
+  "sketches_are_published_by_a_registered_skill_a2ac72": "Skizzen sinn verëffentlecht vun eng registréiert Fäegkeet",
+  "value2_selected_value3_options_b64a24": "{value2} ausgewielt · {value3} Optiounen",
+  "value5_sketches_value6_selected_87bdd8": "{value5} Skizzen · {value6} ausgewielt",
+  "value6_rejected_value7_undecided_bbc778": "{value6} refuséiert · {value7} onentscheet",
+  "reviewer_d29f46": "Iwwerpréifer",
+  "option_unavailable_d03e4e": "Optioun net disponibel",
+  "selected_57fd7a": "ausgewielt",
+  "rejected_aea4a0": "refuséiert",
+  "undecided_00cc36": "onentscheet",
+  "select_2a7802": "auswielen",
+  "reject_ab604a": "refuséieren",
+  "leave_undecided_65c5c0": "loossen onentscheet",
+  "set_6ee0eb": "Set",
+  "sets_82c6db": "Sets",
+  "no_selection_211f6b": "nee Auswiel",
+  "selectedOptionContext": {
+    "argument": "count",
+    "forms": {
+      "one": "derbäisetzen Kontext zu d ausgewielt Optioun",
+      "other": "derbäisetzen Kontext zu d ausgewielt Optiounen"
+    }
+  },
+  "review_set_ca242c": "Iwwerpréiwung Set",
+  "open_sketch_3ccc5c": "opmaachen Skizz",
+  "single_choice_45a76a": "eenzeg Wiel",
+  "choose_multiple_b76dc5": "wielen méi",
+  "open_full_review_canvas_26fc95": "opmaachen voll Iwwerpréiwung canvas",
+  "setCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} Set",
+      "other": "{count} Sets"
+    }
+  }
+}

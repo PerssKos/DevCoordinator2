@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "버그 보고",
   "report_b6ce78": "보고",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "짧고 독립적인 기록만 입력하세요. 비밀 정보, 원시 로그, 비공개 경로는 포함하지 마세요.",
-  "close_310ff2": "닫기"
+  "close_310ff2": "닫기",
+  "expected": "예상 결과",
+  "actual": "실제 결과"
 }

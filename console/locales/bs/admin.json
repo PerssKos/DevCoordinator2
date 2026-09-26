@@ -30,5 +30,10 @@
   "yes_8a7988": "da",
   "remove_user_84a18f": "Ukloni korisnika",
   "revoke_777ac4": "Opozovi",
-  "remove_grant_8c57bf": "Ukloni dozvolu"
+  "remove_grant_8c57bf": "Ukloni dozvolu",
+  "removeGrant": "Ukloni dozvolu {role} za {email}",
+  "removeUser": "Ukloni korisnika {email}",
+  "telegramSummary": "Bot: {state} · izlazne poruke na čekanju: {pending} · posljednja provjera: {time}",
+  "unsubscribe": "Otkaži pretplatu na {scope}",
+  "roleAccess": "Samo pristup"
 }

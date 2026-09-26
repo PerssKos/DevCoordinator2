@@ -77,5 +77,43 @@
   "open_plan_task_4019fe": "Plan tapşırığını aç →",
   "full_page_9d21b6": "Tam səhifə",
   "previous_journey_step_7a544d": "Əvvəlki səyahət addımı",
-  "next_journey_step_35037a": "Növbəti səyahət addımı"
+  "next_journey_step_35037a": "Növbəti səyahət addımı",
+  "annotationSaved": "Annotasiya yadda saxlanıldı",
+  "reviewComment": "Bu baxışa şərh",
+  "attachTo": "Əlavə ediləcək yer",
+  "activeOption": "Aktiv seçim",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Seçilmiş seçim ({count})",
+      "other": "Seçilmiş seçimlər ({count})"
+    }
+  },
+  "commentLabel": "Şərh",
+  "commentPlaceholder": "Bu seçim və ya seçilmiş dəst haqqında şərh əlavə edin.",
+  "postComment": "Şərhi dərc et",
+  "closeReview": "Baxışı bağla",
+  "selectionSummary": "Seçilən: {selected} · Seçimlər: {total}",
+  "allSketchOptions": "Bütün eskiz seçimləri",
+  "selectOptionToAnnotate": "Annotasiya əlavə etmək üçün variant seçin",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Şərh {count} seçimə əlavə edildi",
+      "other": "Şərh {count} seçilmiş seçimə əlavə edildi"
+    }
+  },
+  "commentFailed": "Şərh əlavə etmək alınmadı: {message}",
+  "sketchChangeWhy": "Bu eskiz niyə dəyişdirilir?",
+  "reviewedInConsole": "Konsolda nəzərdən keçirilib",
+  "selectedJourneyScreenshot": "Seçilmiş istifadəçi yolunun ekran görüntüsü",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} dəyişiklik tələb edildi",
+      "other": "{count} dəyişiklik tələb edildi"
+    }
+  },
+  "noChangesRequested": "Heç bir dəyişiklik tələb olunmayıb",
+  "sketchSetUnavailable": "Bu eskiz dəsti artıq əlçatan deyil."
 }

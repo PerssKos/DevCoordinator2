@@ -23,15 +23,15 @@
   "undecided_00cc36": "Onbeslist",
   "select_2a7802": "Selecteren",
   "reject_ab604a": "Afwijzen",
-  "leave_undecided_65c5c0": "Leave onbeslist",
+  "leave_undecided_65c5c0": "Onbeslist laten",
   "set_6ee0eb": "set",
   "sets_82c6db": "sets",
-  "no_selection_211f6b": "Nee selection",
+  "no_selection_211f6b": "Niets geselecteerd",
   "selectedOptionContext": {
     "argument": "count",
     "forms": {
-      "one": "Toevoegen context to the geselecteerd option",
-      "other": "Toevoegen context to the geselecteerd opties"
+      "one": "Context toevoegen aan de geselecteerde optie",
+      "other": "Context toevoegen aan de geselecteerde opties"
     }
   },
   "review_set_ca242c": "Set beoordelen",

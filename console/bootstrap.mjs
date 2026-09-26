@@ -10,7 +10,16 @@ try {
 } catch {
   const main = document.getElementById('main');
   main.replaceChildren();
-  const message = document.createElement('p'); message.textContent = 'The Console could not load. Reload to try again.';
-  const retry = document.createElement('button'); retry.className = 'btn'; retry.textContent = 'Reload'; retry.addEventListener('click', () => location.reload());
+  const message = document.createElement('p');
+  const retry = document.createElement('button'); retry.className = 'btn';
+  // Source English remains usable if even the catalog or manifest failed.
+  try {
+    i18n.text(message, 'shell.loadFailed');
+    i18n.text(retry, 'shell.reload');
+  } catch {
+    message.textContent = 'The Console could not load. Reload to try again.';
+    retry.textContent = 'Reload';
+  }
+  retry.addEventListener('click', () => location.reload());
   main.append(message,retry);
 }

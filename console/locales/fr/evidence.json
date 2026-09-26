@@ -78,5 +78,46 @@
   "open_plan_task_4019fe": "Ouvrir la tâche du plan →",
   "full_page_9d21b6": "Page entière",
   "previous_journey_step_7a544d": "Étape précédente du parcours",
-  "next_journey_step_35037a": "Étape suivante du parcours"
+  "next_journey_step_35037a": "Étape suivante du parcours",
+  "annotationSaved": "Annotation enregistrée",
+  "reviewComment": "Commenter cette revue",
+  "attachTo": "Joindre à",
+  "activeOption": "Option active",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "many": "Options sélectionnées ({count})",
+      "one": "Option sélectionnée ({count})",
+      "other": "Options sélectionnées ({count})"
+    }
+  },
+  "commentLabel": "Commentaire",
+  "commentPlaceholder": "Ajoutez un commentaire sur cette option ou cet ensemble sélectionné.",
+  "postComment": "Publier le commentaire",
+  "closeReview": "Fermer la revue",
+  "selectionSummary": "Sélectionnées : {selected} · Options : {total}",
+  "allSketchOptions": "Toutes les options de croquis",
+  "selectOptionToAnnotate": "Sélectionnez une option à annoter",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "many": "Commentaire ajouté à {count} options sélectionnées",
+      "one": "Commentaire ajouté à {count} option",
+      "other": "Commentaire ajouté à {count} options sélectionnées"
+    }
+  },
+  "commentFailed": "Échec du commentaire : {message}",
+  "sketchChangeWhy": "Pourquoi ce croquis est-il modifié ?",
+  "reviewedInConsole": "Revu dans la console",
+  "selectedJourneyScreenshot": "Capture d’écran du parcours utilisateur sélectionné",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "many": "{count} modifications demandées",
+      "one": "{count} modification demandée",
+      "other": "{count} modifications demandées"
+    }
+  },
+  "noChangesRequested": "Aucune modification demandée",
+  "sketchSetUnavailable": "Cet ensemble de croquis n’est plus disponible."
 }

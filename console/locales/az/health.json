@@ -140,5 +140,9 @@
   "free": "boş",
   "of": "/",
   "one_minute_average": "1 dəqiqəlik orta",
-  "scale": "miqyas"
+  "scale": "miqyas",
+  "removeTest": "Test konteynerini sil",
+  "removeOrphaned": "Yetim konteyneri sil",
+  "removeTestContainer": "Test konteynerini sil: {name}",
+  "removeOrphanedContainer": "Yetim konteyneri sil: {name}"
 }

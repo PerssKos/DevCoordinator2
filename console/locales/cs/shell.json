@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Vzhled repozitáře se nepodařilo uložit. Zkuste to znovu.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "Nedostupné repozitáře: {value1}. Obnovte seznam a zkuste to znovu.",
   "montenegrinLatin": "Černohorština (latinka)",
-  "montenegrinCyrillic": "Černohorština (cyrilice)"
+  "montenegrinCyrillic": "Černohorština (cyrilice)",
+  "loadFailed": "Konzoli se nepodařilo načíst. Zkuste stránku načíst znovu.",
+  "reload": "Načíst znovu"
 }

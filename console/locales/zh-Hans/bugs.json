@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "报告缺陷",
   "report_b6ce78": "提交报告",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "仅填写简短、独立的记录：不要包含秘密、原始日志或私有路径。",
-  "close_310ff2": "关闭"
+  "close_310ff2": "关闭",
+  "expected": "预期结果",
+  "actual": "实际结果"
 }

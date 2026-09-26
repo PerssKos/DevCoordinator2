@@ -58,5 +58,13 @@
       "other": "{count} utrullingar"
     }
   },
-  "my_app_4c9a75": "my-app"
+  "my_app_4c9a75": "my-app",
+  "action_start": "Start",
+  "action_stop": "Stopp",
+  "action_restart": "Start på nytt",
+  "operatorRequired": "Operatørtilgang er påkravd",
+  "refreshAfterApply": "Endringane blir tekne i bruk; oppdater status før neste livssyklushandling",
+  "applyRunning": "Endringane er allereie i ferd med å bli tekne i bruk",
+  "editDomain": "Rediger domene for {name}@{source}",
+  "repositoryLabel": "Kodelager"
 }

@@ -26,9 +26,14 @@
   "subscribe_cc0e38": "Subskrybuj",
   "server_aef7de": "Serwer",
   "configured_201582": "skonfigurowano",
-  "not_configured_9f33f0": "not skonfigurowano",
-  "yes_8a7988": "yes",
+  "not_configured_9f33f0": "nie skonfigurowano",
+  "yes_8a7988": "tak",
   "remove_user_84a18f": "Usuń użytkownika",
   "revoke_777ac4": "cofnij",
-  "remove_grant_8c57bf": "Usuń grant"
+  "remove_grant_8c57bf": "Usuń uprawnienie",
+  "removeGrant": "Usuń uprawnienie {role} dla {email}",
+  "removeUser": "Usuń użytkownika {email}",
+  "telegramSummary": "Bot: {state} · oczekujące wiadomości wychodzące: {pending} · ostatnie sprawdzenie: {time}",
+  "unsubscribe": "Anuluj subskrypcję {scope}",
+  "roleAccess": "Tylko dostęp"
 }

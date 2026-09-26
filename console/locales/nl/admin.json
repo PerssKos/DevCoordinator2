@@ -26,9 +26,14 @@
   "subscribe_cc0e38": "Abonneren",
   "server_aef7de": "Server",
   "configured_201582": "geconfigureerd",
-  "not_configured_9f33f0": "not geconfigureerd",
-  "yes_8a7988": "yes",
+  "not_configured_9f33f0": "niet ingesteld",
+  "yes_8a7988": "ja",
   "remove_user_84a18f": "Gebruiker verwijderen",
   "revoke_777ac4": "intrekken",
-  "remove_grant_8c57bf": "Toestemming verwijderen"
+  "remove_grant_8c57bf": "Toestemming verwijderen",
+  "removeGrant": "Rol {role} voor {email} verwijderen",
+  "removeUser": "Gebruiker {email} verwijderen",
+  "telegramSummary": "Bot {state} · in wachtrij: {pending} · laatste peiling: {time}",
+  "unsubscribe": "Abonnement op {scope} opzeggen",
+  "roleAccess": "Alleen toegang"
 }

@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Prijavi grešku",
   "report_b6ce78": "Prijavi",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Samo kratki, samostalni zapisi: bez tajni, sirovih dnevnika i privatnih putanja.",
-  "close_310ff2": "zatvori"
+  "close_310ff2": "zatvori",
+  "expected": "Očekivano",
+  "actual": "Stvarno"
 }

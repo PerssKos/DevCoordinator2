@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Impossible d’enregistrer la présentation du dépôt. Réessayez.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "{value1} dépôts indisponibles. Actualisez pour réessayer.",
   "montenegrinLatin": "Monténégrin (latin)",
-  "montenegrinCyrillic": "Monténégrin (cyrillique)"
+  "montenegrinCyrillic": "Monténégrin (cyrillique)",
+  "loadFailed": "La console n’a pas pu se charger. Rechargez pour réessayer.",
+  "reload": "Recharger"
 }

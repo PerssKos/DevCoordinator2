@@ -43,14 +43,14 @@
   "value1_critical_a27eba": "{value1} kritisch",
   "reported_signal_b070ed": "Gemeldetes Signal",
   "reported_signals_22350f": "Gemeldete Signale",
-  "no_dismissed_incidents_375c5b": "Nein dismissed incidents.",
-  "no_reported_incidents_need_attention_ea3a12": "Nein reported incidents need attention.",
+  "no_dismissed_incidents_375c5b": "Keine ausgeblendeten Vorfälle.",
+  "no_reported_incidents_need_attention_ea3a12": "Keine gemeldeten Vorfälle erfordern Aufmerksamkeit.",
   "collapse_be6eb1": "Einklappen",
   "expand_07548c": "Ausklappen",
   "dismissed_incidents_c4dec9": "Ausgeblendete Vorfälle",
   "timeline_9dcff9": "Zeitleiste",
   "repository_root_unavailable_1d7ecd": "Repository-Stamm nicht verfügbar",
-  "no_reported_incidents_6b64fd": "Nein reported incidents",
+  "no_reported_incidents_6b64fd": "Keine gemeldeten Vorfälle",
   "controlled_via_its_deployment_59424f": "über die Bereitstellung gesteuert",
   "decide_manually_80c52a": "manuell entscheiden",
   "restore_a76e13": "Wiederherstellen",
@@ -65,7 +65,7 @@
   "label_storage_docker_shared": "Docker gemeinsam",
   "label_storage_docker_images": "Docker-Images",
   "label_storage_docker_build_cache": "Docker-Buildcache",
-  "label_storage_docker_shared_volumes": "Docker gemeinsam volumes",
+  "label_storage_docker_shared_volumes": "Gemeinsame Docker-Volumes",
   "label_storage_other": "Andere",
   "reportedSignals": {
     "argument": "count",
@@ -140,5 +140,9 @@
   "free": "frei",
   "of": "von",
   "one_minute_average": "1-Minuten-Durchschnitt",
-  "scale": "Skala"
+  "scale": "Skala",
+  "removeTest": "Testcontainer entfernen",
+  "removeOrphaned": "Verwaisten Container entfernen",
+  "removeTestContainer": "Testcontainer {name} entfernen",
+  "removeOrphanedContainer": "Verwaisten Container {name} entfernen"
 }

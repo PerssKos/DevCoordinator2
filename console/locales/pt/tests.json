@@ -100,8 +100,8 @@
   "database_setup_7a9e87": "Configuração da base de dados",
   "stop_run_b7ec68": "Parar execução",
   "run_again_3e310b": "Executar novamente",
-  "not_recorded_b37c78": "Nãot recorded",
-  "value1_of_value2_882c45": "{value1} of {value2}",
+  "not_recorded_b37c78": "Não registado",
+  "value1_of_value2_882c45": "{value1} de {value2}",
   "loading_screenshot_e0fd7b": "A carregar captura de ecrã…",
   "preview_value1_cb5dab": "Pré-visualização {value1}",
   "browse_all_value1_screenshots_81fcf6": {
@@ -116,7 +116,7 @@
   "value1_test_results_293210": "{value1} resultados de testes",
   "test_results_3ea600": "Resultados de testes",
   "updates_paused_value1_11b351": "Atualizações em pausa: {value1}",
-  "no_maximum_b5cfdf": "Não maximum",
+  "no_maximum_b5cfdf": "Sem limite máximo",
   "details_45989d": "Detalhes",
   "previous_screenshot_af9be1": "Captura anterior",
   "next_screenshot_fd250f": "Captura seguinte",
@@ -124,7 +124,7 @@
   "screenshot_loading_cancelled_50e74f": "Carregamento da captura cancelado.",
   "the_screenshot_changed_while_loading_94fe13": "A captura mudou durante o carregamento.",
   "the_screenshot_response_was_incomplete_4d7952": "A resposta da captura estava incompleta.",
-  "screenshots_could_not_be_read_92f171": "Screenshots não foi possível ler.",
-  "screenshot_could_not_be_previewed_11a0c5": "Screenshot não foi possível pré-visualizar.",
+  "screenshots_could_not_be_read_92f171": "Não foi possível ler as capturas de ecrã.",
+  "screenshot_could_not_be_previewed_11a0c5": "Não foi possível pré-visualizar a captura de ecrã.",
   "a_newer_run_is_available_refresh_to_view_it_c113b3": "Está disponível uma execução mais recente. Atualize para a ver."
 }

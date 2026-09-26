@@ -281,5 +281,7 @@
   "label_comparison": "Samanlikning",
   "label_reason": "Grunn",
   "label_before": "Før",
-  "label_after": "Etter"
+  "label_after": "Etter",
+  "status_preview": "Forhåndsvisning",
+  "status_elaboration_needed": "Forklaring trengs"
 }

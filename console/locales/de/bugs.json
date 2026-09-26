@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Fehler melden",
   "report_b6ce78": "Melden",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Nur kurze, eigenständige Angaben: keine Geheimnisse, Rohprotokolle oder privaten Pfade.",
-  "close_310ff2": "schließen"
+  "close_310ff2": "schließen",
+  "expected": "Erwartet",
+  "actual": "Tatsächlich"
 }

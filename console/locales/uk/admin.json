@@ -30,5 +30,10 @@
   "yes_8a7988": "так",
   "remove_user_84a18f": "Видалити користувача",
   "revoke_777ac4": "відкликати",
-  "remove_grant_8c57bf": "Скасувати дозвіл"
+  "remove_grant_8c57bf": "Скасувати дозвіл",
+  "removeGrant": "Вилучити роль «{role}» для {email}",
+  "removeUser": "Вилучити користувача {email}",
+  "telegramSummary": "Бот: {state} · у черзі надсилання: {pending} · останнє опитування: {time}",
+  "unsubscribe": "Скасувати підписку на {scope}",
+  "roleAccess": "Лише доступ"
 }

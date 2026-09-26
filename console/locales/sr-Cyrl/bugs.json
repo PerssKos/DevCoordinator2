@@ -9,5 +9,7 @@
   "report_a_bug_f75e0b": "Пријави грешку",
   "report_b6ce78": "Пријави",
   "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Само кратки, самостални записи: без тајни, сирових дневника и приватних путања.",
-  "close_310ff2": "затвори"
+  "close_310ff2": "затвори",
+  "expected": "Очекивано",
+  "actual": "Стварно"
 }

@@ -79,5 +79,49 @@
   "open_plan_task_4019fe": "Открыть задачу плана →",
   "full_page_9d21b6": "Вся страница",
   "previous_journey_step_7a544d": "Предыдущий шаг сценария",
-  "next_journey_step_35037a": "Следующий шаг сценария"
+  "next_journey_step_35037a": "Следующий шаг сценария",
+  "annotationSaved": "Аннотация сохранена",
+  "reviewComment": "Комментарий к проверке",
+  "attachTo": "Прикрепить к",
+  "activeOption": "Активный вариант",
+  "selectedOptions": {
+    "argument": "count",
+    "forms": {
+      "one": "Выбранный вариант ({count})",
+      "few": "Выбранные варианты ({count})",
+      "many": "Выбранные варианты ({count})",
+      "other": "Выбранные варианты ({count})"
+    }
+  },
+  "commentLabel": "Комментарий",
+  "commentPlaceholder": "Добавьте комментарий к этому варианту или выбранному набору.",
+  "postComment": "Опубликовать комментарий",
+  "closeReview": "Закрыть проверку",
+  "selectionSummary": "Выбрано: {selected} · Вариантов: {total}",
+  "allSketchOptions": "Все варианты эскиза",
+  "selectOptionToAnnotate": "Выберите вариант для аннотации",
+  "commentAdded": {
+    "argument": "count",
+    "forms": {
+      "one": "Комментарий добавлен к {count} варианту",
+      "few": "Комментарий добавлен к {count} выбранным вариантам",
+      "many": "Комментарий добавлен к {count} выбранным вариантам",
+      "other": "Комментарий добавлен. Выбранных вариантов: {count}"
+    }
+  },
+  "commentFailed": "Не удалось добавить комментарий: {message}",
+  "sketchChangeWhy": "Почему этот эскиз изменяется?",
+  "reviewedInConsole": "Проверено в консоли",
+  "selectedJourneyScreenshot": "Выбранный снимок экрана пользовательского пути",
+  "changesRequested": {
+    "argument": "count",
+    "forms": {
+      "one": "Запрошено {count} изменение",
+      "few": "Запрошено {count} изменения",
+      "many": "Запрошено {count} изменений",
+      "other": "Запрошено {count} изменения"
+    }
+  },
+  "noChangesRequested": "Изменения не запрашивались",
+  "sketchSetUnavailable": "Этот набор эскизов больше недоступен."
 }

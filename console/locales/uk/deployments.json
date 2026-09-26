@@ -62,5 +62,13 @@
       "many": "{count} розгортань",
       "other": "{count} розгортання"
     }
-  }
+  },
+  "action_start": "Запустити",
+  "action_stop": "Зупинити",
+  "action_restart": "Перезапустити",
+  "operatorRequired": "Потрібні права оператора",
+  "refreshAfterApply": "Застосування триває; оновіть стан перед наступною дією керування",
+  "applyRunning": "Застосування вже триває",
+  "editDomain": "Змінити домен для {name}@{source}",
+  "repositoryLabel": "Репозиторій"
 }

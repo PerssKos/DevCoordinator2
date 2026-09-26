@@ -30,5 +30,10 @@
   "yes_8a7988": "ja",
   "remove_user_84a18f": "Benutzer entfernen",
   "revoke_777ac4": "widerrufen",
-  "remove_grant_8c57bf": "Berechtigung entfernen"
+  "remove_grant_8c57bf": "Berechtigung entfernen",
+  "removeGrant": "Rollenzuweisung {role} für {email} entfernen",
+  "removeUser": "Benutzer {email} entfernen",
+  "telegramSummary": "Bot {state} · ausstehend: {pending} · letzte Abfrage: {time}",
+  "unsubscribe": "Abonnement für {scope} kündigen",
+  "roleAccess": "Nur Zugriff"
 }

@@ -1,0 +1,15 @@
+{
+  "component_ce54f0": "Komponentas",
+  "summary_8e76a9": "Santrauka",
+  "expected_actual_2457a7": "Tikėtasi / gauta",
+  "steps_1de3df": "Žingsniai",
+  "seen_8894cf": "Pastebėta",
+  "correlations_f54dae": "Sąsajos",
+  "open_bugs_dce3d4": "Atviros klaidos",
+  "report_a_bug_f75e0b": "Pranešti apie klaidą",
+  "report_b6ce78": "Pranešti",
+  "bounded_atomic_records_only_no_secrets_raw_logs__2abc9d": "Tik riboti, nedalomi įrašai: be paslapčių, neapdorotų žurnalų ar privačių kelių.",
+  "close_310ff2": "užverti",
+  "expected": "Tikėtasi",
+  "actual": "Gauta"
+}

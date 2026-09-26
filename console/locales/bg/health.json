@@ -142,5 +142,9 @@
   "free": "свободно",
   "of": "от",
   "one_minute_average": "средно за една минута",
-  "scale": "мащаб"
+  "scale": "мащаб",
+  "removeTest": "Премахване на тестов контейнер",
+  "removeOrphaned": "Премахване на осиротял контейнер",
+  "removeTestContainer": "Премахване на тестов контейнер {name}",
+  "removeOrphanedContainer": "Премахване на осиротял контейнер {name}"
 }

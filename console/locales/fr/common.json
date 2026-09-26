@@ -78,7 +78,7 @@
   "requestFailed": "La demande a échoué. Réessayez.",
   "unavailable": "Indisponible",
   "permission_denied_value1_daf08f": "Accès refusé : {value1}",
-  "jump_to_latest_867524": "Touser aux derniers éléments",
+  "jump_to_latest_867524": "Aller aux derniers éléments",
   "refresh_latest_4ae8e9": "Actualiser les derniers éléments",
   "searching_log_909a9f": "Recherche dans le journal",
   "finding_likely_failure_000092": "Recherche de l’échec probable",
@@ -284,5 +284,7 @@
   "label_revert_condition": "Condition de retour arrière",
   "label_reason": "Motif",
   "label_before": "Avant",
-  "label_after": "Après"
+  "label_after": "Après",
+  "status_preview": "Aperçu",
+  "status_elaboration_needed": "Explication demandée"
 }

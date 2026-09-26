@@ -60,5 +60,13 @@
       "other": "{count} juurutust",
       "many": "{count} juurutust"
     }
-  }
+  },
+  "action_start": "Käivita",
+  "action_stop": "Peata",
+  "action_restart": "Taaskäivita",
+  "operatorRequired": "Vajalik on operaatori juurdepääs",
+  "refreshAfterApply": "Rakendamine käib; värskenda olekut enne järgmist elutsükli toimingut",
+  "applyRunning": "Rakendamine juba käib",
+  "editDomain": "Muuda domeeni {name}@{source} jaoks",
+  "repositoryLabel": "Hoidla"
 }

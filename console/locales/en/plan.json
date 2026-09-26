@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Resize task navigator",
   "decisions_7c5ca9": "Decisions →",
   "enter_a_line_estimate_7d4502": "Enter a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "not scheduled yet (backlog)",
+  "elaborateLabel": "Elaborate",
+  "explanationRequested": "A clearer explanation has been requested for {title}",
+  "explainTask": "Ask the agent to explain {title} in simpler language",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} line",
+      "other": "~{value} lines"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} job not estimated",
+      "other": "{count} jobs not estimated"
+    }
+  },
+  "unestimatedCount": "{count} not estimated",
+  "doneSummary": "{done} / {total} done ({percent})",
+  "linesDone": "Lines done: {done} / {total}",
+  "tasksDone": "Tasks done: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} line",
+      "other": "{value} lines"
+    }
+  },
+  "dropTask": "Drop task",
+  "dropTaskNamed": "Drop task {title}",
+  "selectTask": "Select {title}",
+  "dragMoveTask": "Drag {title} to move it",
+  "dragResizeTask": "Drag to resize {title}",
+  "progressNeedsEstimate": "Progress is not calculated until this work is estimated."
 }

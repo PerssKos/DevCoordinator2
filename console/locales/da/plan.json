@@ -2,7 +2,7 @@
   "no_releases_planned_yet_11b10b": "ingen udgivelser planlagt endnu",
   "nothing_sized_yet_8fb780": "ingen størrelse anslået endnu",
   "pick_a_repository_046ba6": "Vælg et repository.",
-  "repository_13d6ff": "Repository",
+  "repository_13d6ff": "Kodelager",
   "now_building_f780a4": "Under udvikling",
   "progress_466482": "Fremdrift",
   "open_tasks_87cfa1": "Åbne opgaver",
@@ -47,28 +47,62 @@
   "put_first_79c815": "placér først",
   "move_6ecc3d": "Flyt",
   "runs_on_server_port_value2_e42376": "kører på serverport {value2}",
-  "move_value1_c26f36": "Move: {value1}",
+  "move_value1_c26f36": "Flyt: {value1}",
   "add_estimate_c87fb7": "Tilføj estimat",
-  "resize_2956e0": "Resize",
-  "not_scheduled_yet_6e4794": "Nejt scheduled yet",
-  "fit_9f872e": "Fit",
-  "show_0df6f1": "Show",
-  "hide_ac20a5": "Hide",
-  "job_5e8c99": "job",
-  "jobs_5d9a17": "jobs",
+  "resize_2956e0": "Tilpas størrelse",
+  "not_scheduled_yet_6e4794": "Endnu ikke planlagt",
+  "fit_9f872e": "Tilpas",
+  "show_0df6f1": "Vis",
+  "hide_ac20a5": "Skjul",
+  "job_5e8c99": "opgave",
+  "jobs_5d9a17": "opgaver",
   "change_estimate_6ae15e": "Skift estimat",
   "not_scheduled_yet_333719": "endnu ikke planlagt",
   "plan_64879f": "plan",
   "decisions_3183d3": "afgørelser",
-  "selected_task_details_a9a7eb": "Valgt task details",
+  "selected_task_details_a9a7eb": "Detaljer for den valgte opgave",
   "request_preview_1e9b91": "Anmod om forhåndsvisning",
   "open_the_app_397f86": "Åbn appen ↗",
   "drag_to_move_task_41b0d9": "Træk for at flytte opgave",
   "drag_to_resize_estimate_2d023d": "Træk for at ændre estimat",
-  "not_estimated_dbbcf5": "Nejt estimated",
+  "not_estimated_dbbcf5": "Ikke estimeret",
   "interactive_plan_timeline_scroll_horizontally_or_f59ba1": "Interaktiv plan-tidslinje. Rul vandret eller brug tidslinjens kontroller til at flytte og zoome.",
   "resize_task_navigator_2cc8bc": "Skift størrelse på opgavenavigatoren",
   "decisions_7c5ca9": "Afgørelser →",
-  "enter_a_line_estimate_7d4502": "Indtast a line estimate",
-  "not_scheduled_yet_backlog_0f0d42": "endnu ikke planlagt (backlog)"
+  "enter_a_line_estimate_7d4502": "Indtast et estimeret antal linjer",
+  "not_scheduled_yet_backlog_0f0d42": "endnu ikke planlagt (backlog)",
+  "elaborateLabel": "Bed om uddybning",
+  "explanationRequested": "Der er anmodet om en tydeligere forklaring af {title}",
+  "explainTask": "Bed agenten forklare {title} i enklere sprog",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} linje",
+      "other": "~{value} linjer"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} opgave uden estimat",
+      "other": "{count} opgaver uden estimat"
+    }
+  },
+  "unestimatedCount": "{count} uden estimat",
+  "doneSummary": "{done} / {total} færdige ({percent})",
+  "linesDone": "Færdige linjer: {done} / {total}",
+  "tasksDone": "Færdige opgaver: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} linje",
+      "other": "{value} linjer"
+    }
+  },
+  "dropTask": "Drop opgave",
+  "dropTaskNamed": "Drop opgave {title}",
+  "selectTask": "Vælg {title}",
+  "dragMoveTask": "Træk {title} for at flytte den",
+  "dragResizeTask": "Træk for at ændre størrelsen på {title}",
+  "progressNeedsEstimate": "Fremdrift beregnes først, når arbejdet er estimeret."
 }

@@ -30,5 +30,10 @@
   "yes_8a7988": "ναι",
   "remove_user_84a18f": "Αφαίρεση χρήστη",
   "revoke_777ac4": "Ανάκληση",
-  "remove_grant_8c57bf": "Αφαίρεση άδειας"
+  "remove_grant_8c57bf": "Αφαίρεση άδειας",
+  "removeGrant": "Αφαίρεση εκχώρησης {role} για {email}",
+  "removeUser": "Αφαίρεση χρήστη {email}",
+  "telegramSummary": "Ρομπότ {state} · εκκρεμή εξερχόμενα: {pending} · τελευταίος έλεγχος: {time}",
+  "unsubscribe": "Κατάργηση εγγραφής από {scope}",
+  "roleAccess": "Μόνο πρόσβαση"
 }

@@ -70,5 +70,36 @@
   "resize_task_navigator_2cc8bc": "调整任务导航器大小",
   "decisions_7c5ca9": "决策 →",
   "enter_a_line_estimate_7d4502": "输入行数估算",
-  "not_scheduled_yet_backlog_0f0d42": "尚未计划（待办）"
+  "not_scheduled_yet_backlog_0f0d42": "尚未计划（待办）",
+  "elaborateLabel": "请求说明",
+  "explanationRequested": "已请求对“{title}”作出更清楚的说明",
+  "explainTask": "请智能体用更易懂的语言解释“{title}”",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "other": "约 {value} 行"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "other": "{count} 项工作尚未估算"
+    }
+  },
+  "unestimatedCount": "{count} 项尚未估算",
+  "doneSummary": "已完成 {done} / {total}（{percent}）",
+  "linesDone": "已完成行数：{done} / {total}",
+  "tasksDone": "已完成任务：{done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "other": "{value} 行"
+    }
+  },
+  "dropTask": "放弃任务",
+  "dropTaskNamed": "放弃任务“{title}”",
+  "selectTask": "选择“{title}”",
+  "dragMoveTask": "拖动“{title}”以移动它",
+  "dragResizeTask": "拖动以调整“{title}”的估算",
+  "progressNeedsEstimate": "估算此项工作后才能计算进度。"
 }

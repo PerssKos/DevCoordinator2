@@ -131,7 +131,7 @@
   "managed_cpu": "Управљани CPU",
   "managed_memory": "Управљана меморија",
   "load_range": "Оптерећење (1 / 5 / 15 минута)",
-  "swap": "Сwап",
+  "swap": "Меморија за размену",
   "loading_health": "Учитавање стања…",
   "host_health_admin_only": "Стање хоста доступно је само администраторима.",
   "host_health_unavailable": "Стање хоста није доступно.",
@@ -142,5 +142,9 @@
   "free": "слободно",
   "of": "од",
   "one_minute_average": "једноминутни просек",
-  "scale": "скала"
+  "scale": "скала",
+  "removeTest": "Уклони тестни контејнер",
+  "removeOrphaned": "Уклони напуштени контејнер",
+  "removeTestContainer": "Уклони тестни контејнер {name}",
+  "removeOrphanedContainer": "Уклони напуштени контејнер {name}"
 }

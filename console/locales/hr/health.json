@@ -142,5 +142,9 @@
   "free": "slobodno",
   "of": "od",
   "one_minute_average": "Jednominutni prosjek",
-  "scale": "ljestvica"
+  "scale": "ljestvica",
+  "removeTest": "Ukloni testni spremnik",
+  "removeOrphaned": "Ukloni napušteni spremnik",
+  "removeTestContainer": "Ukloni testni spremnik {name}",
+  "removeOrphanedContainer": "Ukloni napušteni spremnik {name}"
 }

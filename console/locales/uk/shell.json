@@ -81,5 +81,7 @@
   "could_not_save_repository_appearance_try_again_955cdd": "Не вдалося зберегти вигляд репозиторію. Спробуйте ще раз.",
   "value1_repositories_unavailable_refresh_to_retry_426a76": "Репозиторії розділів «{value1}» недоступні. Оновіть, щоб повторити спробу.",
   "montenegrinLatin": "Чорногорська (латиниця)",
-  "montenegrinCyrillic": "Чорногорська (кирилиця)"
+  "montenegrinCyrillic": "Чорногорська (кирилиця)",
+  "loadFailed": "Не вдалося завантажити консоль. Оновіть сторінку, щоб спробувати знову.",
+  "reload": "Оновити сторінку"
 }

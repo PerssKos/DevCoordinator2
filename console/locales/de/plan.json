@@ -70,5 +70,39 @@
   "resize_task_navigator_2cc8bc": "Aufgabennavigator skalieren",
   "decisions_7c5ca9": "Entscheidungen →",
   "enter_a_line_estimate_7d4502": "Zeilenschätzung eingeben",
-  "not_scheduled_yet_backlog_0f0d42": "noch nicht geplant (Backlog)"
+  "not_scheduled_yet_backlog_0f0d42": "noch nicht geplant (Backlog)",
+  "elaborateLabel": "Erläuterung anfordern",
+  "explanationRequested": "Eine klarere Erklärung wurde für {title} angefordert",
+  "explainTask": "Bitten Sie den Agenten, {title} in einfacherer Sprache zu erklären",
+  "estimatedLines": {
+    "argument": "count",
+    "forms": {
+      "one": "~{value} Zeile",
+      "other": "~{value} Zeilen"
+    }
+  },
+  "unestimatedJobs": {
+    "argument": "count",
+    "forms": {
+      "one": "{count} nicht geschätzter Auftrag",
+      "other": "{count} nicht geschätzte Aufträge"
+    }
+  },
+  "unestimatedCount": "{count} nicht geschätzt",
+  "doneSummary": "{done} / {total} erledigt ({percent})",
+  "linesDone": "Erledigte Zeilen: {done} / {total}",
+  "tasksDone": "Erledigte Aufgaben: {done} / {total}",
+  "lineCount": {
+    "argument": "count",
+    "forms": {
+      "one": "{value} Zeile",
+      "other": "{value} Zeilen"
+    }
+  },
+  "dropTask": "Aufgabe verwerfen",
+  "dropTaskNamed": "Aufgabe {title} verwerfen",
+  "selectTask": "{title} auswählen",
+  "dragMoveTask": "{title} zum Verschieben ziehen",
+  "dragResizeTask": "Ziehen, um die Größenschätzung für {title} zu ändern",
+  "progressNeedsEstimate": "Der Fortschritt wird erst berechnet, wenn diese Arbeit geschätzt ist."
 }

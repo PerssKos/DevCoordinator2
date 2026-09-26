@@ -62,5 +62,13 @@
       "many": "{count} nasazení",
       "other": "{count} nasazení"
     }
-  }
+  },
+  "action_start": "Spustit",
+  "action_stop": "Zastavit",
+  "action_restart": "Restartovat",
+  "operatorRequired": "Je vyžadován přístup operátora",
+  "refreshAfterApply": "Probíhá aplikování změn; před další operací životního cyklu obnovte stav",
+  "applyRunning": "Aplikování změn již probíhá",
+  "editDomain": "Upravit doménu pro {name}@{source}",
+  "repositoryLabel": "Repozitář"
 }

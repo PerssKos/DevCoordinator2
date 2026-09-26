@@ -60,5 +60,13 @@
       "few": "{count} postavljanja",
       "other": "{count} postavljanja"
     }
-  }
+  },
+  "action_start": "Покрени",
+  "action_stop": "Заустави",
+  "action_restart": "Поново покрени",
+  "operatorRequired": "Потребан је приступ оператера",
+  "refreshAfterApply": "Примјена је у току; освјежите статус прије сљедеће радње животног циклуса",
+  "applyRunning": "Примјена је већ у току",
+  "editDomain": "Измијени домен за {name}@{source}",
+  "repositoryLabel": "Репозиторијум"
 }
