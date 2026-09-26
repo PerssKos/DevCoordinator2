@@ -1500,7 +1500,7 @@
         "IE"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ga/common.json"

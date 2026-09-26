@@ -106,8 +106,8 @@
   "expandWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Expand {count} worker for {name}",
-      "other": "Expand {count} workers for {name}",
+      "one": "méadaigh {count} oibrí do {name}",
+      "other": "méadaigh {count} oibrithe do {name}",
       "few": "Expand {count} workers for {name}",
       "many": "Expand {count} workers for {name}",
       "two": "Expand {count} workers for {name}"
@@ -116,8 +116,8 @@
   "collapseWorkers": {
     "argument": "count",
     "forms": {
-      "one": "Collapse {count} worker for {name}",
-      "other": "Collapse {count} workers for {name}",
+      "one": "laghdaigh {count} oibrí do {name}",
+      "other": "laghdaigh {count} oibrithe do {name}",
       "few": "Collapse {count} workers for {name}",
       "many": "Collapse {count} workers for {name}",
       "two": "Collapse {count} workers for {name}"
@@ -141,7 +141,7 @@
   "saved_usage_updating_35ffa5": "Úsáid shábháilte · á nuashonrú",
   "updating_usage_data_c2a58f": "Sonraí úsáide á nuashonrú…",
   "all_value1_environments_included_e48e29": "Na timpeallachtaí {value1} go léir san áireamh",
-  "all_value1_configured_codex_value2_included_22dccd": "Na Codex {value2} cumraithe {value1} go léir san áireamh",
+  "all_value1_configured_codex_value2_included_22dccd": "Na Codex {value1} cumraithe {value2} go léir san áireamh",
   "value1_of_value2_environments_included_8432b4": "{value1} as {value2} timpeallacht san áireamh",
   "some_usage_may_be_missing_data_from_value1_of_va_4135e3": "D’fhéadfadh roinnt úsáide a bheith in easnamh · sonraí ó {value1} as {value2} timpeallacht Codex cumraithe",
   "no_usage_measured_19cdc5": "Níor tomhaiseadh aon úsáid",
