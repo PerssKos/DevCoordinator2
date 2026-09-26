@@ -1309,7 +1309,7 @@
         "GE"
       ],
       "direction": "ltr",
-      "status": "draft",
+      "status": "enabled",
       "files": {
         "common": [
           "ka/common.json"

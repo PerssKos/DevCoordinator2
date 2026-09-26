@@ -30,11 +30,11 @@
   "unknownIntervals": {
     "argument": "count",
     "forms": {
-      "one": "{count} unknown interval",
-      "other": "{count} unknown intervals"
+      "one": "{count} უცნობი ინტერვალი",
+      "other": "{count} უცნობი ინტერვალი"
     }
   },
   "about_codex_environments_4a2e3e": "Codex-ის გარემოების შესახებ",
-  "explain_codex_usage_data_completeness_63247d": "Explain Codex usage data completeness",
-  "tokens_a039df": "Tokens"
+  "explain_codex_usage_data_completeness_63247d": "Codex-ის გამოყენების მონაცემების სისრულის ახსნა",
+  "tokens_a039df": "ტოკენები"
 }
