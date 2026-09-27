@@ -54,7 +54,9 @@ pub(super) fn read(
     SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"#
     );
     let family = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
-    let mut query = connection.prepare(&sql).map_err(|error| format!("totals_prepare:{error}"))?;
+    let mut query = connection
+        .prepare(&sql)
+        .map_err(|error| format!("totals_prepare:{error}"))?;
     tracing::debug!(
         stage = "performance_prepared",
         family_count = family.len(),
@@ -155,7 +157,9 @@ pub(super) fn read(
     let mut query = connection
         .prepare(&metadata)
         .map_err(|error| format!("metadata_prepare:{error}"))?;
-    let mut rows = query.query([ids]).map_err(|error| format!("metadata_query:{error}"))?;
+    let mut rows = query
+        .query([ids])
+        .map_err(|error| format!("metadata_query:{error}"))?;
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
         let mut operation = super::review_facts::decode_operation(row, start, end)
             .map_err(|_| "source_unavailable")?;

@@ -338,7 +338,11 @@ impl UsageService {
         let now_ms = self.usage.now_ms()?;
         let rate_cards = self.usage.rate_cards()?;
         let bucket = end.saturating_sub(start).max(1);
-        let mut report = self.usage.cached_window(
+        // The repository link has already been resolved by Usage. Reusing it
+        // avoids launching the identity probe on every Performance navigation.
+        // A bounded direct read gives the page measured data on first load;
+        // the normal Usage cache remains responsible for background refreshes.
+        let mut report = self.usage.repository_window(
             repository,
             UsageRange::Hours24,
             now_ms,
@@ -346,25 +350,18 @@ impl UsageService {
             end,
             bucket,
             1,
-            true,
+            false,
+            Some(
+                Instant::now()
+                    + if wait_for_refresh {
+                        QUERY_TIMEOUT
+                    } else {
+                        Duration::from_secs(1)
+                    },
+            ),
             Projection::Tokens,
             rate_cards,
         )?;
-        if wait_for_refresh {
-            self.usage.wait_for_refresh(Some(&repository.repository_id));
-            report = self.usage.cached_window(
-                repository,
-                UsageRange::Hours24,
-                now_ms,
-                start,
-                end,
-                bucket,
-                1,
-                true,
-                Projection::Tokens,
-                self.usage.rate_cards()?,
-            )?;
-        }
         self.attach_outcome_titles(&mut report)?;
         Ok(report)
     }
