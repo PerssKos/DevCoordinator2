@@ -40,7 +40,7 @@ impl CompletionService {
                 "the registered source identity is unavailable",
             )
         })?;
-        self.check_source(repository_id, &source_sha256, None, manifest)
+        self.check_source(repository_id, &source_sha256, None, None, manifest)
     }
 
     pub(crate) fn check_source(
@@ -48,6 +48,7 @@ impl CompletionService {
         repository_id: &str,
         source_sha256: &str,
         config_sha256: Option<&str>,
+        run_id: Option<&str>,
         manifest: completion::Manifest,
     ) -> Result<completion::CheckResult, ProtocolError> {
         validate_manifest(&manifest)?;
@@ -70,7 +71,7 @@ impl CompletionService {
             .filter_map(|capability| capability.task_id.as_deref())
             .collect::<BTreeSet<_>>();
         let tasks = self.task_states(&task_ids)?;
-        evaluate(repository_id, source_sha256, manifest, &tasks)
+        evaluate(repository_id, source_sha256, run_id, manifest, &tasks)
     }
 
     fn task_states(
@@ -117,6 +118,7 @@ struct TaskState {
 fn evaluate(
     repository_id: &str,
     source_sha256: &str,
+    run_id: Option<&str>,
     manifest: completion::Manifest,
     tasks: &BTreeMap<String, Option<TaskState>>,
 ) -> Result<completion::CheckResult, ProtocolError> {
@@ -196,7 +198,7 @@ fn evaluate(
 
         if capability.scope == Scope::Product
             && capability.state == State::RealE2e
-            && !has_runtime_evidence(&capability.evidence_refs)
+            && !has_runtime_evidence(&capability.evidence_refs, run_id)
         {
             findings.push(finding(
                 capability,
@@ -212,7 +214,7 @@ fn evaluate(
                     "enabled_control_incomplete",
                     "an enabled product control must be backed by real end-to-end behavior",
                 ));
-            } else if !has_runtime_evidence(&capability.rendered_evidence_refs) {
+            } else if !has_runtime_evidence(&capability.rendered_evidence_refs, run_id) {
                 findings.push(finding(
                     capability,
                     "enabled_control_evidence_missing",
@@ -306,9 +308,15 @@ fn validate_refs(refs: &[String], label: &str) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn has_runtime_evidence(refs: &[String]) -> bool {
-    refs.iter()
-        .any(|reference| reference.starts_with("run/") || reference.starts_with("journey/"))
+fn has_runtime_evidence(refs: &[String], run_id: Option<&str>) -> bool {
+    refs.iter().any(|reference| {
+        reference.starts_with("journey/")
+            || (reference.starts_with("run/")
+                && run_id.is_none_or(|run_id| {
+                    reference[4..].starts_with(run_id)
+                        && reference.as_bytes().get(4 + run_id.len()) == Some(&b'/')
+                }))
+    })
 }
 
 fn validate_digest(value: &str) -> Result<(), ProtocolError> {
@@ -369,7 +377,7 @@ mod tests {
     fn test_only_fixture_can_be_complete_without_an_outcome() {
         let mut value = manifest(State::FixtureOnly, Scope::TestOnly);
         value.claim = Claim::Complete;
-        let result = evaluate("repo", &"a".repeat(64), value, &BTreeMap::new()).unwrap();
+        let result = evaluate("repo", &"a".repeat(64), None, value, &BTreeMap::new()).unwrap();
         assert!(result.valid);
         assert_eq!(result.incomplete_count, 0);
     }
@@ -377,7 +385,7 @@ mod tests {
     #[test]
     fn product_fixture_requires_an_open_outcome() {
         let value = manifest(State::FixtureOnly, Scope::Product);
-        let result = evaluate("repo", &"a".repeat(64), value, &BTreeMap::new()).unwrap();
+        let result = evaluate("repo", &"a".repeat(64), None, value, &BTreeMap::new()).unwrap();
         assert!(!result.valid);
         assert!(
             result
@@ -401,7 +409,7 @@ mod tests {
                 status: "in_progress".into(),
             }),
         );
-        let result = evaluate("repo", &"a".repeat(64), value, &tasks).unwrap();
+        let result = evaluate("repo", &"a".repeat(64), None, value, &tasks).unwrap();
         assert!(!result.valid);
         assert!(
             result
@@ -426,7 +434,7 @@ mod tests {
             database: Database::open(temporary.path().join("authority.sqlite3")).unwrap(),
         };
         let error = service
-            .check_source("repo", &"a".repeat(64), Some(&"c".repeat(64)), value)
+            .check_source("repo", &"a".repeat(64), Some(&"c".repeat(64)), None, value)
             .unwrap_err();
         assert!(error.detail.contains("configuration identity"));
     }
@@ -443,7 +451,7 @@ mod tests {
                 status: "in_progress".into(),
             }),
         );
-        let result = evaluate("repo", &"a".repeat(64), value, &tasks).unwrap();
+        let result = evaluate("repo", &"a".repeat(64), None, value, &tasks).unwrap();
         assert!(result.valid);
         assert_eq!(result.incomplete_count, 1);
     }
@@ -477,7 +485,7 @@ mod tests {
                 status: "dropped".into(),
             }),
         );
-        let result = evaluate("repo", &"a".repeat(64), value, &tasks).unwrap();
+        let result = evaluate("repo", &"a".repeat(64), None, value, &tasks).unwrap();
         assert!(!result.valid);
         assert!(
             result

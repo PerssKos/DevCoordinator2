@@ -114,6 +114,7 @@ impl DeliveryService {
             &repository_id,
             &catalog.source_sha256,
             Some(&catalog.config_sha256),
+            Some(&params.run_id),
             completion_manifest,
         )?;
         if !completion.valid {
