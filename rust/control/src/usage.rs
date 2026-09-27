@@ -748,15 +748,11 @@ impl CodexUsage {
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
             if canonical && matches!(projection, Projection::Tokens) && bucket_count == 1 {
-                let mut facts = if matches!(projection, Projection::Tokens) {
-                    performance::read(&connection, &family, start_ms, end_ms)?
-                        .map(Ok)
-                        .unwrap_or_else(|| {
-                            review_facts::read(&connection, &family, start_ms, end_ms)
-                        })?
-                } else {
-                    review_facts::read(&connection, &family, start_ms, end_ms)?
-                };
+                let mut facts = performance::read(&connection, &family, start_ms, end_ms)?
+                    .map(Ok)
+                    .unwrap_or_else(|| {
+                        review_facts::read(&connection, &family, start_ms, end_ms)
+                    })?;
                 facts.rates = rate_cards.to_vec();
                 let mut series = vec![BTreeMap::new(); bucket_count];
                 let mut observed = vec![false; bucket_count];
