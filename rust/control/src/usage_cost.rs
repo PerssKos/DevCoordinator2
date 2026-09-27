@@ -28,6 +28,8 @@ pub(super) struct CostModel {
     // Numerators retain sub-micro precision until the final projection.
     pub(super) amounts: [u128; 4],
     pub(super) known_components: [bool; 4],
+    pub(super) token_components: [u64; 6],
+    pub(super) known_token_components: [bool; 6],
     pub(super) cards: BTreeMap<String, RateCard>,
     pub tokens: u64,
     pub requests: u64,
@@ -52,6 +54,11 @@ pub(super) fn merge_cost_bucket(target: &mut CostBuckets, source: &CostBuckets) 
         for i in 0..4 {
             dst.amounts[i] += value.amounts[i];
             dst.known_components[i] |= value.known_components[i];
+        }
+        for i in 0..6 {
+            dst.token_components[i] =
+                dst.token_components[i].saturating_add(value.token_components[i]);
+            dst.known_token_components[i] |= value.known_token_components[i];
         }
         dst.cards.extend(value.cards.clone());
         dst.tokens += value.tokens;
@@ -152,10 +159,24 @@ pub(super) fn request_cost(
                 written,
                 output,
             ];
+            let token_components = [
+                input,
+                cached,
+                written,
+                input.zip(cached.zip(written)).map(|(i, (c, w))| i - c - w),
+                output,
+                request.value("output_tokens_details.reasoning_tokens"),
+            ];
             for i in 0..4 {
                 if let Some(count) = amounts[i] {
                     row.amounts[i] = u128::from(count) * u128::from(rates[i]);
                     row.known_components[i] = true;
+                }
+            }
+            for (i, count) in token_components.into_iter().enumerate() {
+                if let Some(count) = count {
+                    row.token_components[i] = count;
+                    row.known_token_components[i] = true;
                 }
             }
             if amounts.iter().any(Option::is_none) {
@@ -191,6 +212,8 @@ pub(super) fn request_cost(
 pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
     let mut amounts = [0u128; 4];
     let mut known = [false; 4];
+    let mut token_components = [0_u64; 6];
+    let mut known_token_components = [false; 6];
     let mut cards = BTreeMap::new();
     let mut unknown_requests = 0;
     let mut unknown_tokens = 0;
@@ -199,6 +222,10 @@ pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
         for i in 0..4 {
             amounts[i] += row.amounts[i];
             known[i] |= row.known_components[i];
+        }
+        for i in 0..6 {
+            token_components[i] = token_components[i].saturating_add(row.token_components[i]);
+            known_token_components[i] |= row.known_token_components[i];
         }
         cards.extend(row.cards.clone());
         unknown_requests += row.unknown_requests;
@@ -230,6 +257,12 @@ pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
         cached_input_usd_micros: known[1].then(|| micros(amounts[1])).flatten(),
         cache_write_usd_micros: known[2].then(|| micros(amounts[2])).flatten(),
         output_usd_micros: known[3].then(|| micros(amounts[3])).flatten(),
+        input_tokens: known_token_components[0].then_some(token_components[0]),
+        cached_input_tokens: known_token_components[1].then_some(token_components[1]),
+        cache_write_tokens: known_token_components[2].then_some(token_components[2]),
+        uncached_input_tokens: known_token_components[3].then_some(token_components[3]),
+        output_tokens: known_token_components[4].then_some(token_components[4]),
+        reasoning_tokens: known_token_components[5].then_some(token_components[5]),
         model_requests: buckets.operations,
         priced_requests: buckets.operations.saturating_sub(unknown_requests),
         unknown_requests,

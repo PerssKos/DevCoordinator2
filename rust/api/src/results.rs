@@ -2026,6 +2026,14 @@ pub struct UsageCost {
     pub cached_input_usd_micros: Option<u64>,
     pub cache_write_usd_micros: Option<u64>,
     pub output_usd_micros: Option<u64>,
+    /// Provider-reported token components used by the cost/detail popover.
+    /// Unavailable components remain null; they are never inferred as zero.
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
     #[serde(default)]
     pub unknown_requests: u64,
     #[serde(default)]

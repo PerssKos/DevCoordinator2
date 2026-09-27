@@ -325,6 +325,50 @@ impl UsageService {
         )
     }
 
+    /// Fast token/cost projection used by the Performance overview. It uses
+    /// the same bounded repository cache as Usage, so the page can paint the
+    /// saved snapshot immediately while the indexed refresh runs in a worker.
+    pub(crate) fn performance_snapshot(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        wait_for_refresh: bool,
+    ) -> Result<UsageRepository, ProtocolError> {
+        let now_ms = self.usage.now_ms()?;
+        let rate_cards = self.usage.rate_cards()?;
+        let bucket = end.saturating_sub(start).max(1);
+        let mut report = self.usage.cached_window(
+            repository,
+            UsageRange::Hours24,
+            now_ms,
+            start,
+            end,
+            bucket,
+            1,
+            true,
+            Projection::Tokens,
+            rate_cards,
+        )?;
+        if wait_for_refresh {
+            self.usage.wait_for_refresh(Some(&repository.repository_id));
+            report = self.usage.cached_window(
+                repository,
+                UsageRange::Hours24,
+                now_ms,
+                start,
+                end,
+                bucket,
+                1,
+                true,
+                Projection::Tokens,
+                self.usage.rate_cards()?,
+            )?;
+        }
+        self.attach_outcome_titles(&mut report)?;
+        Ok(report)
+    }
+
     pub(crate) fn performance_tokens(
         &self,
         repository: &RepositoryRecord,

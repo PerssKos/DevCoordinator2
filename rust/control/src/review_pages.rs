@@ -20,6 +20,19 @@ const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 16 * 1024;
 
 impl ReviewService {
+    pub(super) fn fast_performance_usage(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        wait_for_refresh: bool,
+    ) -> Result<ReviewUsage, ProtocolError> {
+        Ok(review_usage_from_repository(
+            self.usage
+                .performance_snapshot(repository, start, end, wait_for_refresh)?,
+        ))
+    }
+
     pub(super) fn outcome_usage(
         &self,
         repository: &RepositoryRecord,
@@ -200,6 +213,70 @@ impl ReviewService {
             },
         );
         Ok(result)
+    }
+}
+
+fn review_usage_from_repository(
+    report: devcoordinator2_api::results::UsageRepository,
+) -> ReviewUsage {
+    use devcoordinator2_api::outcomes::{
+        OutcomeEffort, OutcomeMeasurement, OutcomeReport, OutcomeRow,
+    };
+    let exact = report.coverage.state == devcoordinator2_api::results::CoverageState::Complete;
+    let measurement = |value: Option<u64>| OutcomeMeasurement {
+        measured: value.unwrap_or(0),
+        exact: value.filter(|_| exact),
+        unknown: u64::from(value.is_none() || !exact),
+    };
+    let total = measurement(report.totals.total_tokens);
+    let rows = report
+        .outcomes
+        .into_iter()
+        .map(|row| OutcomeRow {
+            kind: None,
+            title: row.title,
+            outcome_id: row.outcome_id,
+            workstream_id: None,
+            effort: OutcomeEffort {
+                operations: row.operations,
+                provider_total_tokens: measurement(Some(row.total_tokens)),
+                cost: row.cost,
+                ..OutcomeEffort::default()
+            },
+        })
+        .collect::<Vec<_>>();
+    let outcome_count = rows.len();
+    let totals = OutcomeEffort {
+        operations: report.totals.operations,
+        provider_total_tokens: total,
+        cost: report.totals.cost.clone(),
+        ..OutcomeEffort::default()
+    };
+    let coverage = match report.coverage.state {
+        devcoordinator2_api::results::CoverageState::Complete => "complete",
+        devcoordinator2_api::results::CoverageState::Partial => "partial",
+        _ => "unavailable",
+    };
+    ReviewUsage {
+        coverage: report.coverage,
+        totals: report.totals,
+        activities: report.activities,
+        time: report.time,
+        tools: report.tools,
+        semantics: report.semantics,
+        outcomes: OutcomeReport {
+            kinds: BTreeMap::new(),
+            schema_version: 1,
+            coverage: coverage.into(),
+            totals: totals.clone(),
+            attributed: totals,
+            unattributed: OutcomeEffort::default(),
+            unattributed_reasons: BTreeMap::new(),
+            rows,
+            total_rows: outcome_count,
+            next_cursor: None,
+            basis: "Indexed repository usage snapshot; timing remains separate from provider token measurements.".into(),
+        },
     }
 }
 

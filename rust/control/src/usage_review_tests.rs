@@ -621,6 +621,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
                 outcome_cursor: None,
                 outcome_limit: Some(1),
                 totals_only: false,
+                wait_for_refresh: false,
             },
             START + WEEK,
         )
@@ -637,6 +638,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
                 outcome_cursor: None,
                 outcome_limit: None,
                 totals_only: true,
+                wait_for_refresh: false,
             },
             START + WEEK,
         )
