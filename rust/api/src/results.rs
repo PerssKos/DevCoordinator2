@@ -2060,6 +2060,12 @@ impl UsageCost {
             && self.cached_input_usd_micros.is_none()
             && self.cache_write_usd_micros.is_none()
             && self.output_usd_micros.is_none()
+            && self.input_tokens.is_none()
+            && self.cached_input_tokens.is_none()
+            && self.cache_write_tokens.is_none()
+            && self.uncached_input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.reasoning_tokens.is_none()
             && self.unknown_requests == 0
             && self.unknown_tokens == 0
             && self.unknown_observations == 0
