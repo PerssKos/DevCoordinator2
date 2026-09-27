@@ -166,7 +166,10 @@ impl ReviewService {
             } else {
                 "active"
             };
-            let choice_required = action.is_none() && last_receipt.is_none();
+            // An inactive legacy row is already retired history. It must stay
+            // visible for audit purposes, but it cannot prompt the next agent
+            // to choose a clock action again.
+            let choice_required = active && action.is_none() && last_receipt.is_none();
             let choice_explanation = choice_required.then(|| "An existing review clock is stored for this repository/workstream. Choose whether to follow its dates, reset them, start a new workstream, or retire it before continuing.".to_owned());
             let start = r.get::<_,i64>(3)? as u64;
             Ok(Policy {repository_id:p.repository_id.clone(),workstream_id:p.workstream_id.clone(),review_interval_ms:r.get::<_,i64>(0)? as u64,escalation_interval_ms:escalation,active,window_start_ms:start,window_end_ms:end,last_completed_receipt:last_receipt,due:active&&now>=end,escalated:active&&now>=end.saturating_add(escalation),owner_thread_id:r.get(7)?,lease_expires_at:r.get::<_,Option<i64>>(6)?.map(|at|at as u64),delivery_route:if r.get::<_,Option<i64>>(6)?.is_some_and(|expiry|expiry>now as i64){"codex_alarm"}else{"agent_messages"}.into(),clock_source:source.unwrap_or_else(|| "coordinator".into()),clock_state:state.into(),clock_start_ms:start,clock_due_at_ms:end,clock_hard_stop_at_ms:end.saturating_add(escalation),choice_required,choice_explanation,available_actions:vec!["follow_existing".into(),"reset_existing".into(),"start_new".into(),"retire_existing".into()]})

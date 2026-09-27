@@ -763,3 +763,34 @@ fn review_policy_requires_explicit_clock_choice_for_legacy_existing_scope() {
     assert_eq!(retired.clock_due_at_ms, 87_400_000);
     assert_eq!(retired.clock_hard_stop_at_ms, 91_000_000);
 }
+
+#[test]
+fn retired_legacy_clock_does_not_require_a_new_choice() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    fixture
+        .database
+        .call(|c| {
+            c.execute(
+                "INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES('project-alpha','\"retired-legacy\"',86400000,3600000,0,1000000,87400000,NULL)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let status = fixture
+        .service
+        .policy_status(
+            Scope {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("retired-legacy".into()),
+            },
+            START,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!status.active);
+    assert_eq!(status.clock_state, "retired");
+    assert!(!status.choice_required);
+    assert!(status.choice_explanation.is_none());
+}
