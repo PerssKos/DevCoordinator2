@@ -1,7 +1,7 @@
 //! Read-only Console projections over canonical accounting and review records.
 use crate::{
     outcomes::OutcomeMeasurement,
-    results::UsageCoverage,
+    results::{UsageCost, UsageCoverage},
     review::{EvidenceRef, ReviewUsage, Revision},
 };
 use schemars::JsonSchema;
@@ -52,6 +52,7 @@ pub struct OverviewResult {
     pub window_end_ms: u64,
     pub generated_at_ms: u64,
     pub total_tokens: OutcomeMeasurement,
+    pub cost: UsageCost,
     pub coverage: UsageCoverage,
     pub usage: Option<ReviewUsage>,
 }

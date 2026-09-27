@@ -36,6 +36,7 @@ pub mod planning_recovery;
 pub mod platform;
 pub mod ports;
 pub mod progress;
+pub mod rate_card;
 pub mod repository;
 pub mod repository_config;
 mod review;

@@ -509,6 +509,7 @@ fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
                 escalation_interval_ms: None,
                 active: true,
                 window_start_ms: Some(START),
+                clock_action: None,
             },
             START,
         )
@@ -632,9 +633,19 @@ fn review_policy_without_registration_uses_messages_and_preserves_window_on_upda
         escalation_interval_ms: None,
         active: true,
         window_start_ms: None,
+        clock_action: None,
     };
     let first = fixture.service.policy_set(set.clone(), START).unwrap();
-    let renewed = fixture.service.policy_set(set, START + 1000).unwrap();
+    let renewed = fixture
+        .service
+        .policy_set(
+            Set {
+                clock_action: Some(ClockAction::FollowExisting),
+                ..set
+            },
+            START + 1000,
+        )
+        .unwrap();
     assert_eq!(first.window_start_ms, renewed.window_start_ms);
     fixture
         .service
@@ -672,10 +683,83 @@ fn review_policy_without_registration_uses_messages_and_preserves_window_on_upda
                 escalation_interval_ms: None,
                 active: true,
                 window_start_ms: Some(START),
+                clock_action: None,
             },
             START + WEEK + 1000,
         )
         .unwrap();
     assert_eq!(resumed.window_start_ms, START + WEEK);
     assert_eq!(resumed.last_completed_receipt, Some(receipt.reference));
+}
+
+#[test]
+fn review_policy_requires_explicit_clock_choice_for_legacy_existing_scope() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    fixture
+        .database
+        .call(|c| {
+            c.execute(
+                "INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES('project-alpha','\"legacy\"',86400000,3600000,1,1000000,87400000,NULL)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let status = fixture
+        .service
+        .policy_status(
+            Scope {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+            },
+            START,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(status.choice_required);
+    assert_eq!(status.clock_state, "legacy-only");
+    assert!(
+        status
+            .choice_explanation
+            .as_deref()
+            .is_some_and(|value| value.contains("existing review clock"))
+    );
+    let error = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: None,
+                clock_action: None,
+            },
+            START,
+        )
+        .unwrap_err();
+    assert!(error.message.contains("clock_choice_required"));
+    let retired = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: None,
+                clock_action: Some(ClockAction::RetireExisting),
+            },
+            START,
+        )
+        .unwrap();
+    assert!(!retired.active);
+    assert_eq!(retired.clock_state, "retired");
+    assert!(!retired.choice_required);
+    assert_eq!(retired.clock_start_ms, 1_000_000);
+    assert_eq!(retired.clock_due_at_ms, 87_400_000);
+    assert_eq!(retired.clock_hard_stop_at_ms, 91_000_000);
 }

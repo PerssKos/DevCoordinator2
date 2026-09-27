@@ -25,7 +25,12 @@ impl Groups {
     }
 
     pub(super) fn legacy(report: &SourceReport) -> Self {
+        let mut cost = CostBuckets::default();
+        for bucket in report.activity_costs.values() {
+            merge_cost_bucket(&mut cost, bucket);
+        }
         let effort = Effort {
+            cost,
             activities: report
                 .activities
                 .iter()
@@ -111,6 +116,16 @@ impl Groups {
 }
 
 fn mark_incomplete(effort: &mut devcoordinator2_api::outcomes::OutcomeEffort) {
+    if effort.cost.status == "complete" {
+        effort.cost.status = "partial".into();
+    }
+    if !effort.cost.is_empty() {
+        *effort
+            .cost
+            .unavailable_reasons
+            .entry("unavailable_collectors".into())
+            .or_default() += 1;
+    }
     for metric in effort.activities.values_mut() {
         metric.exact = None;
     }
@@ -161,6 +176,7 @@ fn aggregate_facts(
         ..Default::default()
     };
     let mut counts = HashMap::<String, (u64, u64)>::new();
+    let mut requests = BTreeMap::<(String, String), RequestTokens>::new();
     for token in facts.tokens {
         let Some(owner) = facts.operations.get(&token.owner) else {
             continue;
@@ -171,6 +187,10 @@ fn aggregate_facts(
         {
             continue;
         }
+        requests
+            .entry((token.owner.clone(), token.event.clone()))
+            .or_default()
+            .observe(&token.category, token.value, token.incomplete, token.at);
         report.evidence = true;
         increment(
             &mut report.token_observations,
@@ -209,6 +229,26 @@ fn aggregate_facts(
                 (&owner.operation.phase, &owner.operation.activity),
                 value,
             );
+        }
+    }
+    let mut costs = BTreeMap::<String, CostBuckets>::new();
+    if !facts.rates.is_empty() {
+        for ((owner, _), request) in &requests {
+            let operation = &facts.operations[owner];
+            let cost = super::cost::request_cost(&operation.operation, request, &facts.rates);
+            merge_cost_bucket(costs.entry(owner.clone()).or_default(), &cost);
+        }
+        for (id, op) in &facts.operations {
+            if op.operation.kind == "model_request" && !costs.contains_key(id) {
+                costs.insert(
+                    id.clone(),
+                    super::cost::request_cost(
+                        &op.operation,
+                        &RequestTokens::default(),
+                        &facts.rates,
+                    ),
+                );
+            }
         }
     }
     let mut groups = Groups::default();
@@ -275,6 +315,24 @@ fn aggregate_facts(
                 1,
             );
         }
+        if let Some(cost) = costs.get(&id) {
+            merge_cost_bucket(
+                report
+                    .activity_costs
+                    .entry((
+                        operation.operation.phase.clone(),
+                        operation.operation.activity.clone(),
+                    ))
+                    .or_default(),
+                cost,
+            );
+            if let Some((outcome, _)) = &operation.key {
+                merge_cost_bucket(
+                    report.outcome_costs.entry(outcome.clone()).or_default(),
+                    cost,
+                );
+            }
+        }
         let include = workstream.is_none_or(|selected| {
             operation
                 .workstream
@@ -296,6 +354,9 @@ fn aggregate_facts(
                 );
             }
             for target in targets {
+                if let Some(cost) = costs.get(&id) {
+                    merge_cost_bucket(&mut target.cost, cost);
+                }
                 let activity = target
                     .activities
                     .entry(operation.operation.activity.clone())

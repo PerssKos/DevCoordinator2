@@ -24,7 +24,7 @@ pub(super) fn read(
         "provenance"
     };
     let sql = format!(
-        "{prefix} SELECT owner,token_count,unknown_count,incomplete,conflict FROM tokens LIMIT 200001"
+        "{prefix} SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"
     );
     let family_count = family.len();
     let family = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
@@ -42,6 +42,7 @@ pub(super) fn read(
         ])
         .map_err(|_| "source_unavailable")?;
     let mut facts = Facts {
+        rates: Vec::new(),
         operations: BTreeMap::new(),
         tokens: Vec::new(),
         waits: HashMap::new(),
@@ -56,6 +57,9 @@ pub(super) fn read(
             .transpose()
             .map_err(|_| "source_unavailable")?;
         facts.tokens.push(Token {
+            event: row.get(5).map_err(|_| "source_unavailable")?,
+            at: u64::try_from(row.get::<_, i64>(6).map_err(|_| "source_unavailable")?)
+                .map_err(|_| "source_unavailable")?,
             owner,
             category: "total_tokens".into(),
             value: if conflict { None } else { value },
@@ -125,7 +129,9 @@ pub(super) fn read(
     let mut query = connection
         .prepare(&metadata)
         .map_err(|_| "source_unavailable")?;
-    let mut rows = query.query([ids]).map_err(|_| "source_unavailable")?;
+    let mut rows = query
+        .query([ids.clone()])
+        .map_err(|_| "source_unavailable")?;
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
         let mut operation = super::review_facts::decode_operation(row, start, end)
             .map_err(|_| "source_unavailable")?;
@@ -133,6 +139,43 @@ pub(super) fn read(
         facts
             .operations
             .insert(operation.operation.id.clone(), operation);
+    }
+    drop(rows);
+    drop(query);
+    super::cost::load_models(connection, &mut facts.operations)?;
+    let (selection, _) = super::review_query::selection(connection)?;
+    let mut component_query = connection
+        .prepare(&(selection + super::review_query::TOKENS))
+        .map_err(|_| "source_unavailable")?;
+    let mut component_rows = component_query
+        .query(rusqlite::params![
+            family,
+            i64_value(start)?,
+            i64_value(end)?,
+            ids
+        ])
+        .map_err(|_| "source_unavailable")?;
+    facts.tokens.clear();
+    while let Some(row) = component_rows.next().map_err(|_| "source_unavailable")? {
+        let conflict: bool = row.get(4).map_err(|_| "source_unavailable")?;
+        let value = row
+            .get::<_, Option<i64>>(2)
+            .map_err(|_| "source_unavailable")?
+            .and_then(|v| u64::try_from(v).ok());
+        facts.tokens.push(Token {
+            owner: row.get(0).map_err(|_| "source_unavailable")?,
+            category: row.get(1).map_err(|_| "source_unavailable")?,
+            value: if conflict { None } else { value },
+            incomplete: conflict
+                || value.is_none()
+                || row.get::<_, bool>(3).map_err(|_| "source_unavailable")?,
+            event: row.get(5).map_err(|_| "source_unavailable")?,
+            at: u64::try_from(row.get::<_, i64>(6).map_err(|_| "source_unavailable")?)
+                .map_err(|_| "source_unavailable")?,
+        });
+        if facts.tokens.len() > 200_000 {
+            return Err("query_too_large".into());
+        }
     }
     tracing::debug!(
         stage = "performance_tokens",

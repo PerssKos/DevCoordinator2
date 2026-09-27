@@ -18,7 +18,7 @@ impl ReviewService {
             ));
         }
         let repository = self.repository(&p.repository_id)?;
-        let (total_tokens, coverage, usage) = if p.totals_only {
+        let (total_tokens, cost, coverage, usage) = if p.totals_only {
             if p.outcome_cursor.is_some() {
                 return Err(invalid("Totals do not accept an outcome cursor"));
             }
@@ -34,7 +34,8 @@ impl ReviewService {
                 exact: value.filter(|_| !report.coverage.has_gaps),
                 unknown: u64::from(value.is_none()),
             };
-            (measurement, report.coverage, None)
+            let cost = report.totals.cost;
+            (measurement, cost, report.coverage, None)
         } else {
             let usage = self.performance_usage(
                 &repository,
@@ -51,8 +52,10 @@ impl ReviewService {
                 },
                 Instant::now() + QUERY_TIMEOUT,
             )?;
+            let cost = usage.totals.cost.clone();
             (
                 usage.outcomes.totals.provider_total_tokens.clone(),
+                cost,
                 usage.coverage.clone(),
                 Some(usage),
             )
@@ -63,6 +66,7 @@ impl ReviewService {
             window_end_ms: p.window_end_ms,
             generated_at_ms: now,
             total_tokens,
+            cost,
             coverage,
             usage,
         })

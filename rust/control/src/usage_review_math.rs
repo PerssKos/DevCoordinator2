@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
 pub(super) struct Effort {
+    pub(super) cost: super::CostBuckets,
     pub(super) activities: BTreeMap<String, (u64, u64)>,
     pub(super) operations: u64,
     pub(super) retries: u64,
@@ -21,6 +22,7 @@ pub(super) struct Effort {
 
 impl Effort {
     pub(super) fn merge(&mut self, other: Self, source: usize) -> Result<(), String> {
+        super::merge_cost_bucket(&mut self.cost, &other.cost);
         for (activity, (tokens, unknown)) in other.activities {
             let value = self.activities.entry(activity).or_default();
             value.0 = value.0.checked_add(tokens).ok_or("usage_overflow")?;
@@ -111,6 +113,11 @@ impl Effort {
             active_agent_ms: measurement(active, self.unknown_active),
             elapsed_execution_ms: measurement(union_ms(&self.elapsed), self.unknown_elapsed),
             recorded_wait_ms: measurement(union_ms(&self.waits), self.unknown_waits),
+            cost: if self.cost.models.is_empty() {
+                Default::default()
+            } else {
+                super::cost_from_buckets(&self.cost)
+            },
         })
     }
 }

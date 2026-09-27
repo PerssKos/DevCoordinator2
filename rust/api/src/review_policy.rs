@@ -19,6 +19,17 @@ pub struct Set {
     pub active: bool,
     /// Earlier start retained during migration; never a completion receipt.
     pub window_start_ms: Option<u64>,
+    #[serde(default)]
+    pub clock_action: Option<ClockAction>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockAction {
+    FollowExisting,
+    ResetExisting,
+    StartNew,
+    RetireExisting,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, JsonSchema, Serialize, Deserialize)]
@@ -64,6 +75,14 @@ pub struct Policy {
     pub owner_thread_id: Option<String>,
     /// Absolute UTC lease expiry in Unix milliseconds.
     pub lease_expires_at: Option<u64>,
+    pub clock_source: String,
+    pub clock_state: String,
+    pub clock_start_ms: u64,
+    pub clock_due_at_ms: u64,
+    pub clock_hard_stop_at_ms: u64,
+    pub choice_required: bool,
+    pub choice_explanation: Option<String>,
+    pub available_actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, JsonSchema, Serialize, Deserialize)]

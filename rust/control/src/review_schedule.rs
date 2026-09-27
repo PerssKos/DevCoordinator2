@@ -2,7 +2,7 @@
 use super::*;
 use crate::events::{EventService, NewEvent};
 use devcoordinator2_api::results::{OtherOwnedEvent, OwnedEvent};
-use devcoordinator2_api::review_policy::{self as api, Policy, Reminder};
+use devcoordinator2_api::review_policy::{self as api, ClockAction, Policy, Reminder};
 
 pub(crate) enum RegistrationMode {
     Refresh,
@@ -23,6 +23,14 @@ fn identifier(value: &str) -> Result<(), ProtocolError> {
     }
     Ok(())
 }
+fn clock_action_name(action: ClockAction) -> &'static str {
+    match action {
+        ClockAction::FollowExisting => "follow_existing",
+        ClockAction::ResetExisting => "reset_existing",
+        ClockAction::StartNew => "start_new",
+        ClockAction::RetireExisting => "retire_existing",
+    }
+}
 impl ReviewService {
     pub(crate) fn policy_set(&self, p: api::Set, now: u64) -> Result<Policy, ProtocolError> {
         self.repository(&p.repository_id)?;
@@ -33,18 +41,69 @@ impl ReviewService {
         let escalation = p.escalation_interval_ms.unwrap_or(3_600_000);
         let repo = p.repository_id.clone();
         let key = scope_key(&p.workstream_id);
-        let previous=self.database.call(move|c|{
-            let mut q=c.prepare("SELECT record_id,revision,record_json FROM review_records WHERE repository_id=?1 AND json_extract(record_json,'$.workstreamId') IS json_extract(?2,'$') AND json_extract(record_json,'$.experiment.disposition') IN ('retained','reverted','inconclusive','unchanged') ORDER BY window_end_ms DESC,revision DESC LIMIT 32")?;
-            let rows=q.query_map(rusqlite::params![repo,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
-            Ok(rows.into_iter().find_map(|(id,revision,json)|serde_json::from_str::<ReviewRecord>(&json).ok().filter(review_completed).map(|record|(record.window_end_ms,format!("{id}@{revision}")))))
+        let existing = self.database.call({
+            let repo = repo.clone();
+            let key = key.clone();
+            move |c| Ok(c.query_row("SELECT window_start_ms,window_end_ms,active,last_receipt FROM review_policies WHERE repository_id=?1 AND workstream_key=?2", rusqlite::params![repo,key], |r| Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64,r.get::<_,bool>(2)?,r.get::<_,Option<String>>(3)?))).optional()?)
         }).map_err(database_error)?;
-        let start = match (p.window_start_ms, previous.as_ref().map(|(end, _)| *end)) {
-            (Some(start), Some(completed)) => start.max(completed),
-            (Some(start), None) => start,
-            (None, Some(completed)) => completed,
-            (None, None) => now,
+        let has_history = self.database.call({
+            let repo = p.repository_id.clone(); let key = key.clone();
+            move |c| Ok(c.query_row("SELECT 1 FROM review_clock_history WHERE repository_id=?1 AND workstream_key=?2 ORDER BY id DESC LIMIT 1", rusqlite::params![repo,key], |_| Ok(())).optional()?)
+        }).map_err(database_error)?.is_some();
+        let completed_existing = existing.as_ref().is_some_and(|value| value.3.is_some());
+        if existing.is_some() && p.clock_action.is_none() && !has_history && !completed_existing {
+            return Err(invalid(
+                "clock_choice_required: an existing review clock was found; choose follow_existing, reset_existing, start_new, or retire_existing",
+            ));
+        }
+        if existing.is_some() && p.clock_action.is_none() && !completed_existing {
+            return Err(invalid(
+                "clock_choice_required: this workstream already has a review clock; choose follow_existing, reset_existing, start_new, or retire_existing",
+            ));
+        }
+        let previous = self.database.call({
+            let repo = repo.clone();
+            let workstream = p.workstream_id.clone();
+            move |c| {
+            let mut q=c.prepare("SELECT record_id,revision,record_json FROM review_records WHERE repository_id=?1 AND json_extract(record_json,'$.workstreamId') IS ?2 AND json_extract(record_json,'$.experiment.disposition') IN ('retained','reverted','inconclusive','unchanged') ORDER BY window_end_ms DESC,revision DESC LIMIT 32")?;
+            let rows=q.query_map(rusqlite::params![repo,workstream],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+            Ok(rows.into_iter().find_map(|(id,revision,json)|serde_json::from_str::<ReviewRecord>(&json).ok().filter(review_completed).map(|record|(record.window_end_ms,format!("{id}@{revision}")))))
+        }}).map_err(database_error)?;
+        let action = p.clock_action.unwrap_or(if completed_existing {
+            ClockAction::FollowExisting
+        } else {
+            ClockAction::StartNew
+        });
+        if existing.is_none()
+            && matches!(
+                action,
+                ClockAction::FollowExisting
+                    | ClockAction::ResetExisting
+                    | ClockAction::RetireExisting
+            )
+        {
+            return Err(invalid("clock_action requires an existing review clock"));
+        }
+        let start = match (
+            action,
+            existing.clone(),
+            p.window_start_ms,
+            previous.as_ref().map(|(end, _)| *end),
+        ) {
+            (ClockAction::FollowExisting, Some((start, _, _, _)), _, _) => start,
+            (ClockAction::StartNew, None, Some(start), Some(completed)) => start.max(completed),
+            (_, _, Some(start), _) => start,
+            (ClockAction::ResetExisting, _, None, _) => now,
+            (ClockAction::StartNew, Some(_), None, _) => now,
+            (ClockAction::StartNew, None, None, Some(completed)) => completed,
+            (ClockAction::StartNew, None, None, None) => now,
+            (ClockAction::RetireExisting, Some((start, _, _, _)), _, _) => start,
+            (_, None, None, Some(completed)) => completed,
+            (_, None, None, None) => now,
         };
-        let last_receipt = previous.map(|(_, receipt)| receipt);
+        let last_receipt = previous
+            .map(|(_, receipt)| receipt)
+            .or_else(|| existing.as_ref().and_then(|value| value.3.clone()));
         if interval == 0
             || escalation == 0
             || interval > 31_536_000_000
@@ -55,8 +114,26 @@ impl ReviewService {
         }
         let repo = p.repository_id.clone();
         let scope = scope_key(&p.workstream_id);
-        self.database.call(move|c| {
-            c.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(repository_id,workstream_key) DO UPDATE SET interval_ms=COALESCE(?9,interval_ms),escalation_ms=COALESCE(?10,escalation_ms),active=excluded.active", rusqlite::params![repo,scope,interval as i64,escalation as i64,p.active,start as i64,(start+interval) as i64,last_receipt,p.review_interval_ms.map(|ms|ms as i64),p.escalation_interval_ms.map(|ms|ms as i64)])?;
+        let active = p.active && !matches!(action, ClockAction::RetireExisting);
+        let previous_window = existing;
+        let explanation = match action {
+            ClockAction::FollowExisting => {
+                "The existing review clock was explicitly retained.".to_owned()
+            }
+            ClockAction::ResetExisting => {
+                "The prior clock was retained as history and a fresh baseline was started."
+                    .to_owned()
+            }
+            ClockAction::StartNew => {
+                "A new review baseline was started for this workstream.".to_owned()
+            }
+            ClockAction::RetireExisting => {
+                "The old clock was retired and remains available as historical evidence.".to_owned()
+            }
+        };
+        self.database.transaction(move|tx| {
+            tx.execute("INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(repository_id,workstream_key) DO UPDATE SET interval_ms=COALESCE(?9,interval_ms),escalation_ms=COALESCE(?10,escalation_ms),active=excluded.active,window_start_ms=excluded.window_start_ms,window_end_ms=excluded.window_end_ms,last_receipt=excluded.last_receipt", rusqlite::params![repo,scope,interval as i64,escalation as i64,active,start as i64,(start+interval) as i64,last_receipt,p.review_interval_ms.map(|ms|ms as i64),p.escalation_interval_ms.map(|ms|ms as i64)])?;
+            tx.execute("INSERT INTO review_clock_history(repository_id,workstream_key,action,source,previous_window_start_ms,previous_window_end_ms,new_window_start_ms,new_window_end_ms,recorded_at_ms,explanation) VALUES(?1,?2,?3,'coordinator',?4,?5,?6,?7,?8,?9)", rusqlite::params![repo,scope,clock_action_name(action),previous_window.as_ref().map(|v|v.0 as i64),previous_window.as_ref().map(|v|v.1 as i64),start as i64,(start+interval) as i64,now as i64,explanation])?;
             Ok(())
         }).map_err(database_error)?;
         self.policy_status(
@@ -75,9 +152,24 @@ impl ReviewService {
     ) -> Result<Option<Policy>, ProtocolError> {
         self.repository(&p.repository_id)?;
         let key = scope_key(&p.workstream_id);
-        self.database.call(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at,owner_thread_id FROM review_policies WHERE repository_id=?1 AND workstream_key=?2",rusqlite::params![p.repository_id,key],|r|{
+        self.database.call(move|c| c.query_row("SELECT interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt,lease_expires_at,owner_thread_id,(SELECT action FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1),(SELECT source FROM review_clock_history h WHERE h.repository_id=review_policies.repository_id AND h.workstream_key=review_policies.workstream_key ORDER BY h.id DESC LIMIT 1) FROM review_policies WHERE repository_id=?1 AND workstream_key=?2",rusqlite::params![p.repository_id,key],|r|{
             let end=r.get::<_,i64>(4)? as u64;let escalation=r.get::<_,i64>(1)? as u64;let active:bool=r.get(2)?;
-            Ok(Policy {repository_id:p.repository_id.clone(),workstream_id:p.workstream_id.clone(),review_interval_ms:r.get::<_,i64>(0)? as u64,escalation_interval_ms:escalation,active,window_start_ms:r.get::<_,i64>(3)? as u64,window_end_ms:end,last_completed_receipt:r.get(5)?,due:active&&now>=end,escalated:active&&now>=end.saturating_add(escalation),owner_thread_id:r.get(7)?,lease_expires_at:r.get::<_,Option<i64>>(6)?.map(|at|at as u64),delivery_route:if r.get::<_,Option<i64>>(6)?.is_some_and(|expiry|expiry>now as i64){"codex_alarm"}else{"agent_messages"}.into()})
+            let source: Option<String> = r.get(9)?;
+            let action: Option<String> = r.get(8)?;
+            let last_receipt: Option<String> = r.get(5)?;
+            let state = if !active {
+                "retired"
+            } else if action.is_none() && last_receipt.is_none() {
+                "legacy-only"
+            } else if last_receipt.is_some() && now < end {
+                "completed"
+            } else {
+                "active"
+            };
+            let choice_required = action.is_none() && last_receipt.is_none();
+            let choice_explanation = choice_required.then(|| "An existing review clock is stored for this repository/workstream. Choose whether to follow its dates, reset them, start a new workstream, or retire it before continuing.".to_owned());
+            let start = r.get::<_,i64>(3)? as u64;
+            Ok(Policy {repository_id:p.repository_id.clone(),workstream_id:p.workstream_id.clone(),review_interval_ms:r.get::<_,i64>(0)? as u64,escalation_interval_ms:escalation,active,window_start_ms:start,window_end_ms:end,last_completed_receipt:last_receipt,due:active&&now>=end,escalated:active&&now>=end.saturating_add(escalation),owner_thread_id:r.get(7)?,lease_expires_at:r.get::<_,Option<i64>>(6)?.map(|at|at as u64),delivery_route:if r.get::<_,Option<i64>>(6)?.is_some_and(|expiry|expiry>now as i64){"codex_alarm"}else{"agent_messages"}.into(),clock_source:source.unwrap_or_else(|| "coordinator".into()),clock_state:state.into(),clock_start_ms:start,clock_due_at_ms:end,clock_hard_stop_at_ms:end.saturating_add(escalation),choice_required,choice_explanation,available_actions:vec!["follow_existing".into(),"reset_existing".into(),"start_new".into(),"retire_existing".into()]})
         }).optional().map_err(Into::into)).map_err(database_error)
     }
     pub(crate) fn delivery_register(

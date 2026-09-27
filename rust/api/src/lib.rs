@@ -14,6 +14,7 @@ pub mod incidents;
 pub mod outcomes;
 pub mod params;
 pub mod performance;
+pub mod rate_card;
 pub mod recovery;
 pub mod results;
 pub mod review;
@@ -22,7 +23,7 @@ pub mod runtime_recovery;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 27;
+pub const DATABASE_SCHEMA_VERSION: u32 = 28;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1555,6 +1556,24 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         [],
         params::UsageRepository,
         results::UsageRepository
+    ),
+    operation!(
+        "usage.rate_card.list",
+        "List administrator-managed API-equivalent pricing cards.",
+        READ_SERVER_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        [],
+        rate_card::List,
+        rate_card::Page
+    ),
+    operation!(
+        "usage.rate_card.set",
+        "Append one immutable API-equivalent pricing-card version.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        [],
+        rate_card::Set,
+        rate_card::Mutation
     ),
     operation!(
         "progress.repositories",

@@ -36,6 +36,7 @@ impl CodexUsage {
         projection: Projection,
     ) -> Result<ReviewUsage, ProtocolError> {
         let now_ms = self.now_ms()?;
+        let rates = self.rate_cards()?;
         // Independent collectors share the same deadline, not one another's time.
         let results = thread::scope(|scope| {
             let workers = self
@@ -43,10 +44,11 @@ impl CodexUsage {
                 .codex_usage_sources
                 .iter()
                 .map(|source| {
+                    let rates = &rates.cards;
                     scope.spawn(move || {
                         let result = self.review_source(
                             source, repository, workstream, now_ms, start_ms, end_ms, deadline,
-                            projection,
+                            projection, rates,
                         );
                         (source.uid, result)
                     })
@@ -83,7 +85,7 @@ impl CodexUsage {
             failures,
             self.config.codex_usage_sources.len(),
         );
-        Ok(ReviewUsage {
+        let usage = ReviewUsage {
             coverage: report.coverage,
             totals: report.totals,
             activities: report.activities,
@@ -91,7 +93,8 @@ impl CodexUsage {
             tools: report.tools,
             semantics: report.semantics,
             outcomes,
-        })
+        };
+        Ok(usage)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -105,6 +108,7 @@ impl CodexUsage {
         end_ms: u64,
         deadline: Instant,
         projection: Projection,
+        rates: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<(SourceReport, Groups), String> {
         for attempt in 0..2 {
             if Instant::now() >= deadline {
@@ -136,9 +140,10 @@ impl CodexUsage {
             }
             if schema >= 7
                 && projection == Projection::Tokens
-                && let Some(facts) =
+                && let Some(mut facts) =
                     super::performance::read(&connection, &family, start_ms, end_ms)?
             {
+                facts.rates = rates.to_vec();
                 let result = super::review_aggregate::display(
                     &connection,
                     facts,
@@ -154,7 +159,8 @@ impl CodexUsage {
             }
             let result = if schema >= 7 {
                 super::review_facts::read(&connection, &family, start_ms, end_ms).and_then(
-                    |facts| {
+                    |mut facts| {
+                        facts.rates = rates.to_vec();
                         super::review_aggregate::aggregate(
                             &connection,
                             facts,
@@ -174,6 +180,7 @@ impl CodexUsage {
                     end_ms,
                     end_ms - start_ms,
                     1,
+                    rates,
                 )
                 .map(|report| {
                     let groups = Groups::legacy(&report);

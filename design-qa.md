@@ -636,3 +636,49 @@ No P0, P1, or P2 visual or interaction difference remains.
 - [x] Rendered annotation, comment, and decision journey passed
 - [x] No actionable P0/P1/P2 findings remain
 - [x] Final result: passed
+
+
+## API-equivalent Repository Cost Pulse audit (2026-09-27)
+
+### Repository Usage Cost Pulse audit
+
+Date: 2026-09-27 UTC
+
+Source visual truth: built-in Image Gen asset `exec-278394c5-83d4-47be-89f1-d4b500b94cb4.png` (the user-selected displayed option 3, `c76ec26b299747fb96512b5b25e7b234767901634b4802d95373db1ec4f966ee`). The retained source is outside this checkout; the Coordinator decision keeps its identity and hash.
+
+Implementation captures:
+
+- `/var/tmp/dc2-api-equivalent-cost/hold-run-4/wide.png` — 1487×2056 pixels, CSS viewport 1487×1058, dark Console surface.
+- `/var/tmp/dc2-api-equivalent-cost/hold-run-4/narrow-2.png` — 390px CSS viewport, light theme, with monetary columns retained in compact tables.
+- `/var/tmp/dc2-api-equivalent-cost/design-qa-20260927/source-vs-final.png` — combined source and final rendered comparison input inspected during review.
+
+The fixture route was `#/usage/r0123456789abcdef` with populated repository data, the authenticated owner state, the same repository Usage journey, and the API-equivalent cost, model, activity, outcome, and coverage content enabled. The source and implementation were inspected at the same wide viewport and matched for the dark comparison; the narrow capture checked responsive reflow separately.
+
+## Steps
+
+1. **Open repository Usage.** The repository identity and Usage destination are the first substantial content. The route loads its real usage response and preserves the existing repository navigation. **Healthy.**
+2. **Read the cost summary.** The top band keeps provider-reported tokens primary and places the API-equivalent estimate beside model requests and cache efficiency. The value is explicitly labelled as an estimate. **Healthy.**
+3. **Compare work phase and model cost.** The phase trend remains visible, and the model panel adds a cost mix, exact token/request counts, average cost per request, and coverage states. **Healthy.**
+4. **Inspect outcome and activity attribution.** Outcome cost pulse ranks attributed work; activity rows show tokens, estimate, and share; unavailable rows remain visibly unavailable. **Healthy.**
+5. **Inspect timing, tool outcomes, and completeness.** Existing timing/tool sections remain below the cost surfaces, and the completeness disclosure retains subset and rate-card explanations. **Healthy.**
+6. **Check narrow layout and theme.** The 390px capture keeps the repository header, metrics, model donut, outcome table, activity breakdown, timing, tools, and completeness readable without page-wide overflow. **Healthy.**
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain. The model mix now sits beside the phase trend at the wide target width, and narrow tables retain the monetary estimate column while collapsing secondary token/coverage columns.
+
+P3: The existing product header and repository identity remain more compact than the generated target. This intentionally preserves established Console navigation and does not affect the selected Cost Pulse hierarchy.
+
+## Interaction evidence
+
+`CONSOLE_VERIFY_WORKSPACE_ONLY=1` completed 389 rendered checks with zero failures. The run exercised the Usage route at wide and narrow viewports, light and dark themes, range controls, repository navigation, coverage disclosure, cost panels, loading/unavailable states, and the existing refresh/error journeys. Fresh final captures also verified the wide two-panel trend/model composition, compact model/outcome tables, and no document overflow at 390px. JavaScript syntax checks passed for `console/app.js` and `console/verify.mjs`.
+
+## Comparison history
+
+The first implementation comparison identified the missing model cost surface and a wide-layout mismatch relative to the selected option. The backend model-cost projection, donut/legend, exact model table, request-average values, side-by-side wide layout, and compact responsive columns were added. Fresh wide and narrow captures were taken under the same route and populated state; the revised comparison is the evidence above.
+
+## Evidence limits
+
+The source visual is a design target rather than a live billing statement. The audit verifies rendered hierarchy, copy, responsive behavior, and interaction evidence; it does not prove provider billing or subscription spend. The live production Console was not changed from this worktree because DevCoordinator2's non-self-hosting boundary requires its own reviewed candidate workflow.
+
+final result: passed

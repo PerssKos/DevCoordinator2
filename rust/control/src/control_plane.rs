@@ -117,6 +117,8 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "health.container_remove",
     "usage.repositories",
     "usage.repository",
+    "usage.rate_card.list",
+    "usage.rate_card.set",
     "progress.repositories",
     "progress.repository",
     "telegram.link",
@@ -199,6 +201,7 @@ pub struct ControlPlane {
     health: HealthService,
     incidents: crate::incidents::IncidentService,
     usage: UsageService,
+    rate_cards: crate::rate_card::RateCardService,
     progress: ProgressService,
     telegram: TelegramService,
     clock: Arc<dyn Clock>,
@@ -260,6 +263,7 @@ impl ControlPlane {
             registry.clone(),
             Arc::clone(&clock),
         );
+        let rate_cards = crate::rate_card::RateCardService::new(database.clone());
         let progress = ProgressService::with_clock(
             database.clone(),
             registry.clone(),
@@ -360,6 +364,7 @@ impl ControlPlane {
             health,
             incidents,
             usage,
+            rate_cards,
             progress,
             telegram,
             clock,
@@ -1045,6 +1050,8 @@ impl ControlPlane {
             }
             "usage.repositories" => encode(self.usage.repositories(decode(params)?)?),
             "usage.repository" => encode(self.usage.repository(decode(params)?)?),
+            "usage.rate_card.list" => encode(self.rate_cards.list(decode(params)?)?),
+            "usage.rate_card.set" => encode(self.rate_cards.set(decode(params)?, &actor, &now)?),
             "progress.repositories" => {
                 let _: params::Empty = decode(params)?;
                 encode(self.progress.repositories()?)
@@ -2129,7 +2136,7 @@ mod tests {
             "performance_review.reminder"
         );
         assert!(envelope["data"].get("_agent_messages").is_none());
-        let inactive=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","active":false}),&local()).unwrap();
+        let inactive=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","active":false,"clock_action":"follow_existing"}),&local()).unwrap();
         assert!(inactive.get("_agent_messages").is_none());
         assert_eq!(inactive["due"], false);
         assert_eq!(inactive["last_completed_receipt"], serde_json::Value::Null);

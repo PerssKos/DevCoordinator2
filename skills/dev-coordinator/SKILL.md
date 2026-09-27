@@ -401,3 +401,18 @@ acknowledge messages; `alarm_ack` acknowledges native alarm delivery only. Neith
 acknowledgement completes a review. No review worker or runtime work block is
 created. Use bounded usage evidence, `review.prepare` and a reasoned improvement
 decision before `review.record`.
+
+### Explicit clock reuse
+
+Before starting implementation for a repository/workstream, read
+`review.policy.status`. A returned policy may represent a real active window,
+a completed or retired history record, or a legacy migration clock. Explain
+that status to the user in ordinary language. Never silently inherit an old
+window or hard-stop. When the status reports `choice_required`, ask the user
+whether to follow the existing dates, reset the baseline now, start a new
+workstream, or retire the old clock. Submit that choice through
+`review.policy.set` as `clock_action`; an omitted action is rejected for an
+existing scope. A completed or retired scope can be left historical without
+blocking a fresh workstream. Legacy runtime clock evidence with
+`schedulingActive:false` is historical migration context and cannot block
+Coordinator-owned implementation.
