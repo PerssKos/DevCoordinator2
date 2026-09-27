@@ -9,9 +9,10 @@ pub(super) fn read(
     end: u64,
 ) -> Result<Option<Facts>, String> {
     let began = Instant::now();
-    let Some(prefix) = token_sql(connection)? else {
+    let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_observations_repository_total_observed_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
+    if !indexed {
         return Ok(None);
-    };
+    }
     let (_, cached) = super::review_query::selection(connection)?;
     let classification = if cached {
         "_usage_report_operations"
@@ -23,15 +24,40 @@ pub(super) fn read(
     } else {
         "provenance"
     };
+    let covering: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='model_requests_id_operation_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
+    let model_index = if covering {
+        "INDEXED BY model_requests_id_operation_idx"
+    } else {
+        ""
+    };
     let sql = format!(
-        "{prefix} SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"
+        r#"WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), observations AS MATERIALIZED (
+        SELECT source_event_id, token_count, coverage_state, observed_at_ms, model_request_id, tool_invocation_id
+        FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
+        WHERE repository_bucket IN (SELECT value FROM json_each(?1) UNION SELECT 'multi_repo' UNION SELECT 'unknown')
+          AND category_path='total_tokens' AND measurement_provenance='provider_reported'
+          AND observed_at_ms>=lower_ms AND observed_at_ms<upper_ms
+    ), owned AS MATERIALIZED (
+        SELECT token.*, COALESCE(request.operation_id, covered.operation_id, tool.operation_id) owner
+        FROM observations token
+        LEFT JOIN model_requests request {model_index} ON request.id=token.model_request_id
+        LEFT JOIN tool_invocations tool ON tool.id=token.tool_invocation_id
+        LEFT JOIN model_requests covered {model_index} ON covered.id=tool.covering_model_request_id
+    ), tokens AS MATERIALIZED (
+        SELECT owner,source_event_id,MAX(token_count) token_count,MAX(token_count IS NULL) unknown_count,
+          MAX(coverage_state<>'complete') incomplete,
+          MAX(observed_at_ms) observed_at_ms,
+          COALESCE(MIN(token_count)<>MAX(token_count),0) OR (COUNT(token_count)>0 AND COUNT(token_count)<COUNT(*)) conflict
+        FROM owned WHERE owner IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(?1)))
+        GROUP BY owner,source_event_id
+    )
+    SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"#
     );
-    let family_count = family.len();
     let family = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
-    let mut query = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
+    let mut query = connection.prepare(&sql).map_err(|error| format!("totals_prepare:{error}"))?;
     tracing::debug!(
         stage = "performance_prepared",
-        family_count,
+        family_count = family.len(),
         elapsed_ms = began.elapsed().as_millis()
     );
     let mut rows = query
@@ -40,7 +66,7 @@ pub(super) fn read(
             i64_value(start)?,
             i64_value(end)?
         ])
-        .map_err(|_| "source_unavailable")?;
+        .map_err(|error| format!("totals_query:{error}"))?;
     let mut facts = Facts {
         rates: Vec::new(),
         operations: BTreeMap::new(),
@@ -128,10 +154,8 @@ pub(super) fn read(
     );
     let mut query = connection
         .prepare(&metadata)
-        .map_err(|_| "source_unavailable")?;
-    let mut rows = query
-        .query([ids.clone()])
-        .map_err(|_| "source_unavailable")?;
+        .map_err(|error| format!("metadata_prepare:{error}"))?;
+    let mut rows = query.query([ids]).map_err(|error| format!("metadata_query:{error}"))?;
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
         let mut operation = super::review_facts::decode_operation(row, start, end)
             .map_err(|_| "source_unavailable")?;
@@ -139,43 +163,6 @@ pub(super) fn read(
         facts
             .operations
             .insert(operation.operation.id.clone(), operation);
-    }
-    drop(rows);
-    drop(query);
-    super::cost::load_models(connection, &mut facts.operations)?;
-    let (selection, _) = super::review_query::selection(connection)?;
-    let mut component_query = connection
-        .prepare(&(selection + super::review_query::TOKENS))
-        .map_err(|_| "source_unavailable")?;
-    let mut component_rows = component_query
-        .query(rusqlite::params![
-            family,
-            i64_value(start)?,
-            i64_value(end)?,
-            ids
-        ])
-        .map_err(|_| "source_unavailable")?;
-    facts.tokens.clear();
-    while let Some(row) = component_rows.next().map_err(|_| "source_unavailable")? {
-        let conflict: bool = row.get(4).map_err(|_| "source_unavailable")?;
-        let value = row
-            .get::<_, Option<i64>>(2)
-            .map_err(|_| "source_unavailable")?
-            .and_then(|v| u64::try_from(v).ok());
-        facts.tokens.push(Token {
-            owner: row.get(0).map_err(|_| "source_unavailable")?,
-            category: row.get(1).map_err(|_| "source_unavailable")?,
-            value: if conflict { None } else { value },
-            incomplete: conflict
-                || value.is_none()
-                || row.get::<_, bool>(3).map_err(|_| "source_unavailable")?,
-            event: row.get(5).map_err(|_| "source_unavailable")?,
-            at: u64::try_from(row.get::<_, i64>(6).map_err(|_| "source_unavailable")?)
-                .map_err(|_| "source_unavailable")?,
-        });
-        if facts.tokens.len() > 200_000 {
-            return Err("query_too_large".into());
-        }
     }
     tracing::debug!(
         stage = "performance_tokens",
