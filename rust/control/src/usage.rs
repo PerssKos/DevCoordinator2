@@ -747,7 +747,7 @@ impl CodexUsage {
                 return Err("mapping_unavailable".into());
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
-            if canonical && (matches!(projection, Projection::Full) || bucket_count == 1) {
+            if canonical && matches!(projection, Projection::Tokens) && bucket_count == 1 {
                 let mut facts = if matches!(projection, Projection::Tokens) {
                     performance::read(&connection, &family, start_ms, end_ms)?
                         .map(Ok)
