@@ -8,6 +8,7 @@ pub mod capacity;
 pub mod check_event;
 pub mod cli;
 pub mod client;
+pub mod completion;
 pub mod config;
 pub mod control_plane;
 pub mod daemon;

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod completion;
 pub mod configuration;
 pub mod delivery;
 pub mod glossary;
@@ -1304,6 +1305,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["plan_overview"],
         params::PlanReference,
         results::PlanOverview
+    ),
+    operation!(
+        "completion.check",
+        "Check a hash-bound capability inventory against the repository's open outcomes and evidence contract.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["completion check"],
+        ["completion_check"],
+        params::CompletionCheck,
+        completion::CheckResult
     ),
     operation!(
         "task.search",

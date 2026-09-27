@@ -53,6 +53,12 @@ that module. Never downgrade a load error into successful core-only loading.
 
 ## Context and compatibility
 
+Capability-completeness inventories are retained as bounded, hash-bound
+`completion.json` files beside governed run artifacts. Coordinator stores the
+digest and summary in the existing delivery receipt; it does not add a second
+ledger or infer requirements from the file. New delivery evidence requires the
+inventory, while historical receipts remain readable.
+
 Only a file beginning `<!-- codex:focused-policy:v1 -->` opts in. Unsupported
 focused-policy versions fail explicitly. An unmarked full AGENTS file, even
 one larger than the focused budget or beside an unrelated `modules.json`,

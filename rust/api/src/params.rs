@@ -841,6 +841,14 @@ pub struct PlanReference {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CompletionCheck {
+    /// The registered worktree whose source digest is checked.
+    pub path: String,
+    pub manifest: crate::completion::Manifest,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TaskSearch {
     #[serde(default)]
     pub path: Option<String>,

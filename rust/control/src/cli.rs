@@ -1,7 +1,7 @@
 //! Command-line grammar, protocol-v2 invocation mapping, and response output.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -95,6 +95,7 @@ impl Cli {
             Command::Repository { command } => command.into_invocation(),
             Command::Server { command } => command.into_invocation(),
             Command::Plan { command } => command.into_invocation(),
+            Command::Completion { command } => command.into_invocation(),
             Command::Task { command } => command.into_invocation(),
             Command::Release { command } => command.into_invocation(),
             Command::Decision { command } => command.into_invocation(),
@@ -229,6 +230,10 @@ enum Command {
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
+    },
+    Completion {
+        #[command(subcommand)]
+        command: CompletionCommand,
     },
     Task {
         #[command(subcommand)]
@@ -1107,6 +1112,17 @@ enum PlanCommand {
         path: PathArg,
         #[arg(long = "all")]
         all_repositories: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CompletionCommand {
+    /// Check one capability inventory against the registered source and outcomes.
+    Check {
+        #[command(flatten)]
+        path: PathArg,
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
@@ -2172,6 +2188,20 @@ impl PlanCommand {
     }
 }
 
+impl CompletionCommand {
+    fn into_invocation(self) -> Result<Invocation, CliValidationError> {
+        match self {
+            Self::Check { path, file } => remote(
+                "completion.check",
+                serde_json::json!({
+                    "path": path.absolute()?,
+                    "manifest": completion_manifest_file(&file)?
+                }),
+            ),
+        }
+    }
+}
+
 impl TaskCommand {
     fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
@@ -2438,11 +2468,24 @@ fn qualified_delivery_request(file: &PathBuf) -> Result<Value, CliValidationErro
     serde_json::from_value::<devcoordinator2_api::delivery::Deliver>(params.clone()).map_err(
         |error| {
             invalid(format!(
-                "invalid release.deliver_evidence request: {error}; required fields are release_id, path, run_id, check, artifact, manifest_sha256, source_sha256, target, kind, and optional verification_file"
+                "invalid release.deliver_evidence request: {error}; required fields are release_id, path, run_id, check, artifact, manifest_sha256, source_sha256, target, kind, completion_file, and optional verification_file"
             ))
         },
     )?;
     Ok(params)
+}
+
+fn completion_manifest_file(file: &PathBuf) -> Result<Value, CliValidationError> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)
+        .and_then(|file| file.take(32 * 1024 + 1).read_to_end(&mut bytes))
+        .map_err(|_| invalid("Cannot read capability inventory"))?;
+    if bytes.len() > 32 * 1024 {
+        return Err(invalid("Capability inventory exceeds 32 KiB"));
+    }
+    let manifest: devcoordinator2_api::completion::Manifest =
+        serde_json::from_slice(&bytes).map_err(|_| invalid("Invalid capability inventory JSON"))?;
+    serde_json::to_value(manifest).map_err(|_| invalid("Cannot encode capability inventory"))
 }
 
 fn remote(operation_name: &'static str, params: Value) -> Result<Invocation, CliValidationError> {
@@ -2646,8 +2689,23 @@ mod tests {
             "disposition":"proposed","resultEvidenceRefs":[],"scopeRepoId":"project-alpha","preservesQuality":true,"reason":"Retain all required checks","observations":[]}
         })).unwrap()).unwrap();
         let delivery_file = glossary_inputs.path().join("delivery.json");
-        std::fs::write(&delivery_file, serde_json::to_vec(&json!({"release_id":"release-alpha","path":"/tmp/repo","run_id":"run","check":"build","artifact":"package","manifest_sha256":"a".repeat(64),"source_sha256":"b".repeat(64),"target":"linux-cli","kind":"local-executable"})).unwrap()).unwrap();
+        std::fs::write(&delivery_file, serde_json::to_vec(&json!({"release_id":"release-alpha","path":"/tmp/repo","run_id":"run","check":"build","artifact":"package","manifest_sha256":"a".repeat(64),"source_sha256":"b".repeat(64),"target":"linux-cli","kind":"local-executable","completion_file":"completion.json"})).unwrap()).unwrap();
+        let completion_file = glossary_inputs.path().join("completion.json");
+        std::fs::write(&completion_file, serde_json::to_vec(&json!({
+            "schema_version":1,"claim":"preliminary","source_sha256":"a".repeat(64),
+            "capabilities":[{"id":"fixture","scope":"test_only","state":"fixture_only","expected_result":"fixture available"}]
+        })).unwrap()).unwrap();
         let cases: &[(&[&str], &str)] = &[
+            (
+                &[
+                    "completion",
+                    "check",
+                    "/tmp/repo",
+                    "--file",
+                    completion_file.to_str().unwrap(),
+                ],
+                "completion.check",
+            ),
             (
                 &[
                     "review",
@@ -3564,6 +3622,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("invalid release.deliver_evidence request"));
         assert!(message.contains("manifest_sha256"));
+        assert!(message.contains("completion_file"));
         assert!(message.contains("verification_file"));
     }
 

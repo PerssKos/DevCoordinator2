@@ -30,8 +30,10 @@
   artifact and the verification file inside that artifact.
   The request names the exact release, repository/worktree path, governed run,
   check, retained artifact, manifest digest, source digest, target, delivery
-  kind, and verification-file name. The verification file is a separate
-  bounded `Verification` document inside the retained artifact; it carries
+  kind, completion-inventory file and verification-file name. The completion
+  inventory is a separate bounded `completion.json` document inside the
+  retained artifact; it carries the claim and capability rows. The verification
+  file is a separate bounded `Verification` document inside the retained artifact; it carries
   the observed file digest, access URL, checked timestamp, and exact web
   deployment generation when the kind is `web-deployment`.
 - For each delivery-eligible project/workstream target, resolve the delivery

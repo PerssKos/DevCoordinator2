@@ -235,6 +235,24 @@ still requires one fresh complete passing graph.
 
 ## Plan, ledger, and decisions
 
+### Capability completeness before delivery
+
+Before implementation or a completion report, create a compact capability
+inventory from the approved plan, feedback, decisions and visible promises.
+Assign each row a stable ID, `product` or `test_only` scope, one of
+`real_e2e`, `fixture_only`, `visual_only`, `external_blocked` or `deferred`,
+the expected user result, and its required evidence.
+
+For every incomplete product row, search the Coordinator ledger and create or
+reopen the matching open outcome before continuing. Keep honest unavailable or
+sign-in states open. Use `completion check` against the retained inventory
+before delivery: it rejects missing, closed, stale or cross-repository outcome
+references, and rejects enabled controls without rendered downstream evidence.
+Use `preliminary` for a runnable increment with open rows; use `complete` only
+when all requested product rows are real end to end. Retain the inventory beside
+the governed run as `completion.json`; its digest and summary belong in the
+delivery receipt, not in a second ledger.
+
 The coordinator's database is the only completion ledger and decision
 history — never a Markdown list, checklist, or chat memory. A daemon or
 database error from these tools blocks the affected completion claim; there
@@ -321,6 +339,7 @@ already establishes an unfinished outcome. Record it when decided:
     "source_sha256": "...",
     "target": "web-preview",
     "kind": "web-deployment",
+    "completion_file": "completion.json",
     "verification_file": "delivery.json"
   }
   ```

@@ -378,6 +378,10 @@ fn review_result_delivery_receipts_require_actual_timely_qualification() {
             delivered_at_ms: Some(observed),
             access: Some("https://example.test/download".into()),
             reason: None,
+            completion_sha256: None,
+            completion_claim: None,
+            completion_capabilities: None,
+            completion_incomplete: None,
         };
         let encoded = serde_json::to_string(&receipt).unwrap();
         fixture.database.call(move |connection| {

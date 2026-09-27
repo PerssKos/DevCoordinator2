@@ -137,6 +137,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "agent.message.claim",
     "agent.message.ack",
     "plan.overview",
+    "completion.check",
     "plan.recovery",
     "deployment.recovery",
     "glossary.list",
@@ -1130,6 +1131,17 @@ impl ControlPlane {
                     true,
                 )?;
                 encode(self.plan.overview(Some(&repository.repository_id))?)
+            }
+            "completion.check" => {
+                let params: params::CompletionCheck = decode(params)?;
+                let repository = self.resolve_repository(Some(&params.path), None, caller, true)?;
+                let result = crate::completion::CompletionService::new(self.database.clone())
+                    .check_path(
+                        &repository.repository_id,
+                        Path::new(&params.path),
+                        params.manifest,
+                    )?;
+                encode(result)
             }
             "task.search" => {
                 let params: params::TaskSearch = decode(params)?;
