@@ -682,3 +682,13 @@ The first implementation comparison identified the missing model cost surface an
 The source visual is a design target rather than a live billing statement. The audit verifies rendered hierarchy, copy, responsive behavior, and interaction evidence; it does not prove provider billing or subscription spend. The live production Console was not changed from this worktree because DevCoordinator2's non-self-hosting boundary requires its own reviewed candidate workflow.
 
 final result: passed
+
+## Performance Cost Matrix 2026-09-27
+
+- Source visual truth: Coordinator sketch `s038ac45e937b98bb` in batch `k79e560005b3513af`, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`, selected by user as displayed option 3.
+- Intended route/state: repository Performance overview for hdlripper, measured tokens plus API-equivalent USD, partial coverage, wide and narrow layouts.
+- Implementation candidate: commit `4be8862`; no browser-rendered implementation screenshot is available because the canonical clean-main installer gate rejected the linked candidate (`live checkout must be on main`) and this sandbox cannot write `/home/DevCoordinator2/.git`.
+- Comparison conditions: source is a 1487 × 1058 desktop mockup; implementation capture, CSS viewport, density, theme and populated hdlripper state are unavailable.
+- Findings: the selected source and candidate code are retained, but the required source/rendered comparison and rendered interaction evidence cannot run. The governed fixture browser check also records `listen EPERM` for its temporary socket.
+- Final result: blocked
+- Blocker: activate the candidate through the canonical clean-main reviewed installer, then capture the real hdlripper Performance route and repeat the combined Product Design audit until no P0-P2 finding remains.
