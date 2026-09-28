@@ -863,6 +863,18 @@ impl CodexUsage {
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
             if canonical && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
+                if matches!(projection, Projection::PerformanceFast) && bucket_count > 1 {
+                    return source_token_report(
+                        &connection,
+                        &family,
+                        schema,
+                        taxonomy,
+                        start_ms,
+                        end_ms,
+                        bucket_ms,
+                        bucket_count,
+                    );
+                }
                 let mut facts = if matches!(projection, Projection::PerformanceFast) {
                     performance::read_fast(&connection, &family, start_ms, end_ms)?
                 } else {
