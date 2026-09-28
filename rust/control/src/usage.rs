@@ -338,15 +338,15 @@ impl UsageService {
     ) -> Result<UsageRepository, ProtocolError> {
         let now_ms = self.usage.now_ms()?;
         let rate_cards = self.usage.rate_cards()?;
-        let duration = end.saturating_sub(start);
-        let range = if duration <= 36 * 60 * 60 * 1_000 {
-            UsageRange::Hours24
-        } else if duration <= 8 * 86_400 * 1_000 {
-            UsageRange::Days7
-        } else {
-            UsageRange::Days30
-        };
-        let (cached_start, cached_end, bucket, count) = usage_window(&range, now_ms);
+        // Performance reads are an exact overview period, rather than the
+        // multi-bucket Usage chart. Keeping one bucket selects the indexed
+        // Performance reader for every requested period, including 7d/30d,
+        // so cost components and token totals share one bounded snapshot.
+        let range = UsageRange::Hours24;
+        let cached_start = start;
+        let cached_end = end;
+        let bucket = end.saturating_sub(start).max(1);
+        let count = 1;
         let projection = if wait_for_refresh {
             Projection::Tokens
         } else {
