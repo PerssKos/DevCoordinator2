@@ -229,6 +229,20 @@ fn review_usage_from_repository(
         unknown: u64::from(value.is_none() || !exact),
     };
     let total = measurement(report.totals.total_tokens);
+    let activities = report
+        .activities
+        .iter()
+        .map(|activity| {
+            (
+                activity.activity.clone(),
+                OutcomeMeasurement {
+                    measured: activity.total_tokens,
+                    exact: (exact && activity.total_tokens > 0).then_some(activity.total_tokens),
+                    unknown: u64::from(!exact),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let rows = report
         .outcomes
         .into_iter()
@@ -247,6 +261,7 @@ fn review_usage_from_repository(
         .collect::<Vec<_>>();
     let outcome_count = rows.len();
     let totals = OutcomeEffort {
+        activities,
         operations: report.totals.operations,
         provider_total_tokens: total,
         cost: report.totals.cost.clone(),

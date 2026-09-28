@@ -74,7 +74,8 @@ impl ReviewService {
             text(workstream, 1, 100)?;
         }
         let repository = self.repository(&params.repository_id)?;
-        let usage = self.outcome_usage(&repository, &params, deadline)?;
+        let mut usage = self.outcome_usage(&repository, &params, deadline)?;
+        compact_review_cost_details(&mut usage);
         let mut gaps = Vec::new();
         if usage.outcomes.coverage != "complete" {
             gaps.push(format!(
@@ -363,6 +364,29 @@ let completed = review_completed(&record);
 let completed = review_completed(&record);
             Ok(Revision { reference: params.reference, record_id, revision, recorded_at_ms, completed, record })
         }).map_err(database_error)
+    }
+}
+
+// Review packets are bounded evidence messages. Keep the selected rate-card
+// identifiers and all measured USD/token components, but avoid repeating the
+// full administrator catalog in every activity, outcome, and aggregate row.
+fn compact_review_cost_details(usage: &mut ReviewUsage) {
+    let compact = |cost: &mut devcoordinator2_api::results::UsageCost| {
+        cost.matched_rate_cards.clear();
+    };
+    compact(&mut usage.totals.cost);
+    for activity in &mut usage.activities {
+        compact(&mut activity.cost);
+    }
+    for effort in [
+        &mut usage.outcomes.totals,
+        &mut usage.outcomes.attributed,
+        &mut usage.outcomes.unattributed,
+    ] {
+        compact(&mut effort.cost);
+    }
+    for row in &mut usage.outcomes.rows {
+        compact(&mut row.effort.cost);
     }
 }
 
