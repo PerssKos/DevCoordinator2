@@ -314,16 +314,18 @@ fn page(
     loop {
         result.outcomes.rows = rows[offset..end].to_vec();
         result.outcomes.next_cursor = (end < rows.len()).then(|| format!("{id}:{end}"));
-        if serde_json::to_vec(&result)
+        let encoded_bytes = serde_json::to_vec(&result)
             .map_err(|_| invalid("Cannot encode usage"))?
-            .len()
-            <= MAX_PAGE_BYTES
-        {
+            .len();
+        if encoded_bytes <= MAX_PAGE_BYTES {
             return Ok(result);
         }
         if end <= offset + 1 {
-            return Err(invalid(
-                "Usage page exceeds the supported size; narrow the window",
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                format!(
+                    "Usage page exceeds the supported size ({encoded_bytes} bytes); narrow the window"
+                ),
             ));
         }
         end -= 1;
