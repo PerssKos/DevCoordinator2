@@ -8,6 +8,25 @@ pub(super) fn read(
     start: u64,
     end: u64,
 ) -> Result<Option<Facts>, String> {
+    read_with_options(connection, family, start, end, true)
+}
+
+pub(super) fn read_fast(
+    connection: &Connection,
+    family: &[String],
+    start: u64,
+    end: u64,
+) -> Result<Option<Facts>, String> {
+    read_with_options(connection, family, start, end, false)
+}
+
+fn read_with_options(
+    connection: &Connection,
+    family: &[String],
+    start: u64,
+    end: u64,
+    include_components: bool,
+) -> Result<Option<Facts>, String> {
     let began = Instant::now();
     let indexed: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_observations_repository_total_observed_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")?;
     if !indexed {
@@ -57,9 +76,7 @@ pub(super) fn read(
     SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"#
     );
     let family = serde_json::to_string(family).map_err(|_| "source_unavailable")?;
-    let mut query = connection
-        .prepare(&sql)
-        .map_err(|error| format!("totals_prepare:{error}"))?;
+    let mut query = connection.prepare(&sql).map_err(|_| "source_unavailable")?;
     tracing::debug!(
         stage = "performance_prepared",
         family_count = family.len(),
@@ -71,7 +88,7 @@ pub(super) fn read(
             i64_value(start)?,
             i64_value(end)?
         ])
-        .map_err(|error| format!("totals_query:{error}"))?;
+        .map_err(|_| "source_unavailable")?;
     let mut facts = Facts {
         rates: Vec::new(),
         operations: BTreeMap::new(),
@@ -160,10 +177,8 @@ pub(super) fn read(
     };
     let mut query = connection
         .prepare(&metadata)
-        .map_err(|error| format!("metadata_prepare:{error}"))?;
-    let mut rows = query
-        .query([ids])
-        .map_err(|error| format!("metadata_query:{error}"))?;
+        .map_err(|_| "source_unavailable")?;
+    let mut rows = query.query([&ids]).map_err(|_| "source_unavailable")?;
     tracing::debug!(
         stage = "performance_metadata_started",
         elapsed_ms = began.elapsed().as_millis()
@@ -194,6 +209,104 @@ pub(super) fn read(
         stage = "performance_tokens",
         observations = facts.tokens.len(),
         owners = facts.operations.len(),
+        elapsed_ms = began.elapsed().as_millis()
+    );
+    drop(rows);
+    drop(query);
+    if !include_components {
+        return Ok(Some(facts));
+    }
+    super::cost::load_models(connection, &mut facts.operations)?;
+    let tool_index = if has_index("token_observations_tool_source_category")? {
+        "INDEXED BY token_observations_tool_source_category"
+    } else {
+        ""
+    };
+    // Keep the request-first join order. The tool branch scans its sparse
+    // observation index once, rather than all tool history for every owner.
+    let component_sql = format!(
+        r#"WITH wanted(id) AS MATERIALIZED (SELECT value FROM json_each(?1)),
+      request_ids AS MATERIALIZED (
+        SELECT request.id,request.operation_id FROM wanted CROSS JOIN model_requests request ON request.operation_id=wanted.id
+      )
+      SELECT request.operation_id,token.category_path,token.token_count,token.coverage_state,token.source_event_id,token.observed_at_ms
+      FROM request_ids request CROSS JOIN token_observations token ON token.model_request_id=request.id
+      WHERE token.observed_at_ms>=?2 AND token.observed_at_ms<?3 AND token.measurement_provenance='provider_reported'
+      AND token.category_path IN ('total_tokens','input_tokens','input_tokens_details.cached_tokens','input_tokens_details.cache_write_tokens','output_tokens','output_tokens_details.reasoning_tokens')
+      UNION ALL
+      SELECT COALESCE(request.operation_id,tool.operation_id),token.category_path,token.token_count,token.coverage_state,token.source_event_id,token.observed_at_ms
+      FROM token_observations token {tool_index} CROSS JOIN tool_invocations tool ON tool.id=token.tool_invocation_id
+      LEFT JOIN model_requests request ON request.id=tool.covering_model_request_id
+      WHERE token.tool_invocation_id IS NOT NULL AND token.observed_at_ms>=?2 AND token.observed_at_ms<?3
+      AND token.measurement_provenance='provider_reported'
+      AND token.category_path IN ('total_tokens','input_tokens','input_tokens_details.cached_tokens','input_tokens_details.cache_write_tokens','output_tokens','output_tokens_details.reasoning_tokens')
+      AND COALESCE(request.operation_id,tool.operation_id) IN (SELECT id FROM wanted)
+      LIMIT 1200001"#
+    );
+    let mut query = connection
+        .prepare(&component_sql)
+        .map_err(|_| "source_unavailable")?;
+    let mut rows = query
+        .query(rusqlite::params![ids, i64_value(start)?, i64_value(end)?])
+        .map_err(|_| "source_unavailable")?;
+    let mut components = HashMap::<(String, String, String), Token>::new();
+    let mut count = 0;
+    while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
+        count += 1;
+        if count > 1_200_000 {
+            return Err("query_too_large".into());
+        }
+        let owner: String = row.get(0).map_err(|_| "source_unavailable")?;
+        let category: String = row.get(1).map_err(|_| "source_unavailable")?;
+        let value = row
+            .get::<_, Option<i64>>(2)
+            .map_err(|_| "source_unavailable")?
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| "source_unavailable")?;
+        let incomplete = row.get::<_, String>(3).map_err(|_| "source_unavailable")? != "complete"
+            || value.is_none();
+        let event: String = row.get(4).map_err(|_| "source_unavailable")?;
+        let at = u64::try_from(row.get::<_, i64>(5).map_err(|_| "source_unavailable")?)
+            .map_err(|_| "source_unavailable")?;
+        let key = (owner.clone(), event.clone(), category.clone());
+        match components.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(Token {
+                    owner,
+                    category,
+                    value,
+                    incomplete,
+                    event,
+                    at,
+                });
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                let previous = slot.get_mut();
+                if previous.value != value {
+                    previous.value = None;
+                    previous.incomplete = true;
+                }
+                previous.incomplete |= incomplete;
+                previous.at = previous.at.max(at);
+            }
+        }
+    }
+    let existing_totals = facts
+        .tokens
+        .iter()
+        .filter(|token| token.category == "total_tokens")
+        .map(|token| (token.owner.clone(), token.event.clone()))
+        .collect::<std::collections::HashSet<_>>();
+    facts
+        .tokens
+        .extend(components.into_values().filter(|token| {
+            token.category != "total_tokens"
+                || !existing_totals.contains(&(token.owner.clone(), token.event.clone()))
+        }));
+    tracing::debug!(
+        stage = "performance_components",
+        observations = count,
         elapsed_ms = began.elapsed().as_millis()
     );
     Ok(Some(facts))

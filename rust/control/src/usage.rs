@@ -63,6 +63,7 @@ const SUPPORTED_TAXONOMY: u32 = 1;
 enum Projection {
     Full,
     Tokens,
+    PerformanceFast,
 }
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -337,31 +338,63 @@ impl UsageService {
     ) -> Result<UsageRepository, ProtocolError> {
         let now_ms = self.usage.now_ms()?;
         let rate_cards = self.usage.rate_cards()?;
-        let bucket = end.saturating_sub(start).max(1);
-        // The repository link has already been resolved by Usage. Reusing it
-        // avoids launching the identity probe on every Performance navigation.
-        // A bounded direct read gives the page measured data on first load;
-        // the normal Usage cache remains responsible for background refreshes.
-        let mut report = self.usage.repository_window(
-            repository,
-            UsageRange::Hours24,
-            now_ms,
-            start,
-            end,
-            bucket,
-            1,
-            false,
-            Some(
-                Instant::now()
-                    + if wait_for_refresh {
-                        QUERY_TIMEOUT
-                    } else {
-                        Duration::from_secs(1)
-                    },
-            ),
-            Projection::Tokens,
-            rate_cards,
-        )?;
+        let duration = end.saturating_sub(start);
+        let range = if duration <= 36 * 60 * 60 * 1_000 {
+            UsageRange::Hours24
+        } else if duration <= 8 * 86_400 * 1_000 {
+            UsageRange::Days7
+        } else {
+            UsageRange::Days30
+        };
+        let (cached_start, cached_end, bucket, count) = usage_window(&range, now_ms);
+        let projection = if wait_for_refresh {
+            Projection::Tokens
+        } else {
+            Projection::PerformanceFast
+        };
+        let mut report = if wait_for_refresh {
+            // Start the cost-capable refresh before waiting. The fast and
+            // complete projections have separate cache keys, so waiting on
+            // the fast key first would return before cost enrichment starts.
+            self.usage.cached_window(
+                repository,
+                range.clone(),
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                Projection::Tokens,
+                rate_cards,
+            )?;
+            self.usage.wait_for_refresh(Some(&repository.repository_id));
+            self.usage.cached_window(
+                repository,
+                range,
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                Projection::Tokens,
+                self.usage.rate_cards()?,
+            )?
+        } else {
+            self.usage.cached_window(
+                repository,
+                range,
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                projection,
+                rate_cards,
+            )?
+        };
         self.attach_outcome_titles(&mut report)?;
         Ok(report)
     }
@@ -788,12 +821,17 @@ impl CodexUsage {
                 return Err("mapping_unavailable".into());
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
-            if canonical && matches!(projection, Projection::Tokens) && bucket_count == 1 {
-                let mut facts = performance::read(&connection, &family, start_ms, end_ms)?
-                    .map(Ok)
-                    .unwrap_or_else(|| {
-                        review_facts::read(&connection, &family, start_ms, end_ms)
-                    })?;
+            if canonical
+                && matches!(projection, Projection::Tokens | Projection::PerformanceFast)
+                && bucket_count == 1
+            {
+                let mut facts = if matches!(projection, Projection::PerformanceFast) {
+                    performance::read_fast(&connection, &family, start_ms, end_ms)?
+                } else {
+                    performance::read(&connection, &family, start_ms, end_ms)?
+                }
+                .map(Ok)
+                .unwrap_or_else(|| review_facts::read(&connection, &family, start_ms, end_ms))?;
                 facts.rates = rate_cards.to_vec();
                 let mut series = vec![BTreeMap::new(); bucket_count];
                 let mut observed = vec![false; bucket_count];
@@ -842,7 +880,7 @@ impl CodexUsage {
                     bucket_count,
                     rate_cards,
                 ),
-                Projection::Tokens => source_token_report(
+                Projection::Tokens | Projection::PerformanceFast => source_token_report(
                     &connection,
                     &family,
                     schema,
