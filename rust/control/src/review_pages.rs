@@ -167,6 +167,10 @@ impl ReviewService {
                 .then_with(|| a.outcome_id.cmp(&b.outcome_id))
                 .then_with(|| a.workstream_id.cmp(&b.workstream_id))
         });
+        // The review packet is sent through the bounded evidence channel;
+        // retain rate-card IDs and measured components without repeating the
+        // full catalog in every activity/outcome row.
+        super::compact_review_cost_details(&mut usage);
         let bytes = serde_json::to_vec(&usage)
             .map_err(|_| invalid("Cannot encode usage"))?
             .len();
