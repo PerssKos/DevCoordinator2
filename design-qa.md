@@ -710,7 +710,7 @@ No actionable P0, P1, or P2 finding remains in the captured states. The source m
 
 - Browser-rendered journey: Playwright against the live HTTPS Console; zero page errors.
 - Checks passed: live commit identity, sub-second initial response, cost-enriched refresh, matrix visibility, USD value, all six token breakdown labels, wide screenshot, narrow screenshot, and zero narrow overflow.
-- Live daemon source commit: `6d91ccdc64d5ccf7668b17006d59c76421b6fc01`.
+- Live daemon source commit: `a5ab799fd1fd73e7d98a092f3ef2489515f83202`.
 - Qualified delivery receipt: `delivery-63b896285d26903cdfb0428fc2104809245433ee5a23809eaaed2573d26acc08` from release `v7dafc4aafe8c3acb`.
 - API-equivalent basis is an estimate using the administrator-managed Standard API rate-card catalog. It is not a subscription bill or provider invoice.
 - Screenshot evidence does not establish full WCAG conformance; keyboard activation of the popover and rendered responsive geometry were checked, while assistive-technology output remains outside this pass.
