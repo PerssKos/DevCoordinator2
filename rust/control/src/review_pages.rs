@@ -321,6 +321,26 @@ fn page(
             return Ok(result);
         }
         if end <= offset + 1 {
+            // A single review row can still exceed the packet ceiling when
+            // the surrounding repository has a large provenance/tool matrix.
+            // Preserve headline measurements and cost components, while
+            // dropping secondary breakdowns that are available from the
+            // dedicated Usage/Performance surfaces.
+            let mut bounded = result.clone();
+            bounded
+                .activities
+                .iter_mut()
+                .for_each(|activity| activity.provenance.clear());
+            bounded.tools.outcomes.clear();
+            bounded.tools.families.clear();
+            bounded.outcomes.kinds.clear();
+            if serde_json::to_vec(&bounded)
+                .map_err(|_| invalid("Cannot encode usage"))?
+                .len()
+                <= MAX_PAGE_BYTES
+            {
+                return Ok(bounded);
+            }
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
                 format!(
