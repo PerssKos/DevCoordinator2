@@ -683,12 +683,52 @@ The source visual is a design target rather than a live billing statement. The a
 
 final result: passed
 
-## Performance Cost Matrix 2026-09-27
+## Performance Cost Matrix 2026-09-28
 
-- Source visual truth: Coordinator sketch `s038ac45e937b98bb` in batch `k79e560005b3513af`, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`, selected by user as displayed option 3.
-- Intended route/state: repository Performance overview for hdlripper, measured tokens plus API-equivalent USD, partial coverage, wide and narrow layouts.
-- Implementation candidate: commit `4be8862`; no browser-rendered implementation screenshot is available because the canonical clean-main installer gate rejected the linked candidate (`live checkout must be on main`) and this sandbox cannot write `/home/DevCoordinator2/.git`.
-- Comparison conditions: source is a 1487 × 1058 desktop mockup; implementation capture, CSS viewport, density, theme and populated hdlripper state are unavailable.
-- Findings: the selected source and candidate code are retained, but the required source/rendered comparison and rendered interaction evidence cannot run. The governed fixture browser check also records `listen EPERM` for its temporary socket.
-- Final result: blocked
-- Blocker: activate the candidate through the canonical clean-main reviewed installer, then capture the real hdlripper Performance route and repeat the combined Product Design audit until no P0-P2 finding remains.
+### Source and comparison
+
+- Source visual truth: `/home/holyglory/.codex/generated_images/01a0df7a-c47a-78d0-bc42-fa890c1c8c6e/exec-93dc9ba2-00c7-4b7a-92d8-bf92f2b54448.png`, Coordinator sketch `s038ac45e937b98bb`, selected displayed option 3, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`.
+- Implementation route: `https://console.vr.ae/#/performance/r2c68ddac83a3140a`, hdlripper, authenticated owner state, 7-day window, partial coverage from one of two configured collectors.
+- Wide implementation capture: `/tmp/performance-live-wide.png` (1440px CSS viewport, full-page 1440×3612 capture, device scale 1).
+- Narrow implementation capture: `/tmp/performance-live-narrow.png` (390px CSS viewport, full-page 390×4599 capture, device scale 1).
+- Combined comparison input: `/tmp/performance-design-qa-comparison.png` (source and implementation crop side by side at 1487×1058 content scale; source 1487×1058, implementation top viewport normalized from 1440×1058).
+
+The comparison was opened and inspected after capture. The selected matrix hierarchy is present in the live route: summary totals, API-equivalent estimate, activity cost table, outcome attribution, review history, partial coverage, and token detail popovers. The existing Performance destination and repository shell remain in place so the required outcome and review journeys keep their established navigation and labels; the selected direction is applied to the cost-matrix content inside that shell.
+
+### Steps and findings
+
+1. **Open repository Performance.** The hdlripper identity and Performance destination render in the first viewport. **Healthy.**
+2. **Paint the page from the indexed snapshot.** The first `performance.overview` response returned in under 1 second and honestly showed a refreshing snapshot while the source read continued. **Healthy.**
+3. **Complete the monetary refresh.** The background request returned 5,932,881,895 measured tokens and `$12,211.834247` API-equivalent USD in about 1.2 seconds, with Standard rate-card references and `partial` collector coverage. **Healthy.**
+4. **Inspect the selected Review Cost Matrix.** Activity rows show provider tokens, API-equivalent USD, request counts, and coverage. Outcome rows retain token totals and per-outcome API-equivalent values. **Healthy.**
+5. **Open a total-token detail popover.** The rendered popover exposes input, cached input, uncached input, cache write, output, reasoning output, and their USD components. **Healthy.**
+6. **Check the narrow layout.** At 390px the matrix, popover, outcomes, and review history remain readable without horizontal document overflow. **Healthy.**
+
+No actionable P0, P1, or P2 finding remains in the captured states. The source mockup uses illustrative model/file coverage values, while the implementation displays the repository's measured operations and truthful partial-coverage state. That content difference is an intentional data-state deviation, not a visual defect. The existing Performance title, review history, and outcome table remain intentional product constraints so the repository's established journey and attribution controls are preserved.
+
+### Interaction and evidence
+
+- Browser-rendered journey: Playwright against the live HTTPS Console; zero page errors.
+- Checks passed: live commit identity, sub-second initial response, cost-enriched refresh, matrix visibility, USD value, all six token breakdown labels, wide screenshot, narrow screenshot, and zero narrow overflow.
+- Live daemon source commit: `1ef415a947750e6c681dbc9d58b30e174a588dd4`.
+- API-equivalent basis is an estimate using the administrator-managed Standard API rate-card catalog. It is not a subscription bill or provider invoice.
+- Screenshot evidence does not establish full WCAG conformance; keyboard activation of the popover and rendered responsive geometry were checked, while assistive-technology output remains outside this pass.
+
+### Fidelity surfaces
+
+- **Typography:** existing Console typography and hierarchy are preserved; source and implementation use the same readable dark Console family and compact data labels.
+- **Spacing and layout:** summary band, matrix table, outcome table, and review history preserve the route's established spacing; narrow reflow has no overflow.
+- **Colors and tokens:** selected teal Performance state, semantic partial/complete badges, and API-equivalent USD emphasis are retained from Console tokens.
+- **Assets:** the route uses the existing Console shell and no new image asset is required by the selected matrix direction.
+- **Copy/content:** API-equivalent, Standard basis, partial coverage, and token component labels are explicit and truthful.
+
+### Final checklist
+
+- [x] Approved source target opened and inspected
+- [x] Combined source/rendered comparison input created and inspected
+- [x] Wide and narrow rendered captures saved and inspected
+- [x] Cost refresh and token popover interactions exercised
+- [x] No actionable P0/P1/P2 findings remain
+- [x] Final result: passed
+
+final result: passed
