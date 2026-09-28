@@ -689,9 +689,9 @@ final result: passed
 
 - Source visual truth: `/home/holyglory/.codex/generated_images/01a0df7a-c47a-78d0-bc42-fa890c1c8c6e/exec-93dc9ba2-00c7-4b7a-92d8-bf92f2b54448.png`, Coordinator sketch `s038ac45e937b98bb`, selected displayed option 3, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`.
 - Implementation route: `https://console.vr.ae/#/performance/r2c68ddac83a3140a`, hdlripper, authenticated owner state, 7-day window, partial coverage from one of two configured collectors.
-- Wide implementation capture: `/tmp/performance-live-wide.png` (1440px CSS viewport, full-page 1440×3612 capture, device scale 1).
-- Narrow implementation capture: `/tmp/performance-live-narrow.png` (390px CSS viewport, full-page 390×4599 capture, device scale 1).
-- Combined comparison input: `/tmp/performance-design-qa-comparison.png` (source and implementation crop side by side at 1487×1058 content scale; source 1487×1058, implementation top viewport normalized from 1440×1058).
+- Wide implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-wide.png` (1440px CSS viewport, full-page 1440×3719 capture, device scale 1).
+- Narrow implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-narrow.png` (390px CSS viewport, full-page 390×4705 capture, device scale 1).
+- Combined comparison input: `/tmp/performance-design-qa-comparison-final.png` (source and final implementation crop side by side at 1487×1058 content scale; source 1487×1058, implementation top viewport normalized from 1440×1058).
 
 The comparison was opened and inspected after capture. The selected matrix hierarchy is present in the live route: summary totals, API-equivalent estimate, activity cost table, outcome attribution, review history, partial coverage, and token detail popovers. The existing Performance destination and repository shell remain in place so the required outcome and review journeys keep their established navigation and labels; the selected direction is applied to the cost-matrix content inside that shell.
 
@@ -710,7 +710,8 @@ No actionable P0, P1, or P2 finding remains in the captured states. The source m
 
 - Browser-rendered journey: Playwright against the live HTTPS Console; zero page errors.
 - Checks passed: live commit identity, sub-second initial response, cost-enriched refresh, matrix visibility, USD value, all six token breakdown labels, wide screenshot, narrow screenshot, and zero narrow overflow.
-- Live daemon source commit: `1ef415a947750e6c681dbc9d58b30e174a588dd4`.
+- Live daemon source commit: `6d91ccdc64d5ccf7668b17006d59c76421b6fc01`.
+- Qualified delivery receipt: `delivery-63b896285d26903cdfb0428fc2104809245433ee5a23809eaaed2573d26acc08` from release `v7dafc4aafe8c3acb`.
 - API-equivalent basis is an estimate using the administrator-managed Standard API rate-card catalog. It is not a subscription bill or provider invoice.
 - Screenshot evidence does not establish full WCAG conformance; keyboard activation of the popover and rendered responsive geometry were checked, while assistive-technology output remains outside this pass.
 
