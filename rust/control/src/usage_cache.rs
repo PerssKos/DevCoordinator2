@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8,13 +9,17 @@ use devcoordinator2_api::{ErrorCode, ProtocolError};
 
 const FRESH_FOR: Duration = Duration::from_secs(30);
 const MAX_ENTRIES: usize = 128;
+// A repository collection request can touch millions of token observations.
+// Bound concurrent source scans so the Usage page cannot fan out one large
+// SQLite read per repository and exhaust daemon memory.
+const MAX_ACTIVE_REFRESHES: usize = 2;
 // A refresh can run alongside the Performance lifetime read. Let an explicit
 // wait-for-refresh request cover the same bounded source timeout rather than
 // returning an unavailable snapshot while the worker is still completing.
 const MAX_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Default)]
-pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar)>);
+pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize)>);
 
 struct Entry {
     repository_id: String,
@@ -33,7 +38,7 @@ impl UsageCache {
         empty: UsageRepository,
         load: impl FnOnce() -> Result<UsageRepository, ProtocolError> + Send + 'static,
     ) -> UsageRepository {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, active) = &*self.0;
         let mut entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -66,7 +71,16 @@ impl UsageCache {
         });
         entry.touched = Instant::now();
         let start = !entry.refreshing && entry.completed.is_none_or(|at| at.elapsed() >= FRESH_FOR);
-        entry.refreshing |= start;
+        let admitted = start
+            && active
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_ACTIVE_REFRESHES).then_some(count + 1)
+                })
+                .is_ok();
+        entry.refreshing |= admitted;
+        if start && !admitted {
+            entry.refresh_failed = true;
+        }
         let mut report = entry.report.clone();
         report.coverage.snapshot = Some(UsageSnapshot {
             updated_at_ms: entry.updated_at_ms,
@@ -74,7 +88,7 @@ impl UsageCache {
             refresh_failed: entry.refresh_failed,
         });
         drop(entries);
-        if start {
+        if admitted {
             let cache = self.clone();
             let worker_key = key.clone();
             let spawned = std::thread::Builder::new()
@@ -115,7 +129,8 @@ impl UsageCache {
     }
 
     fn finish(&self, key: &str, result: Result<UsageRepository, ProtocolError>) {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, active) = &*self.0;
+        active.fetch_sub(1, Ordering::AcqRel);
         let mut entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -152,7 +167,7 @@ impl UsageCache {
     }
 
     pub(crate) fn wait(&self, repository_id: Option<&str>) {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, _) = &*self.0;
         let entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
