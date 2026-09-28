@@ -12,11 +12,11 @@ const MAX_ENTRIES: usize = 128;
 // A repository collection request can touch millions of token observations.
 // Bound concurrent source scans so the Usage page cannot fan out one large
 // SQLite read per repository and exhaust daemon memory.
-const MAX_ACTIVE_REFRESHES: usize = 2;
-// A refresh can run alongside the Performance lifetime read. Let an explicit
-// wait-for-refresh request cover the same bounded source timeout rather than
-// returning an unavailable snapshot while the worker is still completing.
-const MAX_WAIT: Duration = Duration::from_secs(15);
+const MAX_ACTIVE_REFRESHES: usize = 1;
+// The edge gives ordinary daemon requests a ten-second response budget. Keep
+// an explicit refresh wait below that ceiling so a slow collector returns an
+// honest refreshing/partial snapshot instead of becoming daemon_unavailable.
+const MAX_WAIT: Duration = Duration::from_secs(7);
 
 #[derive(Clone, Default)]
 pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize)>);
@@ -326,6 +326,25 @@ mod tests {
             Some(100)
         );
         assert!(UsageCache::default().0.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn refresh_admission_defers_second_source_scan_without_claiming_refreshing() {
+        let cache = UsageCache::default();
+        let (release, release_rx) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        cache.get("first".into(), report(None), move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            Ok(report(Some(1)))
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let deferred = cache.get("second".into(), report(None), || panic!("admission capped"));
+        let snapshot = deferred.coverage.snapshot.unwrap();
+        assert!(!snapshot.refreshing);
+        assert!(snapshot.refresh_failed);
+        release.send(()).unwrap();
+        cache.wait(Some("fixture"));
     }
 
     #[test]
