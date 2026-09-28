@@ -8,7 +8,10 @@ use devcoordinator2_api::{ErrorCode, ProtocolError};
 
 const FRESH_FOR: Duration = Duration::from_secs(30);
 const MAX_ENTRIES: usize = 128;
-const MAX_WAIT: Duration = Duration::from_secs(5);
+// A refresh can run alongside the Performance lifetime read. Let an explicit
+// wait-for-refresh request cover the same bounded source timeout rather than
+// returning an unavailable snapshot while the worker is still completing.
+const MAX_WAIT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Default)]
 pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar)>);
