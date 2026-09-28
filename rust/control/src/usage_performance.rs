@@ -30,8 +30,16 @@ pub(super) fn read(
     } else {
         ""
     };
+    let attribution_index = if connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='repository_attributions_repository_operation_idx')", [], |r| r.get(0)).map_err(|_| "source_unavailable")? {
+        "INDEXED BY repository_attributions_repository_operation_idx"
+    } else {
+        ""
+    };
     let sql = format!(
-        r#"WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), observations AS MATERIALIZED (
+        r#"WITH bounds AS (SELECT ?2 lower_ms, ?3 upper_ms), repository_owners(operation_id) AS MATERIALIZED (
+        SELECT DISTINCT operation_id FROM repository_attributions {attribution_index}
+        WHERE repository_id IN (SELECT value FROM json_each(?1))
+    ), observations AS MATERIALIZED (
         SELECT source_event_id, token_count, coverage_state, observed_at_ms, model_request_id, tool_invocation_id
         FROM bounds CROSS JOIN token_observations INDEXED BY token_observations_repository_total_observed_idx
         WHERE repository_bucket IN (SELECT value FROM json_each(?1) UNION SELECT 'multi_repo' UNION SELECT 'unknown')
@@ -48,7 +56,7 @@ pub(super) fn read(
           MAX(coverage_state<>'complete') incomplete,
           MAX(observed_at_ms) observed_at_ms,
           COALESCE(MIN(token_count)<>MAX(token_count),0) OR (COUNT(token_count)>0 AND COUNT(token_count)<COUNT(*)) conflict
-        FROM owned WHERE owner IN (SELECT operation_id FROM repository_attributions WHERE repository_id IN (SELECT value FROM json_each(?1)))
+        FROM owned JOIN repository_owners ON repository_owners.operation_id=owned.owner
         GROUP BY owner,source_event_id
     )
     SELECT owner,token_count,unknown_count,incomplete,conflict,source_event_id,observed_at_ms FROM tokens LIMIT 200001"#
