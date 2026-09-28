@@ -333,6 +333,18 @@ fn page(
             bounded.tools.outcomes.clear();
             bounded.tools.families.clear();
             bounded.outcomes.kinds.clear();
+            bounded.coverage.events.clear();
+            bounded.coverage.token_observations.clear();
+            for effort in [
+                &mut bounded.outcomes.totals,
+                &mut bounded.outcomes.attributed,
+                &mut bounded.outcomes.unattributed,
+            ] {
+                effort.activities.clear();
+            }
+            for row in &mut bounded.outcomes.rows {
+                row.effort.activities.clear();
+            }
             if serde_json::to_vec(&bounded)
                 .map_err(|_| invalid("Cannot encode usage"))?
                 .len()
