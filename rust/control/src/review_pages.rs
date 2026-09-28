@@ -327,10 +327,9 @@ fn page(
             // dropping secondary breakdowns that are available from the
             // dedicated Usage/Performance surfaces.
             let mut bounded = result.clone();
-            bounded
-                .activities
-                .iter_mut()
-                .for_each(|activity| activity.provenance.clear());
+            bounded.activities.clear();
+            bounded.outcomes.totals.activities.clear();
+            bounded.outcomes.attributed.activities.clear();
             bounded.tools.outcomes.clear();
             bounded.tools.families.clear();
             bounded.outcomes.kinds.clear();
