@@ -14,11 +14,6 @@ pub(super) fn read(
         return Ok(None);
     }
     let (_, cached) = super::review_query::selection(connection)?;
-    let classification = if cached {
-        "_usage_report_operations"
-    } else {
-        "effective_classification_events"
-    };
     let provenance = if cached {
         "attribution_provenance"
     } else {
@@ -110,12 +105,22 @@ pub(super) fn read(
     }
     drop(rows);
     drop(query);
+    tracing::debug!(
+        stage = "performance_totals",
+        observations = facts.tokens.len(),
+        elapsed_ms = began.elapsed().as_millis()
+    );
     let ids = facts
         .tokens
         .iter()
         .map(|t| &t.owner)
         .collect::<BTreeSet<_>>();
     let ids = serde_json::to_string(&ids).map_err(|_| "source_unavailable")?;
+    tracing::debug!(
+        stage = "performance_owner_ids",
+        owners = facts.tokens.len(),
+        elapsed_ms = began.elapsed().as_millis()
+    );
     let has_index = |name: &str| -> Result<bool, String> {
         connection
             .query_row(
@@ -125,50 +130,54 @@ pub(super) fn read(
             )
             .map_err(|_| "source_unavailable".into())
     };
-    let owner_index = if has_index("operations_review_owner_idx")? {
-        "INDEXED BY operations_review_owner_idx"
-    } else {
-        ""
-    };
-    let terminal_index = if has_index("operation_events_review_terminal_idx")? {
-        "INDEXED BY operation_events_review_terminal_idx"
-    } else {
-        ""
-    };
     let context_index = if has_index("operation_work_contexts_review_idx")? {
         "INDEXED BY operation_work_contexts_review_idx"
     } else {
         ""
     };
-    let attribution_index = if has_index("repository_attributions_owner_repository_idx")? {
-        "INDEXED BY repository_attributions_owner_repository_idx"
+    // The Performance chart needs only classification and work attribution.
+    // Terminal events, waits and repository-count joins remain in the full
+    // review reader used for comparisons.
+    let metadata = if cached {
+        format!(
+            r#"SELECT owner.operation_id,owner.agent_id,owner.operation_kind,owner.started_at_ms,
+            NULL,NULL,owner.activity_state,owner.phase,owner.activity,owner.{provenance},NULL,0,0,
+            context.operation_id,context.native_project_id,context.workstream_id,context.outcome_id,1,0
+            FROM json_each(?1) wanted JOIN _usage_report_operations owner ON owner.operation_id=wanted.value
+            LEFT JOIN operation_work_contexts context {context_index} ON context.operation_id=owner.operation_id LIMIT 200001"#
+        )
     } else {
-        ""
+        format!(
+            r#"SELECT owner.id,owner.agent_id,owner.operation_kind,owner.started_at_ms,
+            NULL,NULL,COALESCE(effective.activity_state,owner.activity_state),
+            COALESCE(effective.phase,owner.phase),COALESCE(effective.activity,owner.activity),
+            COALESCE(effective.provenance,owner.attribution_provenance),NULL,0,0,
+            context.operation_id,context.native_project_id,context.workstream_id,context.outcome_id,1,0
+            FROM json_each(?1) wanted JOIN operations owner ON owner.id=wanted.value
+            LEFT JOIN effective_classification_events effective ON effective.operation_id=owner.id
+            LEFT JOIN operation_work_contexts context {context_index} ON context.operation_id=owner.id LIMIT 200001"#
+        )
     };
-    let classification_index = if cached && has_index("_usage_report_classification_owner_idx")? {
-        "INDEXED BY _usage_report_classification_owner_idx"
-    } else {
-        ""
-    };
-    let metadata = format!(
-        r#"    SELECT owner.id, owner.agent_id, owner.operation_kind, owner.started_at_ms,
-        terminal.occurred_at_ms, terminal.event_kind, COALESCE(effective.activity_state,owner.activity_state),
-        COALESCE(effective.phase,owner.phase),COALESCE(effective.activity,owner.activity),COALESCE(effective.{provenance},owner.attribution_provenance),
-        NULL,owner.retry_of_operation_id IS NOT NULL,owner.rework_of_operation_id IS NOT NULL,
-        context.operation_id,context.native_project_id,context.workstream_id,context.outcome_id,
-        (SELECT COUNT(DISTINCT repository_id) FROM repository_attributions {attribution_index} WHERE operation_id=owner.id),terminal.duration_ns IS NOT NULL
-    FROM json_each(?1) wanted CROSS JOIN operations owner {owner_index} ON owner.id=wanted.value
-    LEFT JOIN {classification} effective {classification_index} ON effective.operation_id=owner.id
-    LEFT JOIN operation_events terminal {terminal_index} ON terminal.operation_id=owner.id AND terminal.terminal=1
-    LEFT JOIN operation_work_contexts context {context_index} ON context.operation_id=owner.id LIMIT 200001"#
-    );
     let mut query = connection
         .prepare(&metadata)
         .map_err(|error| format!("metadata_prepare:{error}"))?;
     let mut rows = query
         .query([ids])
         .map_err(|error| format!("metadata_query:{error}"))?;
+    tracing::debug!(
+        stage = "performance_metadata_started",
+        elapsed_ms = began.elapsed().as_millis()
+    );
+    let mut metadata_rows = 0usize;
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
+        metadata_rows += 1;
+        if metadata_rows % 5000 == 0 {
+            tracing::debug!(
+                stage = "performance_metadata_progress",
+                rows = metadata_rows,
+                elapsed_ms = began.elapsed().as_millis()
+            );
+        }
         let mut operation = super::review_facts::decode_operation(row, start, end)
             .map_err(|_| "source_unavailable")?;
         operation.interval = None;
@@ -176,6 +185,11 @@ pub(super) fn read(
             .operations
             .insert(operation.operation.id.clone(), operation);
     }
+    tracing::debug!(
+        stage = "performance_metadata_done",
+        rows = metadata_rows,
+        elapsed_ms = began.elapsed().as_millis()
+    );
     tracing::debug!(
         stage = "performance_tokens",
         observations = facts.tokens.len(),
