@@ -235,7 +235,7 @@ impl UsageService {
         let report = self.usage.repositories(&records, params.range.clone())?;
         if params.wait_for_refresh {
             self.usage.wait_for_refresh(None);
-            return self.usage.repositories(&records, params.range);
+            return self.usage.repositories_tokens(&records, params.range);
         }
         Ok(report)
     }
@@ -254,8 +254,13 @@ impl UsageService {
         let mut report = self.usage.repository(&repository, params.range.clone())?;
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
+            // Start the cost-capable projection before waiting; the initial
+            // fast snapshot and the complete snapshot use separate keys.
+            let _ = self
+                .usage
+                .repository_tokens(&repository, params.range.clone())?;
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            let mut report = self.usage.repository(&repository, params.range)?;
+            let mut report = self.usage.repository_tokens(&repository, params.range)?;
             self.attach_outcome_titles(&mut report)?;
             return Ok(report);
         }
@@ -490,6 +495,34 @@ impl CodexUsage {
         })
     }
 
+    pub fn repositories_tokens(
+        &self,
+        repositories: &[RepositoryRecord],
+        range: UsageRange,
+    ) -> Result<UsageRepositories, ProtocolError> {
+        let now_ms = self.now_ms()?;
+        let mut rows = Vec::new();
+        for repository in repositories {
+            let report = self.repository_tokens(repository, range.clone())?;
+            rows.push(UsageRepositoryRow {
+                repository_id: report.repository_id,
+                display_name: report.display_name,
+                range: report.range,
+                coverage: report.coverage,
+                total_tokens: report.totals.total_tokens,
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
+                execution_wall_ms: report.time.execution_wall.measured_ms,
+                cost: report.totals.cost.clone(),
+            });
+        }
+        Ok(UsageRepositories {
+            range,
+            generated_at_ms: now_ms,
+            repositories: rows,
+        })
+    }
+
     pub fn wait_for_refresh(&self, repository_id: Option<&str>) {
         self.cache.wait(repository_id);
     }
@@ -499,20 +532,28 @@ impl CodexUsage {
         repository: &RepositoryRecord,
         range: UsageRange,
     ) -> Result<UsageRepository, ProtocolError> {
+        self.repository_projection(repository, range, Projection::PerformanceFast)
+    }
+
+    pub fn repository_tokens(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+    ) -> Result<UsageRepository, ProtocolError> {
+        self.repository_projection(repository, range, Projection::Tokens)
+    }
+
+    fn repository_projection(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+        projection: Projection,
+    ) -> Result<UsageRepository, ProtocolError> {
         let now_ms = self.now_ms()?;
         let rate_cards = self.rate_cards()?;
         let (start, end, bucket, count) = usage_window(&range, now_ms);
         self.cached_window(
-            repository,
-            range,
-            now_ms,
-            start,
-            end,
-            bucket,
-            count,
-            true,
-            Projection::Full,
-            rate_cards,
+            repository, range, now_ms, start, end, bucket, count, true, projection, rate_cards,
         )
     }
 
@@ -821,10 +862,7 @@ impl CodexUsage {
                 return Err("mapping_unavailable".into());
             }
             let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
-            if canonical
-                && matches!(projection, Projection::Tokens | Projection::PerformanceFast)
-                && bucket_count == 1
-            {
+            if canonical && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
                 let mut facts = if matches!(projection, Projection::PerformanceFast) {
                     performance::read_fast(&connection, &family, start_ms, end_ms)?
                 } else {
