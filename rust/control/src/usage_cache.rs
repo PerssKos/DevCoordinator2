@@ -1,26 +1,26 @@
-use std::collections::HashMap;
+use devcoordinator2_api::results::{UsageRepository, UsageSnapshot};
+use devcoordinator2_api::{ErrorCode, ProtocolError};
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use devcoordinator2_api::results::{UsageRepository, UsageSnapshot};
-use devcoordinator2_api::{ErrorCode, ProtocolError};
-
 const FRESH_FOR: Duration = Duration::from_secs(30);
 const MAX_ENTRIES: usize = 128;
-// A repository collection request can touch millions of token observations.
-// Bound concurrent source scans so the Usage page cannot fan out one large
-// SQLite read per repository and exhaust daemon memory.
-const MAX_ACTIVE_REFRESHES: usize = 1;
-// The edge gives ordinary daemon requests a ten-second response budget. Keep
-// an explicit refresh wait below that ceiling so a slow collector returns an
-// honest refreshing/partial snapshot instead of becoming daemon_unavailable.
-const MAX_WAIT: Duration = Duration::from_secs(7);
+const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ENTRY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_PENDING: usize = 32;
+const MAX_WAIT: Duration = Duration::from_millis(650);
 
+type Loader = Box<dyn FnOnce() -> Result<UsageRepository, ProtocolError> + Send>;
 #[derive(Clone, Default)]
-pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize)>);
-
+pub(crate) struct UsageCache(Arc<(Mutex<State>, Condvar)>);
+#[derive(Default)]
+struct State {
+    entries: HashMap<String, Entry>,
+    pending: VecDeque<(String, Loader)>,
+    running: bool,
+}
 struct Entry {
     repository_id: String,
     report: UsageRepository,
@@ -29,29 +29,29 @@ struct Entry {
     refreshing: bool,
     refresh_failed: bool,
     updated_at_ms: Option<u64>,
+    bytes: usize,
 }
-
 impl UsageCache {
     pub(crate) fn get(
         &self,
         key: String,
-        empty: UsageRepository,
+        mut empty: UsageRepository,
         load: impl FnOnce() -> Result<UsageRepository, ProtocolError> + Send + 'static,
     ) -> UsageRepository {
-        let (entries, changed, active) = &*self.0;
-        let mut entries = entries
+        let (state, changed) = &*self.0;
+        let mut state = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !entries.contains_key(&key) && entries.len() >= MAX_ENTRIES {
-            let oldest = entries
+        if !state.entries.contains_key(&key) && state.entries.len() >= MAX_ENTRIES {
+            let oldest = state
+                .entries
                 .iter()
-                .filter(|(_, entry)| !entry.refreshing)
-                .min_by_key(|(_, entry)| entry.touched)
-                .map(|(key, _)| key.clone());
+                .filter(|(_, e)| !e.refreshing)
+                .min_by_key(|(_, e)| e.touched)
+                .map(|(k, _)| k.clone());
             if let Some(oldest) = oldest {
-                entries.remove(&oldest);
+                state.entries.remove(&oldest);
             } else {
-                let mut empty = empty;
                 empty.coverage.snapshot = Some(UsageSnapshot {
                     updated_at_ms: None,
                     refreshing: false,
@@ -60,7 +60,8 @@ impl UsageCache {
                 return empty;
             }
         }
-        let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
+        let room = state.pending.len() < MAX_PENDING;
+        let entry = state.entries.entry(key.clone()).or_insert_with(|| Entry {
             repository_id: empty.repository_id.clone(),
             report: empty,
             completed: None,
@@ -68,94 +69,154 @@ impl UsageCache {
             refreshing: false,
             refresh_failed: false,
             updated_at_ms: None,
+            bytes: 0,
         });
         entry.touched = Instant::now();
         let start = !entry.refreshing && entry.completed.is_none_or(|at| at.elapsed() >= FRESH_FOR);
-        let admitted = start
-            && active
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    (count < MAX_ACTIVE_REFRESHES).then_some(count + 1)
-                })
-                .is_ok();
-        entry.refreshing |= admitted;
-        if start && !admitted {
-            entry.refresh_failed = true;
+        if start {
+            entry.refreshing = room;
+            entry.refresh_failed = !room;
         }
         let mut report = entry.report.clone();
+        let source = report.coverage.snapshot.take();
         report.coverage.snapshot = Some(UsageSnapshot {
             updated_at_ms: entry.updated_at_ms,
-            refreshing: entry.refreshing,
-            refresh_failed: entry.refresh_failed,
+            refreshing: entry.refreshing || source.as_ref().is_some_and(|s| s.refreshing),
+            refresh_failed: entry.refresh_failed
+                || source.as_ref().is_some_and(|s| s.refresh_failed),
         });
-        drop(entries);
-        if admitted {
+        if start && room {
+            state.pending.push_back((key, Box::new(load)));
+        }
+        let spawn = !state.running && !state.pending.is_empty();
+        if spawn {
+            state.running = true;
+        }
+        drop(state);
+        if spawn {
             let cache = self.clone();
-            let worker_key = key.clone();
-            let spawned = std::thread::Builder::new()
+            if std::thread::Builder::new()
                 .name("usage-refresh".into())
-                .spawn(move || {
-                    let result = catch_unwind(AssertUnwindSafe(load)).unwrap_or_else(|_| {
-                        Err(ProtocolError::new(
-                            ErrorCode::InternalError,
-                            "usage refresh failed",
-                        ))
-                    });
-                    cache.finish(&worker_key, result);
-                });
-            if spawned.is_err() {
-                self.finish(
-                    &key,
-                    Err(ProtocolError::new(
-                        ErrorCode::InternalError,
-                        "usage refresh unavailable",
-                    )),
-                );
-                report
-                    .coverage
-                    .snapshot
-                    .as_mut()
-                    .expect("snapshot set")
-                    .refreshing = false;
-                report
-                    .coverage
-                    .snapshot
-                    .as_mut()
-                    .expect("snapshot set")
-                    .refresh_failed = true;
+                .spawn(move || cache.run())
+                .is_err()
+            {
+                let mut state = self
+                    .0
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.running = false;
+                while let Some((key, _)) = state.pending.pop_front() {
+                    if let Some(entry) = state.entries.get_mut(&key) {
+                        entry.refreshing = false;
+                        entry.refresh_failed = true;
+                    }
+                }
+                if let Some(snapshot) = report.coverage.snapshot.as_mut() {
+                    snapshot.refreshing = false;
+                    snapshot.refresh_failed = true;
+                }
+                changed.notify_all();
             }
-            changed.notify_all();
         }
         report
     }
-
+    fn run(&self) {
+        loop {
+            let next = {
+                let mut state = self
+                    .0
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match state.pending.pop_front() {
+                    Some(job) => Some(job),
+                    None => {
+                        state.running = false;
+                        None
+                    }
+                }
+            };
+            let Some((key, load)) = next else {
+                return;
+            };
+            let result = catch_unwind(AssertUnwindSafe(load)).unwrap_or_else(|_| {
+                Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "usage refresh failed",
+                ))
+            });
+            self.finish(&key, result);
+        }
+    }
     fn finish(&self, key: &str, result: Result<UsageRepository, ProtocolError>) {
-        let (entries, changed, active) = &*self.0;
-        active.fetch_sub(1, Ordering::AcqRel);
-        let mut entries = entries
+        let (state, changed) = &*self.0;
+        let mut state = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(entry) = entries.get_mut(key) {
-            let usable = result.as_ref().is_ok_and(|report| {
-                !report
-                    .coverage
-                    .unavailable_reasons
-                    .contains_key("source_unavailable")
-                    && report.coverage.available_collectors
-                        >= entry.report.coverage.available_collectors
-                    && (report.coverage.available_collectors > 0
-                        || report.coverage.configured_collectors == 0
-                        || (!report.coverage.unavailable_reasons.is_empty()
-                            && report
-                                .coverage
-                                .unavailable_reasons
-                                .keys()
-                                .all(|reason| reason == "mapping_unavailable")))
-            });
+        let bytes = result.as_ref().ok().and_then(report_bytes);
+        if let Some(bytes) = bytes {
+            while state
+                .entries
+                .iter()
+                .filter(|(k, _)| k.as_str() != key)
+                .map(|(_, e)| e.bytes)
+                .sum::<usize>()
+                .saturating_add(bytes)
+                > MAX_CACHE_BYTES
+            {
+                let oldest = state
+                    .entries
+                    .iter()
+                    .filter(|(k, e)| k.as_str() != key && !e.refreshing)
+                    .min_by_key(|(_, e)| e.touched)
+                    .map(|(k, _)| k.clone());
+                if let Some(oldest) = oldest {
+                    state.entries.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        let room = bytes.is_some_and(|bytes| {
+            state
+                .entries
+                .iter()
+                .filter(|(k, _)| k.as_str() != key)
+                .map(|(_, e)| e.bytes)
+                .sum::<usize>()
+                .saturating_add(bytes)
+                <= MAX_CACHE_BYTES
+        });
+        if let Some(entry) = state.entries.get_mut(key) {
+            let usable = room
+                && result.as_ref().is_ok_and(|report| {
+                    !report
+                        .coverage
+                        .unavailable_reasons
+                        .contains_key("source_unavailable")
+                        && report.coverage.available_collectors
+                            >= entry.report.coverage.available_collectors
+                        && (report.coverage.available_collectors > 0
+                            || report.coverage.configured_collectors == 0
+                            || (!report.coverage.unavailable_reasons.is_empty()
+                                && report
+                                    .coverage
+                                    .unavailable_reasons
+                                    .keys()
+                                    .all(|r| r == "mapping_unavailable")))
+                });
             if let Ok(report) = result {
-                if usable {
-                    entry.updated_at_ms = Some(report.generated_at_ms);
-                    entry.report = report;
-                } else if entry.updated_at_ms.is_none() {
+                if usable || (room && entry.updated_at_ms.is_none()) {
+                    if usable {
+                        entry.updated_at_ms = report
+                            .coverage
+                            .snapshot
+                            .as_ref()
+                            .and_then(|s| s.updated_at_ms)
+                            .or(Some(report.generated_at_ms));
+                    }
+                    entry.bytes = bytes.unwrap_or(0);
                     entry.report = report;
                 }
             }
@@ -165,22 +226,43 @@ impl UsageCache {
         }
         changed.notify_all();
     }
-
     pub(crate) fn wait(&self, repository_id: Option<&str>) {
-        let (entries, changed, _) = &*self.0;
-        let entries = entries
+        let state = self
+            .0
+            .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _waited = changed
-            .wait_timeout_while(entries, MAX_WAIT, |entries| {
-                entries.values().any(|entry| {
-                    entry.refreshing && repository_id.is_none_or(|id| entry.repository_id == id)
+        let _waited =
+            self.0
+                .1
+                .wait_timeout_while(state, MAX_WAIT, |state| {
+                    state.entries.values().any(|e| {
+                        e.refreshing && repository_id.is_none_or(|id| e.repository_id == id)
+                    })
                 })
-            })
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
-
+// Bound serialization without allocating a second copy. The multiplier covers
+// numeric-heavy structs, vectors and owned strings in display projections.
+fn report_bytes(report: &UsageRepository) -> Option<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, value: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(value.len());
+            if self.0 > MAX_ENTRY_BYTES / 8 {
+                return Err(std::io::Error::other("snapshot too large"));
+            }
+            Ok(value.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Counter(0);
+    serde_json::to_writer(&mut count, report).ok()?;
+    Some(count.0.saturating_mul(8))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,8 +293,15 @@ mod tests {
     }
 
     fn expire(cache: &UsageCache, key: &str) {
-        cache.0.0.lock().unwrap().get_mut(key).unwrap().completed =
-            Some(Instant::now() - FRESH_FOR);
+        cache
+            .0
+            .0
+            .lock()
+            .unwrap()
+            .entries
+            .get_mut(key)
+            .unwrap()
+            .completed = Some(Instant::now() - FRESH_FOR);
     }
 
     #[test]
@@ -325,11 +414,11 @@ mod tests {
                 .total_tokens,
             Some(100)
         );
-        assert!(UsageCache::default().0.0.lock().unwrap().is_empty());
+        assert!(UsageCache::default().0.0.lock().unwrap().entries.is_empty());
     }
 
     #[test]
-    fn refresh_admission_defers_second_source_scan_without_claiming_refreshing() {
+    fn refresh_admission_queues_second_scan_without_losing_its_refresh() {
         let cache = UsageCache::default();
         let (release, release_rx) = mpsc::channel();
         let (started_tx, started) = mpsc::channel();
@@ -339,10 +428,10 @@ mod tests {
             Ok(report(Some(1)))
         });
         started.recv_timeout(Duration::from_secs(2)).unwrap();
-        let deferred = cache.get("second".into(), report(None), || panic!("admission capped"));
+        let deferred = cache.get("second".into(), report(None), || Ok(report(Some(2))));
         let snapshot = deferred.coverage.snapshot.unwrap();
-        assert!(!snapshot.refreshing);
-        assert!(snapshot.refresh_failed);
+        assert!(snapshot.refreshing);
+        assert!(!snapshot.refresh_failed);
         release.send(()).unwrap();
         cache.wait(Some("fixture"));
     }
@@ -355,7 +444,8 @@ mod tests {
             cache.wait(None);
         }
         {
-            let mut entries = cache.0.0.lock().unwrap();
+            let mut state = cache.0.0.lock().unwrap();
+            let entries = &mut state.entries;
             assert_eq!(entries.len(), MAX_ENTRIES);
             assert!(!entries.contains_key("0"));
             for entry in entries.values_mut() {
@@ -365,7 +455,7 @@ mod tests {
         let full = cache.get("overflow".into(), report(None), || panic!("over capacity"));
         assert_eq!(full.totals.total_tokens, None);
         assert!(full.coverage.snapshot.unwrap().refresh_failed);
-        assert_eq!(cache.0.0.lock().unwrap().len(), MAX_ENTRIES);
+        assert_eq!(cache.0.0.lock().unwrap().entries.len(), MAX_ENTRIES);
     }
 
     #[test]
@@ -384,5 +474,54 @@ mod tests {
                 refresh_failed: true,
             })
         );
+    }
+    #[test]
+    fn oversized_refresh_preserves_last_good_snapshot_and_byte_budget() {
+        let cache = UsageCache::default();
+        cache.get("key".into(), report(None), || Ok(report(Some(25))));
+        cache.wait(None);
+        expire(&cache, "key");
+        cache.get("key".into(), report(None), || {
+            let mut too_large = report(Some(99));
+            too_large.display_name = "x".repeat(MAX_ENTRY_BYTES);
+            Ok(too_large)
+        });
+        cache.wait(None);
+        let kept = cache.get("key".into(), report(None), || panic!("failure cooldown"));
+        assert_eq!(kept.totals.total_tokens, Some(25));
+        assert!(kept.coverage.snapshot.unwrap().refresh_failed);
+        let state = cache.0.0.lock().unwrap();
+        assert!(state.entries.values().map(|e| e.bytes).sum::<usize>() <= MAX_CACHE_BYTES);
+    }
+
+    #[test]
+    fn pending_reads_are_bounded_and_all_admitted_reads_finish() {
+        let cache = UsageCache::default();
+        let (release, blocked) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        cache.get("active".into(), report(None), move || {
+            started_tx.send(()).unwrap();
+            blocked.recv_timeout(Duration::from_secs(2)).unwrap();
+            Ok(report(Some(1)))
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        for i in 0..MAX_PENDING {
+            let row = cache.get(format!("queued-{i}"), report(None), || Ok(report(Some(2))));
+            assert!(row.coverage.snapshot.unwrap().refreshing);
+        }
+        let refused = cache.get("overflow".into(), report(None), || panic!("queue overflow"));
+        assert!(refused.coverage.snapshot.unwrap().refresh_failed);
+        assert_eq!(cache.0.0.lock().unwrap().pending.len(), MAX_PENDING);
+        release.send(()).unwrap();
+        cache.wait(None);
+        for i in 0..MAX_PENDING {
+            assert_eq!(
+                cache
+                    .get(format!("queued-{i}"), report(None), || panic!("duplicate"))
+                    .totals
+                    .total_tokens,
+                Some(2)
+            );
+        }
     }
 }

@@ -18,6 +18,7 @@ pub struct CodexUsageSource {
     pub uid: u32,
     pub codex_home: PathBuf,
     pub executable: PathBuf,
+    pub api_socket: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -322,6 +323,8 @@ struct UsagePolicySource {
     uid: u32,
     codex_home: String,
     executable: String,
+    #[serde(default)]
+    api_socket: Option<String>,
 }
 
 fn read_usage_policy(path: Option<&Path>) -> Result<Vec<CodexUsageSource>, ConfigError> {
@@ -344,10 +347,15 @@ fn read_usage_policy(path: Option<&Path>) -> Result<Vec<CodexUsageSource>, Confi
         }
         let codex_home = validate_absolute_policy_path("codex_home", source.codex_home)?;
         let executable = validate_absolute_policy_path("executable", source.executable)?;
+        let api_socket = source
+            .api_socket
+            .map(|path| validate_absolute_policy_path("api_socket", path))
+            .transpose()?;
         sources.push(CodexUsageSource {
             uid: source.uid,
             codex_home,
             executable,
+            api_socket,
         });
     }
     Ok(sources)

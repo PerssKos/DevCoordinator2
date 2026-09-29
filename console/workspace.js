@@ -237,15 +237,15 @@ window.DevCoordinatorWorkspace = (() => {
       if (data && (currentView !== 'tests' || testsLoaded)) return;
       if (loading?.signal === signal) return loading.promise;
       const read = async (operation) => {
-        try { return { value: await api(operation, operation === 'usage.repositories' ? { range: '24h' } : {}) }; }
+        try { return { value: await api(operation, {}) }; }
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
       const includeTests = currentView === 'tests';
-      const promise = Promise.all([read('plan.overview'), includeTests ? read('test.list') : { value: { runs: [] } }, read('deployment.list'), ...(canOperate() ? [read('usage.repositories'), read('progress.repositories')] : [])]).then(async ([plans, tests, deploymentList, usage, progress]) => {
+      const promise = Promise.all([read('plan.overview'), includeTests ? read('test.list') : { value: { runs: [] } }, read('deployment.list')]).then(async ([plans, tests, deploymentList]) => {
         if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
-        if ([plans, tests, deploymentList, usage, progress].filter(Boolean).every((result) => result.error)) throw plans.error;
-        data = { repositories: [...(plans.value?.repositories || []), ...(usage?.value?.repositories || []), ...(progress?.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        if ([plans, tests, deploymentList].filter(Boolean).every((result) => result.error)) throw plans.error;
+        data = { repositories: plans.value?.repositories || [], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
         const unavailable = [['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]].filter(([, result]) => result.error && result.error.code !== 'permission_denied');

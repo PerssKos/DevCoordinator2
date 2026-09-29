@@ -173,6 +173,13 @@ repository. Until then the collection says "Open repository to index usage";
 successful links are persisted, so later collection reads and restarts stay
 fast without launching unused Codex processes.
 
+A source may optionally set `api_socket` to its existing CodexMulti local
+app-server socket. The Coordinator then prefers the bounded `localUsage/summary`
+API and retains the read-only SQLite fallback. Keep API mode opt-in until that
+source passes the windowed-rollup integration checks described in
+[the usage consumer contract](codex-usage-consumer.md). The default socket is
+`CODEX_HOME/app-server-control/app-server-control.sock`; no new server is started.
+
 The installer accepts repeatable `--codex-usage-account UNIX_ACCOUNT` for the
 default `~/.codex` and `~/.local/bin/codex` locations, merges the private policy
 atomically, and preserves previously configured sources.

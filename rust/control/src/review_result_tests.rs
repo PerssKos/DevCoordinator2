@@ -59,6 +59,7 @@ fn measured_fixture() -> (Fixture, Record, u64) {
         })
         .unwrap();
     fixture.config.codex_usage_sources = vec![CodexUsageSource {
+        api_socket: None,
         uid,
         codex_home: home,
         executable: probe,
