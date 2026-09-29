@@ -2059,9 +2059,10 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 124);
-        assert_eq!(tools.len(), 98);
-        assert_eq!(cli_routes.len(), 100);
+        // Includes the two pricing-card operations and completion.check.
+        assert_eq!(OPERATIONS.len(), 127);
+        assert_eq!(tools.len(), 99);
+        assert_eq!(cli_routes.len(), 101);
     }
 
     #[test]
