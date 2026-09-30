@@ -272,7 +272,7 @@ impl TestRunStore {
         &self,
         worktree: &Path,
     ) -> Result<Option<TestSummary>, TestStateError> {
-        let Some(root) = open_worktree_if_present(worktree)? else {
+        let Some(root) = open_worktree_for_read(worktree)? else {
             return Ok(None);
         };
         let Some(current) = open_chain(&root, &[".devcoordinator", "test", "current"])? else {
@@ -746,6 +746,17 @@ fn open_worktree(path: &Path) -> Result<File, TestStateError> {
 }
 
 fn open_worktree_if_present(path: &Path) -> Result<Option<File>, TestStateError> {
+    open_worktree_path(path, false)
+}
+
+fn open_worktree_for_read(path: &Path) -> Result<Option<File>, TestStateError> {
+    open_worktree_path(path, true)
+}
+
+fn open_worktree_path(
+    path: &Path,
+    tolerate_non_directory: bool,
+) -> Result<Option<File>, TestStateError> {
     if !path.is_absolute() {
         return Err(TestStateError::Invalid(
             "worktree root must be absolute".into(),
@@ -758,6 +769,17 @@ fn open_worktree_if_present(path: &Path) -> Result<Option<File>, TestStateError>
     ) {
         Ok(descriptor) => Ok(Some(File::from(descriptor))),
         Err(rustix::io::Errno::NOENT) => Ok(None),
+        // A retained worktree can disappear between registration and a list
+        // read. Treat a path whose parent was replaced by a file, or whose
+        // symlink target was retired, as absent so one stale checkout cannot
+        // hide every other test run. Mutating operations pass `false` and
+        // retain the concrete error.
+        Err(error)
+            if tolerate_non_directory
+                && matches!(error, rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) =>
+        {
+            Ok(None)
+        }
         Err(error) => Err(errno("open worktree root", error)),
     }
 }
@@ -1084,6 +1106,34 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use tempfile::tempdir;
+
+    #[test]
+    fn missing_or_non_directory_worktree_is_absent_from_read_only_state() {
+        let temporary = tempdir().unwrap();
+        let file_root = temporary.path().join("replaced-worktree");
+        std::fs::write(&file_root, "stale scratch entry").unwrap();
+        assert_eq!(TestRunStore.read_current_summary(&file_root).unwrap(), None);
+        assert!(
+            open_worktree(&file_root)
+                .unwrap_err()
+                .to_string()
+                .contains("Not a directory")
+        );
+
+        let linked_root = temporary.path().join("linked-worktree");
+        symlink(temporary.path().join("missing-target"), &linked_root).unwrap();
+        assert_eq!(
+            TestRunStore.read_current_summary(&linked_root).unwrap(),
+            None
+        );
+        assert!(open_worktree(&linked_root).is_err());
+
+        let missing_root = temporary.path().join("removed-worktree");
+        assert_eq!(
+            TestRunStore.read_current_summary(&missing_root).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn run_layout_summary_plan_history_and_evidence_round_trip() {
