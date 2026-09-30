@@ -145,6 +145,16 @@ try {
     await page.setViewportSize({width:1487,height:1058});await page.evaluate(()=>document.documentElement.dataset.theme='dark');
     assert.deepEqual(errors,[]);
   },page);
+  await check('phone and tablet action menus keep named close and reopen controls',async()=>{
+    for(const theme of ['light','dark'])for(const width of [390,741]){
+      await page.setViewportSize({width,height:844});await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+      await page.locator('.ticket-menu summary').click();await page.getByRole('button',{name:'Reopen ticket',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.ticket-controls .ticket-state')?.textContent==='Open');
+      assert.equal((await action(origin,{kind:'get',ticket_id:ticketId})).ticket.closed,false);
+      await page.locator('.ticket-menu summary').click();assert.ok(await page.getByRole('button',{name:'Remove request',exact:true}).isVisible());await page.locator('.ticket-menu').screenshot({path:path.join(out,'action-menu-'+theme+'-'+width+'.png')});await page.getByRole('button',{name:'Close ticket',exact:true}).click();await page.waitForFunction(()=>document.querySelector('.ticket-controls .ticket-state')?.textContent==='Closed');
+      assert.equal((await action(origin,{kind:'get',ticket_id:ticketId})).ticket.closed,true);
+    }
+    await page.setViewportSize({width:1487,height:1058});
+  },page);
   await check('long discussions reveal the newest reply and page backward without gaps',async()=>{
     for(let i=0;i<24;i++)await action(origin,{kind:'comment',ticket_id:ticketId,request_key:'long-thread-'+i,body:'Discussion item '+i,attachments:[]});
     await page.reload();await page.getByText('Discussion item 23',{exact:true}).waitFor();assert.equal(await page.locator('.ticket-comment').count(),20);
