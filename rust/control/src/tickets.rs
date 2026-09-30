@@ -13,7 +13,6 @@ use thiserror::Error;
 
 use crate::database::{Database, DatabaseError};
 
-const SCHEMA: &str = include_str!("tickets.sql");
 pub const DEFAULT_UPSTREAM: &str = "https://vr.ae";
 pub const MAX_ATTACHMENTS: usize = 16;
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -45,12 +44,7 @@ pub struct Settings {
     pub revision: u64,
 }
 
-/// Attribution supplied by an authenticated adapter, never a public identity assertion.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Author {
-    pub server: String,
-    pub name: String,
-}
+pub use devcoordinator2_api::tickets::{Attachment, Author, Comment, Ticket, TicketSummary};
 
 #[derive(Clone, Debug)]
 pub struct FileInput {
@@ -74,47 +68,6 @@ pub struct AddComment {
     pub ticket_id: String,
     pub body: String,
     pub files: Vec<FileInput>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TicketSummary {
-    pub id: String,
-    pub upstream: String,
-    pub origin: String,
-    pub title: String,
-    pub closed: bool,
-    pub revision: u64,
-    pub created_at: String,
-    pub updated_at: String,
-    pub comment_count: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Attachment {
-    pub id: String,
-    pub name: String,
-    pub content_type: String,
-    pub byte_size: u64,
-    pub sha256: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Ticket {
-    #[serde(flatten)]
-    pub summary: TicketSummary,
-    pub author: Author,
-    pub body: String,
-    pub attachments: Vec<Attachment>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Comment {
-    pub id: String,
-    pub ticket_id: String,
-    pub author: Author,
-    pub body: String,
-    pub created_at: String,
-    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,10 +95,6 @@ impl TicketStore {
     /// This constructor adds no network listener or public API.
     pub fn new(database: Database, upstream: &str) -> Result<Self, TicketError> {
         let upstream = normalize_upstream(upstream)?;
-        database.call(|db| {
-            db.execute_batch(SCHEMA)?;
-            Ok(())
-        })?;
         Ok(Self { database, upstream })
     }
 

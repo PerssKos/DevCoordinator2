@@ -687,7 +687,7 @@ final result: passed
 
 ### Source and comparison
 
-- Source visual truth: `/home/holyglory/.codex/generated_images/01a0df7a-c47a-78d0-bc42-fa890c1c8c6e/exec-93dc9ba2-00c7-4b7a-92d8-bf92f2b54448.png`, Coordinator sketch `s038ac45e937b98bb`, selected displayed option 3, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`.
+- Source visual truth: retained image `exec-93dc9ba2-00c7-4b7a-92d8-bf92f2b54448.png`, Coordinator sketch `s038ac45e937b98bb`, selected displayed option 3, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`.
 - Implementation route: `https://console.vr.ae/#/performance/r2c68ddac83a3140a`, hdlripper, authenticated owner state, 7-day window, partial coverage from one of two configured collectors.
 - Wide implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-wide.png` (1440px CSS viewport, full-page 1440×3719 capture, device scale 1).
 - Narrow implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-narrow.png` (390px CSS viewport, full-page 390×4705 capture, device scale 1).

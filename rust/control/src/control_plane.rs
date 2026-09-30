@@ -52,6 +52,10 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 /// service is ported; they never report synthetic success.
 pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "ping",
+    "ticket.request",
+    "ticket.settings",
+    "ticket.configure",
+    "ticket.remote",
     "config.get",
     "config.env.set",
     "config.reload",
@@ -195,6 +199,7 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     sketches: SketchService,
+    tickets: crate::ticket_service::TicketService,
     deployments: Deployments,
     servers: ServerService,
     events: EventService,
@@ -249,6 +254,8 @@ impl ControlPlane {
         let test_evidence =
             TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
         let sketches = SketchService::with_clock(&config, database.clone(), Arc::clone(&clock));
+        let tickets =
+            crate::ticket_service::TicketService::new(database.clone(), &config.base_domain)?;
         let incidents =
             crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
@@ -358,6 +365,7 @@ impl ControlPlane {
             artifacts,
             test_evidence,
             sketches,
+            tickets,
             deployments,
             servers,
             events,
@@ -447,6 +455,20 @@ impl ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let now = self.timestamp()?;
         let actor = caller.actor();
+        if operation.starts_with("ticket.") {
+            let principal = self.access.principal(caller)?;
+            let administrator = principal.local || principal.administrator;
+            return match operation {
+                "ticket.request" => encode(self.tickets.request(decode(params)?, administrator)?),
+                "ticket.settings" => encode(self.tickets.settings(administrator)?),
+                "ticket.configure" => encode(self.tickets.configure(decode(params)?)?),
+                "ticket.remote" => encode(self.tickets.remote(decode(params)?)?),
+                _ => Err(ProtocolError::new(
+                    ErrorCode::OperationUnknown,
+                    "unknown ticket operation",
+                )),
+            };
+        }
         if operation.starts_with("glossary.") {
             let path = params.get("path").and_then(Value::as_str);
             let repository_id = params.get("repository_id").and_then(Value::as_str);
@@ -1759,9 +1781,10 @@ impl OperationExecutor for ControlPlane {
                     },
                     now,
                     crate::review::RegistrationMode::Refresh,
-                ) {
-                    tracing::warn!(code=%error.code,"native review delivery registration unavailable; message fallback remains available");
-                }
+                )
+            {
+                tracing::warn!(code=%error.code,"native review delivery registration unavailable; message fallback remains available");
+            }
         }
         let mut result = authorization.apply_result(result)?;
         if !caller.via_edge
@@ -1772,23 +1795,24 @@ impl OperationExecutor for ControlPlane {
                 params.get("repository_id").and_then(Value::as_str),
                 caller,
                 false,
-            ) {
-                if let Err(error) = self.deliver_review_reminders() {
-                    tracing::warn!(code=%error.code,"review reminders temporarily unavailable");
-                }
-                if let Ok(messages) = self.sketches.message_poll_kind(
-                    params::AgentMessagePoll {
-                        repository_id: repository.repository_id,
-                        after_id: None,
-                        limit: 2,
-                    },
-                    Some("performance_review.reminder"),
-                ) && !messages.messages.is_empty()
-                    && let Some(object) = result.as_object_mut()
-                {
-                    object.insert("_agent_messages".into(), encode(messages.messages)?);
-                }
+            )
+        {
+            if let Err(error) = self.deliver_review_reminders() {
+                tracing::warn!(code=%error.code,"review reminders temporarily unavailable");
             }
+            if let Ok(messages) = self.sketches.message_poll_kind(
+                params::AgentMessagePoll {
+                    repository_id: repository.repository_id,
+                    after_id: None,
+                    limit: 2,
+                },
+                Some("performance_review.reminder"),
+            ) && !messages.messages.is_empty()
+                && let Some(object) = result.as_object_mut()
+            {
+                object.insert("_agent_messages".into(), encode(messages.messages)?);
+            }
+        }
         Ok(result)
     }
 

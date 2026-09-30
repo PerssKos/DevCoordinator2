@@ -40,7 +40,7 @@ impl Cli {
                         work.alarm = None;
                         break;
                     }
-                    std::thread::sleep(delay);
+                    std::thread::sleep(delay.min(std::time::Duration::from_millis(100)));
                     delay = (delay * 2).min(std::time::Duration::from_millis(100));
                 }
             }

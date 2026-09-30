@@ -288,6 +288,22 @@ export async function createEdge(config, { log = console } = {}) {
   async function handleRequest(req, res) {
     const host = hostOf(req);
     const url = new URL(req.url || '/', `${scheme}://${host || config.consoleHost}`);
+    // Public ticket-only surface. Never forward an operation name, target,
+    // administrator flag or user identity supplied by an Internet caller.
+    if ((host === config.consoleHost || host === config.baseDomain) && url.pathname === '/.well-known/devcoordinator2/tickets') {
+      if (req.method !== 'POST') return writeJson(res, 405, { ok:false,error:{code:'method_not_allowed',message:'Use POST',detail:''} });
+      let params;
+      try { params = await readJsonBody(req, 60000); }
+      catch { return writeJson(res,400,{ok:false,error:{code:'params_invalid',message:'Invalid ticket request',detail:''}}); }
+      try {
+        const response = await daemon.call('ticket.remote', params);
+        return writeJson(res,response.ok ? 200 : response.error?.code === 'permission_denied' ? 403 : 400,response);
+      } catch { return writeJson(res,503,{ok:false,error:{code:'daemon_unavailable',message:'Ticket server unavailable',detail:''}}); }
+    }
+    if ((host === config.consoleHost || host === config.baseDomain) && consoleStatic && (url.pathname === '/requests' || url.pathname === '/requests/' || ['/tickets.js','/tickets.css','/tickets-public.js','/design-system.css','/theme.js','/app.css'].includes(url.pathname) || url.pathname.startsWith('/fonts/') || url.pathname.startsWith('/icons/tabler/') || url.pathname.startsWith('/vendor/pdfjs/'))) {
+      if (url.pathname === '/requests' || url.pathname === '/requests/') req.url = '/tickets-public.html';
+      return consoleStatic.handle(req,res);
+    }
     if (url.pathname.startsWith('/auth/')) return handleAuth(req, res, url, host);
     if (host === config.consoleHost) return handleConsole(req, res, url);
     const doc = store.current();

@@ -21,10 +21,11 @@ pub mod results;
 pub mod review;
 pub mod review_policy;
 pub mod runtime_recovery;
+pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 28;
+pub const DATABASE_SCHEMA_VERSION: u32 = 29;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -613,6 +614,10 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         EmptyParams,
         PingData
     ),
+    operation!("ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, excluded "Use Console or MCP ticket_request.", ["ticket_request"], tickets::Request, tickets::Reply),
+    operation!("ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, excluded "Use Console or MCP ticket_settings.", ["ticket_settings"], EmptyParams, tickets::Settings),
+    operation!("ticket.configure", "Set the feature request upstream without moving existing tickets; local uses this server.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP ticket_configure.", ["ticket_configure"], tickets::Configure, tickets::Settings),
+    operation!("ticket.remote", "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), excluded "Used only by the dedicated edge ticket endpoint.", [], tickets::RemoteRequest, tickets::Reply),
     operation!(
         "user.whoami",
         "Show the current public identity and grants.",
@@ -2059,9 +2064,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 124);
-        assert_eq!(tools.len(), 98);
-        assert_eq!(cli_routes.len(), 100);
+        assert_eq!(OPERATIONS.len(), 131);
+        assert_eq!(tools.len(), 102);
+        assert_eq!(cli_routes.len(), 101);
     }
 
     #[test]

@@ -46,6 +46,16 @@ const source = manifest.locales.find(entry => entry.tag === manifest.sourceLocal
 if (localeArgument !== -1) check(manifest.locales.some(entry => entry.tag === requestedLocale), 'Unknown --locale');
 check(source?.status === 'enabled','Source locale must be enabled');
 for (const ns of manifest.namespaces) namespaces.set(ns, await read(source,ns));
+// New optional feature catalogs can use the established source-language fallback
+// without claiming translation coverage. Core admission remains all-or-nothing.
+const sourceOnlyFeatures = [];
+for (const [ns, feature] of Object.entries(manifest.featureNamespaces || {})) {
+  check(!manifest.namespaces.includes(ns), `Feature namespace duplicates core namespace ${ns}`);
+  check(feature.status === 'source-only' && feature.sourceLocale === manifest.sourceLocale, `Invalid feature fallback ${ns}`);
+  const sourceMessages = await read(source, ns);
+  check(Object.keys(sourceMessages).length > 0, `Empty feature namespace ${ns}`);
+  sourceOnlyFeatures.push(ns);
+}
 for (const entry of manifest.locales) {
   check(!tags.has(entry.tag), `Duplicate locale ${entry.tag}`); tags.add(entry.tag);
   check(['ltr','rtl'].includes(entry.direction), `${entry.tag}: invalid direction`);
@@ -66,5 +76,5 @@ for (const entry of manifest.locales) {
     for (const key of Object.keys(values)) check(Object.hasOwn(en,key), `${entry.tag}/${ns}: unknown ${key}`);
   }
 }
-console.log(JSON.stringify({ enabled:manifest.locales.length-drafts.length, drafts, sourceMessages:[...namespaces.values()].reduce((n,v)=>n+Object.keys(v).length,0), errors },null,2));
+console.log(JSON.stringify({ enabled:manifest.locales.length-drafts.length, drafts, sourceOnlyFeatures, sourceMessages:[...namespaces.values()].reduce((n,v)=>n+Object.keys(v).length,0), errors },null,2));
 process.exitCode = errors.length ? 1 : 0;

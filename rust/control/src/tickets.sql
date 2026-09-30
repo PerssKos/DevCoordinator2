@@ -1,5 +1,4 @@
--- Component-owned additive schema. TicketStore is not activated by the daemon
--- until the federation and access adapters are integrated.
+-- Authority schema 29: public ticket content and private federation credentials.
 CREATE TABLE IF NOT EXISTS ticket_settings (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   upstream TEXT NOT NULL,
@@ -63,4 +62,19 @@ CREATE TABLE IF NOT EXISTS ticket_history (
   author_name TEXT NOT NULL,
   occurred_at TEXT NOT NULL,
   PRIMARY KEY(ticket_id,revision)
+);
+CREATE TABLE IF NOT EXISTS ticket_peers (
+  upstream TEXT PRIMARY KEY,
+  credential TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ticket_uploads (
+  upload_id TEXT PRIMARY KEY,
+  owner TEXT NOT NULL,
+  request_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  byte_size INTEGER NOT NULL CHECK(byte_size>0 AND byte_size<=16777216),
+  sha256 TEXT NOT NULL,
+  content BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  UNIQUE(owner,request_key)
 );
