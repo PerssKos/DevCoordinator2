@@ -792,16 +792,47 @@ installation; the isolated result alone is not a shared-surface handoff.
 
 ### Shared surface and final status
 
-The eight-cell isolated visual audit passes with no actionable P0-P2 findings.
-The exact source/rendered comparison and thirteen passing two-server journeys
-support that result. The shared Console still runs the previous source commit.
-Automatic approval review refused the push to the default `main` branch, so
-native installation and the required shared-surface comparison have not occurred.
-No shared-surface screenshot or qualified delivery receipt is claimed.
+The user authorized merge and installation on 2026-09-30. PR16 was merged and
+installed through the reviewed native workflow. Shared acceptance then found a
+phone action-menu label defect: the toolbar label-collapse selector also hid
+text-only menu items. The direct-child selector repair is committed as
+`c46ddc9`, installed, and verified by fourteen two-server journeys, including
+phone/tablet close and reopen in both themes. This repair restores the selected
+behavior and introduces no new design direction.
 
-**Final result: blocked pending explicit merge/installation authorization and
-shared Console verification.** The selected design and all requested behavior
-remain in scope. Once authorized, install the verified candidate through the
-reviewed native workflow, run `console/verify-live-tickets.mjs` through `run-local`,
-compare the shared captures to the retained selected target, and retain the
-qualified delivery receipt before closing the request-related outcomes.
+The shared Console comparison at `https://console.vr.ae/#/requests` uses the
+actual installed implementation, a temporary public acceptance ticket, 1487px
+and 390px viewports, dark theme, authenticated local administrator, and public
+reader states. The mockup has illustrative ticket content; the rendered capture
+has real persisted acceptance content and an additional initial-request file
+strip required by the original request. Both images were combined in
+`/tmp/upstream-shared-audit/source-render-comparison.png` and inspected.
+The paired layout preserves the selected inbox/discussion hierarchy, local Inter
+and semantic palette, readable text and compact controls. The phone layout
+preserves the thread with a working return-to-list action. Real image thumbnails
+and document links remain attached to their originating comment.
+
+Shared acceptance passed eight checks: upstream ownership, both sides' persisted
+replies, comment document viewing, narrow layout, closure, reload persistence,
+public read-only behavior, and removal of the exact temporary ticket. The public
+page and API returned HTTP200 through both `vr.ae` and `console.vr.ae`.
+The installed MCP server reports the default upstream `https://vr.ae`.
+The native evidence pass checked 1,150 observations, including every served
+Console asset against the installed source. The running daemon source is
+`c46ddc9c2e8decb89e686b89419ba715776e0874`.
+
+Evidence: `/tmp/upstream-shared-audit/report.json`, paired capture above,
+`shared-wide.png`, `shared-narrow.png`, `shared-public.png`,
+`/tmp/dc2-ticket-phone-repair/report.json`, and native run
+`native-tickets-1790766784122`. A final qualified delivery artifact retains these
+reports and captures; its receipt is recorded in the authoritative release.
+Earlier failed runs remain failure evidence and do not supply completion claims.
+
+No actionable P0-P2 visual, responsive or interaction finding remains. The PDF
+media-surface warnings are intentional document content, reviewed visually.
+P3: real server-name avatars use the existing user icon instead of generated
+initials. English-source fallback for ticket-specific copy is explicitly
+recorded in the feature catalog; it is not claimed as translated coverage.
+
+**Final result: passed.** Shared-source comparison and rendered interactions
+are complete; the temporary acceptance ticket was removed after verification.
