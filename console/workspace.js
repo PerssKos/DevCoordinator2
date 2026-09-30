@@ -288,7 +288,7 @@ window.DevCoordinatorWorkspace = (() => {
           groups = catalogue(data.repositories, data.runs, data.deployments);
           updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Usage', usage], ['Progress', progress]]);
           if (active) paint();
-        });
+        }).catch(() => {});
       });
       loading = { signal, promise };
       return promise;
