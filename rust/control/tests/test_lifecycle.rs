@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use devcoordinator2_api::ErrorCode;
