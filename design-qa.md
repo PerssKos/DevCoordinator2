@@ -733,3 +733,75 @@ No actionable P0, P1, or P2 finding remains in the captured states. The source m
 - [x] Final result: passed
 
 final result: passed
+
+## Public upstream feature requests — 2026-09-30
+
+Source: selected first option, Coordinator sketch `sd59f6dba5a44ad09`, and the
+user-directed per-comment attachment refinement `s82efb78984dd8871` in batch
+`kdddec2283058ce53`. The refined source SHA-256 is
+`573148334d7d7a7474725c223076aba31b1d6e29df1a1d25236bcab8e99ff7f6`.
+User decisions: `DC2-UPSTREAM-REQUEST-INBOX-SELECTED-20260929` and
+`DC2-PUBLIC-FEATURE-REQUESTS-20260929`.
+
+The selected inbox keeps the request collection beside the discussion. Both the
+initial request and each comment retain their own files. Public readers can view
+content while the originating server and upstream administrators use the same
+thread for edits, replies, closure and reopening. Source mockups use illustrative
+content; acceptance uses actual persisted tickets in isolated servers. Shared-Console
+acceptance will use an explicit temporary ticket after installation. Existing Console tokens and
+Inter remain authoritative, including the readable light variant.
+
+### Reviewed journeys and evidence
+
+1. Configure the upstream and retain existing ticket ownership: real Console
+   save/reload and previous-upstream access pass.
+2. Create, cancel and resume a draft, edit and remove the exact request: real
+   persistence and downstream readback pass. A discovered immediate-edit/upload
+   race was fixed by completing refreshed readback before closing the editor.
+3. Reply with multiple files from both sides: attachment/message identity,
+   retry without duplication, failure draft preservation, restart persistence,
+   and paging through more than twenty replies pass.
+4. Preview images, text and DOCX, and render multi-page PDFs: the native PDF
+   iframe was replaced with local PDF.js rendering without document actions.
+   Previous/next page, accessible document text and original download work.
+5. Public read-only access and MCP parity: unrelated origins cannot mutate a
+   ticket, public callers cannot select control-plane operations, and actual
+   MCP clients on both servers create, discuss, attach files and close tickets.
+6. Wide, phone and transition widths: tested at 1487, 741, 740 and 390 CSS pixels
+   in light and dark themes. Primary content, controls and forms remain usable.
+
+Isolated acceptance: `console/verify-tickets.mjs`, 13 passing journeys; evidence
+`/tmp/dc2-ticket-journey-final/report.json`. Formal run
+`formal-web-ui-mundh7yw-ff3b576c` checked eight discussion, creation and PDF cells,
+with zero critical findings. The two media-surface warnings describe the white
+PDF canvas and were resolved by screenshot review. Manual review receipt:
+`/tmp/upstream-formal-pdf/manual-review.json`, eight pass decisions and zero gaps.
+The exact selected source and rendered implementation were combined in
+`/tmp/upstream-final-design-comparison.png` and inspected together.
+
+Typography, copy, layout rhythm, token colors, hierarchy, responsive reflow,
+attachment grouping, focus, cancellation and error recovery were reviewed. The
+real attachment thumbnails were inspected after their bytes finished loading;
+redacted Formal UI input captures do not imply missing control labels. The
+source does not specify a phone layout, error state or full document viewer;
+those states were checked against the agreed journey rather than a fabricated
+source image. Full assistive-technology conformance remains outside this review.
+
+Shared Console comparison and final result are recorded below after native
+installation; the isolated result alone is not a shared-surface handoff.
+
+### Shared surface and final status
+
+The eight-cell isolated visual audit passes with no actionable P0-P2 findings.
+The exact source/rendered comparison and thirteen passing two-server journeys
+support that result. The shared Console still runs the previous source commit.
+Automatic approval review refused the push to the default `main` branch, so
+native installation and the required shared-surface comparison have not occurred.
+No shared-surface screenshot or qualified delivery receipt is claimed.
+
+**Final result: blocked pending explicit merge/installation authorization and
+shared Console verification.** The selected design and all requested behavior
+remain in scope. Once authorized, install the verified candidate through the
+reviewed native workflow, run `console/verify-live-tickets.mjs` through `run-local`,
+compare the shared captures to the retained selected target, and retain the
+qualified delivery receipt before closing the request-related outcomes.
