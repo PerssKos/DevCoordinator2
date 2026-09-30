@@ -262,15 +262,33 @@ window.DevCoordinatorWorkspace = (() => {
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
       const includeTests = currentView === 'tests';
-      const promise = Promise.all([read('plan.overview'), includeTests ? read('test.list') : { value: { runs: [] } }, read('deployment.list'), ...(canOperate() ? [read('usage.repositories'), read('progress.repositories')] : [])]).then(async ([plans, tests, deploymentList, usage, progress]) => {
+      const updateStatus = (results) => {
+        const unavailable = results.filter(([, result]) => result?.error && result.error.code !== 'permission_denied');
+        window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
+      };
+      // Plan, Tests, and Deployments determine the initial repository
+      // navigation. Optional Usage and Progress projections may involve
+      // independent refresh work; do not hold the entire workspace on them.
+      const promise = Promise.all([
+        read('plan.overview'),
+        includeTests ? read('test.list') : { value: { runs: [] } },
+        read('deployment.list'),
+      ]).then(async ([plans, tests, deploymentList]) => {
         if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
-        if ([plans, tests, deploymentList, usage, progress].filter(Boolean).every((result) => result.error)) throw plans.error;
-        data = { repositories: [...(plans.value?.repositories || []), ...(usage?.value?.repositories || []), ...(progress?.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
+        data = { repositories: [...(plans.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
-        const unavailable = [['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]].filter(([, result]) => result.error && result.error.code !== 'permission_denied');
-        window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
+        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]]);
+        if (!canOperate()) return;
+        void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
+          if (signal.aborted) return;
+          data.repositories = [...(plans.value?.repositories || []), ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          groups = catalogue(data.repositories, data.runs, data.deployments);
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Usage', usage], ['Progress', progress]]);
+          if (active) paint();
+        });
       });
       loading = { signal, promise };
       return promise;
