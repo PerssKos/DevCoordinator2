@@ -186,7 +186,7 @@ fn read_with_options(
     let mut metadata_rows = 0usize;
     while let Some(row) = rows.next().map_err(|_| "source_unavailable")? {
         metadata_rows += 1;
-        if metadata_rows % 5000 == 0 {
+        if metadata_rows.is_multiple_of(5000) {
             tracing::debug!(
                 stage = "performance_metadata_progress",
                 rows = metadata_rows,

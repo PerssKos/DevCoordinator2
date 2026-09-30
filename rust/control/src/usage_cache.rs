@@ -18,8 +18,9 @@ const MAX_ACTIVE_REFRESHES: usize = 1;
 // honest refreshing/partial snapshot instead of becoming daemon_unavailable.
 const MAX_WAIT: Duration = Duration::from_secs(7);
 
+type SharedEntries = (Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize);
 #[derive(Clone, Default)]
-pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize)>);
+pub(crate) struct UsageCache(Arc<SharedEntries>);
 
 struct Entry {
     repository_id: String,

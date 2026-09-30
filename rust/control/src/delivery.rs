@@ -428,7 +428,7 @@ fn console_assets_digest(root: &std::path::Path) -> Result<String, ProtocolError
         let metadata = file
             .symlink_metadata()
             .map_err(|_| invalid("Console asset unavailable"))?;
-        if !metadata.is_file() || metadata.len() > 1_048_576 {
+        if !metadata.is_file() || metadata.len() > 2_097_152 {
             return Err(invalid("Console asset must be a bounded regular file"));
         }
         let bytes = std::fs::read(file).map_err(|_| invalid("Console asset unavailable"))?;

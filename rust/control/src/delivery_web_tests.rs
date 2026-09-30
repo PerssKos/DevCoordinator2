@@ -144,6 +144,46 @@ fn native_console_asset_fingerprint_matches_only_published_static_types() {
         console_assets_digest(&world.fixture.repository).unwrap(),
         before
     );
+    let before_renderer = console_assets_digest(&world.fixture.repository).unwrap();
+    for name in ["font.ttf", "font.pfb", "characters.bcmap", "decoder.wasm"] {
+        let relative = format!("console/{name}");
+        std::fs::write(
+            world.fixture.repository.join(&relative),
+            b"renderer fixture",
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(&world.fixture.repository)
+                .args(["add", &relative])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(
+        world.fixture.repository.join("console/worker.mjs"),
+        vec![b' '; 1_300_000],
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&world.fixture.repository)
+            .args(["add", "console/worker.mjs"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_ne!(
+        console_assets_digest(&world.fixture.repository).unwrap(),
+        before_renderer
+    );
+    std::fs::write(
+        world.fixture.repository.join("console/worker.mjs"),
+        vec![b' '; 2_097_153],
+    )
+    .unwrap();
+    assert!(console_assets_digest(&world.fixture.repository).is_err());
 }
 
 #[test]

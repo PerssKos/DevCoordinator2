@@ -301,7 +301,7 @@ function currentDestinationHeading() {
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
-    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'],
+    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], requests: ['Feature requests', '#/requests'],
   };
   const destination = destinations[view] || destinations.deployments;
   return pageHeading(destination[0], destination[1], view === 'health' && arg === 'containers' ? 'Containers' : '');
@@ -4572,6 +4572,8 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
+  main.classList.toggle('tickets-page', view === 'requests');
+  if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
   const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
@@ -4606,6 +4608,7 @@ async function render() {
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();
+  if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
   location.hash = '#/plan';
   return undefined;
