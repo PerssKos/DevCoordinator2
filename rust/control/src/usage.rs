@@ -871,7 +871,13 @@ impl CodexUsage {
         rate_cards: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<SourceReport, String> {
         let inherited_deadline = deadline;
-        let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
+        let deadline = deadline.unwrap_or_else(|| {
+            if matches!(projection, Projection::PerformanceFast) && source.api_socket.is_some() {
+                Instant::now() + collector_api::API_BUDGET
+            } else {
+                Instant::now() + QUERY_TIMEOUT
+            }
+        });
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
         }
