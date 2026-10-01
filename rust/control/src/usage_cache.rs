@@ -212,19 +212,19 @@ impl UsageCache {
                                     .keys()
                                     .all(|r| r == "mapping_unavailable")))
                 });
-            if let Ok(report) = result {
-                if usable || (room && entry.updated_at_ms.is_none()) {
-                    if usable {
-                        entry.updated_at_ms = report
-                            .coverage
-                            .snapshot
-                            .as_ref()
-                            .and_then(|s| s.updated_at_ms)
-                            .or(Some(report.generated_at_ms));
-                    }
-                    entry.bytes = bytes.unwrap_or(0);
-                    entry.report = report;
+            if let Ok(report) = result
+                && (usable || (room && entry.updated_at_ms.is_none()))
+            {
+                if usable {
+                    entry.updated_at_ms = report
+                        .coverage
+                        .snapshot
+                        .as_ref()
+                        .and_then(|s| s.updated_at_ms)
+                        .or(Some(report.generated_at_ms));
                 }
+                entry.bytes = bytes.unwrap_or(0);
+                entry.report = report;
             }
             entry.refresh_failed = !usable;
             entry.refreshing = false;

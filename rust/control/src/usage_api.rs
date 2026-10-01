@@ -433,18 +433,17 @@ fn validate(
     {
         return Err("api_contract_unsupported".into());
     }
-    if let Some(snapshot) = &summary.snapshot {
-        if !matches!(
+    if let Some(snapshot) = &summary.snapshot
+        && (!matches!(
             snapshot.freshness.as_str(),
             "fresh" | "stale" | "refreshing" | "failed"
         ) || snapshot
             .source_watermark
             .as_ref()
             .is_some_and(|s| s.len() > 256)
-            || snapshot.refresh_id.as_ref().is_some_and(|s| s.len() > 256)
-        {
-            return Err("api_contract_unsupported".into());
-        }
+            || snapshot.refresh_id.as_ref().is_some_and(|s| s.len() > 256))
+    {
+        return Err("api_contract_unsupported".into());
     }
     if let Some(cost) = &summary.report.cost {
         let provider_total = summary

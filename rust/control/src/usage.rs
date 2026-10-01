@@ -946,16 +946,17 @@ impl CodexUsage {
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
         }
-        if matches!(projection, Projection::PerformanceFast) && source.api_socket.is_some() {
-            if let Ok(summary) = self.api.summary(
+        if matches!(projection, Projection::PerformanceFast)
+            && source.api_socket.is_some()
+            && let Ok(summary) = self.api.summary(
                 source,
                 Some(repository_key),
                 start_ms,
                 end_ms,
                 deadline.min(Instant::now() + collector_api::API_BUDGET),
-            ) {
-                return Ok(summary.source_report(None, bucket_count));
-            }
+            )
+        {
+            return Ok(summary.source_report(None, bucket_count));
         }
         let result = (|| {
             let connection = match inherited_deadline {
