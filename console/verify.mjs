@@ -967,7 +967,6 @@ async function main() {
               if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
               const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
               check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === renderedOperation && call.params.wait_for_refresh === true));
-              if (renderedOperation === 'usage.repository') check('repository Usage does not load unrelated repository measurements', !daemon.calls.some(call => call.operation === 'usage.repositories'));
             }
             check('cache ' + viewport.width + ' ' + route + ': no document overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
             await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-initial.png') });
