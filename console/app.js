@@ -3056,14 +3056,23 @@ function usageRefreshContext(waiting) {
   };
 }
 
+const usageRefreshTimers = new Map();
 function continueUsageRefresh(coverages, refresh) {
-  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) return;
   const identity = usageViewIdentity();
+  const scheduled = usageRefreshTimers.get(identity);
+  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) {
+    if (scheduled) window.clearTimeout(scheduled);
+    usageRefreshTimers.delete(identity);
+    return;
+  }
+  if (scheduled) return;
   const controller = viewAbort;
-  queueMicrotask(() => {
+  const timer = window.setTimeout(() => {
+    usageRefreshTimers.delete(identity);
     if (controller !== viewAbort || controller?.signal.aborted || identity !== usageViewIdentity()) return;
     refresh();
-  });
+  }, 5000);
+  usageRefreshTimers.set(identity, timer);
 }
 
 function coverageKind(value) {
