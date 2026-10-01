@@ -875,7 +875,10 @@ impl CodexUsage {
         // this loader runs off the request path. Let the SQLite fallback finish
         // with its normal deadline so producer warm-up can still populate the
         // saved snapshot instead of failing after the API probe alone.
-        let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
+        // Cache loaders run off the request path. Large historical collectors
+        // may need more than the normal request budget to build a saved
+        // snapshot; keep the UI responsive while allowing that work to finish.
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(120));
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
         }
