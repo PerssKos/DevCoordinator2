@@ -373,11 +373,7 @@ impl UsageService {
         let cached_end = end;
         let bucket = end.saturating_sub(start).max(1);
         let count = 1;
-        let projection = if wait_for_refresh {
-            Projection::Tokens
-        } else {
-            Projection::PerformanceFast
-        };
+        let projection = Projection::Tokens;
         let mut report = if wait_for_refresh {
             // Start the cost-capable refresh before waiting. The fast and
             // complete projections have separate cache keys, so waiting on
@@ -500,7 +496,7 @@ impl CodexUsage {
         let now_ms = self.now_ms()?;
         let mut rows = Vec::new();
         for repository in repositories {
-            let report = self.repository(repository, range.clone())?;
+            let report = self.repository_fast(repository, range.clone())?;
             rows.push(UsageRepositoryRow {
                 repository_id: report.repository_id,
                 display_name: report.display_name,
@@ -553,6 +549,16 @@ impl CodexUsage {
     }
 
     pub fn repository(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+    ) -> Result<UsageRepository, ProtocolError> {
+        // Detail pages promise token components and API-equivalent cost. The
+        // bounded cache keeps this indexed projection off the request path.
+        self.repository_projection(repository, range, Projection::Tokens)
+    }
+
+    pub fn repository_fast(
         &self,
         repository: &RepositoryRecord,
         range: UsageRange,
