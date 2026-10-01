@@ -871,13 +871,11 @@ impl CodexUsage {
         rate_cards: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<SourceReport, String> {
         let inherited_deadline = deadline;
-        let deadline = deadline.unwrap_or_else(|| {
-            if matches!(projection, Projection::PerformanceFast) && source.api_socket.is_some() {
-                Instant::now() + collector_api::API_BUDGET
-            } else {
-                Instant::now() + QUERY_TIMEOUT
-            }
-        });
+        // Initial Performance reads return the cached snapshot immediately;
+        // this loader runs off the request path. Let the SQLite fallback finish
+        // with its normal deadline so producer warm-up can still populate the
+        // saved snapshot instead of failing after the API probe alone.
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
         }
