@@ -74,6 +74,23 @@ impl World {
                 b"fixture executable bytes".to_vec()
             },
         )];
+        files.push((
+            "completion.json".into(),
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "claim": "complete",
+                "source_sha256": source,
+                "capabilities": [{
+                    "id": "retained-delivery-fixture",
+                    "scope": "test_only",
+                    "state": "fixture_only",
+                    "expected_result": "the retained delivery fixture is available",
+                    "evidence_refs": [format!("run/{}", RUN)]
+                }]
+            }))
+            .unwrap(),
+        ));
+        let proof_present = proof.is_some();
         if let Some(proof) = proof {
             files.push(("delivery.json".into(), serde_json::to_vec(&proof).unwrap()));
         }
@@ -124,7 +141,8 @@ impl World {
             source_sha256: source,
             target: "linux-cli".into(),
             kind,
-            verification_file: (files.len() > 1).then(|| "delivery.json".into()),
+            completion_file: "completion.json".into(),
+            verification_file: proof_present.then(|| "delivery.json".into()),
         };
         let caller = Caller {
             via_edge: false,

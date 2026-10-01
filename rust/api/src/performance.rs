@@ -1,7 +1,7 @@
 //! Read-only Console projections over canonical accounting and review records.
 use crate::{
     outcomes::OutcomeMeasurement,
-    results::UsageCoverage,
+    results::{UsageCost, UsageCoverage},
     review::{EvidenceRef, ReviewUsage, Revision},
 };
 use schemars::JsonSchema;
@@ -20,6 +20,10 @@ pub struct Overview {
     /// A separate lightweight request keeps lifetime totals from delaying the page.
     #[serde(default)]
     pub totals_only: bool,
+    /// Return the current cached snapshot immediately unless this is set,
+    /// in which case wait for the bounded background refresh once.
+    #[serde(default)]
+    pub wait_for_refresh: bool,
 }
 
 #[derive(Clone, Debug, JsonSchema, Serialize, Deserialize)]
@@ -52,6 +56,11 @@ pub struct OverviewResult {
     pub window_end_ms: u64,
     pub generated_at_ms: u64,
     pub total_tokens: OutcomeMeasurement,
+    /// Lightweight token/cost components for the headline total. This is
+    /// populated even when the full outcome projection is intentionally not
+    /// requested, so the detail popover does not trigger another scan.
+    pub totals: Option<crate::results::UsageTotals>,
+    pub cost: UsageCost,
     pub coverage: UsageCoverage,
     pub usage: Option<ReviewUsage>,
 }

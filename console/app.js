@@ -301,7 +301,7 @@ function currentDestinationHeading() {
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
     tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
-    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'],
+    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], requests: ['Feature requests', '#/requests'],
   };
   const destination = destinations[view] || destinations.deployments;
   return pageHeading(destination[0], destination[1], view === 'health' && arg === 'containers' ? 'Containers' : '');
@@ -1647,6 +1647,7 @@ function setupEvidenceLayout() {
   const paint = () => {
     if (!page.isConnected) return;
     const narrow = page.clientWidth < 1050;
+    const mobileDetails = narrow && window.matchMedia('(max-width: 1180px)').matches;
     page.classList.toggle('evidence-layout-narrow', narrow);
     page.classList.toggle('evidence-is-fullscreen', fullscreen);
     page.style.height = `${fullscreen ? innerHeight : Math.max(520, innerHeight - Math.max(0, page.getBoundingClientRect().top) - 1)}px`;
@@ -1654,7 +1655,7 @@ function setupEvidenceLayout() {
       const visible = expanded(panel);
       // Keep the narrow details bar mounted while its body is closed so the
       // user still has a control to reopen postmortem review.
-      $(selector, page).hidden = !visible && !(panel === 'details' && narrow);
+      $(selector, page).hidden = !visible && !(panel === 'details' && mobileDetails);
       page.style.setProperty(`--evidence-${panel}-width`, visible ? (panel === 'journey' ? '230px' : '280px') : '0px');
       page.querySelectorAll(`[data-evidence-panel="${panel}"]`).forEach(button => {
         button.setAttribute('aria-expanded', String(visible));
@@ -1698,7 +1699,7 @@ function setupEvidenceLayout() {
     }
     paint();
     if (focus) (visible && panel === 'details'
-      ? (page.clientWidth < 1050 ? $('.evidence-mobile-inspector-toggle', page) : $('.evidence-panel-close', page))
+      ? (page.clientWidth < 1050 && window.matchMedia('(max-width: 1180px)').matches ? $('.evidence-mobile-inspector-toggle', page) : $('.evidence-panel-close', page))
       : $(`[data-evidence-panel="${panel}"]:not(.evidence-panel-close)`, page))?.focus({ preventScroll: true });
   };
   const finishFullscreen = () => {
@@ -3102,6 +3103,41 @@ function usageMetric(label, value, detail = '') {
   return `<div class="usage-metric"><div class="k">${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.label(label))}</div><div class="v">${esc(value)}</div>${detail ? `<div class="usage-metric-detail">${detail}</div>` : ''}</div>`;
 }
 
+function costValue(cost) {
+  if (!cost || cost.estimated_usd_micros == null) return null;
+  return Number(cost.estimated_usd_micros) / 1000000;
+}
+
+function costAmount(cost, options = {}) {
+  const value = costValue(cost);
+  if (value == null || cost?.status === 'unavailable') return '—';
+  return new Intl.NumberFormat(window.DevCoordinatorI18n.locale, {
+    style: 'currency', currency: 'USD', minimumFractionDigits: value < 0.01 ? 4 : 2,
+    maximumFractionDigits: value < 0.01 ? 4 : 2, ...options,
+  }).format(value);
+}
+
+function costBasis(cost) {
+  if (!cost || cost.status === 'unavailable') return 'API-equivalent estimate unavailable';
+  return cost.status === 'partial' ? 'API-equivalent estimate · partial rate coverage' : 'API-equivalent estimate';
+}
+
+function costRateCardLabel(cost) {
+  const refs = Array.isArray(cost?.rate_card_refs) ? cost.rate_card_refs.filter(Boolean) : [];
+  return refs.length ? refs.join(', ') : (cost?.rate_card_ref || 'rate card unavailable');
+}
+
+function costComponents(cost) {
+  if (!cost) return '';
+  const parts = [
+    ['Input', cost.input_usd_micros],
+    ['Cache read', cost.cached_input_usd_micros],
+    ['Cache write', cost.cache_write_usd_micros],
+    ['Output', cost.output_usd_micros],
+  ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${costAmount({ ...cost, estimated_usd_micros: value })}`);
+  return parts.join(' · ');
+}
+
 function activityRows(data) {
   const first = data.activities.slice(0, 9);
   for (const special of ['accounting_overhead', 'mixed', 'unknown']) {
@@ -3109,11 +3145,32 @@ function activityRows(data) {
     if (row && !first.includes(row)) first.push(row);
   }
   if (!first.length) return "<p class=\"muted\"><span data-i18n=\"usage.no_classified_token_activity_in_this_window_f460d0\">No classified token activity in this window.</span></p>";
-  return `<div class="usage-activity-table" role="table" aria-label="Activity breakdown" data-i18n-attrs='{"aria-label":"usage.activity_breakdown_7ebc89"}'><div class="usage-activity-head" role="row"><span><span data-i18n="usage.work_activity_bf3178">Work activity</span></span><span><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></span><span>%</span></div>${first.map((row) => {
+  return `<div class="usage-activity-table" role="table" aria-label="Activity breakdown" data-i18n-attrs='{"aria-label":"usage.activity_breakdown_7ebc89"}'><div class="usage-activity-head" role="row"><span><span data-i18n="usage.work_activity_bf3178">Work activity</span></span><span><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></span><span>API-equivalent estimate</span><span>%</span></div>${first.map((row) => {
     const label = window.DevCoordinatorI18n.activity(row.activity);
     const percent = row.share == null ? null : row.share * 100;
-    return `<div class="usage-activity-row" role="row"><span class="usage-activity-name"><i class="usage-phase-${esc(row.phase)}" aria-hidden="true"></i>${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.activity(row.activity))}</span><span class="usage-activity-bar"><i class="usage-phase-${esc(row.phase)}" style="width:${Math.max(1, percent || 0).toFixed(1)}%"></i></span><strong title="" ${window.DevCoordinatorI18n.computedAttribute("title", () => Number(row.total_tokens).toLocaleString(window.DevCoordinatorI18n.locale))}>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</strong><span>${percent == null ? '—' : `${percent.toFixed(1)}%`}</span></div>`;
+    return `<div class="usage-activity-row" role="row"><span class="usage-activity-name"><i class="usage-phase-${esc(row.phase)}" aria-hidden="true"></i>${window.DevCoordinatorI18n.computedMarkup(() => window.DevCoordinatorI18n.activity(row.activity))}</span><span class="usage-activity-bar"><i class="usage-phase-${esc(row.phase)}" style="width:${Math.max(1, percent || 0).toFixed(1)}%"></i></span><strong title="" ${window.DevCoordinatorI18n.computedAttribute("title", () => Number(row.total_tokens).toLocaleString(window.DevCoordinatorI18n.locale))}>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</strong><strong class="usage-cost-value" title="${esc(costBasis(row.cost))}">${esc(costAmount(row.cost))}</strong><span>${percent == null ? '—' : `${percent.toFixed(1)}%`}</span></div>`;
   }).join('')}</div>`;
+}
+
+function outcomeCostPulse(data) {
+  const rows = [...(data.outcomes || [])].sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)).slice(0, 8);
+  if (!rows.length) return '<p class="muted">No outcome-attributed cost measurements are available in this window.</p>';
+  return `<section class="usage-outcome-pulse"><div class="usage-section-title"><div><h2>Outcome cost pulse</h2><p class="muted">Outcomes ranked by API-equivalent estimate from provider-reported usage.</p></div><details class="usage-cost-basis"><summary>Rate-card basis</summary><p>Standard public API rates are used for an API-equivalent estimate. This is operational insight, not a bill or subscription summary.</p></details></div><div class="tablewrap"><table><thead><tr><th>#</th><th>Outcome</th><th>Tokens</th><th>API-equivalent estimate</th><th>Coverage</th><th>Share</th></tr></thead><tbody>${rows.map((row, index) => { const share = data.totals?.total_tokens ? (Number(row.total_tokens) / Number(data.totals.total_tokens) * 100) : null; return `<tr><td>${index + 1}</td><td class="wrap"><strong>${esc(row.title || row.outcome_id)}</strong></td><td>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td><strong>${esc(costAmount(row.cost))}</strong><small class="muted">${esc(costBasis(row.cost))}</small></td><td>${row.cost?.status === 'complete' ? '<span class="badge ok">Complete</span>' : row.cost?.status === 'partial' ? '<span class="badge warn">Partial</span>' : '<span class="badge">Unavailable</span>'}</td><td>${share == null ? '—' : `${share.toFixed(1)}%`}</td></tr>`; }).join('')}</tbody></table></div></section>`;
+}
+
+function modelCostPulse(data) {
+  const rows = [...(data.models || [])].sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)).slice(0, 8);
+  if (!rows.length) return '';
+  const palette = ['var(--chart-blue)', 'var(--chart-teal)', 'var(--chart-violet)', 'var(--line-strong)'];
+  const total = rows.reduce((sum, row) => sum + (row.cost?.estimated_usd_micros || 0), 0);
+  let cursor = 0;
+  const segments = rows.map((row, index) => {
+    const share = total ? ((row.cost?.estimated_usd_micros || 0) / total) * 100 : 0;
+    const segment = `${palette[index % palette.length]} ${cursor.toFixed(2)}% ${(cursor + share).toFixed(2)}%`;
+    cursor += share;
+    return segment;
+  }).join(', ');
+  return `<section class="usage-model-pulse"><div class="usage-section-title"><div><h2>Cost by model</h2><p class="muted">API-equivalent estimate per provider model request.</p></div></div><div class="usage-model-summary"><div class="usage-model-donut" style="background:conic-gradient(${segments})"><span>${esc(costAmount({ estimated_usd_micros: total, status: total ? 'complete' : 'unavailable' }))}<small>est. USD</small></span></div><div class="usage-model-legend">${rows.map((row, index) => `<div><span><i style="background:${palette[index % palette.length]}"></i>${esc(row.model)}</span><strong>${esc(costAmount(row.cost))}</strong><em>${total ? `${(((row.cost?.estimated_usd_micros || 0) / total) * 100).toFixed(1)}%` : '—'}</em></div>`).join('')}</div></div><div class="tablewrap"><table><thead><tr><th>Model</th><th>Tokens</th><th>Requests</th><th>Estimate</th><th>Average / request</th><th>Coverage</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="wrap"><strong>${esc(row.model)}</strong></td><td>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${row.average_usd_micros == null ? '—' : esc(costAmount({ estimated_usd_micros: row.average_usd_micros, status: 'complete' }))}</td><td>${row.cost?.status === 'complete' ? '<span class="badge ok">Complete</span>' : row.cost?.status === 'partial' ? '<span class="badge warn">Partial</span>' : '<span class="badge">Unavailable</span>'}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function timeRails(data) {
@@ -3147,7 +3204,7 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
   const rows = result.repositories || [];
   const measured = (row) => ['complete', 'partial'].includes(row.coverage.state)
     || Number(row.coverage.contributing_collectors || 0) > 0;
-  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${rows.length ? `<div class="tablewrap usage-collection-tablewrap"><table class="usage-collection-table"><thead><tr><th><span data-i18n="usage.repository_13d6ff">Repository</span></th><th><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></th><th><span data-i18n="usage.model_requests_888826">Model requests</span></th><th><span data-i18n="usage.tool_calls_da5122">Tool calls</span></th><th><span data-i18n="usage.execution_time_1069e2">Execution time</span></th><th><span data-i18n="usage.data_included_217858">Data included</span></th></tr></thead><tbody>${rows.map((row) => `<tr><td data-label="Repository" data-i18n-attrs='{"data-label":"usage.repository_13d6ff"}'><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td data-label="Total tokens" data-i18n-attrs='{"data-label":"usage.total_tokens_e7601c"}'>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td data-label="Model requests" data-i18n-attrs='{"data-label":"usage.model_requests_888826"}'>${measured(row) ? Number(row.model_requests).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Tool calls" data-i18n-attrs='{"data-label":"usage.tool_calls_da5122"}'>${measured(row) ? Number(row.tool_calls).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Execution time" data-i18n-attrs='{"data-label":"usage.execution_time_1069e2"}'>${measured(row) ? esc(durationMs(row.execution_wall_ms)) : '—'}</td><td data-label="Data included" data-i18n-attrs='{"data-label":"usage.data_included_217858"}'>${coverageMark(row.coverage, true)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_repositories_are_available_for_codex_usage_an_1d8f6d"))}</section>`;
+  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${rows.length ? `<div class="tablewrap usage-collection-tablewrap"><table class="usage-collection-table"><thead><tr><th><span data-i18n="usage.repository_13d6ff">Repository</span></th><th><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent estimate</th><th><span data-i18n="usage.model_requests_888826">Model requests</span></th><th><span data-i18n="usage.tool_calls_da5122">Tool calls</span></th><th><span data-i18n="usage.execution_time_1069e2">Execution time</span></th><th><span data-i18n="usage.data_included_217858">Data included</span></th></tr></thead><tbody>${rows.map((row) => `<tr><td data-label="Repository" data-i18n-attrs='{"data-label":"usage.repository_13d6ff"}'><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td data-label="Total tokens" data-i18n-attrs='{"data-label":"usage.total_tokens_e7601c"}'>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td data-label="API-equivalent estimate"><strong>${esc(costAmount(row.cost))}</strong></td><td data-label="Model requests" data-i18n-attrs='{"data-label":"usage.model_requests_888826"}'>${measured(row) ? Number(row.model_requests).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Tool calls" data-i18n-attrs='{"data-label":"usage.tool_calls_da5122"}'>${measured(row) ? Number(row.tool_calls).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Execution time" data-i18n-attrs='{"data-label":"usage.execution_time_1069e2"}'>${measured(row) ? esc(durationMs(row.execution_wall_ms)) : '—'}</td><td data-label="Data included" data-i18n-attrs='{"data-label":"usage.data_included_217858"}'>${coverageMark(row.coverage, true)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_repositories_are_available_for_codex_usage_an_1d8f6d"))}</section>`;
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
@@ -3174,10 +3231,11 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${compactNumber(value)}`).join(' · ');
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
     <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span></div></div>
-    <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Tool calls', compactNumber(data.totals.tool_calls))}${usageMetric('Execution time', durationMs(data.time.execution_wall.measured_ms))}</div>
-    <section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series)}</section>
+    <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>
+    <div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series)}</section>${modelCostPulse(data)}</div>
+    ${outcomeCostPulse(data)}
     <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>
-    <details class="usage-provenance"><summary><strong><span data-i18n="usage.data_completeness_c7114d">Data completeness</span></strong><span>${window.DevCoordinatorI18n.computedMarkup(() => coverageText(data.coverage))}</span><strong><span data-i18n="usage.counting_method_7a480a">Counting method</span></strong><span><span data-i18n="usage.provider_reported_total_tokens_cached_input_and__9908f6">Provider-reported total tokens; cached input and reasoning are subsets.</span></span></summary><div><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(data.coverage))}</p><p>${(subsets ? esc(subsets) : window.DevCoordinatorI18n.markup("usage.token_subsets_unavailable_4cec86"))}</p><p>${window.DevCoordinatorI18n.markup("usage.schema_value19_taxonomy_value20_cdddf8", {value19: data.coverage.database_schemas.join(', ') || 'unavailable', value20: data.coverage.taxonomy_versions.join(', ') || 'unavailable'})}</p><p>${window.DevCoordinatorI18n.markup("usage.value21_environments_that_supplied_no_data_and_u_cbbc39", {value21: data.semantics.time})}</p>${exactUsageTable(data)}</div></details>
+    <details class="usage-provenance"><summary><strong><span data-i18n="usage.data_completeness_c7114d">Data completeness</span></strong><span>${window.DevCoordinatorI18n.computedMarkup(() => coverageText(data.coverage))}</span><strong><span data-i18n="usage.counting_method_7a480a">Counting method</span></strong><span><span data-i18n="usage.provider_reported_total_tokens_cached_input_and__9908f6">Provider-reported total tokens; cached input and reasoning are subsets.</span></span></summary><div><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(data.coverage))}</p><p>${(subsets ? esc(subsets) : window.DevCoordinatorI18n.markup("usage.token_subsets_unavailable_4cec86"))}</p><p class="usage-cost-basis-line"><strong>API-equivalent estimate</strong> · ${esc(costBasis(data.totals.cost))} · ${esc(costRateCardLabel(data.totals.cost))}<br><span class="muted">${esc(costComponents(data.totals.cost) || 'Component values unavailable')}</span></p><p>${window.DevCoordinatorI18n.markup("usage.schema_value19_taxonomy_value20_cdddf8", {value19: data.coverage.database_schemas.join(', ') || 'unavailable', value20: data.coverage.taxonomy_versions.join(', ') || 'unavailable'})}</p><p>${window.DevCoordinatorI18n.markup("usage.value21_environments_that_supplied_no_data_and_u_cbbc39", {value21: data.semantics.time})}</p>${exactUsageTable(data)}</div></details>
   </section>`;
   bindProjectPicker(main);
   bindCoverageHint(main);
@@ -4521,6 +4579,8 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
+  main.classList.toggle('tickets-page', view === 'requests');
+  if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
   const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
@@ -4555,6 +4615,7 @@ async function render() {
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
   if (view === 'bugs') return viewBugs();
+  if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
   location.hash = '#/plan';
   return undefined;

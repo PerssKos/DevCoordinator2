@@ -235,6 +235,24 @@ still requires one fresh complete passing graph.
 
 ## Plan, ledger, and decisions
 
+### Capability completeness before delivery
+
+Before implementation or a completion report, create a compact capability
+inventory from the approved plan, feedback, decisions and visible promises.
+Assign each row a stable ID, `product` or `test_only` scope, one of
+`real_e2e`, `fixture_only`, `visual_only`, `external_blocked` or `deferred`,
+the expected user result, and its required evidence.
+
+For every incomplete product row, search the Coordinator ledger and create or
+reopen the matching open outcome before continuing. Keep honest unavailable or
+sign-in states open. Use `completion check` against the retained inventory
+before delivery: it rejects missing, closed, stale or cross-repository outcome
+references, and rejects enabled controls without rendered downstream evidence.
+Use `preliminary` for a runnable increment with open rows; use `complete` only
+when all requested product rows are real end to end. Retain the inventory beside
+the governed run as `completion.json`; its digest and summary belong in the
+delivery receipt, not in a second ledger.
+
 The coordinator's database is the only completion ledger and decision
 history — never a Markdown list, checklist, or chat memory. A daemon or
 database error from these tools blocks the affected completion claim; there
@@ -297,8 +315,8 @@ already establishes an unfinished outcome. Record it when decided:
   recording it against a delivery clock. The qualified workflow is:
   `release deliver-evidence` with a retained run artifact and a compact
   verification document, read the returned receipt and require
-  `qualified: true`, then pass that receipt ID to
-  `project_automation.record_delivery`. `release deliver` records deployment
+  `qualified: true`, then retain that receipt ID with the
+  matching Coordinator outcome and set the next generic delivery alarm. `release deliver` records deployment
   metadata only; its `status: delivered` result is not a qualified delivery
   receipt and its release ID is not an `evidence_ref`. The verification
   document must be the bounded request JSON expected by
@@ -321,6 +339,7 @@ already establishes an unfinished outcome. Record it when decided:
     "source_sha256": "...",
     "target": "web-preview",
     "kind": "web-deployment",
+    "completion_file": "completion.json",
     "verification_file": "delivery.json"
   }
   ```
@@ -386,3 +405,33 @@ Never use an installed DevCoordinator or DevCoordinator2 runtime to package,
 install, deploy, roll back, or validate DevCoordinator2 itself. Follow the
 DevCoordinator2 repository's own non-self-hosting installation and acceptance
 workflow.
+
+
+### Regular review reminders
+
+For continuing persistent work, read or set `review.policy` for the repository
+and workstream. Coordinator owns the 24-hour default review window, the one-hour
+escalation and validated `review.record` receipts. Act on reminders before
+unrelated work; after escalation complete the review or record an explicit user
+override without clearing the obligation. Native alarm capabilities register a
+leased `review.delivery` route automatically when the policy is used. Other
+clients receive existing agent messages through normal tool responses. Claim and
+acknowledge messages; `alarm_ack` acknowledges native alarm delivery only. Neither
+acknowledgement completes a review. No review worker or runtime work block is
+created. Use bounded usage evidence, `review.prepare` and a reasoned improvement
+decision before `review.record`.
+
+### Explicit clock reuse
+
+Before starting implementation for a repository/workstream, read
+`review.policy.status`. A returned policy may represent a real active window,
+a completed or retired history record, or a legacy migration clock. Explain
+that status to the user in ordinary language. Never silently inherit an old
+window or hard-stop. When the status reports `choice_required`, ask the user
+whether to follow the existing dates, reset the baseline now, start a new
+workstream, or retire the old clock. Submit that choice through
+`review.policy.set` as `clock_action`; an omitted action is rejected for an
+existing scope. A completed or retired scope can be left historical without
+blocking a fresh workstream. Legacy runtime clock evidence with
+`schedulingActive:false` is historical migration context and cannot block
+Coordinator-owned implementation.

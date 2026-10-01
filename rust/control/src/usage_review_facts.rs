@@ -21,9 +21,12 @@ pub(super) struct Token {
     pub(super) category: String,
     pub(super) value: Option<u64>,
     pub(super) incomplete: bool,
+    pub(super) event: String,
+    pub(super) at: u64,
 }
 
 pub(super) struct Facts {
+    pub(super) rates: Vec<devcoordinator2_api::rate_card::RateCard>,
     pub(super) operations: BTreeMap<String, WorkOperation>,
     pub(super) tokens: Vec<Token>,
     pub(super) waits: HashMap<String, (Vec<(u64, u64)>, u64)>,
@@ -124,6 +127,8 @@ pub(super) fn read(
         let value = optional_unsigned(row, 2).map_err(|_| "source_unavailable")?;
         let conflict: bool = row.get(4).map_err(|_| "source_unavailable")?;
         tokens.push(Token {
+            event: row.get(5).map_err(|_| "source_unavailable")?,
+            at: unsigned(row, 6).map_err(|_| "source_unavailable")?,
             owner: row.get(0).map_err(|_| "source_unavailable")?,
             category: row.get(1).map_err(|_| "source_unavailable")?,
             value: if conflict { None } else { value },
@@ -166,7 +171,9 @@ pub(super) fn read(
         elapsed_ms = began.elapsed().as_millis(),
         "outcome query stage completed"
     );
+    super::cost::load_models(connection, &mut operations)?;
     Ok(Facts {
+        rates: Vec::new(),
         operations,
         tokens,
         waits,
@@ -225,6 +232,9 @@ pub(super) fn decode_operation(
             provenance: safe_label(&row.get::<_, String>(9)?),
             terminal_event: row.get(5)?,
             tool_family: row.get(10)?,
+            provider_kind: None,
+            model: None,
+            outcome_id: outcome.clone(),
         },
         agent_id,
         interval,

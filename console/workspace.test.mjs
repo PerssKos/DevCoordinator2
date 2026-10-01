@@ -29,6 +29,33 @@ test('matching names and nested paths alone never combine repositories', () => {
   assert.deepEqual(new Set(groups.map(group => group.rootPath)), new Set(['/source', '/source/workspace']));
 });
 
+test('governed test scratch repositories stay under their owning project', () => {
+  const source = { key: 'kaizen-origin', name: 'Kaizen' };
+  const groups = catalogue([
+    { repository_id: 'kaizen', display_name: 'Kaizen', root_path: '/srv/projects/kaizen', repository_source: source },
+  ], [
+    {
+      repository_id: 'failed-replay',
+      display_name: 'failed-replay-abc',
+      worktree_path: '/srv/projects/kaizen/.devcoordinator/test/current/scratch/replay/failed-replay-abc',
+    },
+  ], []);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, 'Kaizen');
+  assert.deepEqual(new Set(groups[0].records.map(record => record.repository_id)), new Set(['kaizen', 'failed-replay']));
+  assert.ok(groups[0].paths.includes('/srv/projects/kaizen/.devcoordinator/test/current/scratch/replay/failed-replay-abc'));
+});
+
+test('ordinary nested repositories remain separate from their parent', () => {
+  const groups = catalogue([
+    { repository_id: 'parent', display_name: 'Parent', root_path: '/srv/projects/parent' },
+  ], [
+    { repository_id: 'nested', display_name: 'Nested', worktree_path: '/srv/projects/parent/tools/nested' },
+  ], []);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(new Set(groups.map(group => group.repositoryId)), new Set(['parent', 'nested']));
+});
+
 test('repository roots and source grouping survive unavailable or incomplete test results', () => {
   const source = { key: 'verified-origin', name: 'project' };
   const repositories = [

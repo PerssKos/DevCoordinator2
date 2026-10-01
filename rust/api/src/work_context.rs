@@ -8,6 +8,8 @@ pub const MAX_WORK_CONTEXT_BYTES: usize = 2048;
 pub struct WorkContext {
     #[schemars(range(min = 1, max = 1))]
     pub version: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alarm: Option<crate::review_policy::AlarmCapability>,
     #[schemars(length(min = 1, max = 256))]
     pub native_project_id: String,
     #[schemars(length(min = 1, max = 256))]

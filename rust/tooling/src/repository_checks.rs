@@ -615,6 +615,14 @@ fn rust_wait_is_bounded(text: &str, call_end: usize) -> bool {
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
+    if let Some((_, ceiling)) = compact.split_once(".min(")
+        && let Some(ceiling) = ceiling.strip_suffix(')')
+        && duration_millis(ceiling)
+            .or_else(|| declared_duration_millis(text, ceiling))
+            .is_some_and(|millis| millis <= 100.0)
+    {
+        return true;
+    }
     let name = compact
         .split_once(".min(")
         .map_or(compact.as_str(), |(name, _)| name);
@@ -2999,8 +3007,8 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
             "no delivery targets, obligations, or alarms",
             "project age alone never creates a delivery obligation",
             "authorized implementation transition with a real target starts delivery timing",
-            "agent runtime owns durable clocks, deadline revisions, deduplicated wakeups",
-            "coordinator owns authoritative outcomes, decisions, evidence, and capacity",
+            "agent runtimes provide generic alarms and deduplicated wakeups",
+            "owns authoritative outcomes, review schedules, decisions, evidence and capacity",
             "delivery interval defaults to 24 hours",
             "defaults to 36 hours",
             "explicit user postponement, pause, or threshold changes revise the applicable obligation",
@@ -3308,9 +3316,9 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
         "daily and deduplicated performance review contract",
         12,
         &[
-            "including performance-only specifications and research",
-            "24 elapsed hours and every subsequent 24 hours",
-            "a review does not reset a delivery deadline",
+            "every continuing persistent task, including specifications and research",
+            "interval is 24 elapsed hours",
+            "review cadence and delivery alarms are independent, and their receipts never reset one another",
             "measured tokens, active agent time, elapsed time, and waiting time",
             "do not double-count parent and descendant totals",
             "user waiting, inactive periods, and intentional required release revalidation are not waste by themselves",
@@ -4332,6 +4340,15 @@ mod tests {
         let findings = scan_timer_waits_in_text(rust, "test.rs", SourceLanguage::Rust);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].line, Some(5));
+        let capped = "const MAX: StdDuration = StdDuration::from_millis(100);\nthread::sleep(delay.min(std::time::Duration::from_millis(100)));\nthread::sleep(delay.min(MAX));\nthread::sleep(delay.min(Duration::from_millis(101)));\nthread::sleep(delay.min(unknown));\nthread::sleep(delay.min(MAX) + Duration::from_secs(1));\n";
+        let findings = scan_timer_waits_in_text(capped, "bridge.rs", SourceLanguage::Rust);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.line)
+                .collect::<Vec<_>>(),
+            vec![Some(4), Some(5), Some(6)]
+        );
     }
 
     fn neutrality_fixture(root: &Path) {

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod completion;
 pub mod configuration;
 pub mod delivery;
 pub mod glossary;
@@ -14,14 +15,17 @@ pub mod incidents;
 pub mod outcomes;
 pub mod params;
 pub mod performance;
+pub mod rate_card;
 pub mod recovery;
 pub mod results;
 pub mod review;
+pub mod review_policy;
 pub mod runtime_recovery;
+pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 26;
+pub const DATABASE_SCHEMA_VERSION: u32 = 29;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -148,6 +152,8 @@ pub enum ResponseEnvelope {
         id: String,
         ok: True,
         data: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_messages: Option<Vec<results::AgentMessage>>,
     },
     Failure {
         protocol: u8,
@@ -233,11 +239,19 @@ impl JsonSchema for False {
 
 impl ResponseEnvelope {
     pub fn success(id: impl Into<String>, data: impl Serialize) -> Result<Self, ProtocolError> {
+        let mut data = serde_json::to_value(data).map_err(ProtocolError::serialization)?;
+        let agent_messages = data
+            .as_object_mut()
+            .and_then(|object| object.remove("_agent_messages"))
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(ProtocolError::serialization)?;
         Ok(Self::Success {
+            agent_messages,
             protocol: PROTOCOL_VERSION,
             id: id.into(),
             ok: True,
-            data: serde_json::to_value(data).map_err(ProtocolError::serialization)?,
+            data,
         })
     }
 
@@ -600,6 +614,10 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         EmptyParams,
         PingData
     ),
+    operation!("ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, excluded "Use Console or MCP ticket_request.", ["ticket_request"], tickets::Request, tickets::Reply),
+    operation!("ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, excluded "Use Console or MCP ticket_settings.", ["ticket_settings"], EmptyParams, tickets::Settings),
+    operation!("ticket.configure", "Set the feature request upstream without moving existing tickets; local uses this server.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP ticket_configure.", ["ticket_configure"], tickets::Configure, tickets::Settings),
+    operation!("ticket.remote", "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), excluded "Used only by the dedicated edge ticket endpoint.", [], tickets::RemoteRequest, tickets::Reply),
     operation!(
         "user.whoami",
         "Show the current public identity and grants.",
@@ -1294,6 +1312,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::PlanOverview
     ),
     operation!(
+        "completion.check",
+        "Check a hash-bound capability inventory against the repository's open outcomes and evidence contract.",
+        READ_REPOSITORY_VIEWER,
+        Protocol["completion check"],
+        ["completion_check"],
+        params::CompletionCheck,
+        completion::CheckResult
+    ),
+    operation!(
         "task.search",
         "Search all task states, including dropped history, without changing the active plan.",
         READ_REPOSITORY_VIEWER,
@@ -1402,6 +1429,42 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         performance::ReviewResult
     ),
     operation!(
+        "review.delivery.pending",
+        "Reconcile outstanding native reminders after a cursor gap.",
+        READ_SERVER_ADMIN,
+        Protocol["review delivery-pending"],
+        ["review_delivery_pending"],
+        review_policy::PendingRequest,
+        review_policy::Pending
+    ),
+    operation!(
+        "review.policy.set",
+        "Set a continuing repository/workstream review schedule.",
+        APPEND_REPOSITORY_ADMIN,
+        Protocol["review policy-set"],
+        ["review_policy_set"],
+        review_policy::Set,
+        review_policy::Policy
+    ),
+    operation!(
+        "review.policy.status",
+        "Read review obligation and delivery route.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["review policy-status"],
+        ["review_policy_status"],
+        review_policy::Scope,
+        Option<review_policy::Policy>
+    ),
+    operation!(
+        "review.delivery.register",
+        "Register a leased native alarm delivery capability.",
+        APPEND_REPOSITORY_ADMIN,
+        Protocol["review delivery-register"],
+        ["review_delivery_register"],
+        review_policy::Register,
+        review_policy::Policy
+    ),
+    operation!(
         "review.prepare",
         "Prepare bounded canonical usage and outcome evidence without scheduling work.",
         READ_REPOSITORY_ADMIN,
@@ -1508,6 +1571,24 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         [],
         params::UsageRepository,
         results::UsageRepository
+    ),
+    operation!(
+        "usage.rate_card.list",
+        "List administrator-managed API-equivalent pricing cards.",
+        READ_SERVER_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        [],
+        rate_card::List,
+        rate_card::Page
+    ),
+    operation!(
+        "usage.rate_card.set",
+        "Append one immutable API-equivalent pricing-card version.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        [],
+        rate_card::Set,
+        rate_card::Mutation
     ),
     operation!(
         "progress.repositories",
@@ -1983,9 +2064,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 120);
-        assert_eq!(tools.len(), 94);
-        assert_eq!(cli_routes.len(), 96);
+        assert_eq!(OPERATIONS.len(), 131);
+        assert_eq!(tools.len(), 102);
+        assert_eq!(cli_routes.len(), 101);
     }
 
     #[test]

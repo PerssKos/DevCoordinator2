@@ -1984,6 +1984,8 @@ pub struct UsageRepositoryRow {
     pub model_requests: u64,
     pub tool_calls: u64,
     pub execution_wall_ms: u64,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2005,6 +2007,74 @@ pub struct UsageTotals {
     pub model_requests: u64,
     pub tool_calls: u64,
     pub operations: u64,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageCost {
+    pub status: String,
+    pub basis: String,
+    pub currency: String,
+    #[serde(default)]
+    pub processing_tier: String,
+    #[serde(default)]
+    pub estimated_usd: Option<String>,
+    pub estimated_usd_micros: Option<u64>,
+    pub input_usd_micros: Option<u64>,
+    pub cached_input_usd_micros: Option<u64>,
+    pub cache_write_usd_micros: Option<u64>,
+    pub output_usd_micros: Option<u64>,
+    /// Provider-reported token components used by the cost/detail popover.
+    /// Unavailable components remain null; they are never inferred as zero.
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default)]
+    pub unknown_requests: u64,
+    #[serde(default)]
+    pub unknown_tokens: u64,
+    #[serde(default)]
+    pub unknown_observations: u64,
+    pub rate_card_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate_card_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_rate_cards: Vec<crate::rate_card::RateCard>,
+    #[serde(default)]
+    pub model_requests: u64,
+    #[serde(default)]
+    pub priced_requests: u64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unavailable_reasons: BTreeMap<String, u64>,
+}
+
+impl UsageCost {
+    pub fn is_empty(&self) -> bool {
+        self.estimated_usd_micros.is_none()
+            && self.input_usd_micros.is_none()
+            && self.cached_input_usd_micros.is_none()
+            && self.cache_write_usd_micros.is_none()
+            && self.output_usd_micros.is_none()
+            && self.input_tokens.is_none()
+            && self.cached_input_tokens.is_none()
+            && self.cache_write_tokens.is_none()
+            && self.uncached_input_tokens.is_none()
+            && self.output_tokens.is_none()
+            && self.reasoning_tokens.is_none()
+            && self.unknown_requests == 0
+            && self.unknown_tokens == 0
+            && self.unknown_observations == 0
+            && self.status.is_empty()
+            && self.basis.is_empty()
+            && self.currency.is_empty()
+            && self.rate_card_ref.is_none()
+            && self.rate_card_refs.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2026,6 +2096,34 @@ pub struct UsageActivity {
     pub share: Option<f64>,
     pub operations: u64,
     pub provenance: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageOutcome {
+    pub outcome_id: String,
+    pub title: Option<String>,
+    pub phase: Option<String>,
+    pub activity: Option<String>,
+    pub total_tokens: u64,
+    pub share: Option<f64>,
+    pub operations: u64,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageModelCost {
+    pub model: String,
+    pub total_tokens: u64,
+    pub share: Option<f64>,
+    pub model_requests: u64,
+    pub average_usd_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2092,6 +2190,10 @@ pub struct UsageRepository {
     pub totals: UsageTotals,
     pub series: Vec<UsageSeriesPoint>,
     pub activities: Vec<UsageActivity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<UsageModelCost>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<UsageOutcome>,
     pub time: UsageTime,
     pub tools: UsageTools,
     pub semantics: UsageSemantics,
@@ -2445,6 +2547,8 @@ pub struct FeedbackOwnedEvent {
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OtherOwnedEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review_policy::Reminder>,
     pub kind: String,
     pub repository_id: Option<String>,
     pub deployment_id: Option<String>,

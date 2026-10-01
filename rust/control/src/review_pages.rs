@@ -20,6 +20,19 @@ const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PAGE_BYTES: usize = 16 * 1024;
 
 impl ReviewService {
+    pub(super) fn fast_performance_usage(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        wait_for_refresh: bool,
+    ) -> Result<ReviewUsage, ProtocolError> {
+        Ok(review_usage_from_repository(
+            self.usage
+                .performance_snapshot(repository, start, end, wait_for_refresh)?,
+        ))
+    }
+
     pub(super) fn outcome_usage(
         &self,
         repository: &RepositoryRecord,
@@ -154,6 +167,10 @@ impl ReviewService {
                 .then_with(|| a.outcome_id.cmp(&b.outcome_id))
                 .then_with(|| a.workstream_id.cmp(&b.workstream_id))
         });
+        // The review packet is sent through the bounded evidence channel;
+        // retain rate-card IDs and measured components without repeating the
+        // full catalog in every activity/outcome row.
+        super::compact_review_cost_details(&mut usage);
         let bytes = serde_json::to_vec(&usage)
             .map_err(|_| invalid("Cannot encode usage"))?
             .len();
@@ -203,6 +220,85 @@ impl ReviewService {
     }
 }
 
+fn review_usage_from_repository(
+    report: devcoordinator2_api::results::UsageRepository,
+) -> ReviewUsage {
+    use devcoordinator2_api::outcomes::{
+        OutcomeEffort, OutcomeMeasurement, OutcomeReport, OutcomeRow,
+    };
+    let exact = report.coverage.state == devcoordinator2_api::results::CoverageState::Complete;
+    let measurement = |value: Option<u64>| OutcomeMeasurement {
+        measured: value.unwrap_or(0),
+        exact: value.filter(|_| exact),
+        unknown: u64::from(value.is_none() || !exact),
+    };
+    let total = measurement(report.totals.total_tokens);
+    let activities = report
+        .activities
+        .iter()
+        .map(|activity| {
+            (
+                activity.activity.clone(),
+                OutcomeMeasurement {
+                    measured: activity.total_tokens,
+                    exact: (exact && activity.total_tokens > 0).then_some(activity.total_tokens),
+                    unknown: u64::from(!exact),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let rows = report
+        .outcomes
+        .into_iter()
+        .map(|row| OutcomeRow {
+            kind: None,
+            title: row.title,
+            outcome_id: row.outcome_id,
+            workstream_id: None,
+            effort: OutcomeEffort {
+                operations: row.operations,
+                provider_total_tokens: measurement(Some(row.total_tokens)),
+                cost: row.cost,
+                ..OutcomeEffort::default()
+            },
+        })
+        .collect::<Vec<_>>();
+    let outcome_count = rows.len();
+    let totals = OutcomeEffort {
+        activities,
+        operations: report.totals.operations,
+        provider_total_tokens: total,
+        cost: report.totals.cost.clone(),
+        ..OutcomeEffort::default()
+    };
+    let coverage = match report.coverage.state {
+        devcoordinator2_api::results::CoverageState::Complete => "complete",
+        devcoordinator2_api::results::CoverageState::Partial => "partial",
+        _ => "unavailable",
+    };
+    ReviewUsage {
+        coverage: report.coverage,
+        totals: report.totals,
+        activities: report.activities,
+        time: report.time,
+        tools: report.tools,
+        semantics: report.semantics,
+        outcomes: OutcomeReport {
+            kinds: BTreeMap::new(),
+            schema_version: 1,
+            coverage: coverage.into(),
+            totals: totals.clone(),
+            attributed: totals,
+            unattributed: OutcomeEffort::default(),
+            unattributed_reasons: BTreeMap::new(),
+            rows,
+            total_rows: outcome_count,
+            next_cursor: None,
+            basis: "Indexed repository usage snapshot; timing remains separate from provider token measurements.".into(),
+        },
+    }
+}
+
 fn page(
     usage: &ReviewUsage,
     id: &str,
@@ -218,16 +314,49 @@ fn page(
     loop {
         result.outcomes.rows = rows[offset..end].to_vec();
         result.outcomes.next_cursor = (end < rows.len()).then(|| format!("{id}:{end}"));
-        if serde_json::to_vec(&result)
+        let encoded_bytes = serde_json::to_vec(&result)
             .map_err(|_| invalid("Cannot encode usage"))?
-            .len()
-            <= MAX_PAGE_BYTES
-        {
+            .len();
+        if encoded_bytes <= MAX_PAGE_BYTES {
             return Ok(result);
         }
         if end <= offset + 1 {
-            return Err(invalid(
-                "Usage page exceeds the supported size; narrow the window",
+            // A single review row can still exceed the packet ceiling when
+            // the surrounding repository has a large provenance/tool matrix.
+            // Preserve headline measurements and cost components, while
+            // dropping secondary breakdowns that are available from the
+            // dedicated Usage/Performance surfaces.
+            let mut bounded = result.clone();
+            bounded.activities.clear();
+            bounded.outcomes.totals.activities.clear();
+            bounded.outcomes.attributed.activities.clear();
+            bounded.tools.outcomes.clear();
+            bounded.tools.families.clear();
+            bounded.outcomes.kinds.clear();
+            bounded.coverage.events.clear();
+            bounded.coverage.token_observations.clear();
+            for effort in [
+                &mut bounded.outcomes.totals,
+                &mut bounded.outcomes.attributed,
+                &mut bounded.outcomes.unattributed,
+            ] {
+                effort.activities.clear();
+            }
+            for row in &mut bounded.outcomes.rows {
+                row.effort.activities.clear();
+            }
+            if serde_json::to_vec(&bounded)
+                .map_err(|_| invalid("Cannot encode usage"))?
+                .len()
+                <= MAX_PAGE_BYTES
+            {
+                return Ok(bounded);
+            }
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                format!(
+                    "Usage page exceeds the supported size ({encoded_bytes} bytes); narrow the window"
+                ),
             ));
         }
         end -= 1;

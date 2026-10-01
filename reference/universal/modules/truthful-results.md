@@ -1,5 +1,11 @@
 ## 8. Keep product behavior and completion claims truthful
 
+Every enabled control must have rendered end-to-end evidence showing its real
+downstream result, including persistence or external delivery when promised.
+If that path is unavailable, make the control disabled or visibly unavailable
+and link it to an open Coordinator outcome. A handler, route, toast, local
+state change or fixture response alone is not enabled-control evidence.
+
 - Never present invented facts, data, measurements, media, parameters,
   statuses, results, actions, integrations, or controls as real. Factual
   values come from real sources, user input, measurement, imported data, or

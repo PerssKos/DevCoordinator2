@@ -3,6 +3,26 @@ use std::io::Read;
 
 #[derive(Debug, Subcommand)]
 pub(super) enum ReviewCommand {
+    DeliveryPending {
+        #[arg(long)]
+        alarm_namespace: String,
+        #[arg(long, default_value_t = 0)]
+        after_id: u64,
+    },
+    PolicySet {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    PolicyStatus {
+        #[arg(long)]
+        repository_id: String,
+        #[arg(long)]
+        workstream_id: Option<String>,
+    },
+    DeliveryRegister {
+        #[arg(long)]
+        file: PathBuf,
+    },
     Prepare {
         #[arg(long)]
         repository_id: String,
@@ -49,6 +69,24 @@ pub(super) enum ReviewCommand {
 impl ReviewCommand {
     pub(super) fn into_invocation(self) -> Result<Invocation, CliValidationError> {
         match self {
+            Self::DeliveryPending {
+                alarm_namespace,
+                after_id,
+            } => remote(
+                "review.delivery.pending",
+                json!({"alarm_namespace":alarm_namespace,"after_id":after_id}),
+            ),
+            Self::PolicySet { file } => remote("review.policy.set", bounded_file(&file)?),
+            Self::PolicyStatus {
+                repository_id,
+                workstream_id,
+            } => remote(
+                "review.policy.status",
+                json!({"repository_id":repository_id,"workstream_id":workstream_id}),
+            ),
+            Self::DeliveryRegister { file } => {
+                remote("review.delivery.register", bounded_file(&file)?)
+            }
             Self::Prepare {
                 repository_id,
                 workstream_id,

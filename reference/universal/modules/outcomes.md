@@ -1,5 +1,28 @@
 ## 1. Infer the intended outcome and carry it to completion
 
+### Capability-completeness gate
+
+Before implementing or reporting an increment, make one bounded inventory of
+the capabilities promised by the approved plan, feedback, decisions and visible
+product controls. Give each capability a stable ID, say whether it is `product`
+or `test_only`, and classify it as `real_e2e`, `fixture_only`, `visual_only`,
+`external_blocked`, or `deferred`.
+
+For every product capability that is not `real_e2e`, create or update its open
+Coordinator outcome before continuing. An honest empty, unavailable or
+needs-sign-in state is valid behavior, but it does not close the missing
+capability outcome. Fixtures, mocks, intercepted requests, screenshots and
+source wiring prove only their own boundary; they do not prove live
+integration, persistence, authorization, collaboration or delivery.
+
+Before calling an increment complete, compare the inventory with visible
+controls, handlers, persistence, authorization, external effects, evidence and
+the existing Coordinator outcomes. Any mismatch keeps the related outcome open.
+Use a `preliminary` claim when the result is runnable with open outcomes. Use a
+`complete` claim only when every requested product capability is real and its
+required evidence is present. Removing a capability from scope requires an
+explicit plan or decision update; do not invent an `out_of_scope` state.
+
 - Infer the user's intent and task scope from their instructions, prior
   conversation, established requirements, and relevant project context.
   Bias toward action and carry the intended task to completion.

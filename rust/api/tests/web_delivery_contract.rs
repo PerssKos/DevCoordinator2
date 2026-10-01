@@ -17,6 +17,7 @@ fn delivery_request(kind: &str) -> Value {
             "source_sha256": "b".repeat(64),
             "target": "web-preview",
             "kind": kind,
+            "completion_file": "completion.json",
             "verification_file": "delivery.json"
         }
     })

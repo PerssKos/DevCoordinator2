@@ -167,6 +167,21 @@ matching the index alone does not prove that buttons work or text is translated.
 
 ## Prepare
 
+### Clock lifecycle and explicit reuse
+
+`review.policy.status` reports the current review window, its source, clock
+state, start (`clock_start_ms`), due (`clock_due_at_ms`) and escalation
+hard-stop (`clock_hard_stop_at_ms`) timestamps, and whether a user choice is
+required before an existing scope can be used again. An active, completed,
+retired, or legacy-only clock is shown with plain-language dates and available
+actions. `review.policy.set` accepts
+`clock_action` values `follow_existing`, `reset_existing`, `start_new`, and
+`retire_existing`. Setting a policy for an existing scope without an explicit
+choice returns `clock_choice_required`; it never silently carries an old
+window or hard-stop into new work. Historical clock actions are retained in
+Coordinator history. Legacy runtime state marked `schedulingActive:false` is
+migration evidence only and cannot block Coordinator implementation.
+
 `review.prepare` / `review_prepare` accepts:
 
 ```json
@@ -359,6 +374,20 @@ Applicable confirmed assumptions: `DC2-2026-08-29-CODEX-USAGE-SOURCE`,
 cross-account identity disclosure or external verification authority is added.
 
 ## Performance Console projections
+
+Usage responses expose `cost` on repository totals, activities and outcome
+rows. `cost.basis` is `api_equivalent`: a deterministic estimate from
+provider-reported token observations and the Coordinator's versioned standard
+API rate card. It is not subscription, credit, invoice or actual provider
+spend. Input, cached-input, cache-write and output components are mutually
+exclusive for calculation; reasoning remains an output subset. Missing model,
+token component or rate-card coverage yields `partial` or `unavailable` and
+never a synthetic zero. Unknown request and token counts remain explicit. The
+source collector remains read-only and its provider `total_tokens` value
+remains the canonical usage metric. Administrators can inspect and append
+immutable revisions through `usage.rate_card.list` and `usage.rate_card.set`;
+each card records model pattern, processing/context tiers, effective dates and
+the published source reference.
 
 Three read-only repository-administrator operations expose the existing review/accounting data. They are available through protocol v2 and matching `performance_overview`, `performance_reviews`, and `performance_review` MCP tools.
 

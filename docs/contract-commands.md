@@ -480,8 +480,13 @@ Deduplicated while active; one recovery each.
   query budget so repository count cannot multiply an individual timeout.
 - `usage.repository {repository_id, range?}` returns one content-free combined
   report: coverage/source counts, provider-native top-level token categories,
-  fixed UTC phase buckets, activity totals, separate timing unions, tool
-  outcomes/families, and measurement semantics.
+  fixed UTC phase buckets, activity and outcome totals, API-equivalent cost
+  estimates using the configured standard rate card, separate timing unions,
+  tool outcomes/families, and measurement semantics. Cost status remains
+  partial/unavailable when model or rate-card coverage is missing. Cost
+  responses also include fixed-precision USD text plus micros, matched card
+  references, processing tier, priced/unknown request and token counts, and
+  component-specific unavailable reasons.
 - Administrators may read every repository. Public operators may read only a
   repository where they hold operator-or-higher deployment access; viewers are
   denied. Results never include collector identity, paths, per-user values,
@@ -489,6 +494,13 @@ Deduplicated while active; one recovery each.
 - `total_tokens` alone is the stacked/activity basis. Cached input and
   reasoning remain labelled subsets; missing collectors and unsupported source
   versions are partial/unavailable coverage, never synthetic zeroes.
+- `usage.rate_card.list {include_inactive?, effective_at_ms?, limit?, offset?}`
+  is an administrator-only read of the versioned Standard API-equivalent rate
+  cards. `usage.rate_card.set {expected_revision, card}` appends one immutable
+  card version with its model pattern, processing/context tiers, effective
+  dates, four mutually exclusive token rates, and source reference. A stale
+  revision or reused card version is rejected; historical cards are never
+  rewritten.
 
 ## progress.repositories | repository (implemented)
 

@@ -38,6 +38,7 @@ impl McpAdapter {
         tool: McpToolDefinition,
         arguments: Map<String, Value>,
         client_kind: ClientKind,
+        work: Option<devcoordinator2_api::work_context::WorkContext>,
     ) -> CallToolResult {
         let raw = Value::Object(arguments);
         if let Err(error) = (tool.validate_params)(&raw) {
@@ -50,14 +51,27 @@ impl McpAdapter {
             params,
             ClientContext {
                 kind: client_kind,
-                session: None,
+                session: work.as_ref().map(|work| work.thread_id.clone()),
+                work,
                 identity: None,
                 ..ClientContext::default()
             },
         )
         .await
         {
-            Ok(ResponseEnvelope::Success { data, .. }) => CallToolResult::structured(data),
+            Ok(ResponseEnvelope::Success {
+                data,
+                agent_messages,
+                ..
+            }) => {
+                let mut result = CallToolResult::structured(data);
+                if let Some(messages) = agent_messages {
+                    result.content.push(ContentBlock::text(
+                        serde_json::to_string(&messages).unwrap_or_default(),
+                    ));
+                }
+                result
+            }
             Ok(ResponseEnvelope::Failure { error, .. }) => {
                 let text =
                     serde_json::to_string(&error).unwrap_or_else(|_| "operation failed".to_owned());
@@ -111,7 +125,17 @@ impl ServerHandler for McpAdapter {
             .client_info()
             .map(|client| client_kind(&client.name))
             .unwrap_or_default();
-        let execution = self.execute(tool, request.arguments.unwrap_or_default(), kind);
+        let work = context
+            .meta
+            .get("devcoordinator/work_context")
+            .and_then(|value| {
+                serde_json::from_value::<devcoordinator2_api::work_context::WorkContext>(
+                    value.clone(),
+                )
+                .ok()
+            })
+            .filter(|work| work.validate().is_ok());
+        let execution = self.execute(tool, request.arguments.unwrap_or_default(), kind, work);
         tokio::select! {
             result = execution => Ok(result.into()),
             _ = context.ct.cancelled() => Err(McpError::internal_error("tool request cancelled", None)),
@@ -141,7 +165,7 @@ fn tool_model(tool: McpToolDefinition) -> Tool {
     .with_annotations(ToolAnnotations::from_raw(
         None,
         Some(tool.operation.policy.read_only()),
-        Some(tool.operation.policy.destructive()),
+        Some(tool.operation.policy.destructive() || tool.operation.name == "ticket.request"),
         Some(tool.operation.policy.idempotent),
         Some(tool.operation.policy.open_world()),
     ))
@@ -194,6 +218,14 @@ mod tests {
             mcp_tools().iter().map(|tool| tool.name).collect::<Vec<_>>()
         );
         assert!(tools.windows(2).all(|pair| pair[0].name < pair[1].name));
+        let ticket = tools
+            .iter()
+            .find(|tool| tool.name == "ticket_request")
+            .unwrap();
+        let annotations = serde_json::to_value(ticket.annotations.as_ref().unwrap()).unwrap();
+        assert_eq!(annotations["destructiveHint"], true);
+        assert_eq!(annotations["openWorldHint"], true);
+        assert_eq!(annotations["readOnlyHint"], false);
         for tool in &tools {
             assert!(
                 tool.output_schema.is_some(),
@@ -272,7 +304,9 @@ mod tests {
         .as_object()
         .unwrap()
         .clone();
-        let result = adapter.execute(tool, arguments, ClientKind::Codex).await;
+        let result = adapter
+            .execute(tool, arguments, ClientKind::Codex, None)
+            .await;
         server.await.unwrap();
         let encoded = serde_json::to_value(result).unwrap();
         let structured = &encoded["structuredContent"];

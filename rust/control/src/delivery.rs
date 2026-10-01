@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::access::Caller;
+use crate::completion::CompletionService;
 use crate::database::Database;
 use crate::deployment_state::DeploymentStore;
 use crate::plan::{DeploymentEvidenceReader, SqliteDeploymentEvidence};
@@ -87,6 +88,40 @@ impl DeliveryService {
             .artifact
             .as_ref()
             .ok_or_else(|| invalid("Retained artifact was not selected"))?;
+        let completion_chunk = self.artifacts.file(
+            ArtifactFile {
+                path: params.path.clone(),
+                run_id: params.run_id.clone(),
+                check: params.check.clone(),
+                artifact: params.artifact.clone(),
+                file: params.completion_file.clone(),
+                manifest_sha256: params.manifest_sha256.clone(),
+                offset: 0,
+                max_bytes: 32 * 1024,
+            },
+            caller,
+        )?;
+        if completion_chunk.next_offset.is_some() {
+            return Err(invalid("Capability inventory must fit within 32 KiB"));
+        }
+        let completion_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&completion_chunk.base64)
+            .map_err(|_| invalid("Invalid retained capability inventory encoding"))?;
+        let completion_manifest: devcoordinator2_api::completion::Manifest =
+            serde_json::from_slice(&completion_bytes)
+                .map_err(|_| invalid("Invalid retained capability inventory"))?;
+        let completion = CompletionService::new(self.database.clone()).check_source(
+            &repository_id,
+            &catalog.source_sha256,
+            Some(&catalog.config_sha256),
+            Some(&params.run_id),
+            completion_manifest,
+        )?;
+        if !completion.valid {
+            return Err(invalid(
+                "Capability inventory does not support the requested delivery claim",
+            ));
+        }
         let mut receipt = Receipt {
             receipt_id: String::new(), release_id: params.release_id.clone(), repository_id,
             worktree_id: catalog.worktree_id.clone(), kind: params.kind.clone(), target: params.target.clone(),
@@ -97,6 +132,10 @@ impl DeliveryService {
             qualified: false, verified_at_ms: None,
             delivered_at_ms: None, access: None,
             reason: Some("Artifact integrity is verified; actual delivery/access or executable validation evidence is still missing.".into()),
+            completion_sha256: Some(completion_chunk.sha256.clone()),
+            completion_claim: Some(completion.claim.clone()),
+            completion_capabilities: Some(completion.capability_count),
+            completion_incomplete: Some(completion.incomplete_count),
         };
         if let Some(verification_file) = &params.verification_file {
             let chunk = self.artifacts.file(
@@ -389,7 +428,7 @@ fn console_assets_digest(root: &std::path::Path) -> Result<String, ProtocolError
         let metadata = file
             .symlink_metadata()
             .map_err(|_| invalid("Console asset unavailable"))?;
-        if !metadata.is_file() || metadata.len() > 1_048_576 {
+        if !metadata.is_file() || metadata.len() > 2_097_152 {
             return Err(invalid("Console asset must be a bounded regular file"));
         }
         let bytes = std::fs::read(file).map_err(|_| invalid("Console asset unavailable"))?;

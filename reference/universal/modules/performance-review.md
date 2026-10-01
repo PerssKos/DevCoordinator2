@@ -1,12 +1,33 @@
 ## 13. Review outcomes and resource use every 24 hours
 
-- For each project with continuing work, including performance-only
-  specifications and research, complete a review after the first
-  24 elapsed hours and every subsequent 24 hours while work remains active.
-  This review cadence is separate from the project's delivery watchdog
-  intervals; overriding those intervals does not silently change the review
-  cadence. Complete an overdue review before starting another implementation
-  batch. A review does not reset a delivery deadline.
+- Every continuing persistent task, including specifications and research,
+  must have an active DevCoordinator2 review policy for its repository and
+  workstream. Use `review.policy.status` and `review.policy.set`; default review
+  interval is 24 elapsed hours, with one escalation after one further hour.
+  Preserve existing review windows when resuming or changing agents. Repositories
+  without a policy receive no reminders; register one when beginning continuing
+  work. Deactivate only when the work is inactive or complete.
+- Coordinator owns the clock, due state, escalation, evidence and `review.record`
+  completion. CodexMulti only supplies generic durable alarms. A live native alarm
+  registration selects that delivery route; missing, expired or unavailable
+  registration uses Coordinator's existing agent-message channel. Client names
+  alone never select the native route. Do not add another watcher or review worker.
+- Act on each review reminder before unrelated work. Check the current policy
+  and latest receipt first; acknowledge inactive, transferred or already-covered windows
+  without repeating a completed review. Inspect bounded
+  `usage_stats performance_review` evidence for the exact stated interval when
+  available, use Coordinator `review.prepare`, retain a reasoned improvement
+  decision, then obtain a validated `review.record` receipt. Other runtimes use
+  their available usage evidence and identify missing coverage honestly.
+- Acknowledge local alarms with `alarm_ack` and Coordinator messages through
+  their claim/ack operations. These acknowledge delivery only. Neither a reminder,
+  totals, passing tests nor an agent's prose completes the review. Only Coordinator
+  records its completion. An outstanding one-hour escalation requires completing
+  the review or an explicit user override before continuing. Record the override
+  as a decision; it does not clear the review or reset its window. Enforcement is
+  through durable reminders, model-visible instructions and the review ledger,
+  never an additional runtime admission block. Review cadence and delivery alarms
+  are independent, and their receipts never reset one another.
 - Preserve review boundaries across sessions and agents. State the actual UTC
   reporting interval, cover work not yet reported, and identify any inactive
   or unobserved periods rather than dropping them or inventing continuous work.

@@ -23,7 +23,7 @@ const agent = new https.Agent({ keepAlive: true });
 const request = (pathname, body) => new Promise((resolve, reject) => {
   const req = https.request({ agent, hostname: loopback ? '127.0.0.1' : url.hostname, servername: url.hostname, port: url.port || 443, path: pathname, method: body ? 'POST' : 'GET', headers: { Host: url.host, ...(body ? { 'Content-Type': 'application/json' } : {}) } }, res => {
     const chunks = []; let bytes = 0;
-    res.on('data', chunk => { bytes += chunk.length; if (bytes > 1048576) { res.destroy(new Error('Response exceeds verification bound')); return; } chunks.push(chunk); });
+    res.on('data', chunk => { bytes += chunk.length; if (bytes > 2097152) { res.destroy(new Error('Response exceeds verification bound')); return; } chunks.push(chunk); });
     res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], body: Buffer.concat(chunks), checked: Date.now() }));
     res.on('error', reject);
   });
@@ -63,7 +63,7 @@ try {
   const pingResponse = await request('/api/v2/ping', '{}'); const ping = JSON.parse(pingResponse.body);
   check('Native route returns HTML', response.status === 200 && response.type?.split(';')[0] === 'text/html');
   check('Running daemon source identified', pingResponse.status === 200 && ping.ok === true && /^[a-f0-9]{40}$/.test(ping.data?.source_commit || ''));
-  const paths = execFileSync('git', ['ls-files', '-z', '--', 'console'], { cwd: root, timeout: 2000, maxBuffer: 65536 }).toString('utf8').split('\0').filter(file => file && !path.basename(file).startsWith('.') && /\.(html|css|js|mjs|svg|woff2|png|ico|json|txt)$/i.test(file)).sort();
+  const paths = execFileSync('git', ['ls-files', '-z', '--', 'console'], { cwd: root, timeout: 2000, maxBuffer: 65536 }).toString('utf8').split('\0').filter(file => file && !path.basename(file).startsWith('.') && /\.(html|css|js|mjs|svg|woff2|ttf|pfb|bcmap|wasm|png|ico|json|txt)$/i.test(file)).sort();
   check('Console source file list present', paths.length > 0 && paths.length <= 4096 && paths.every(file => file.startsWith('console/')));
   const assets = createHash('sha256').update('devcoordinator2-console-assets-v1\0');
   for (const file of paths) {

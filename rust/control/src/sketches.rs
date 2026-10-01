@@ -340,9 +340,17 @@ impl SketchService {
         &self,
         p: params::AgentMessagePoll,
     ) -> Result<results::AgentMessageList, ProtocolError> {
+        self.message_poll_kind(p, None)
+    }
+    pub(crate) fn message_poll_kind(
+        &self,
+        p: params::AgentMessagePoll,
+        kind: Option<&str>,
+    ) -> Result<results::AgentMessageList, ProtocolError> {
+        let kind = kind.map(str::to_owned);
         let repo = p.repository_id;
         let limit = p.limit.clamp(1, 100);
-        self.database.call(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND acknowledged_at IS NULL ORDER BY created_at LIMIT ?2")?; let rows=st.query_map(rusqlite::params![repo,limit],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
+        self.database.call(move|c|{ let mut st=c.prepare("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND acknowledged_at IS NULL AND (?3 IS NULL OR kind=?3) AND NOT EXISTS (SELECT 1 FROM review_reminders r JOIN review_policies p USING(repository_id,workstream_key) WHERE r.message_id=agent_messages.message_id AND (r.resolved=1 OR p.active=0)) ORDER BY created_at LIMIT ?2")?; let rows=st.query_map(rusqlite::params![repo,limit,kind],message_row)?.collect::<Result<Vec<_>,_>>()?; Ok(results::AgentMessageList{has_more:rows.len()==usize::from(limit),messages:rows}) }).map_err(db_error)
     }
     fn add_message(
         &self,
@@ -376,7 +384,7 @@ impl SketchService {
         let id = p.message_id.clone();
         let actor2 = actor.clone();
         let until2 = until.clone();
-        self.database.transaction(move|tx|{ let updated=tx.execute("UPDATE agent_messages SET claimed_by=?1,claimed_until=?2 WHERE repository_id=?3 AND message_id=?4 AND acknowledged_at IS NULL AND (claimed_until IS NULL OR claimed_until < ?5)",rusqlite::params![actor2,until2,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"message is already claimed or acknowledged")))} Ok(()) }).map_err(db_error)?;
+        self.database.transaction(move|tx|{ let updated=tx.execute("UPDATE agent_messages SET claimed_by=?1,claimed_until=?2 WHERE repository_id=?3 AND message_id=?4 AND acknowledged_at IS NULL AND (claimed_until IS NULL OR claimed_until <= ?5)",rusqlite::params![actor2,until2,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"message is already claimed or acknowledged")))} Ok(()) }).map_err(db_error)?;
         self.message_by_id(&p.repository_id, &p.message_id)
     }
     pub fn message_ack(
@@ -385,9 +393,10 @@ impl SketchService {
         caller: &Caller,
     ) -> Result<results::AgentMessageMutation, ProtocolError> {
         let actor = caller.actor();
+        let now = self.now()?;
         let repo = p.repository_id.clone();
         let id = p.message_id.clone();
-        self.database.transaction(move|tx|{let updated=tx.execute("UPDATE agent_messages SET acknowledged_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'),acknowledged_by=?1 WHERE repository_id=?2 AND message_id=?3 AND acknowledged_at IS NULL AND claimed_by=?1",rusqlite::params![actor,repo,id])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::PermissionDenied,"message is not claimed by this agent")))} Ok(())}).map_err(db_error)?;
+        self.database.transaction(move|tx|{let updated=tx.execute("UPDATE agent_messages SET acknowledged_at=?4,acknowledged_by=?1 WHERE repository_id=?2 AND message_id=?3 AND acknowledged_at IS NULL AND claimed_by=?1 AND claimed_until>?4",rusqlite::params![actor,repo,id,now])?; if updated==0{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::PermissionDenied,"message is not claimed by this agent")))} Ok(())}).map_err(db_error)?;
         self.message_by_id(&p.repository_id, &p.message_id)
     }
     fn message_by_id(
@@ -550,7 +559,13 @@ mod tests {
         fs::write(&image, &png).unwrap();
         let record = root.join("record.json");
         fs::write(&record, b"{\"prompt\":\"fixture\"}").unwrap();
-        let service = SketchService::new(&config(root), db);
+        let service = SketchService::with_clock(
+            &config(root),
+            db,
+            Arc::new(crate::platform::FixedClock(
+                time::macros::datetime!(2026-09-26 00:00 UTC),
+            )),
+        );
         let caller = Caller::from_client(1, 1000, 1000, ClientContext::default(), None).unwrap();
         let batch = service
             .publish(
@@ -602,5 +617,55 @@ mod tests {
             )
             .unwrap();
         assert_eq!(changed.sketch.decision, SketchDecision::Keep);
+        service
+            .add_message(
+                &batch.repository_id,
+                "performance_review.reminder",
+                "review-fixture",
+                "Review the stated window",
+            )
+            .unwrap();
+        let messages = service
+            .message_poll(params::AgentMessagePoll {
+                repository_id: batch.repository_id.clone(),
+                after_id: None,
+                limit: 10,
+            })
+            .unwrap();
+        let reminder = messages
+            .messages
+            .into_iter()
+            .find(|message| message.kind == "performance_review.reminder")
+            .unwrap();
+        let claim = params::AgentMessageClaim {
+            repository_id: batch.repository_id.clone(),
+            message_id: reminder.message_id.clone(),
+        };
+        let ack = params::AgentMessageAck {
+            repository_id: batch.repository_id.clone(),
+            message_id: reminder.message_id,
+        };
+        service.message_claim(claim.clone(), &caller).unwrap();
+        let other = Caller::from_client(2, 2000, 2000, ClientContext::default(), None).unwrap();
+        assert!(service.message_ack(ack.clone(), &other).is_err());
+        service
+            .database
+            .call(|connection| {
+                connection.execute(
+                    "UPDATE agent_messages SET claimed_until='2026-09-26T00:00:00Z'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(service.message_ack(ack.clone(), &caller).is_err());
+        service.message_claim(claim, &caller).unwrap();
+        assert!(
+            service
+                .message_ack(ack, &caller)
+                .unwrap()
+                .message
+                .acknowledged
+        );
     }
 }

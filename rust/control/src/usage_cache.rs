@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -8,10 +9,18 @@ use devcoordinator2_api::{ErrorCode, ProtocolError};
 
 const FRESH_FOR: Duration = Duration::from_secs(30);
 const MAX_ENTRIES: usize = 128;
-const MAX_WAIT: Duration = Duration::from_secs(5);
+// A repository collection request can touch millions of token observations.
+// Bound concurrent source scans so the Usage page cannot fan out one large
+// SQLite read per repository and exhaust daemon memory.
+const MAX_ACTIVE_REFRESHES: usize = 1;
+// The edge gives ordinary daemon requests a ten-second response budget. Keep
+// an explicit refresh wait below that ceiling so a slow collector returns an
+// honest refreshing/partial snapshot instead of becoming daemon_unavailable.
+const MAX_WAIT: Duration = Duration::from_secs(7);
 
+type SharedEntries = (Mutex<HashMap<String, Entry>>, Condvar, AtomicUsize);
 #[derive(Clone, Default)]
-pub(crate) struct UsageCache(Arc<(Mutex<HashMap<String, Entry>>, Condvar)>);
+pub(crate) struct UsageCache(Arc<SharedEntries>);
 
 struct Entry {
     repository_id: String,
@@ -30,7 +39,7 @@ impl UsageCache {
         empty: UsageRepository,
         load: impl FnOnce() -> Result<UsageRepository, ProtocolError> + Send + 'static,
     ) -> UsageRepository {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, active) = &*self.0;
         let mut entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -63,7 +72,16 @@ impl UsageCache {
         });
         entry.touched = Instant::now();
         let start = !entry.refreshing && entry.completed.is_none_or(|at| at.elapsed() >= FRESH_FOR);
-        entry.refreshing |= start;
+        let admitted = start
+            && active
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < MAX_ACTIVE_REFRESHES).then_some(count + 1)
+                })
+                .is_ok();
+        entry.refreshing |= admitted;
+        if start && !admitted {
+            entry.refresh_failed = true;
+        }
         let mut report = entry.report.clone();
         report.coverage.snapshot = Some(UsageSnapshot {
             updated_at_ms: entry.updated_at_ms,
@@ -71,7 +89,7 @@ impl UsageCache {
             refresh_failed: entry.refresh_failed,
         });
         drop(entries);
-        if start {
+        if admitted {
             let cache = self.clone();
             let worker_key = key.clone();
             let spawned = std::thread::Builder::new()
@@ -112,7 +130,8 @@ impl UsageCache {
     }
 
     fn finish(&self, key: &str, result: Result<UsageRepository, ProtocolError>) {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, active) = &*self.0;
+        active.fetch_sub(1, Ordering::AcqRel);
         let mut entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -149,7 +168,7 @@ impl UsageCache {
     }
 
     pub(crate) fn wait(&self, repository_id: Option<&str>) {
-        let (entries, changed) = &*self.0;
+        let (entries, changed, _) = &*self.0;
         let entries = entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -308,6 +327,25 @@ mod tests {
             Some(100)
         );
         assert!(UsageCache::default().0.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn refresh_admission_defers_second_source_scan_without_claiming_refreshing() {
+        let cache = UsageCache::default();
+        let (release, release_rx) = mpsc::channel();
+        let (started_tx, started) = mpsc::channel();
+        cache.get("first".into(), report(None), move || {
+            started_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            Ok(report(Some(1)))
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let deferred = cache.get("second".into(), report(None), || panic!("admission capped"));
+        let snapshot = deferred.coverage.snapshot.unwrap();
+        assert!(!snapshot.refreshing);
+        assert!(snapshot.refresh_failed);
+        release.send(()).unwrap();
+        cache.wait(Some("fixture"));
     }
 
     #[test]

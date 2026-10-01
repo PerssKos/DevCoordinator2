@@ -49,6 +49,10 @@ or Escape and restore focus after keyboard dismissal.
 
 The shared catalogue combines authorized planning, usage, progress, deployment,
 and test indexes. Only verified origin keys combine separate checkout records.
+Temporary governed-test repositories nested below a registered checkout's
+`.devcoordinator/test/current/scratch` directory are shown under that owning
+project while their exact repository and worktree identities remain available
+in the checkout disclosure.
 The checkout disclosure preserves access to separate plans and decision records;
 test and deployment actions always use their original exact identifiers.
 This is presentation grouping, not a database ownership merge
@@ -319,7 +323,7 @@ explicit permission-denied notice instead of partial data.
 | Domain edit / clear (pop-up from list rows and the detail page, administrators) | `deployment.set_domain {deployment_id, domain|null, port?, public?}` | status re-read; route document republished |
 | Health range switch (24h/7d/30d) and usage range (1h/24h/7d/30d) | `health.history {minutes, points}` | charts re-render from the store |
 | Health container inventory / incident deployment details | — (real hash links) | opens Containers or the exact deployment destination |
-| Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, totals, phase chart, exact table, and data-completeness explanation re-render from canonical reads |
+| Codex Usage repository selection and range (24h/7d/30d) | `usage.repositories {range}` / `usage.repository {repository_id, range}` | repository heading, provider-token and API-equivalent estimate totals, phase chart, activity/outcome cost pulse, exact table, and data-completeness explanation re-render from canonical reads |
 | Codex Usage completeness hint | — (client-side) | opens the full environment and excluded-not-zero explanation in a labelled DOM pop-up; Escape, focus departure, outside click, or the toggle closes it |
 | Progress period (Hour/Day/Week) | `progress.repository {repository_id, period}` | completed bars above the baseline and newly added work below it share one scale within each lane, so equal values have equal lengths; a protected label area keeps titles clear of first-bucket maxima; completion running totals, test/token evidence, forecast quality, Plan-ordered work, comparison totals, and exact values re-render from one bounded report |
 | Select release work | — (client-side) | only row selection and the Plan-continuation target change; the workspace node, scroll, focus, task order, and release scope remain unchanged |

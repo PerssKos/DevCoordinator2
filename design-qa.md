@@ -1,40 +1,58 @@
-# Localization interim integration — 2026-09-26
-
-Final localization handoff: incomplete. The earlier audits below are retained
-as historical evidence; they do not certify the current integrated snapshot.
-
-The preview now integrates current main's Sketch set annotation behavior and
-adds translated full messages for its new controls, performance totals and
-container-removal actions. The current source catalog contains 1,258 messages.
-English, Ukrainian, Simplified Chinese, Traditional Chinese, Japanese and
-Korean have complete fragments for this snapshot. Other catalogs are preserved
-as drafts, with their remaining work tracked by pfdc432072d9d03e4.
-
-Fresh verification under /var/tmp/dc2-localization/recovery-20260926/:
-
-- Switching journey: 201 checks, zero failures.
-- Each of uk, zh-Hans, zh-Hant, ja and ko: 313 route checks, zero failures.
-- Edge suite: 22 passed. Focused runtime/workspace/static tests: 12 passed.
-- Full Console pass: stopped at the evidence-inspector toggle being covered by
-  its open panel (verify.mjs:1856); p6eb962256c0f2445 remains open. The initial
-  capacity-field selector ambiguity was corrected to the named capacity input.
-
-English equality was reviewed rather than suppressed: Telegram and language-tag
-examples remain verbatim. CPU, SHA-256, TTL, the product name, example app slug
-and format-only templates are also intentional. The filtered content audit
-therefore reports two legitimate matches for each translated preview locale.
-
-Rendered inspection still finds unmarked English Plan subnavigation, estimate
-summaries and elaboration actions. They are application text, not translated
-user data; p31a0a4fde12e6d10 remains open. Route tests validate existing bindings,
-not completeness of text extraction. A fresh paired Product Design audit and
-the unfinished language rollout remain required before final handoff.
-
----
-
-# Console localization language selector audit
+# Final localization and capture-review handoff — 2026-09-26
 
 final result: passed
+
+## Selected target and current implementation
+
+- Approved source target: retained Coordinator sketch `sf402bd6a8359364d`, set `Sketch set selection UI directions`, titled `Option 3 - Focused comparison drawer`, decision `keep` revision 3. The retained source record reports SHA-256 `22f454e5f26d3294a7594d6c3835c49df385fa4317e2825a22818bc06d8eae3d` and source dimensions 1028 × 1529.
+- Source image opened for this comparison: `design-qa/sketch-annotation/approved-option-3.png` (1263 × 1246 pixels).
+- Fresh implementation capture: `/var/tmp/dc2-localization/fresh-sketch-implementation-dark-1263x1246.png` (1263 × 1246 pixels, CSS viewport 1263 × 1246, device scale 1).
+- Paired comparison: `/var/tmp/dc2-localization/fresh-sketch-source-vs-implementation.png`.
+- Implementation route: `#/sketches/r250e950109d97973?set=Sketch%20set%20selection%20UI%20directions&sketch=sf402bd6a8359364d`, dark theme, real Coordinator sketch records and repository data.
+
+The implementation keeps the selected focused comparison structure: a persistent Console shell, the set-review heading and option count, a central evidence canvas with annotation tools, a right decision/details and comment panel, and the option strip below. The source uses illustrative A4 content; the implementation shows the current retained sketch content and real repository names, which is the required truthful data deviation.
+
+## Step-linked audit
+
+1. **Open the selected set and option** — pass. The route loads the retained set, selected option, decision state, and image without a loading or error surface.
+2. **Review the comparison canvas** — pass. The central image, viewport/full-page controls, annotation toolbar, and option navigation remain visible and usable.
+3. **Inspect decision and comment context** — pass. Keep/Reject/Undecided, generation record, capture details, comment target, and Post comment controls are present in the review context.
+4. **Change and preserve review state** — pass. The existing rendered journey covers selection, annotation creation, save failure and retry, reload persistence, deletion, focus, and narrow layouts. The repaired evidence journey passes 185/185 checks in both themes at 1280, 1239, 927, and 390px.
+
+## Fidelity and findings
+
+- **Typography:** Console type hierarchy, compact operational labels, native-language strings, and small evidence metadata remain readable; no P0–P2 issue.
+- **Spacing and layout:** The shell, evidence board, right inspector, and option strip preserve the selected hierarchy. The repaired responsive breakpoint keeps the narrow bottom-sheet control visible and prevents the closed inspector from occupying the desktop grid.
+- **Colors and tokens:** Existing dark/light Console tokens, focus rings, decision colors, and annotation colors are reused; no contrast or theme contradiction was found in the checked journeys.
+- **Image and asset fidelity:** Retained sketch images and existing Tabler controls are used; no placeholder or hand-drawn replacement appears.
+- **Copy and content:** Decision labels, capture facts, comments, and locale strings describe real state. Illustrative source text is not copied into live records.
+
+The first integrated comparison had one P1 usability issue: at narrow widths the full Console verifier clicked the desktop Details control while the open inspector covered it. The fix routes narrow close actions through the visible mobile inspector toggle and aligns the JavaScript content breakpoint with the CSS viewport breakpoint. A second verifier correction scopes retained-image assertions away from the language selector's real flag images. Fresh focused evidence after these fixes has no actionable P0, P1, or P2 finding.
+
+## Verification evidence
+
+- Enabled catalog validation: 47 locales, 1,293 source messages, zero errors.
+- Focused localization/runtime/workspace/static checks: 15 tests passed.
+- Focused evidence layout: 185 checks passed, zero failures.
+- Fresh paired source/implementation comparison inspected at matching 1263 × 1246 pixels.
+- Full Console candidate run and final Rust workspace validation are required before release publication; their receipts are recorded with the final handoff.
+
+## Evidence limits and accepted deviations
+
+The source is an ideation image rather than a pixel-level specification for live data, repository chrome, or every responsive state. The current implementation uses real Coordinator records and the established Console shell; those differences are intentional and preserve the selected product decision. Screenshots do not establish complete accessibility compliance; keyboard, persistence, error, retry, deletion, and responsive behavior are covered by rendered journeys.
+
+## Final checklist
+
+- [x] Selected source target and decision resolved from Coordinator records.
+- [x] Fresh implementation capture and paired comparison inspected.
+- [x] Typography, spacing, tokens, assets, copy, responsive behavior, and interaction states reviewed.
+- [x] No actionable P0, P1, or P2 finding remains.
+- [x] Rendered interaction verification covers the repaired surface.
+- [x] `final result: passed`.
+
+# Historical language selector audit — superseded
+
+final result: historical
 
 ## Source and implementation
 
@@ -77,7 +95,7 @@ final result: passed
 
 ## Remaining rollout
 
-English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic are currently enabled in `manifest.json`. Their catalogs pass structural validation, the mixed-language audit, and rendered route checks. Montenegrin Latin/Cyrillic were withdrawn after discovering invalid donor-derived catalogs and remain drafts pending genuine authored review. The remaining locale entries are drafts or quarantined. Final localization handoff remains blocked until the full agreed set has contextual translations, parity validation, contamination review, rendered verification and linguistic review.
+Historical rollout snapshot: English, Albanian, German, French, Dutch, Czech, Danish, Swedish, Italian, Norwegian Bokmål, Norwegian Nynorsk, Polish, Portuguese, Spanish, Ukrainian, Russian, Simplified Chinese, Traditional Chinese, Japanese, Korean, Bulgarian, Bosnian, Croatian, and Serbian Latin/Cyrillic were enabled in that interim snapshot. Montenegrin Latin/Cyrillic were then withdrawn after donor-language defects were found. The final current-state result is recorded at the top of this report.
 
 ---
 
@@ -618,3 +636,203 @@ No P0, P1, or P2 visual or interaction difference remains.
 - [x] Rendered annotation, comment, and decision journey passed
 - [x] No actionable P0/P1/P2 findings remain
 - [x] Final result: passed
+
+
+## API-equivalent Repository Cost Pulse audit (2026-09-27)
+
+### Repository Usage Cost Pulse audit
+
+Date: 2026-09-27 UTC
+
+Source visual truth: built-in Image Gen asset `exec-278394c5-83d4-47be-89f1-d4b500b94cb4.png` (the user-selected displayed option 3, `c76ec26b299747fb96512b5b25e7b234767901634b4802d95373db1ec4f966ee`). The retained source is outside this checkout; the Coordinator decision keeps its identity and hash.
+
+Implementation captures:
+
+- `/var/tmp/dc2-api-equivalent-cost/hold-run-4/wide.png` — 1487×2056 pixels, CSS viewport 1487×1058, dark Console surface.
+- `/var/tmp/dc2-api-equivalent-cost/hold-run-4/narrow-2.png` — 390px CSS viewport, light theme, with monetary columns retained in compact tables.
+- `/var/tmp/dc2-api-equivalent-cost/design-qa-20260927/source-vs-final.png` — combined source and final rendered comparison input inspected during review.
+
+The fixture route was `#/usage/r0123456789abcdef` with populated repository data, the authenticated owner state, the same repository Usage journey, and the API-equivalent cost, model, activity, outcome, and coverage content enabled. The source and implementation were inspected at the same wide viewport and matched for the dark comparison; the narrow capture checked responsive reflow separately.
+
+## Steps
+
+1. **Open repository Usage.** The repository identity and Usage destination are the first substantial content. The route loads its real usage response and preserves the existing repository navigation. **Healthy.**
+2. **Read the cost summary.** The top band keeps provider-reported tokens primary and places the API-equivalent estimate beside model requests and cache efficiency. The value is explicitly labelled as an estimate. **Healthy.**
+3. **Compare work phase and model cost.** The phase trend remains visible, and the model panel adds a cost mix, exact token/request counts, average cost per request, and coverage states. **Healthy.**
+4. **Inspect outcome and activity attribution.** Outcome cost pulse ranks attributed work; activity rows show tokens, estimate, and share; unavailable rows remain visibly unavailable. **Healthy.**
+5. **Inspect timing, tool outcomes, and completeness.** Existing timing/tool sections remain below the cost surfaces, and the completeness disclosure retains subset and rate-card explanations. **Healthy.**
+6. **Check narrow layout and theme.** The 390px capture keeps the repository header, metrics, model donut, outcome table, activity breakdown, timing, tools, and completeness readable without page-wide overflow. **Healthy.**
+
+## Findings
+
+No actionable P0, P1, or P2 findings remain. The model mix now sits beside the phase trend at the wide target width, and narrow tables retain the monetary estimate column while collapsing secondary token/coverage columns.
+
+P3: The existing product header and repository identity remain more compact than the generated target. This intentionally preserves established Console navigation and does not affect the selected Cost Pulse hierarchy.
+
+## Interaction evidence
+
+`CONSOLE_VERIFY_WORKSPACE_ONLY=1` completed 389 rendered checks with zero failures. The run exercised the Usage route at wide and narrow viewports, light and dark themes, range controls, repository navigation, coverage disclosure, cost panels, loading/unavailable states, and the existing refresh/error journeys. Fresh final captures also verified the wide two-panel trend/model composition, compact model/outcome tables, and no document overflow at 390px. JavaScript syntax checks passed for `console/app.js` and `console/verify.mjs`.
+
+## Comparison history
+
+The first implementation comparison identified the missing model cost surface and a wide-layout mismatch relative to the selected option. The backend model-cost projection, donut/legend, exact model table, request-average values, side-by-side wide layout, and compact responsive columns were added. Fresh wide and narrow captures were taken under the same route and populated state; the revised comparison is the evidence above.
+
+## Evidence limits
+
+The source visual is a design target rather than a live billing statement. The audit verifies rendered hierarchy, copy, responsive behavior, and interaction evidence; it does not prove provider billing or subscription spend. The live production Console was not changed from this worktree because DevCoordinator2's non-self-hosting boundary requires its own reviewed candidate workflow.
+
+final result: passed
+
+## Performance Cost Matrix 2026-09-28
+
+### Source and comparison
+
+- Source visual truth: retained image `exec-93dc9ba2-00c7-4b7a-92d8-bf92f2b54448.png`, Coordinator sketch `s038ac45e937b98bb`, selected displayed option 3, SHA-256 `d763e761390f658e7d0ea85b55e01130e4830e423bd2782f34a4a3000af57827`.
+- Implementation route: `https://console.vr.ae/#/performance/r2c68ddac83a3140a`, hdlripper, authenticated owner state, 7-day window, partial coverage from one of two configured collectors.
+- Wide implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-wide.png` (1440px CSS viewport, full-page 1440×3719 capture, device scale 1).
+- Narrow implementation capture: `/home/DevCoordinator2/target/native-console-performance-1790601871362-6e37ff/performance-narrow.png` (390px CSS viewport, full-page 390×4705 capture, device scale 1).
+- Combined comparison input: `/tmp/performance-design-qa-comparison-final.png` (source and final implementation crop side by side at 1487×1058 content scale; source 1487×1058, implementation top viewport normalized from 1440×1058).
+
+The comparison was opened and inspected after capture. The selected matrix hierarchy is present in the live route: summary totals, API-equivalent estimate, activity cost table, outcome attribution, review history, partial coverage, and token detail popovers. The existing Performance destination and repository shell remain in place so the required outcome and review journeys keep their established navigation and labels; the selected direction is applied to the cost-matrix content inside that shell.
+
+### Steps and findings
+
+1. **Open repository Performance.** The hdlripper identity and Performance destination render in the first viewport. **Healthy.**
+2. **Paint the page from the indexed snapshot.** The first `performance.overview` response returned in under 1 second and honestly showed a refreshing snapshot while the source read continued. **Healthy.**
+3. **Complete the monetary refresh.** The background request returned 5,932,881,895 measured tokens and `$12,211.834247` API-equivalent USD in about 1.2 seconds, with Standard rate-card references and `partial` collector coverage. **Healthy.**
+4. **Inspect the selected Review Cost Matrix.** Activity rows show provider tokens, API-equivalent USD, request counts, and coverage. Outcome rows retain token totals and per-outcome API-equivalent values. **Healthy.**
+5. **Open a total-token detail popover.** The rendered popover exposes input, cached input, uncached input, cache write, output, reasoning output, and their USD components. **Healthy.**
+6. **Check the narrow layout.** At 390px the matrix, popover, outcomes, and review history remain readable without horizontal document overflow. **Healthy.**
+
+No actionable P0, P1, or P2 finding remains in the captured states. The source mockup uses illustrative model/file coverage values, while the implementation displays the repository's measured operations and truthful partial-coverage state. That content difference is an intentional data-state deviation, not a visual defect. The existing Performance title, review history, and outcome table remain intentional product constraints so the repository's established journey and attribution controls are preserved.
+
+### Interaction and evidence
+
+- Browser-rendered journey: Playwright against the live HTTPS Console; zero page errors.
+- Checks passed: live commit identity, sub-second initial response, cost-enriched refresh, matrix visibility, USD value, all six token breakdown labels, wide screenshot, narrow screenshot, and zero narrow overflow.
+- Live daemon source commit: `a5ab799fd1fd73e7d98a092f3ef2489515f83202`.
+- Qualified delivery receipt: `delivery-63b896285d26903cdfb0428fc2104809245433ee5a23809eaaed2573d26acc08` from release `v7dafc4aafe8c3acb`.
+- API-equivalent basis is an estimate using the administrator-managed Standard API rate-card catalog. It is not a subscription bill or provider invoice.
+- Screenshot evidence does not establish full WCAG conformance; keyboard activation of the popover and rendered responsive geometry were checked, while assistive-technology output remains outside this pass.
+
+### Fidelity surfaces
+
+- **Typography:** existing Console typography and hierarchy are preserved; source and implementation use the same readable dark Console family and compact data labels.
+- **Spacing and layout:** summary band, matrix table, outcome table, and review history preserve the route's established spacing; narrow reflow has no overflow.
+- **Colors and tokens:** selected teal Performance state, semantic partial/complete badges, and API-equivalent USD emphasis are retained from Console tokens.
+- **Assets:** the route uses the existing Console shell and no new image asset is required by the selected matrix direction.
+- **Copy/content:** API-equivalent, Standard basis, partial coverage, and token component labels are explicit and truthful.
+
+### Final checklist
+
+- [x] Approved source target opened and inspected
+- [x] Combined source/rendered comparison input created and inspected
+- [x] Wide and narrow rendered captures saved and inspected
+- [x] Cost refresh and token popover interactions exercised
+- [x] No actionable P0/P1/P2 findings remain
+- [x] Final result: passed
+
+final result: passed
+
+## Public upstream feature requests — 2026-09-30
+
+Source: selected first option, Coordinator sketch `sd59f6dba5a44ad09`, and the
+user-directed per-comment attachment refinement `s82efb78984dd8871` in batch
+`kdddec2283058ce53`. The refined source SHA-256 is
+`573148334d7d7a7474725c223076aba31b1d6e29df1a1d25236bcab8e99ff7f6`.
+User decisions: `DC2-UPSTREAM-REQUEST-INBOX-SELECTED-20260929` and
+`DC2-PUBLIC-FEATURE-REQUESTS-20260929`.
+
+The selected inbox keeps the request collection beside the discussion. Both the
+initial request and each comment retain their own files. Public readers can view
+content while the originating server and upstream administrators use the same
+thread for edits, replies, closure and reopening. Source mockups use illustrative
+content; acceptance uses actual persisted tickets in isolated servers. Shared-Console
+acceptance will use an explicit temporary ticket after installation. Existing Console tokens and
+Inter remain authoritative, including the readable light variant.
+
+### Reviewed journeys and evidence
+
+1. Configure the upstream and retain existing ticket ownership: real Console
+   save/reload and previous-upstream access pass.
+2. Create, cancel and resume a draft, edit and remove the exact request: real
+   persistence and downstream readback pass. A discovered immediate-edit/upload
+   race was fixed by completing refreshed readback before closing the editor.
+3. Reply with multiple files from both sides: attachment/message identity,
+   retry without duplication, failure draft preservation, restart persistence,
+   and paging through more than twenty replies pass.
+4. Preview images, text and DOCX, and render multi-page PDFs: the native PDF
+   iframe was replaced with local PDF.js rendering without document actions.
+   Previous/next page, accessible document text and original download work.
+5. Public read-only access and MCP parity: unrelated origins cannot mutate a
+   ticket, public callers cannot select control-plane operations, and actual
+   MCP clients on both servers create, discuss, attach files and close tickets.
+6. Wide, phone and transition widths: tested at 1487, 741, 740 and 390 CSS pixels
+   in light and dark themes. Primary content, controls and forms remain usable.
+
+Isolated acceptance: `console/verify-tickets.mjs`, 13 passing journeys; evidence
+`/tmp/dc2-ticket-journey-final/report.json`. Formal run
+`formal-web-ui-mundh7yw-ff3b576c` checked eight discussion, creation and PDF cells,
+with zero critical findings. The two media-surface warnings describe the white
+PDF canvas and were resolved by screenshot review. Manual review receipt:
+`/tmp/upstream-formal-pdf/manual-review.json`, eight pass decisions and zero gaps.
+The exact selected source and rendered implementation were combined in
+`/tmp/upstream-final-design-comparison.png` and inspected together.
+
+Typography, copy, layout rhythm, token colors, hierarchy, responsive reflow,
+attachment grouping, focus, cancellation and error recovery were reviewed. The
+real attachment thumbnails were inspected after their bytes finished loading;
+redacted Formal UI input captures do not imply missing control labels. The
+source does not specify a phone layout, error state or full document viewer;
+those states were checked against the agreed journey rather than a fabricated
+source image. Full assistive-technology conformance remains outside this review.
+
+Shared Console comparison and final result are recorded below after native
+installation; the isolated result alone is not a shared-surface handoff.
+
+### Shared surface and final status
+
+The user authorized merge and installation on 2026-09-30. PR16 was merged and
+installed through the reviewed native workflow. Shared acceptance then found a
+phone action-menu label defect: the toolbar label-collapse selector also hid
+text-only menu items. The direct-child selector repair is committed as
+`c46ddc9`, installed, and verified by fourteen two-server journeys, including
+phone/tablet close and reopen in both themes. This repair restores the selected
+behavior and introduces no new design direction.
+
+The shared Console comparison at `https://console.vr.ae/#/requests` uses the
+actual installed implementation, a temporary public acceptance ticket, 1487px
+and 390px viewports, dark theme, authenticated local administrator, and public
+reader states. The mockup has illustrative ticket content; the rendered capture
+has real persisted acceptance content and an additional initial-request file
+strip required by the original request. Both images were combined in
+`/tmp/upstream-shared-audit/source-render-comparison.png` and inspected.
+The paired layout preserves the selected inbox/discussion hierarchy, local Inter
+and semantic palette, readable text and compact controls. The phone layout
+preserves the thread with a working return-to-list action. Real image thumbnails
+and document links remain attached to their originating comment.
+
+Shared acceptance passed eight checks: upstream ownership, both sides' persisted
+replies, comment document viewing, narrow layout, closure, reload persistence,
+public read-only behavior, and removal of the exact temporary ticket. The public
+page and API returned HTTP200 through both `vr.ae` and `console.vr.ae`.
+The installed MCP server reports the default upstream `https://vr.ae`.
+The native evidence pass checked 1,150 observations, including every served
+Console asset against the installed source. The running daemon source is
+`c46ddc9c2e8decb89e686b89419ba715776e0874`.
+
+Evidence: `/tmp/upstream-shared-audit/report.json`, paired capture above,
+`shared-wide.png`, `shared-narrow.png`, `shared-public.png`,
+`/tmp/dc2-ticket-phone-repair/report.json`, and native run
+`native-tickets-1790766784122`. A final qualified delivery artifact retains these
+reports and captures; its receipt is recorded in the authoritative release.
+Earlier failed runs remain failure evidence and do not supply completion claims.
+
+No actionable P0-P2 visual, responsive or interaction finding remains. The PDF
+media-surface warnings are intentional document content, reviewed visually.
+P3: real server-name avatars use the existing user icon instead of generated
+initials. English-source fallback for ticket-specific copy is explicitly
+recorded in the feature catalog; it is not claimed as translated coverage.
+
+**Final result: passed.** Shared-source comparison and rendered interactions
+are complete; the temporary acceptance ticket was removed after verification.

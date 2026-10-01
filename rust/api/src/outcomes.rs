@@ -3,6 +3,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+use crate::results::UsageCost;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 /// A measured token or millisecond quantity. `unknown` counts missing/incomplete
@@ -25,6 +27,8 @@ pub struct OutcomeEffort {
     pub active_agent_ms: OutcomeMeasurement,
     pub elapsed_execution_ms: OutcomeMeasurement,
     pub recorded_wait_ms: OutcomeMeasurement,
+    #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
+    pub cost: UsageCost,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

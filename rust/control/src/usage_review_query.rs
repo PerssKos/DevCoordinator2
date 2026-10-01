@@ -57,7 +57,7 @@ const TOKEN_FACTS: &str = r#", owned_tokens AS MATERIALIZED (
 ), token_facts AS MATERIALIZED (
     SELECT token.operation_id,
            token.source_event_id, token.category_path, token.measurement_provenance,
-           MAX(token.token_count) token_count, COUNT(*) raw_count,
+           MAX(token.token_count) token_count, MAX(token.observed_at_ms) observed_at_ms, COUNT(*) raw_count,
            MAX(token.token_count IS NULL) unknown_count,
            MAX(token.coverage_state <> 'complete') incomplete,
            (MIN(token.token_count) <> MAX(token.token_count) OR
@@ -82,7 +82,7 @@ pub(super) const OPERATIONS: &str = "SELECT owner.id, owner.agent_id, owner.oper
     ORDER BY owner.id LIMIT 200001";
 
 pub(super) const TOKENS: &str =
-    "SELECT operation_id, category_path, token_count, incomplete, COALESCE(conflict, 0)
+    "SELECT operation_id, category_path, token_count, incomplete, COALESCE(conflict, 0), source_event_id, observed_at_ms
     FROM token_facts WHERE measurement_provenance = 'provider_reported' LIMIT 200001";
 
 pub(super) const WAITS: &str = "SELECT span.operation_id, span.started_at_ms, ended.occurred_at_ms

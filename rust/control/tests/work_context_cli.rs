@@ -76,3 +76,58 @@ async fn work_context_real_cli_environment_is_bounded_nonfatal_and_session_aware
         );
     }
 }
+
+#[tokio::test]
+async fn native_alarm_activation_is_acknowledged_before_registration_or_falls_back() {
+    for acknowledge in [true, false] {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("fixture.sock");
+        let marker = temporary.path().join("activation");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut encoded = String::new();
+            stream.read_line(&mut encoded).await.unwrap();
+            let request = devcoordinator2_api::parse_request(encoded.as_bytes()).unwrap();
+            let response =
+                ResponseEnvelope::success(request.id.clone(), json!({"accepted":true})).unwrap();
+            stream
+                .get_mut()
+                .write_all(&serde_json::to_vec(&response).unwrap())
+                .await
+                .unwrap();
+            request
+        });
+        let receiver = marker.clone();
+        let receipt = tokio::spawn(async move {
+            if acknowledge {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if let Ok(bytes) = tokio::fs::read(&receiver).await
+                            && bytes == b"codex.alarm-route.v1\n"
+                        {
+                            tokio::fs::remove_file(&receiver).await.unwrap();
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap();
+            }
+        });
+        let output=tokio::process::Command::new(env!("CARGO_BIN_EXE_devcoordinator2"))
+            .current_dir(temporary.path()).env_clear().env("PATH","/usr/bin:/bin")
+            .env("DEVCOORDINATOR2_INSTANCE_ENV",temporary.path().join("absent.env"))
+            .env("DEVCOORDINATOR2_SOCKET",&socket)
+            .env("DEVCOORDINATOR_WORK_CONTEXT",json!({"version":1,"native_project_id":"native","thread_id":"thread"}).to_string())
+            .env("CODEX_ALARM_CONTEXT",json!({"alarm_namespace":"codex.review.v1","capability_revision":1,"lease_expires_at":1000000}).to_string())
+            .env("CODEX_ALARM_ACTIVATION",&marker).args(["ping","--format","json"]).output().await.unwrap();
+        assert!(output.status.success());
+        let request = server.await.unwrap();
+        receipt.await.unwrap();
+        assert_eq!(request.client.work.unwrap().alarm.is_some(), acknowledge);
+        assert_eq!(marker.exists(), !acknowledge);
+    }
+}

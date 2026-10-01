@@ -8,6 +8,7 @@ pub mod capacity;
 pub mod check_event;
 pub mod cli;
 pub mod client;
+pub mod completion;
 pub mod config;
 pub mod control_plane;
 pub mod daemon;
@@ -36,6 +37,7 @@ pub mod planning_recovery;
 pub mod platform;
 pub mod ports;
 pub mod progress;
+pub mod rate_card;
 pub mod repository;
 pub mod repository_config;
 mod review;
@@ -56,6 +58,8 @@ pub mod test_evidence;
 pub mod test_lifecycle;
 pub mod test_logs;
 pub mod test_state;
+pub mod ticket_service;
+pub mod tickets;
 pub mod usage;
 
 #[cfg(test)]

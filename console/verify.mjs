@@ -237,18 +237,27 @@ const fixtures = (scenario) => {
     repository_id: REPO, display_name: 'repo-one', range: '24h', generated_at_ms: Date.now(),
     coverage: usageCoverage,
     totals: usageHasNoMeasurements
-      ? { total_tokens: null, input_tokens: null, cached_input_tokens: null, output_tokens: null, reasoning_tokens: null, model_requests: 0, tool_calls: 0, operations: 0 }
-      : { total_tokens: 6405721, input_tokens: 6391772, cached_input_tokens: 6212608, output_tokens: 13949, reasoning_tokens: 7821, model_requests: 104, tool_calls: 236, operations: 340 },
+      ? { total_tokens: null, input_tokens: null, cached_input_tokens: null, output_tokens: null, reasoning_tokens: null, model_requests: 0, tool_calls: 0, operations: 0, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, input_usd_micros: null, cached_input_usd_micros: null, cache_write_usd_micros: null, output_usd_micros: null, unknown_observations: 0, rate_card_ref: null } }
+      : { total_tokens: 6405721, input_tokens: 6391772, cached_input_tokens: 6212608, output_tokens: 13949, reasoning_tokens: 7821, model_requests: 104, tool_calls: 236, operations: 340, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 1842000, input_usd_micros: 1200000, cached_input_usd_micros: 480000, cache_write_usd_micros: 0, output_usd_micros: 162000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09', rate_card_refs: ['openai-standard-2026-09'] } },
     series: usageSeries,
     activities: usageHasNoMeasurements ? [] : [
-      { phase: 'implementation', activity: 'coding', total_tokens: 2660000, share: .416, operations: 42, provenance: { agent_declared: 42 } },
-      { phase: 'planning', activity: 'repository_analysis', total_tokens: 1740000, share: .272, operations: 28, provenance: { agent_declared: 28 } },
-      { phase: 'testing', activity: 'integration_testing', total_tokens: 1240000, share: .194, operations: 35, provenance: { deterministic_classification: 35 } },
-      { phase: 'deployment', activity: 'deployment', total_tokens: 540000, share: .084, operations: 9, provenance: { agent_declared: 9 } },
-      { phase: 'reporting', activity: 'completion_handoff', total_tokens: 120000, share: .019, operations: 5, provenance: { agent_declared: 5 } },
-      { phase: 'unattributed', activity: 'unknown', total_tokens: 70000, share: .011, operations: 8, provenance: { unknown: 8 } },
-      { phase: 'unattributed', activity: 'mixed', total_tokens: 22000, share: .003, operations: 3, provenance: { unknown: 3 } },
-      { phase: 'unattributed', activity: 'accounting_overhead', total_tokens: 13721, share: .002, operations: 12, provenance: { deterministic_classification: 12 } },
+      { phase: 'implementation', activity: 'coding', total_tokens: 2660000, share: .416, operations: 42, provenance: { agent_declared: 42 }, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 760000, input_usd_micros: 500000, cached_input_usd_micros: 180000, cache_write_usd_micros: 0, output_usd_micros: 80000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { phase: 'planning', activity: 'repository_analysis', total_tokens: 1740000, share: .272, operations: 28, provenance: { agent_declared: 28 }, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 460000, input_usd_micros: 300000, cached_input_usd_micros: 110000, cache_write_usd_micros: 0, output_usd_micros: 50000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { phase: 'testing', activity: 'integration_testing', total_tokens: 1240000, share: .194, operations: 35, provenance: { deterministic_classification: 35 }, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 330000, input_usd_micros: 220000, cached_input_usd_micros: 80000, cache_write_usd_micros: 0, output_usd_micros: 30000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { phase: 'deployment', activity: 'deployment', total_tokens: 540000, share: .084, operations: 9, provenance: { agent_declared: 9 }, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 150000, input_usd_micros: 100000, cached_input_usd_micros: 40000, cache_write_usd_micros: 0, output_usd_micros: 10000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { phase: 'reporting', activity: 'completion_handoff', total_tokens: 120000, share: .019, operations: 5, provenance: { agent_declared: 5 }, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 40000, input_usd_micros: 25000, cached_input_usd_micros: 10000, cache_write_usd_micros: 0, output_usd_micros: 5000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { phase: 'unattributed', activity: 'unknown', total_tokens: 70000, share: .011, operations: 8, provenance: { unknown: 8 }, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, unknown_observations: 8, rate_card_ref: null } },
+      { phase: 'unattributed', activity: 'mixed', total_tokens: 22000, share: .003, operations: 3, provenance: { unknown: 3 }, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, unknown_observations: 3, rate_card_ref: null } },
+      { phase: 'unattributed', activity: 'accounting_overhead', total_tokens: 13721, share: .002, operations: 12, provenance: { deterministic_classification: 12 }, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, unknown_observations: 12, rate_card_ref: null } },
+    ],
+    models: usageHasNoMeasurements ? [] : [
+      { model: 'gpt-6-sol', total_tokens: 4920000, share: .767, model_requests: 88, average_usd_micros: 18000, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 1580000, input_usd_micros: 1020000, cached_input_usd_micros: 420000, cache_write_usd_micros: 0, output_usd_micros: 140000, unknown_observations: 0, rate_card_ref: 'openai-standard-gpt-6-sol@1', rate_card_refs: ['openai-standard-gpt-6-sol@1'] } },
+      { model: 'gpt-5.6-sol', total_tokens: 1325721, share: .207, model_requests: 16, average_usd_micros: 16250, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 260000, input_usd_micros: 180000, cached_input_usd_micros: 60000, cache_write_usd_micros: 0, output_usd_micros: 20000, unknown_observations: 0, rate_card_ref: 'openai-standard-gpt-5.6-sol@1', rate_card_refs: ['openai-standard-gpt-5.6-sol@1'] } },
+      { model: 'unknown', total_tokens: 70000, share: .011, model_requests: 0, average_usd_micros: null, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, unknown_requests: 8, unknown_tokens: 70000, unknown_observations: 8, rate_card_ref: null } },
+    ],
+    outcomes: usageHasNoMeasurements ? [] : [
+      { outcome_id: P_C1, title: 'Improve the repository workflow', total_tokens: 2660000, share: .416, operations: 42, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 760000, input_usd_micros: 500000, cached_input_usd_micros: 180000, cache_write_usd_micros: 0, output_usd_micros: 80000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
+      { outcome_id: P_C2, title: 'Verify the release journey', total_tokens: 1740000, share: .272, operations: 28, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 460000, input_usd_micros: 300000, cached_input_usd_micros: 110000, cache_write_usd_micros: 0, output_usd_micros: 50000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09' } },
     ],
     time: {
       request_to_delivery: { measured_ms: usageHasNoMeasurements ? 0 : 472000, unknown_intervals: usageHasNoMeasurements ? 0 : 1 },
@@ -313,8 +322,8 @@ const fixtures = (scenario) => {
       { id: 'c'.repeat(64), name: 'devcoordinator2-test-old-postgres', image: 'postgres:16-alpine', state: 'exited', status: 'Exited (0)', created: '2026-08-22', repository_id: 'r1', deployment_id: null, component: null, run_id: 't-old', caller_uid: 1001, client: 'codex', ttl_seconds: 3600, data: 'disposable', classification: 'orphaned-managed', cpu_percent: null, memory_bytes: null, pids: null, container_layer_bytes: 12345 },
       { id: 'd'.repeat(64), name: 'existing-compose-stack-app-1', image: 'app:1', state: 'running', status: 'Up 3 days (healthy)', created: '2026-08-20', repository_id: 'r0123456789abcdef', deployment_id: OBS, component: 'app', run_id: null, caller_uid: null, client: 'legacy-current-import', ttl_seconds: null, data: 'observed-only', classification: 'observed-current', cpu_percent: 2.5, memory_bytes: 123456789, pids: 4, container_layer_bytes: 45678 }], counts: { 'managed-test': 0, 'managed-preview': 0, 'managed-permanent': 1, 'observed-current': 1, 'orphaned-managed': 1, unmanaged: 1 } },
     'usage.repositories': { range: '24h', generated_at_ms: Date.now(), repositories: scenario.empty ? [] : [
-      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: scenario.usageIndexing ? usageIndexingCoverage : scenario.dashboardUsagePending ? usageMappingPendingCoverage : scenario.dashboardUsageUnobserved ? usageUnobservedCoverage : usageCoverage, total_tokens: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? null : 6405721, model_requests: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 104, tool_calls: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 236, execution_wall_ms: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 147000 },
-      { repository_id: 'r2', display_name: LONG, range: '24h', coverage: usageCompleteCoverage, total_tokens: 2100000, model_requests: 38, tool_calls: 74, execution_wall_ms: 72000 },
+      { repository_id: REPO, display_name: 'repo-one', range: '24h', coverage: scenario.usageIndexing ? usageIndexingCoverage : scenario.dashboardUsagePending ? usageMappingPendingCoverage : scenario.dashboardUsageUnobserved ? usageUnobservedCoverage : usageCoverage, total_tokens: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? null : 6405721, model_requests: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 104, tool_calls: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 236, execution_wall_ms: scenario.usageIndexing || scenario.dashboardUsagePending || scenario.dashboardUsageUnobserved ? 0 : 147000, cost: usageDetail.totals.cost },
+      { repository_id: 'r2', display_name: LONG, range: '24h', coverage: usageCompleteCoverage, total_tokens: 2100000, model_requests: 38, tool_calls: 74, execution_wall_ms: 72000, cost: usageDetail.totals.cost },
       { repository_id: 'r3', display_name: 'no-measurements', range: '24h', coverage: usageUnobservedCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
       { repository_id: 'r4', display_name: 'not-connected', range: '24h', coverage: usageMappingPendingCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 },
       { repository_id: 'r5', display_name: 'source-read-failed', range: '24h', coverage: usageSourceFailureCoverage, total_tokens: null, model_requests: 0, tool_calls: 0, execution_wall_ms: 0 }] },
@@ -1663,8 +1672,9 @@ async function main() {
   check('interaction: saving the administrator maximum calls test.capacity.set directly',
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === 72));
   await page.waitForSelector('dialog#test-capacity-dialog[open]', { state: 'hidden' });
+  await page.waitForSelector('#test-capacity-open', { state: 'attached' });
   check('interaction: saving capacity returns focus to the Capacity action',
-    await page.locator('#nav-toggle:focus').count() === 1);
+    await page.locator('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').count() === 1);
   await revealTestSettings(page); await page.click('#test-capacity-open');
   await page.waitForSelector('dialog#test-capacity-dialog[open]');
   daemon.calls.length = 0;
@@ -1674,7 +1684,7 @@ async function main() {
     daemon.calls.some((call) => call.operation === 'test.capacity.set' && call.params.cap === null));
   await page.waitForSelector('[data-test-start]', { state: 'attached' });
   check('interaction: clearing capacity returns focus to the Capacity action',
-    await page.locator('#nav-toggle:focus').count() === 1);
+    await page.locator('#nav-toggle:focus, .test-settings-toggle:focus, #test-capacity-open:focus').count() === 1);
   await revealTestRows(page);
   await chooseRepository(page, LONG);
   await page.click('#test-run-open');
@@ -1854,7 +1864,7 @@ async function main() {
   check('interaction: resolved feedback can be reopened',
     /open/.test(await page.innerText('.evidence-thread-state')));
   await page.setViewportSize(VIEWPORTS.narrow);
-  const mobileDetailsToggle = page.locator('.evidence-mobile-inspector-toggle');
+  const mobileDetailsToggle = page.locator('.evidence-mobile-inspector-toggle[data-evidence-panel="details"]');
   await mobileDetailsToggle.waitFor({ state: 'visible' });
   await mobileDetailsToggle.click();
   await page.waitForFunction(() => !document.querySelector('.evidence-page')?.classList.contains('inspector-open'));
@@ -2094,6 +2104,7 @@ async function main() {
     && await page.locator('.progress-completed-bar').count() > 0
     && await page.locator('.progress-incoming-bar').count() > 0);
   await page.click('.progress-exact summary');
+  await page.waitForSelector('.progress-exact[open]');
   const exactProgressText = await page.innerText('.progress-exact');
   const exactProgressRows = await page.locator('.progress-exact[open] tbody tr').count();
   check('interaction: exact progress values and counting rules expand in place',

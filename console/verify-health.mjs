@@ -99,7 +99,11 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
   await check('Failure to persist never hides the incident or reports success',async()=>{
     await page.reload();await page.locator('#hi-incidents-toggle').click();await page.locator(`[data-hi-select="${web.incident_id}"]`).click();
     await page.route('**/api/v2/health.incident.update',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({ok:false,error:{code:'configuration_conflict',message:'Incident changed; refresh'}})}));
-    await page.locator('[data-hi-disposition]').click();await page.getByText('Could not save: This record changed. Reload it before trying again. [configuration_conflict]: Incident changed; refresh', {exact:true}).waitFor();
+    await page.locator('[data-hi-disposition]').click();
+    const failure=page.locator('#hi-selected-detail .hi-action-result');
+    await failure.filter({hasText:'[configuration_conflict]: Incident changed; refresh'}).waitFor();
+    const expected=await page.evaluate(()=>window.DevCoordinatorI18n.t('common.error_conflict'));
+    assert.equal(await failure.innerText(),`Could not save: ${expected} [configuration_conflict]: Incident changed; refresh`);
     assert.equal((await list('attention')).attention_count,2);assert.equal(await page.locator('[data-hi-disposition]').isEnabled(),true);await page.unroute('**/api/v2/health.incident.update');
   },page);
   await check('Paging, recovery and recurrence keep exact incident identities',async()=>{

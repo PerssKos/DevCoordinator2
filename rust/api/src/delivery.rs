@@ -23,6 +23,9 @@ pub struct Deliver {
     pub source_sha256: String,
     pub target: String,
     pub kind: Kind,
+    /// A retained, hash-bound capability inventory. New delivery requests must
+    /// include this file so completion claims cannot skip known omissions.
+    pub completion_file: String,
     pub verification_file: Option<String>,
 }
 
@@ -68,6 +71,14 @@ pub struct Receipt {
     pub delivered_at_ms: Option<u64>,
     pub access: Option<String>,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_claim: Option<crate::completion::Claim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_capabilities: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_incomplete: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

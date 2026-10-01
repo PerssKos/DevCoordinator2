@@ -4,6 +4,7 @@ use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource
 #[test]
 fn work_context_receipt_retention_preserves_whole_newest_bindings_within_existing_bytes() {
     let context = WorkContext {
+        alarm: None,
         version: 1,
         native_project_id: "n".repeat(256),
         thread_id: "t".repeat(256),

@@ -25,14 +25,35 @@ window.DevCoordinatorWorkspace = (() => {
 
   function catalogue(repositories, runs, deployments) {
     const records = new Map();
+    const isPathInside = (path, root) => {
+      if (!path || !root) return false;
+      const normalizedRoot = root.endsWith('/') ? root.slice(0, -1) : root;
+      return path === normalizedRoot || path.startsWith(`${normalizedRoot}/`);
+    };
+    // A governed test may create a temporary Git repository under the
+    // owning checkout's scratch directory. It is still a distinct registered
+    // worktree, but presenting it as another top-level repository hides the
+    // project that owns the run. Keep this relationship presentation-only;
+    // the scratch repository's exact ID remains in its checkout disclosure.
+    const scratchOwner = (row) => {
+      const path = row.worktree_path || row.root_path;
+      if (!path || !path.includes('/.devcoordinator/test/current/scratch/')) return null;
+      return repositories
+        .filter((candidate) => candidate.repository_id !== row.repository_id && isPathInside(path, candidate.root_path))
+        .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
+    };
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
+      const owner = scratchOwner(row);
+      const ownerSource = owner?.repository_source;
       records.set(row.repository_id, {
         ...previous, ...row,
         display_name: previous?.display_name || row.display_name || 'Repository',
         root_path: previous?.root_path || row.root_path,
         repository_source: previous?.repository_source || row.repository_source,
+        repository_group_key: previous?.repository_group_key || row.repository_group_key || ownerSource?.key || owner?.repository_id,
+        repository_group_name: previous?.repository_group_name || row.repository_group_name || ownerSource?.name || owner?.display_name,
         paths: [...new Set([...(previous?.paths || []), row.root_path, row.worktree_path].filter(Boolean))],
       });
     };
@@ -41,8 +62,8 @@ window.DevCoordinatorWorkspace = (() => {
     deployments.forEach((deployment) => add({ repository_id: deployment.repository_id, display_name: deployment.repository_name }));
     const groups = new Map();
     for (const record of records.values()) {
-      const key = record.repository_source?.key || record.repository_id;
-      if (!groups.has(key)) groups.set(key, { key, name: record.repository_source?.name || record.display_name, records: [] });
+      const key = record.repository_group_key || record.repository_source?.key || record.repository_id;
+      if (!groups.has(key)) groups.set(key, { key, name: record.repository_group_name || record.repository_source?.name || record.display_name, records: [] });
       groups.get(key).records.push(record);
     }
     for (const group of groups.values()) {
@@ -241,15 +262,33 @@ window.DevCoordinatorWorkspace = (() => {
         catch (error) { if (signal.aborted || error.code === 'stale' || error.code === 'unauthenticated') throw error; return { error }; }
       };
       const includeTests = currentView === 'tests';
-      const promise = Promise.all([read('plan.overview'), includeTests ? read('test.list') : { value: { runs: [] } }, read('deployment.list'), ...(canOperate() ? [read('usage.repositories'), read('progress.repositories')] : [])]).then(async ([plans, tests, deploymentList, usage, progress]) => {
+      const updateStatus = (results) => {
+        const unavailable = results.filter(([, result]) => result?.error && result.error.code !== 'permission_denied');
+        window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
+      };
+      // Plan, Tests, and Deployments determine the initial repository
+      // navigation. Optional Usage and Progress projections may involve
+      // independent refresh work; do not hold the entire workspace on them.
+      const promise = Promise.all([
+        read('plan.overview'),
+        includeTests ? read('test.list') : { value: { runs: [] } },
+        read('deployment.list'),
+      ]).then(async ([plans, tests, deploymentList]) => {
         if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
-        if ([plans, tests, deploymentList, usage, progress].filter(Boolean).every((result) => result.error)) throw plans.error;
-        data = { repositories: [...(plans.value?.repositories || []), ...(usage?.value?.repositories || []), ...(progress?.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
+        data = { repositories: [...(plans.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
-        const unavailable = [['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]].filter(([, result]) => result.error && result.error.code !== 'permission_denied');
-        window.DevCoordinatorI18n.bind(document.querySelector('#repository-status'), () => (unavailable.length ? window.DevCoordinatorI18n.t("shell.value1_repositories_unavailable_refresh_to_retry_426a76", {value1: unavailable.map(([label]) => label).join(', ')}) : ''));
+        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]]);
+        if (!canOperate()) return;
+        void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
+          if (signal.aborted) return;
+          data.repositories = [...(plans.value?.repositories || []), ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          groups = catalogue(data.repositories, data.runs, data.deployments);
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Usage', usage], ['Progress', progress]]);
+          if (active) paint();
+        }).catch(() => {});
       });
       loading = { signal, promise };
       return promise;

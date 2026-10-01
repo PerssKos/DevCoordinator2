@@ -472,3 +472,325 @@ fn work_context_review_packet_exposes_native_links_without_allocating_repository
             .contains(&"run_work_context_unavailable".into())
     );
 }
+
+#[test]
+fn review_schedule_routes_escalates_and_only_valid_receipts_advance_it() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    let events = crate::events::EventService::new(fixture.database.clone()).unwrap();
+    fixture
+        .service
+        .review_reminders(&events, START + WEEK)
+        .unwrap();
+    let count = || {
+        fixture
+            .database
+            .call(|c| {
+                Ok(
+                    c.query_row("SELECT COUNT(*) FROM review_reminders", [], |r| {
+                        r.get::<_, i64>(0)
+                    })?,
+                )
+            })
+            .unwrap()
+    };
+    assert_eq!(count(), 0);
+    let scope = Scope {
+        repository_id: "project-alpha".into(),
+        workstream_id: Some("spec".into()),
+    };
+    let policy = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: scope.repository_id.clone(),
+                workstream_id: scope.workstream_id.clone(),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: Some(START),
+                clock_action: None,
+            },
+            START,
+        )
+        .unwrap();
+    assert_eq!(
+        (policy.review_interval_ms, policy.escalation_interval_ms),
+        (86_400_000, 3_600_000)
+    );
+    let due = policy.window_end_ms;
+    fixture
+        .service
+        .delivery_register(
+            Register {
+                repository_id: scope.repository_id.clone(),
+                workstream_id: scope.workstream_id.clone(),
+                owner_thread_id: "thread-1".into(),
+                mode: DeliveryMode::CodexAlarm,
+                alarm_namespace: "codex.review.v1".into(),
+                capability_revision: 1,
+                lease_expires_at: due + 3_600_000,
+            },
+            due,
+            RegistrationMode::Replace,
+        )
+        .unwrap();
+    fixture.service.review_reminders(&events, due).unwrap();
+    fixture.service.review_reminders(&events, due).unwrap();
+    assert_eq!(count(), 1);
+    let native = fixture
+        .service
+        .delivery_pending(
+            PendingRequest {
+                alarm_namespace: "codex.review.v1".into(),
+                after_id: 0,
+            },
+            due,
+        )
+        .unwrap();
+    assert_eq!(native.reminders.len(), 1);
+    assert_eq!(native.reminders[0].owner_thread_id, "thread-1");
+    assert!(native.reminders[0].last_completed_receipt.is_none());
+    let message_count = || {
+        fixture
+            .database
+            .call(|c| {
+                Ok(c.query_row("SELECT COUNT(*) FROM agent_messages", [], |r| {
+                    r.get::<_, i64>(0)
+                })?)
+            })
+            .unwrap()
+    };
+    assert_eq!(message_count(), 0);
+    // Restart the owner of the event service; the policy/outbox still deduplicate.
+    drop(events);
+    let events = crate::events::EventService::new(fixture.database.clone()).unwrap();
+    fixture
+        .service
+        .review_reminders(&events, due + 3_600_000)
+        .unwrap();
+    fixture
+        .service
+        .review_reminders(&events, due + 3_600_001)
+        .unwrap();
+    assert_eq!((count(), message_count()), (2, 2));
+    assert!(
+        fixture
+            .service
+            .policy_status(scope.clone(), due + 3_600_001)
+            .unwrap()
+            .unwrap()
+            .escalated
+    );
+    // Transport acknowledgements do not satisfy a review obligation.
+    fixture
+        .database
+        .call(|c| {
+            c.execute(
+                "UPDATE agent_messages SET acknowledged_at='1970-01-03T00:00:00Z'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        fixture
+            .service
+            .policy_status(scope.clone(), due + 3_600_001)
+            .unwrap()
+            .unwrap()
+            .due
+    );
+    let receipt = fixture
+        .service
+        .record(record(&fixture), "fixture", START + WEEK)
+        .unwrap();
+    assert!(receipt.completed);
+    let after = fixture
+        .service
+        .policy_status(scope, START + WEEK)
+        .unwrap()
+        .unwrap();
+    assert!(!after.due);
+    assert_eq!(after.last_completed_receipt, Some(receipt.reference));
+    assert_eq!(after.window_start_ms, START + WEEK);
+    fixture
+        .service
+        .review_reminders(&events, START + WEEK)
+        .unwrap();
+    assert_eq!(count(), 2);
+}
+
+#[test]
+fn review_policy_without_registration_uses_messages_and_preserves_window_on_update() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    let events = crate::events::EventService::new(fixture.database.clone()).unwrap();
+    let set = Set {
+        repository_id: "project-alpha".into(),
+        workstream_id: None,
+        review_interval_ms: None,
+        escalation_interval_ms: None,
+        active: true,
+        window_start_ms: None,
+        clock_action: None,
+    };
+    let first = fixture.service.policy_set(set.clone(), START).unwrap();
+    let renewed = fixture
+        .service
+        .policy_set(
+            Set {
+                clock_action: Some(ClockAction::FollowExisting),
+                ..set
+            },
+            START + 1000,
+        )
+        .unwrap();
+    assert_eq!(first.window_start_ms, renewed.window_start_ms);
+    fixture
+        .service
+        .review_reminders(&events, first.window_end_ms)
+        .unwrap();
+    let counts = fixture
+        .database
+        .call(|c| {
+            Ok((
+                c.query_row(
+                    "SELECT COUNT(*) FROM agent_messages WHERE kind='performance_review.reminder'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?,
+                c.query_row(
+                    "SELECT COUNT(*) FROM owned_events WHERE kind='review.reminder'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?,
+            ))
+        })
+        .unwrap();
+    assert_eq!(counts, (1, 0));
+    let receipt = fixture
+        .service
+        .record(record(&fixture), "fixture", START + WEEK)
+        .unwrap();
+    let resumed = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("spec".into()),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: Some(START),
+                clock_action: None,
+            },
+            START + WEEK + 1000,
+        )
+        .unwrap();
+    assert_eq!(resumed.window_start_ms, START + WEEK);
+    assert_eq!(resumed.last_completed_receipt, Some(receipt.reference));
+}
+
+#[test]
+fn review_policy_requires_explicit_clock_choice_for_legacy_existing_scope() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    fixture
+        .database
+        .call(|c| {
+            c.execute(
+                "INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES('project-alpha','\"legacy\"',86400000,3600000,1,1000000,87400000,NULL)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let status = fixture
+        .service
+        .policy_status(
+            Scope {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+            },
+            START,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(status.choice_required);
+    assert_eq!(status.clock_state, "legacy-only");
+    assert!(
+        status
+            .choice_explanation
+            .as_deref()
+            .is_some_and(|value| value.contains("existing review clock"))
+    );
+    let error = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: None,
+                clock_action: None,
+            },
+            START,
+        )
+        .unwrap_err();
+    assert!(error.message.contains("clock_choice_required"));
+    let retired = fixture
+        .service
+        .policy_set(
+            Set {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("legacy".into()),
+                review_interval_ms: None,
+                escalation_interval_ms: None,
+                active: true,
+                window_start_ms: None,
+                clock_action: Some(ClockAction::RetireExisting),
+            },
+            START,
+        )
+        .unwrap();
+    assert!(!retired.active);
+    assert_eq!(retired.clock_state, "retired");
+    assert!(!retired.choice_required);
+    assert_eq!(retired.clock_start_ms, 1_000_000);
+    assert_eq!(retired.clock_due_at_ms, 87_400_000);
+    assert_eq!(retired.clock_hard_stop_at_ms, 91_000_000);
+}
+
+#[test]
+fn retired_legacy_clock_does_not_require_a_new_choice() {
+    use devcoordinator2_api::review_policy::*;
+    let fixture = Fixture::new();
+    fixture
+        .database
+        .call(|c| {
+            c.execute(
+                "INSERT INTO review_policies(repository_id,workstream_key,interval_ms,escalation_ms,active,window_start_ms,window_end_ms,last_receipt) VALUES('project-alpha','\"retired-legacy\"',86400000,3600000,0,1000000,87400000,NULL)",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let status = fixture
+        .service
+        .policy_status(
+            Scope {
+                repository_id: "project-alpha".into(),
+                workstream_id: Some("retired-legacy".into()),
+            },
+            START,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(!status.active);
+    assert_eq!(status.clock_state, "retired");
+    assert!(!status.choice_required);
+    assert!(status.choice_explanation.is_none());
+}

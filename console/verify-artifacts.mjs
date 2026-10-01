@@ -83,6 +83,12 @@ export async function verifyTestArtifacts({ page, daemon, check, baseUrl, output
   const prefix = `files ${theme} ${viewport.width}`;
   const verify = (name, value, detail = '') => check(`${prefix}: ${name}`, value, detail);
   const errors = [];
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en-GB'] });
+    localStorage.removeItem('dc2-locale');
+    localStorage.removeItem('dc2-recent-locales');
+    document.cookie = 'dc2-locale=; Max-Age=0; Path=/';
+  });
   page.on('pageerror', (error) => errors.push(error.message));
   daemon.setScenario({ artifactFiles: true });
   await page.goto(`${baseUrl}#/tests?repository=native-repository`);

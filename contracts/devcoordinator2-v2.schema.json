@@ -72,6 +72,2016 @@
     },
     {
       "cli": {
+        "excludedReason": "Use Console or MCP ticket_request.",
+        "routes": []
+      },
+      "description": "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.",
+      "inputSchema": {
+        "$defs": {
+          "Action": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "list",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mine": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "get",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "comments",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "create",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "edit",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "remove",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "close",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "closed"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "comment",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "request_key",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "byte_size": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "upload_start",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "name",
+                  "byte_size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "data_base64": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_chunk",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id",
+                  "offset",
+                  "data_base64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "upload_remove",
+                    "type": "string"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "comment_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "file_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "file_id"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/Action"
+          },
+          "target": {
+            "description": "Omit for configured upstream; use \"local\" to manage received tickets.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "Request",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Action": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "closed": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "kind": {
+                        "const": "list",
+                        "type": "string"
+                      },
+                      "limit": {
+                        "default": 20,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "mine": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "get",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "comments",
+                        "type": "string"
+                      },
+                      "limit": {
+                        "default": 20,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attachments": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "create",
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "request_key",
+                      "title",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "body": {
+                        "type": "string"
+                      },
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "edit",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision",
+                      "title",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "remove",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "close",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision",
+                      "closed"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attachments": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "comment",
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "request_key",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "byte_size": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "upload_start",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "sha256": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "request_key",
+                      "name",
+                      "byte_size",
+                      "sha256"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "data_base64": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "upload_chunk",
+                        "type": "string"
+                      },
+                      "offset": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "upload_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "upload_id",
+                      "offset",
+                      "data_base64"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "upload_remove",
+                        "type": "string"
+                      },
+                      "upload_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "upload_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "comment_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "file_id": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "file",
+                        "type": "string"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "file_id"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "target": {
+                "description": "Omit for configured upstream; use \"local\" to manage received tickets.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "title": "Request",
+            "type": "object"
+          },
+          "name": "ticket_request",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.request",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Author": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "server",
+              "name"
+            ],
+            "type": "object"
+          },
+          "Comment": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "author",
+              "body",
+              "created_at",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "Ticket": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count",
+              "author",
+              "body",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "TicketSummary": {
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TicketSummary"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "tickets",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "can_comment": {
+                "type": "boolean"
+              },
+              "can_manage": {
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "ticket",
+                "type": "string"
+              },
+              "ticket": {
+                "$ref": "#/$defs/Ticket"
+              }
+            },
+            "required": [
+              "kind",
+              "ticket",
+              "can_manage",
+              "can_comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Comment"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "comments",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "comment": {
+                "$ref": "#/$defs/Comment"
+              },
+              "kind": {
+                "const": "comment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "upload",
+                "type": "string"
+              },
+              "offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "upload_id",
+              "offset"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "attachment": {
+                "$ref": "#/$defs/Attachment"
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "attachment",
+              "offset",
+              "data_base64"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "removed",
+                "type": "string"
+              },
+              "removed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "removed"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "Reply"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP ticket_settings.",
+        "routes": []
+      },
+      "description": "Read the feature request upstream, default vr.ae, and prior ticket destinations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "EmptyParams",
+            "type": "object"
+          },
+          "name": "ticket_settings",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.settings",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "can_configure": {
+            "type": "boolean"
+          },
+          "local": {
+            "type": "string"
+          },
+          "previous_upstreams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "revision",
+          "local",
+          "previous_upstreams",
+          "can_configure"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP ticket_configure.",
+        "routes": []
+      },
+      "description": "Set the feature request upstream without moving existing tickets; local uses this server.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "expected_revision"
+        ],
+        "title": "Configure",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "upstream",
+              "expected_revision"
+            ],
+            "title": "Configure",
+            "type": "object"
+          },
+          "name": "ticket_configure",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.configure",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "can_configure": {
+            "type": "boolean"
+          },
+          "local": {
+            "type": "string"
+          },
+          "previous_upstreams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "revision",
+          "local",
+          "previous_upstreams",
+          "can_configure"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Used only by the dedicated edge ticket endpoint.",
+        "routes": []
+      },
+      "description": "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.",
+      "inputSchema": {
+        "$defs": {
+          "Action": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "list",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mine": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "get",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "comments",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "create",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "edit",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "remove",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "close",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "closed"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "comment",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "request_key",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "byte_size": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "upload_start",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "name",
+                  "byte_size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "data_base64": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_chunk",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id",
+                  "offset",
+                  "data_base64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "upload_remove",
+                    "type": "string"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "comment_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "file_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "file_id"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/Action"
+          },
+          "credential": {
+            "description": "Transport credential, never returned or logged. Omit for public reads.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RemoteRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "ticket.remote",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Author": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "server",
+              "name"
+            ],
+            "type": "object"
+          },
+          "Comment": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "author",
+              "body",
+              "created_at",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "Ticket": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count",
+              "author",
+              "body",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "TicketSummary": {
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TicketSummary"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "tickets",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "can_comment": {
+                "type": "boolean"
+              },
+              "can_manage": {
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "ticket",
+                "type": "string"
+              },
+              "ticket": {
+                "$ref": "#/$defs/Ticket"
+              }
+            },
+            "required": [
+              "kind",
+              "ticket",
+              "can_manage",
+              "can_comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Comment"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "comments",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "comment": {
+                "$ref": "#/$defs/Comment"
+              },
+              "kind": {
+                "const": "comment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "upload",
+                "type": "string"
+              },
+              "offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "upload_id",
+              "offset"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "attachment": {
+                "$ref": "#/$defs/Attachment"
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "attachment",
+              "offset",
+              "data_base64"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "removed",
+                "type": "string"
+              },
+              "removed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "removed"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "Reply"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "anonymous",
+        "scope": "public"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": "The signed-in identity is served directly by the Console edge.",
         "routes": []
       },
@@ -1420,6 +3430,658 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "server register"
+          }
+        ]
+      },
+      "description": "Adopt one systemd-supervised local listener into the server inventory.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "cwd": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "health_timeout": {
+            "format": "uint16",
+            "maximum": 60,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "health_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "host": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          "role": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "project",
+          "name",
+          "role",
+          "cwd",
+          "argv",
+          "pid",
+          "port",
+          "host",
+          "health_url",
+          "health_timeout"
+        ],
+        "title": "ServerRegister",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "server.register",
+      "outputSchema": {
+        "$defs": {
+          "ServerBroker": {
+            "additionalProperties": false,
+            "properties": {
+              "publication": {
+                "$ref": "#/$defs/ServerPublication"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "publication"
+            ],
+            "type": "object"
+          },
+          "ServerHealth": {
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "type": "object"
+          },
+          "ServerPublication": {
+            "additionalProperties": false,
+            "properties": {
+              "lifecycle": {
+                "type": "string"
+              },
+              "pid": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server_definition_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "lifecycle",
+              "pid",
+              "port",
+              "server_definition_id"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "broker": {
+            "$ref": "#/$defs/ServerBroker"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/$defs/ServerHealth"
+          },
+          "health_timeout": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "health_url": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "server_definition_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "url_is_current": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "server_definition_id",
+          "agent",
+          "project",
+          "name",
+          "role",
+          "cwd",
+          "argv",
+          "pid",
+          "port",
+          "host",
+          "health_url",
+          "health_timeout",
+          "status",
+          "url_is_current",
+          "health",
+          "lease_id",
+          "broker"
+        ],
+        "title": "ServerRow",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "server list"
+          }
+        ]
+      },
+      "description": "List exact systemd-supervised local listener registrations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ServerList",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "server.list",
+      "outputSchema": {
+        "$defs": {
+          "ServerBroker": {
+            "additionalProperties": false,
+            "properties": {
+              "publication": {
+                "$ref": "#/$defs/ServerPublication"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "publication"
+            ],
+            "type": "object"
+          },
+          "ServerHealth": {
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "type": "object"
+          },
+          "ServerPublication": {
+            "additionalProperties": false,
+            "properties": {
+              "lifecycle": {
+                "type": "string"
+              },
+              "pid": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server_definition_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "lifecycle",
+              "pid",
+              "port",
+              "server_definition_id"
+            ],
+            "type": "object"
+          },
+          "ServerRow": {
+            "additionalProperties": false,
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "argv": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "broker": {
+                "$ref": "#/$defs/ServerBroker"
+              },
+              "cwd": {
+                "type": "string"
+              },
+              "health": {
+                "$ref": "#/$defs/ServerHealth"
+              },
+              "health_timeout": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "health_url": {
+                "type": "string"
+              },
+              "host": {
+                "type": "string"
+              },
+              "lease_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "pid": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "project": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "server_definition_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "url_is_current": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "server_definition_id",
+              "agent",
+              "project",
+              "name",
+              "role",
+              "cwd",
+              "argv",
+              "pid",
+              "port",
+              "host",
+              "health_url",
+              "health_timeout",
+              "status",
+              "url_is_current",
+              "health",
+              "lease_id",
+              "broker"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "servers": {
+            "items": {
+              "$ref": "#/$defs/ServerRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "servers"
+        ],
+        "title": "ServerList",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "server stop"
+          }
+        ]
+      },
+      "description": "Mark one systemd-supervised listener registration as stopping.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "project": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "project",
+          "name"
+        ],
+        "title": "ServerStop",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "server.stop",
+      "outputSchema": {
+        "$defs": {
+          "ServerBroker": {
+            "additionalProperties": false,
+            "properties": {
+              "publication": {
+                "$ref": "#/$defs/ServerPublication"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "publication"
+            ],
+            "type": "object"
+          },
+          "ServerHealth": {
+            "additionalProperties": false,
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ok"
+            ],
+            "type": "object"
+          },
+          "ServerPublication": {
+            "additionalProperties": false,
+            "properties": {
+              "lifecycle": {
+                "type": "string"
+              },
+              "pid": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "server_definition_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "lifecycle",
+              "pid",
+              "port",
+              "server_definition_id"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "broker": {
+            "$ref": "#/$defs/ServerBroker"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "health": {
+            "$ref": "#/$defs/ServerHealth"
+          },
+          "health_timeout": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "health_url": {
+            "type": "string"
+          },
+          "host": {
+            "type": "string"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "server_definition_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "url_is_current": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "server_definition_id",
+          "agent",
+          "project",
+          "name",
+          "role",
+          "cwd",
+          "argv",
+          "pid",
+          "port",
+          "host",
+          "health_url",
+          "health_timeout",
+          "status",
+          "url_is_current",
+          "health",
+          "lease_id",
+          "broker"
+        ],
+        "title": "ServerRow",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "test start"
           }
         ]
@@ -1913,6 +4575,32 @@
       "name": "test.status",
       "outputSchema": {
         "$defs": {
+          "AlarmCapability": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
           "ArtifactReceipt": {
             "additionalProperties": false,
             "properties": {
@@ -2850,6 +5538,16 @@
           "WorkContext": {
             "additionalProperties": false,
             "properties": {
+              "alarm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AlarmCapability"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "experiment_ref": {
                 "maxLength": 256,
                 "type": [
@@ -11229,6 +13927,32 @@
       "name": "test.history",
       "outputSchema": {
         "$defs": {
+          "AlarmCapability": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
           "RunTerminationReason": {
             "enum": [
               "operator_cancelled",
@@ -11349,6 +14073,16 @@
           "WorkContext": {
             "additionalProperties": false,
             "properties": {
+              "alarm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AlarmCapability"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "experiment_ref": {
                 "maxLength": 256,
                 "type": [
@@ -11524,6 +14258,32 @@
       "name": "test.list",
       "outputSchema": {
         "$defs": {
+          "AlarmCapability": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
           "ArtifactReceipt": {
             "additionalProperties": false,
             "properties": {
@@ -12821,6 +15581,16 @@
           "WorkContext": {
             "additionalProperties": false,
             "properties": {
+              "alarm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AlarmCapability"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "experiment_ref": {
                 "maxLength": 256,
                 "type": [
@@ -24298,6 +27068,380 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "completion check"
+          }
+        ]
+      },
+      "description": "Check a hash-bound capability inventory against the repository's open outcomes and evidence contract.",
+      "inputSchema": {
+        "$defs": {
+          "Capability": {
+            "additionalProperties": false,
+            "description": "One requirement or visible capability in a bounded completion inventory.",
+            "properties": {
+              "enabled_control": {
+                "default": false,
+                "description": "Set this for a rendered product control that users can activate.",
+                "type": "boolean"
+              },
+              "evidence_refs": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "expected_result": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "rendered_evidence_refs": {
+                "default": [],
+                "description": "Runtime journey evidence for an enabled control.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "scope": {
+                "$ref": "#/$defs/Scope"
+              },
+              "state": {
+                "$ref": "#/$defs/State"
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "scope",
+              "state",
+              "expected_result"
+            ],
+            "type": "object"
+          },
+          "Claim": {
+            "enum": [
+              "preliminary",
+              "complete"
+            ],
+            "type": "string"
+          },
+          "Manifest": {
+            "additionalProperties": false,
+            "description": "Hash-bound, deliberately small inventory retained beside a governed run.",
+            "properties": {
+              "capabilities": {
+                "items": {
+                  "$ref": "#/$defs/Capability"
+                },
+                "type": "array"
+              },
+              "claim": {
+                "$ref": "#/$defs/Claim"
+              },
+              "config_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "schema_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "source_sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "schema_version",
+              "claim",
+              "source_sha256",
+              "capabilities"
+            ],
+            "type": "object"
+          },
+          "Scope": {
+            "enum": [
+              "product",
+              "test_only"
+            ],
+            "type": "string"
+          },
+          "State": {
+            "enum": [
+              "real_e2e",
+              "fixture_only",
+              "visual_only",
+              "external_blocked",
+              "deferred"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "manifest": {
+            "$ref": "#/$defs/Manifest"
+          },
+          "path": {
+            "description": "The registered worktree whose source digest is checked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "manifest"
+        ],
+        "title": "CompletionCheck",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Capability": {
+                "additionalProperties": false,
+                "description": "One requirement or visible capability in a bounded completion inventory.",
+                "properties": {
+                  "enabled_control": {
+                    "default": false,
+                    "description": "Set this for a rendered product control that users can activate.",
+                    "type": "boolean"
+                  },
+                  "evidence_refs": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "expected_result": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "rendered_evidence_refs": {
+                    "default": [],
+                    "description": "Runtime journey evidence for an enabled control.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "scope": {
+                    "$ref": "#/$defs/Scope"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/State"
+                  },
+                  "task_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "scope",
+                  "state",
+                  "expected_result"
+                ],
+                "type": "object"
+              },
+              "Claim": {
+                "enum": [
+                  "preliminary",
+                  "complete"
+                ],
+                "type": "string"
+              },
+              "Manifest": {
+                "additionalProperties": false,
+                "description": "Hash-bound, deliberately small inventory retained beside a governed run.",
+                "properties": {
+                  "capabilities": {
+                    "items": {
+                      "$ref": "#/$defs/Capability"
+                    },
+                    "type": "array"
+                  },
+                  "claim": {
+                    "$ref": "#/$defs/Claim"
+                  },
+                  "config_sha256": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "schema_version": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "source_sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "schema_version",
+                  "claim",
+                  "source_sha256",
+                  "capabilities"
+                ],
+                "type": "object"
+              },
+              "Scope": {
+                "enum": [
+                  "product",
+                  "test_only"
+                ],
+                "type": "string"
+              },
+              "State": {
+                "enum": [
+                  "real_e2e",
+                  "fixture_only",
+                  "visual_only",
+                  "external_blocked",
+                  "deferred"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "manifest": {
+                "$ref": "#/$defs/Manifest"
+              },
+              "path": {
+                "description": "The registered worktree whose source digest is checked.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "manifest"
+            ],
+            "title": "CompletionCheck",
+            "type": "object"
+          },
+          "name": "completion_check",
+          "transform": "identity"
+        }
+      ],
+      "name": "completion.check",
+      "outputSchema": {
+        "$defs": {
+          "Claim": {
+            "enum": [
+              "preliminary",
+              "complete"
+            ],
+            "type": "string"
+          },
+          "Finding": {
+            "additionalProperties": false,
+            "properties": {
+              "capability_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "capability_id",
+              "code",
+              "detail"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "capability_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "claim": {
+            "$ref": "#/$defs/Claim"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/$defs/Finding"
+            },
+            "type": "array"
+          },
+          "incomplete_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "real_e2e_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source_sha256": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "claim",
+          "source_sha256",
+          "capability_count",
+          "real_e2e_count",
+          "incomplete_count",
+          "findings"
+        ],
+        "title": "CheckResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "task search"
           }
         ]
@@ -26077,7 +29221,7 @@
           }
         ]
       },
-      "description": "Attach real delivery evidence to a release.",
+      "description": "Record deployment metadata for a release; this does not create a qualified delivery receipt or satisfy a delivery clock.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -26664,6 +29808,11 @@
             "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
             "type": "boolean"
           },
+          "wait_for_refresh": {
+            "default": false,
+            "description": "Return the current cached snapshot immediately unless this is set,\nin which case wait for the bounded background refresh once.",
+            "type": "boolean"
+          },
           "window_end_ms": {
             "format": "uint64",
             "minimum": 0,
@@ -26712,6 +29861,11 @@
               "totals_only": {
                 "default": false,
                 "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
+                "type": "boolean"
+              },
+              "wait_for_refresh": {
+                "default": false,
+                "description": "Return the current cached snapshot immediately unless this is set,\nin which case wait for the bounded background refresh once.",
                 "type": "boolean"
               },
               "window_end_ms": {
@@ -26779,6 +29933,9 @@
                   "$ref": "#/$defs/OutcomeMeasurement"
                 },
                 "type": "object"
+              },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
               },
               "elapsedExecutionMs": {
                 "$ref": "#/$defs/OutcomeMeasurement"
@@ -26968,6 +30125,87 @@
             ],
             "type": "object"
           },
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          },
           "ReviewUsage": {
             "additionalProperties": false,
             "properties": {
@@ -27049,6 +30287,9 @@
               "activity": {
                 "type": "string"
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
@@ -27084,6 +30325,182 @@
               "total_tokens",
               "operations",
               "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCost": {
+            "additionalProperties": false,
+            "properties": {
+              "basis": {
+                "type": "string"
+              },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "estimated_usd": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimated_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "matched_rate_cards": {
+                "items": {
+                  "$ref": "#/$defs/RateCard"
+                },
+                "type": "array"
+              },
+              "model_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "default": "",
+                "type": "string"
+              },
+              "rate_card_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rate_card_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_tokens": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "basis",
+              "currency"
             ],
             "type": "object"
           },
@@ -27288,6 +30705,9 @@
                   "null"
                 ]
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
@@ -27346,6 +30766,9 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "cost": {
+            "$ref": "#/$defs/UsageCost"
+          },
           "coverage": {
             "$ref": "#/$defs/UsageCoverage"
           },
@@ -27359,6 +30782,17 @@
           },
           "total_tokens": {
             "$ref": "#/$defs/OutcomeMeasurement"
+          },
+          "totals": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTotals"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lightweight token/cost components for the headline total. This is\npopulated even when the full outcome projection is intentionally not\nrequested, so the detail popover does not trigger another scan."
           },
           "usage": {
             "anyOf": [
@@ -27387,6 +30821,7 @@
           "window_end_ms",
           "generated_at_ms",
           "total_tokens",
+          "cost",
           "coverage"
         ],
         "title": "OverviewResult",
@@ -28238,6 +31673,9 @@
                 },
                 "type": "object"
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "elapsedExecutionMs": {
                 "$ref": "#/$defs/OutcomeMeasurement"
               },
@@ -28423,6 +31861,87 @@
               "phase",
               "measured_ms",
               "unknown_intervals"
+            ],
+            "type": "object"
+          },
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
             ],
             "type": "object"
           },
@@ -28594,6 +32113,9 @@
               "activity": {
                 "type": "string"
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
@@ -28629,6 +32151,182 @@
               "total_tokens",
               "operations",
               "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCost": {
+            "additionalProperties": false,
+            "properties": {
+              "basis": {
+                "type": "string"
+              },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "estimated_usd": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimated_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "matched_rate_cards": {
+                "items": {
+                  "$ref": "#/$defs/RateCard"
+                },
+                "type": "array"
+              },
+              "model_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "default": "",
+                "type": "string"
+              },
+              "rate_card_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rate_card_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_tokens": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "basis",
+              "currency"
             ],
             "type": "object"
           },
@@ -28833,6 +32531,9 @@
                   "null"
                 ]
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
@@ -28922,6 +32623,918 @@
       "policy": {
         "effect": "read",
         "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review delivery-pending"
+          }
+        ]
+      },
+      "description": "Reconcile outstanding native reminders after a cursor gap.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after_id": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "alarm_namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "alarm_namespace"
+        ],
+        "title": "PendingRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after_id": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "alarm_namespace": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "alarm_namespace"
+            ],
+            "title": "PendingRequest",
+            "type": "object"
+          },
+          "name": "review_delivery_pending",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.delivery.pending",
+      "outputSchema": {
+        "$defs": {
+          "Reminder": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "due_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "escalation": {
+                "type": "boolean"
+              },
+              "last_completed_receipt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner_thread_id": {
+                "type": "string"
+              },
+              "reminder_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "reminder_id",
+              "repository_id",
+              "owner_thread_id",
+              "alarm_namespace",
+              "window_start_ms",
+              "window_end_ms",
+              "due_at_ms",
+              "escalation"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "next_after_id": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "reminders": {
+            "items": {
+              "$ref": "#/$defs/Reminder"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "reminders"
+        ],
+        "title": "Pending",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review policy-set"
+          }
+        ]
+      },
+      "description": "Set a continuing repository/workstream review schedule.",
+      "inputSchema": {
+        "$defs": {
+          "ClockAction": {
+            "enum": [
+              "follow_existing",
+              "reset_existing",
+              "start_new",
+              "retire_existing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "clock_action": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ClockAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "escalation_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "review_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "window_start_ms": {
+            "description": "Earlier start retained during migration; never a completion receipt.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "active"
+        ],
+        "title": "Set",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "ClockAction": {
+                "enum": [
+                  "follow_existing",
+                  "reset_existing",
+                  "start_new",
+                  "retire_existing"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "clock_action": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ClockAction"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "escalation_interval_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "review_interval_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "window_start_ms": {
+                "description": "Earlier start retained during migration; never a completion receipt.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id",
+              "active"
+            ],
+            "title": "Set",
+            "type": "object"
+          },
+          "name": "review_policy_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.policy.set",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "available_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "choice_explanation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choice_required": {
+            "type": "boolean"
+          },
+          "clock_due_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_hard_stop_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_source": {
+            "type": "string"
+          },
+          "clock_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_state": {
+            "type": "string"
+          },
+          "delivery_route": {
+            "type": "string"
+          },
+          "due": {
+            "type": "boolean"
+          },
+          "escalated": {
+            "type": "boolean"
+          },
+          "escalation_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_completed_receipt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_expires_at": {
+            "description": "Absolute UTC lease expiry in Unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner_thread_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "review_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "review_interval_ms",
+          "escalation_interval_ms",
+          "active",
+          "window_start_ms",
+          "window_end_ms",
+          "due",
+          "escalated",
+          "delivery_route",
+          "clock_source",
+          "clock_state",
+          "clock_start_ms",
+          "clock_due_at_ms",
+          "clock_hard_stop_at_ms",
+          "choice_required",
+          "available_actions"
+        ],
+        "title": "Policy",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review policy-status"
+          }
+        ]
+      },
+      "description": "Read review obligation and delivery route.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {
+            "type": "string"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id"
+        ],
+        "title": "Scope",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {
+                "type": "string"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id"
+            ],
+            "title": "Scope",
+            "type": "object"
+          },
+          "name": "review_policy_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.policy.status",
+      "outputSchema": {
+        "$defs": {
+          "Policy": {
+            "properties": {
+              "active": {
+                "type": "boolean"
+              },
+              "available_actions": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "choice_explanation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "choice_required": {
+                "type": "boolean"
+              },
+              "clock_due_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "clock_hard_stop_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "clock_source": {
+                "type": "string"
+              },
+              "clock_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "clock_state": {
+                "type": "string"
+              },
+              "delivery_route": {
+                "type": "string"
+              },
+              "due": {
+                "type": "boolean"
+              },
+              "escalated": {
+                "type": "boolean"
+              },
+              "escalation_interval_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_completed_receipt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "owner_thread_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "review_interval_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id",
+              "review_interval_ms",
+              "escalation_interval_ms",
+              "active",
+              "window_start_ms",
+              "window_end_ms",
+              "due",
+              "escalated",
+              "delivery_route",
+              "clock_source",
+              "clock_state",
+              "clock_start_ms",
+              "clock_due_at_ms",
+              "clock_hard_stop_at_ms",
+              "choice_required",
+              "available_actions"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Policy"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Nullable_Policy"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "review delivery-register"
+          }
+        ]
+      },
+      "description": "Register a leased native alarm delivery capability.",
+      "inputSchema": {
+        "$defs": {
+          "DeliveryMode": {
+            "enum": [
+              "codex_alarm"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "alarm_namespace": {
+            "type": "string"
+          },
+          "capability_revision": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_expires_at": {
+            "description": "Absolute UTC lease expiry in Unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "$ref": "#/$defs/DeliveryMode"
+          },
+          "owner_thread_id": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "owner_thread_id",
+          "mode",
+          "alarm_namespace",
+          "capability_revision",
+          "lease_expires_at"
+        ],
+        "title": "Register",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "DeliveryMode": {
+                "enum": [
+                  "codex_alarm"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "mode": {
+                "$ref": "#/$defs/DeliveryMode"
+              },
+              "owner_thread_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id",
+              "owner_thread_id",
+              "mode",
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "title": "Register",
+            "type": "object"
+          },
+          "name": "review_delivery_register",
+          "transform": "identity"
+        }
+      ],
+      "name": "review.delivery.register",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "available_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "choice_explanation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choice_required": {
+            "type": "boolean"
+          },
+          "clock_due_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_hard_stop_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_source": {
+            "type": "string"
+          },
+          "clock_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clock_state": {
+            "type": "string"
+          },
+          "delivery_route": {
+            "type": "string"
+          },
+          "due": {
+            "type": "boolean"
+          },
+          "escalated": {
+            "type": "boolean"
+          },
+          "escalation_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_completed_receipt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_expires_at": {
+            "description": "Absolute UTC lease expiry in Unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "owner_thread_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "review_interval_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_end_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "window_start_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "workstream_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "review_interval_ms",
+          "escalation_interval_ms",
+          "active",
+          "window_start_ms",
+          "window_end_ms",
+          "due",
+          "escalated",
+          "delivery_route",
+          "clock_source",
+          "clock_state",
+          "clock_start_ms",
+          "clock_due_at_ms",
+          "clock_hard_stop_at_ms",
+          "choice_required",
+          "available_actions"
+        ],
+        "title": "Policy",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
         "role": "administrator",
         "scope": "repository"
       }
@@ -29081,6 +33694,32 @@
       "name": "review.prepare",
       "outputSchema": {
         "$defs": {
+          "AlarmCapability": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
           "CoverageState": {
             "enum": [
               "complete",
@@ -29192,6 +33831,9 @@
                   "$ref": "#/$defs/OutcomeMeasurement"
                 },
                 "type": "object"
+              },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
               },
               "elapsedExecutionMs": {
                 "$ref": "#/$defs/OutcomeMeasurement"
@@ -29381,6 +34023,87 @@
             ],
             "type": "object"
           },
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          },
           "ReviewUsage": {
             "additionalProperties": false,
             "properties": {
@@ -29462,6 +34185,9 @@
               "activity": {
                 "type": "string"
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
@@ -29497,6 +34223,182 @@
               "total_tokens",
               "operations",
               "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCost": {
+            "additionalProperties": false,
+            "properties": {
+              "basis": {
+                "type": "string"
+              },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "estimated_usd": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimated_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "matched_rate_cards": {
+                "items": {
+                  "$ref": "#/$defs/RateCard"
+                },
+                "type": "array"
+              },
+              "model_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "default": "",
+                "type": "string"
+              },
+              "rate_card_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rate_card_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_tokens": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "basis",
+              "currency"
             ],
             "type": "object"
           },
@@ -29701,6 +34603,9 @@
                   "null"
                 ]
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
@@ -29791,6 +34696,16 @@
           "WorkContext": {
             "additionalProperties": false,
             "properties": {
+              "alarm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AlarmCapability"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "experiment_ref": {
                 "maxLength": 256,
                 "type": [
@@ -31615,12 +36530,20 @@
       "name": "release.evidence",
       "outputSchema": {
         "$defs": {
+          "Claim": {
+            "enum": [
+              "preliminary",
+              "complete"
+            ],
+            "type": "string"
+          },
           "Kind": {
             "enum": [
               "artifact",
               "registry-package",
               "local-executable",
-              "web-deployment"
+              "web-deployment",
+              "native-console"
             ],
             "type": "string"
           },
@@ -31654,6 +36577,38 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "completion_capabilities": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completion_claim": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Claim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completion_incomplete": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completion_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "config_sha256": {
             "type": "string"
@@ -31762,7 +36717,7 @@
           }
         ]
       },
-      "description": "Attach retained delivery proof or explicitly pending external evidence.",
+      "description": "Create a server-derived delivery receipt from retained artifact proof; use a qualified receipt ID for the delivery clock.",
       "inputSchema": {
         "$defs": {
           "Kind": {
@@ -31770,7 +36725,8 @@
               "artifact",
               "registry-package",
               "local-executable",
-              "web-deployment"
+              "web-deployment",
+              "native-console"
             ],
             "type": "string"
           }
@@ -31782,6 +36738,10 @@
             "type": "string"
           },
           "check": {
+            "type": "string"
+          },
+          "completion_file": {
+            "description": "A retained, hash-bound capability inventory. New delivery requests must\ninclude this file so completion claims cannot skip known omissions.",
             "type": "string"
           },
           "kind": {
@@ -31821,7 +36781,8 @@
           "manifest_sha256",
           "source_sha256",
           "target",
-          "kind"
+          "kind",
+          "completion_file"
         ],
         "title": "Deliver",
         "type": "object"
@@ -31836,7 +36797,8 @@
                   "artifact",
                   "registry-package",
                   "local-executable",
-                  "web-deployment"
+                  "web-deployment",
+                  "native-console"
                 ],
                 "type": "string"
               }
@@ -31848,6 +36810,10 @@
                 "type": "string"
               },
               "check": {
+                "type": "string"
+              },
+              "completion_file": {
+                "description": "A retained, hash-bound capability inventory. New delivery requests must\ninclude this file so completion claims cannot skip known omissions.",
                 "type": "string"
               },
               "kind": {
@@ -31887,7 +36853,8 @@
               "manifest_sha256",
               "source_sha256",
               "target",
-              "kind"
+              "kind",
+              "completion_file"
             ],
             "title": "Deliver",
             "type": "object"
@@ -31899,12 +36866,20 @@
       "name": "release.deliver_evidence",
       "outputSchema": {
         "$defs": {
+          "Claim": {
+            "enum": [
+              "preliminary",
+              "complete"
+            ],
+            "type": "string"
+          },
           "Kind": {
             "enum": [
               "artifact",
               "registry-package",
               "local-executable",
-              "web-deployment"
+              "web-deployment",
+              "native-console"
             ],
             "type": "string"
           },
@@ -31938,6 +36913,38 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "completion_capabilities": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completion_claim": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Claim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completion_incomplete": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completion_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "config_sha256": {
             "type": "string"
@@ -32111,12 +37118,20 @@
       "name": "release.evidence_show",
       "outputSchema": {
         "$defs": {
+          "Claim": {
+            "enum": [
+              "preliminary",
+              "complete"
+            ],
+            "type": "string"
+          },
           "Kind": {
             "enum": [
               "artifact",
               "registry-package",
               "local-executable",
-              "web-deployment"
+              "web-deployment",
+              "native-console"
             ],
             "type": "string"
           },
@@ -32149,6 +37164,38 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "completion_capabilities": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "completion_claim": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Claim"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "completion_incomplete": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "completion_sha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "config_sha256": {
                 "type": "string"
@@ -33107,6 +38154,263 @@
             ],
             "type": "string"
           },
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          },
+          "UsageCost": {
+            "additionalProperties": false,
+            "properties": {
+              "basis": {
+                "type": "string"
+              },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "estimated_usd": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimated_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "matched_rate_cards": {
+                "items": {
+                  "$ref": "#/$defs/RateCard"
+                },
+                "type": "array"
+              },
+              "model_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "default": "",
+                "type": "string"
+              },
+              "rate_card_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rate_card_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_tokens": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "basis",
+              "currency"
+            ],
+            "type": "object"
+          },
           "UsageCoverage": {
             "additionalProperties": false,
             "properties": {
@@ -33215,6 +38519,9 @@
           "UsageRepositoryRow": {
             "additionalProperties": false,
             "properties": {
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "coverage": {
                 "$ref": "#/$defs/UsageCoverage"
               },
@@ -33416,6 +38723,87 @@
             ],
             "type": "object"
           },
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          },
           "ToolFamily": {
             "additionalProperties": false,
             "properties": {
@@ -33458,6 +38846,9 @@
               "activity": {
                 "type": "string"
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
@@ -33493,6 +38884,182 @@
               "total_tokens",
               "operations",
               "provenance"
+            ],
+            "type": "object"
+          },
+          "UsageCost": {
+            "additionalProperties": false,
+            "properties": {
+              "basis": {
+                "type": "string"
+              },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": "string"
+              },
+              "estimated_usd": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "estimated_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "matched_rate_cards": {
+                "items": {
+                  "$ref": "#/$defs/RateCard"
+                },
+                "type": "array"
+              },
+              "model_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "priced_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "default": "",
+                "type": "string"
+              },
+              "rate_card_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rate_card_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "unavailable_reasons": {
+                "additionalProperties": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "unknown_observations": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_requests": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "unknown_tokens": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "status",
+              "basis",
+              "currency"
             ],
             "type": "object"
           },
@@ -33590,6 +39157,100 @@
               "unavailable_reasons",
               "database_schemas",
               "taxonomy_versions"
+            ],
+            "type": "object"
+          },
+          "UsageModelCost": {
+            "additionalProperties": false,
+            "properties": {
+              "average_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
+              "model": {
+                "type": "string"
+              },
+              "model_requests": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "share": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "model",
+              "total_tokens",
+              "model_requests"
+            ],
+            "type": "object"
+          },
+          "UsageOutcome": {
+            "additionalProperties": false,
+            "properties": {
+              "activity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
+              "operations": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "outcome_id": {
+                "type": "string"
+              },
+              "phase": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "share": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "total_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "outcome_id",
+              "total_tokens",
+              "operations"
             ],
             "type": "object"
           },
@@ -33746,6 +39407,9 @@
                   "null"
                 ]
               },
+              "cost": {
+                "$ref": "#/$defs/UsageCost"
+              },
               "input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
@@ -33822,6 +39486,18 @@
             "minimum": 0,
             "type": "integer"
           },
+          "models": {
+            "items": {
+              "$ref": "#/$defs/UsageModelCost"
+            },
+            "type": "array"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/$defs/UsageOutcome"
+            },
+            "type": "array"
+          },
           "range": {
             "$ref": "#/$defs/UsageRange"
           },
@@ -33868,6 +39544,321 @@
         "idempotent": true,
         "role": "operator",
         "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "List administrator-managed API-equivalent pricing cards.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "effective_at_ms": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "include_inactive": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": null,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": null,
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "usage.rate_card.list",
+      "outputSchema": {
+        "$defs": {
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "cards": {
+            "items": {
+              "$ref": "#/$defs/RateCard"
+            },
+            "type": "array"
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "cards"
+        ],
+        "title": "Page",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Append one immutable API-equivalent pricing-card version.",
+      "inputSchema": {
+        "$defs": {
+          "RateCard": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "default": true,
+                "type": "boolean"
+              },
+              "cache_write_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cached_input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "card_id": {
+                "type": "string"
+              },
+              "context_tier": {
+                "type": "string"
+              },
+              "effective_from_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_to_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "input_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_pattern": {
+                "type": "string"
+              },
+              "output_usd_micros_per_million": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "processing_tier": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "card_id",
+              "version",
+              "provider",
+              "model_pattern",
+              "processing_tier",
+              "context_tier",
+              "effective_from_ms",
+              "input_usd_micros_per_million",
+              "cached_input_usd_micros_per_million",
+              "cache_write_usd_micros_per_million",
+              "output_usd_micros_per_million",
+              "source_ref"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "card": {
+            "$ref": "#/$defs/RateCard"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "card"
+        ],
+        "title": "Set",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "usage.rate_card.set",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "card_id",
+          "version"
+        ],
+        "title": "Mutation",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
       }
     },
     {
@@ -35528,6 +41519,16 @@
                   "null"
                 ]
               },
+              "review": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Reminder"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "subject_id": {
                 "type": "string"
               },
@@ -35691,6 +41692,71 @@
               "repository_id",
               "subject_kind",
               "subject_id"
+            ],
+            "type": "object"
+          },
+          "Reminder": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "due_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "escalation": {
+                "type": "boolean"
+              },
+              "last_completed_receipt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "owner_thread_id": {
+                "type": "string"
+              },
+              "reminder_id": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_end_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "window_start_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "reminder_id",
+              "repository_id",
+              "owner_thread_id",
+              "alarm_namespace",
+              "window_start_ms",
+              "window_end_ms",
+              "due_at_ms",
+              "escalation"
             ],
             "type": "object"
           },
@@ -39160,6 +45226,32 @@
   "protocol": 2,
   "requestEnvelope": {
     "$defs": {
+      "AlarmCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "alarm_namespace": {
+            "type": "string"
+          },
+          "capability_revision": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_expires_at": {
+            "description": "Absolute UTC lease expiry in Unix milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alarm_namespace",
+          "capability_revision",
+          "lease_expires_at"
+        ],
+        "type": "object"
+      },
       "ClientContext": {
         "additionalProperties": false,
         "properties": {
@@ -39227,6 +45319,16 @@
       "WorkContext": {
         "additionalProperties": false,
         "properties": {
+          "alarm": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AlarmCapability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "experiment_ref": {
             "maxLength": 256,
             "type": [

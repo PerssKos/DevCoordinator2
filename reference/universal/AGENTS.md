@@ -35,10 +35,17 @@ earlier model messages or reload unchanged instructions.
   open ledger outcomes, following the placement rules in
   `modules/ledger-decisions.md`. Parent notes, decisions, and conversation
   history alone do not satisfy this obligation.
-- The agent runtime owns persistent project/workstream clocks and wakeups;
-  Coordinator supplies evidence and capacity, not agent scheduling. Classify
-  specifications, research, and work with no meaningful deployable result as
-  performance-only: reviews apply, delivery obligations and alarms do not.
+- DevCoordinator2 owns review policies, cadence, evidence, escalation and
+  completion receipts. Agent runtimes provide generic durable alarms and
+  wakeups only; they do not own review jobs, workers or completion. Every
+  continuing persistent task must have an active Coordinator review schedule.
+  Registered native alarm clients receive reminders through that capability;
+  other clients use Coordinator's agent-message channel. A reminder is not a
+  receipt. Act before unrelated work; after the one-hour escalation complete
+  the review or obtain an explicit user override that leaves it outstanding.
+  No hidden runtime work block is introduced. Classify specifications,
+  research and work without a meaningful deployable result as performance-only:
+  reviews apply, delivery obligations and alarms do not.
   Only an authorized transition to implementation with a real delivery target
   starts that target's delivery baseline; earlier discussion time is excluded.
 - For delivery-eligible work, set one runtime delivery alarm per target when
@@ -51,8 +58,8 @@ earlier model messages or reload unchanged instructions.
   immediately reevaluate obsolete wakes. A completed review and a qualified
   delivery are separate receipts. A release metadata row or healthy deployment
   is not a qualified delivery: require a `release.deliver_evidence` receipt
-  with `qualified: true`, then record that receipt ID against the matching
-  delivery target and schedule its next alarm from the actual delivery time.
+  with `qualified: true`, then retain that receipt ID with the matching
+  Coordinator delivery outcome and schedule its next alarm from the actual delivery time.
 - At or beyond the hard-stop threshold without a qualified receipt, block the
   affected scope from starting another implementation batch. A bounded
   work item already underway may be finalized when directly needed to make

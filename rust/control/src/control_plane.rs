@@ -52,6 +52,10 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 /// service is ported; they never report synthetic success.
 pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "ping",
+    "ticket.request",
+    "ticket.settings",
+    "ticket.configure",
+    "ticket.remote",
     "config.get",
     "config.env.set",
     "config.reload",
@@ -117,6 +121,8 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "health.container_remove",
     "usage.repositories",
     "usage.repository",
+    "usage.rate_card.list",
+    "usage.rate_card.set",
     "progress.repositories",
     "progress.repository",
     "telegram.link",
@@ -135,6 +141,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "agent.message.claim",
     "agent.message.ack",
     "plan.overview",
+    "completion.check",
     "plan.recovery",
     "deployment.recovery",
     "glossary.list",
@@ -160,6 +167,10 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "performance.overview",
     "performance.reviews",
     "performance.review",
+    "review.delivery.pending",
+    "review.policy.set",
+    "review.policy.status",
+    "review.delivery.register",
     "review.prepare",
     "review.record",
     "review.show",
@@ -188,6 +199,7 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     sketches: SketchService,
+    tickets: crate::ticket_service::TicketService,
     deployments: Deployments,
     servers: ServerService,
     events: EventService,
@@ -195,6 +207,7 @@ pub struct ControlPlane {
     health: HealthService,
     incidents: crate::incidents::IncidentService,
     usage: UsageService,
+    rate_cards: crate::rate_card::RateCardService,
     progress: ProgressService,
     telegram: TelegramService,
     clock: Arc<dyn Clock>,
@@ -241,6 +254,8 @@ impl ControlPlane {
         let test_evidence =
             TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
         let sketches = SketchService::with_clock(&config, database.clone(), Arc::clone(&clock));
+        let tickets =
+            crate::ticket_service::TicketService::new(database.clone(), &config.base_domain)?;
         let incidents =
             crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
@@ -256,6 +271,7 @@ impl ControlPlane {
             registry.clone(),
             Arc::clone(&clock),
         );
+        let rate_cards = crate::rate_card::RateCardService::new(database.clone());
         let progress = ProgressService::with_clock(
             database.clone(),
             registry.clone(),
@@ -349,6 +365,7 @@ impl ControlPlane {
             artifacts,
             test_evidence,
             sketches,
+            tickets,
             deployments,
             servers,
             events,
@@ -356,6 +373,7 @@ impl ControlPlane {
             health,
             incidents,
             usage,
+            rate_cards,
             progress,
             telegram,
             clock,
@@ -422,6 +440,13 @@ impl ControlPlane {
         Ok(expired)
     }
 
+    pub fn deliver_review_reminders(&self) -> Result<(), ProtocolError> {
+        self.reviews.review_reminders(
+            &self.events,
+            (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+        )
+    }
+
     fn dispatch_authorized(
         &self,
         operation: &str,
@@ -430,6 +455,20 @@ impl ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let now = self.timestamp()?;
         let actor = caller.actor();
+        if operation.starts_with("ticket.") {
+            let principal = self.access.principal(caller)?;
+            let administrator = principal.local || principal.administrator;
+            return match operation {
+                "ticket.request" => encode(self.tickets.request(decode(params)?, administrator)?),
+                "ticket.settings" => encode(self.tickets.settings(administrator)?),
+                "ticket.configure" => encode(self.tickets.configure(decode(params)?)?),
+                "ticket.remote" => encode(self.tickets.remote(decode(params)?)?),
+                _ => Err(ProtocolError::new(
+                    ErrorCode::OperationUnknown,
+                    "unknown ticket operation",
+                )),
+            };
+        }
         if operation.starts_with("glossary.") {
             let path = params.get("path").and_then(Value::as_str);
             let repository_id = params.get("repository_id").and_then(Value::as_str);
@@ -566,6 +605,7 @@ impl ControlPlane {
                 if result.registered {
                     self.publish_owned(
                         results::OwnedEvent::Other(results::OtherOwnedEvent {
+                            review: None,
                             kind: "repository.registered".to_owned(),
                             repository_id: Some(result.repository_id.clone()),
                             deployment_id: None,
@@ -595,6 +635,7 @@ impl ControlPlane {
                 let result = self.registry.update_presentation(params, caller.uid)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.presentation.updated".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -615,6 +656,7 @@ impl ControlPlane {
                 )?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.archived".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -632,6 +674,7 @@ impl ControlPlane {
                         .unarchive(&params.repository_id, &params.note, caller.uid)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "repository.unarchived".to_owned(),
                         repository_id: Some(result.repository_id.clone()),
                         deployment_id: None,
@@ -867,6 +910,7 @@ impl ControlPlane {
                 let result = self.sketches.publish(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.published".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -887,6 +931,7 @@ impl ControlPlane {
                 let result = self.sketches.decision(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.decision.changed".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -903,6 +948,7 @@ impl ControlPlane {
                 let result = self.sketches.annotation_create(params, caller)?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "sketch.annotation.created".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
@@ -997,6 +1043,7 @@ impl ControlPlane {
                 let incident = self.incidents.update(decode(params)?, &caller.actor())?;
                 self.publish_owned(
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
                         kind: "health.incident.changed".into(),
                         repository_id: incident.repository_id.clone(),
                         deployment_id: incident.deployment_id.clone(),
@@ -1026,6 +1073,8 @@ impl ControlPlane {
             }
             "usage.repositories" => encode(self.usage.repositories(decode(params)?)?),
             "usage.repository" => encode(self.usage.repository(decode(params)?)?),
+            "usage.rate_card.list" => encode(self.rate_cards.list(decode(params)?)?),
+            "usage.rate_card.set" => encode(self.rate_cards.set(decode(params)?, &actor, &now)?),
             "progress.repositories" => {
                 let _: params::Empty = decode(params)?;
                 encode(self.progress.repositories()?)
@@ -1104,6 +1153,17 @@ impl ControlPlane {
                     true,
                 )?;
                 encode(self.plan.overview(Some(&repository.repository_id))?)
+            }
+            "completion.check" => {
+                let params: params::CompletionCheck = decode(params)?;
+                let repository = self.resolve_repository(Some(&params.path), None, caller, true)?;
+                let result = crate::completion::CompletionService::new(self.database.clone())
+                    .check_path(
+                        &repository.repository_id,
+                        Path::new(&params.path),
+                        params.manifest,
+                    )?;
+                encode(result)
             }
             "task.search" => {
                 let params: params::TaskSearch = decode(params)?;
@@ -1263,6 +1323,26 @@ impl ControlPlane {
                         .div_euclid(1_000_000) as u64,
                 )?,
             ),
+            "review.delivery.pending" => {
+                self.deliver_review_reminders()?;
+                encode(self.reviews.delivery_pending(
+                    decode(params)?,
+                    (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                )?)
+            }
+            "review.policy.set" => encode(self.reviews.policy_set(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            )?),
+            "review.policy.status" => encode(self.reviews.policy_status(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+            )?),
+            "review.delivery.register" => encode(self.reviews.delivery_register(
+                decode(params)?,
+                (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64,
+                crate::review::RegistrationMode::Replace,
+            )?),
             "review.prepare" => encode(
                 self.reviews.prepare(
                     decode(params)?,
@@ -1655,7 +1735,85 @@ impl OperationExecutor for ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let authorization = self.access.authorize(operation, &params, caller)?;
         let result = self.dispatch_authorized(operation, authorization.params.clone(), caller)?;
-        authorization.apply_result(result)
+        // Only an actual native capability selects the alarm route; client names do not.
+        if !caller.via_edge
+            && !operation.starts_with("review.delivery.")
+            && let Some(work) = caller.work.as_ref().and_then(|work| work.context.as_ref())
+            && let Some(capability) = &work.alarm
+            && let Ok(repository) = self.resolve_repository(
+                authorization.params.get("path").and_then(Value::as_str),
+                authorization
+                    .params
+                    .get("repository_id")
+                    .and_then(Value::as_str),
+                caller,
+                false,
+            )
+        {
+            let now = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+            let scope = devcoordinator2_api::review_policy::Scope {
+                repository_id: repository.repository_id.clone(),
+                workstream_id: authorization
+                    .params
+                    .get("workstream_id")
+                    .map(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| work.workstream_id.clone()),
+            };
+            if self
+                .reviews
+                .policy_status(scope, now)
+                .ok()
+                .flatten()
+                .is_some()
+                && let Err(error) = self.reviews.delivery_register(
+                    devcoordinator2_api::review_policy::Register {
+                        repository_id: repository.repository_id,
+                        workstream_id: authorization
+                            .params
+                            .get("workstream_id")
+                            .map(|value| value.as_str().map(str::to_owned))
+                            .unwrap_or_else(|| work.workstream_id.clone()),
+                        owner_thread_id: work.thread_id.clone(),
+                        mode: devcoordinator2_api::review_policy::DeliveryMode::CodexAlarm,
+                        alarm_namespace: capability.alarm_namespace.clone(),
+                        capability_revision: capability.capability_revision,
+                        lease_expires_at: capability.lease_expires_at,
+                    },
+                    now,
+                    crate::review::RegistrationMode::Refresh,
+                )
+            {
+                tracing::warn!(code=%error.code,"native review delivery registration unavailable; message fallback remains available");
+            }
+        }
+        let mut result = authorization.apply_result(result)?;
+        if !caller.via_edge
+            && !operation.starts_with("event.")
+            && !operation.starts_with("agent.message.")
+            && let Ok(repository) = self.resolve_repository(
+                params.get("path").and_then(Value::as_str),
+                params.get("repository_id").and_then(Value::as_str),
+                caller,
+                false,
+            )
+        {
+            if let Err(error) = self.deliver_review_reminders() {
+                tracing::warn!(code=%error.code,"review reminders temporarily unavailable");
+            }
+            if let Ok(messages) = self.sketches.message_poll_kind(
+                params::AgentMessagePoll {
+                    repository_id: repository.repository_id,
+                    after_id: None,
+                    limit: 2,
+                },
+                Some("performance_review.reminder"),
+            ) && !messages.messages.is_empty()
+                && let Some(object) = result.as_object_mut()
+            {
+                object.insert("_agent_messages".into(), encode(messages.messages)?);
+            }
+        }
+        Ok(result)
     }
 
     fn defer(
@@ -1794,6 +1952,7 @@ fn owned_notification(event: &TelegramEvent) -> Option<results::OwnedEvent> {
         return None;
     };
     Some(results::OwnedEvent::Other(results::OtherOwnedEvent {
+        review: None,
         kind: event.kind.clone(),
         repository_id,
         deployment_id,
@@ -1950,6 +2109,73 @@ mod tests {
             .execute("test.start", serde_json::json!({"path":"/repo"}), &local())
             .expect_err("invalid repository is rejected by the installed lifecycle");
         assert_eq!(invalid_start.code, ErrorCode::RepositoryNotFound);
+        assert!(overview.get("_agent_messages").is_none());
+        let now = (datetime!(2026-09-03 12:00 UTC).unix_timestamp_nanos() / 1_000_000) as u64;
+        let mut native = local();
+        native.client_session = Some("00000000-0000-0000-0000-000000000001".into());
+        native.work=Some(devcoordinator2_api::work_context::WorkAttribution {
+            context:Some(devcoordinator2_api::work_context::WorkContext::parse(&serde_json::json!({"version":1,"native_project_id":"project-native","thread_id":native.client_session,"workstream_id":"native","alarm":{"alarm_namespace":"codex.review.v1","capability_revision":1,"lease_expires_at":now+1000}}).to_string()).unwrap()),
+            source:devcoordinator2_api::work_context::WorkSource::Request,diagnostic:None,
+        });
+        plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native","review_interval_ms":100,"active":true,"window_start_ms":now-100}),&native).unwrap();
+        let policy = plane
+            .execute(
+                "review.policy.status",
+                serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native"}),
+                &native,
+            )
+            .unwrap();
+        assert_eq!(policy["delivery_route"], "codex_alarm");
+        let mut second = native.clone();
+        let other_thread = "00000000-0000-0000-0000-000000000002";
+        second.client_session = Some(other_thread.into());
+        second
+            .work
+            .as_mut()
+            .unwrap()
+            .context
+            .as_mut()
+            .unwrap()
+            .thread_id = other_thread.into();
+        let refreshed = plane
+            .execute(
+                "review.policy.status",
+                serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"native"}),
+                &second,
+            )
+            .unwrap();
+        assert_eq!(
+            refreshed["owner_thread_id"],
+            native.client_session.as_ref().unwrap().as_str()
+        );
+
+        let pending = plane
+            .execute(
+                "review.delivery.pending",
+                serde_json::json!({"alarm_namespace":"codex.review.v1"}),
+                &native,
+            )
+            .unwrap();
+        assert_eq!(pending["reminders"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            pending["reminders"][0]["owner_thread_id"],
+            native.client_session.as_ref().unwrap().as_str()
+        );
+        // The same Codex client name without the capability uses normal messages.
+        let fallback=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","review_interval_ms":100,"active":true,"window_start_ms":now-100}),&local()).unwrap();
+        let envelope = serde_json::to_value(
+            devcoordinator2_api::ResponseEnvelope::success("fixture", fallback).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            envelope["agent_messages"][0]["kind"],
+            "performance_review.reminder"
+        );
+        assert!(envelope["data"].get("_agent_messages").is_none());
+        let inactive=plane.execute("review.policy.set",serde_json::json!({"repository_id":"r1111111111111111","workstream_id":"official","active":false,"clock_action":"follow_existing"}),&local()).unwrap();
+        assert!(inactive.get("_agent_messages").is_none());
+        assert_eq!(inactive["due"], false);
+        assert_eq!(inactive["last_completed_receipt"], serde_json::Value::Null);
     }
 
     #[test]

@@ -18,44 +18,70 @@ impl ReviewService {
             ));
         }
         let repository = self.repository(&p.repository_id)?;
-        let (total_tokens, coverage, usage) = if p.totals_only {
-            if p.outcome_cursor.is_some() {
-                return Err(invalid("Totals do not accept an outcome cursor"));
+        let (total_tokens, totals, cost, coverage, usage) = 'overview: {
+            if p.totals_only {
+                if p.outcome_cursor.is_some() {
+                    return Err(invalid("Totals do not accept an outcome cursor"));
+                }
+                let report = self.usage.performance_tokens(
+                    &repository,
+                    p.window_start_ms,
+                    p.window_end_ms,
+                    now,
+                )?;
+                let value = report.totals.total_tokens;
+                let measurement = OutcomeMeasurement {
+                    measured: value.unwrap_or(0),
+                    exact: value.filter(|_| !report.coverage.has_gaps),
+                    unknown: u64::from(value.is_none()),
+                };
+                let totals = report.totals;
+                let cost = totals.cost.clone();
+                (measurement, Some(totals), cost, report.coverage, None)
+            } else {
+                let recent = now.saturating_sub(p.window_end_ms) < 120_000;
+                if recent
+                    && p.window_end_ms.saturating_sub(p.window_start_ms) <= 32 * 86_400 * 1_000
+                {
+                    let usage = self.fast_performance_usage(
+                        &repository,
+                        p.window_start_ms,
+                        p.window_end_ms,
+                        p.wait_for_refresh,
+                    )?;
+                    let cost = usage.totals.cost.clone();
+                    break 'overview (
+                        usage.outcomes.totals.provider_total_tokens.clone(),
+                        Some(usage.totals.clone()),
+                        cost,
+                        usage.coverage.clone(),
+                        Some(usage),
+                    );
+                }
+                let usage = self.performance_usage(
+                    &repository,
+                    &Prepare {
+                        repository_id: p.repository_id.clone(),
+                        workstream_id: None,
+                        window_start_ms: p.window_start_ms,
+                        window_end_ms: p.window_end_ms,
+                        offset: 0,
+                        limit: 1,
+                        before_decision_seq: None,
+                        outcome_cursor: p.outcome_cursor,
+                        outcome_limit: p.outcome_limit,
+                    },
+                    Instant::now() + QUERY_TIMEOUT,
+                )?;
+                let cost = usage.totals.cost.clone();
+                (
+                    usage.outcomes.totals.provider_total_tokens.clone(),
+                    Some(usage.totals.clone()),
+                    cost,
+                    usage.coverage.clone(),
+                    Some(usage),
+                )
             }
-            let report = self.usage.performance_tokens(
-                &repository,
-                p.window_start_ms,
-                p.window_end_ms,
-                now,
-            )?;
-            let value = report.totals.total_tokens;
-            let measurement = OutcomeMeasurement {
-                measured: value.unwrap_or(0),
-                exact: value.filter(|_| !report.coverage.has_gaps),
-                unknown: u64::from(value.is_none()),
-            };
-            (measurement, report.coverage, None)
-        } else {
-            let usage = self.performance_usage(
-                &repository,
-                &Prepare {
-                    repository_id: p.repository_id.clone(),
-                    workstream_id: None,
-                    window_start_ms: p.window_start_ms,
-                    window_end_ms: p.window_end_ms,
-                    offset: 0,
-                    limit: 1,
-                    before_decision_seq: None,
-                    outcome_cursor: p.outcome_cursor,
-                    outcome_limit: p.outcome_limit,
-                },
-                Instant::now() + QUERY_TIMEOUT,
-            )?;
-            (
-                usage.outcomes.totals.provider_total_tokens.clone(),
-                usage.coverage.clone(),
-                Some(usage),
-            )
         };
         Ok(api::OverviewResult {
             repository_id: p.repository_id,
@@ -63,6 +89,8 @@ impl ReviewService {
             window_end_ms: p.window_end_ms,
             generated_at_ms: now,
             total_tokens,
+            totals,
+            cost,
             coverage,
             usage,
         })

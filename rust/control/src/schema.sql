@@ -2,6 +2,38 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_rate_cards (
+  card_id TEXT NOT NULL,
+  version INTEGER NOT NULL CHECK(version > 0),
+  provider TEXT NOT NULL,
+  model_pattern TEXT NOT NULL,
+  processing_tier TEXT NOT NULL,
+  context_tier TEXT NOT NULL,
+  effective_from_ms INTEGER NOT NULL CHECK(effective_from_ms >= 0),
+  effective_to_ms INTEGER CHECK(effective_to_ms IS NULL OR effective_to_ms > effective_from_ms),
+  input_usd_micros_per_million INTEGER NOT NULL CHECK(input_usd_micros_per_million >= 0),
+  cached_input_usd_micros_per_million INTEGER NOT NULL CHECK(cached_input_usd_micros_per_million >= 0),
+  cache_write_usd_micros_per_million INTEGER NOT NULL CHECK(cache_write_usd_micros_per_million >= 0),
+  output_usd_micros_per_million INTEGER NOT NULL CHECK(output_usd_micros_per_million >= 0),
+  source_ref TEXT NOT NULL,
+  active INTEGER NOT NULL CHECK(active IN (0,1)),
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  PRIMARY KEY(card_id, version)
+);
+CREATE INDEX IF NOT EXISTS usage_rate_cards_match_idx
+  ON usage_rate_cards(provider, model_pattern, processing_tier, context_tier, effective_from_ms);
+INSERT OR IGNORE INTO meta(key,value) VALUES('usage_rate_card_revision','1');
+INSERT OR IGNORE INTO usage_rate_cards(
+  card_id,version,provider,model_pattern,processing_tier,context_tier,effective_from_ms,
+  effective_to_ms,input_usd_micros_per_million,cached_input_usd_micros_per_million,
+  cache_write_usd_micros_per_million,output_usd_micros_per_million,source_ref,active,
+  created_at,created_by
+) VALUES
+  ('openai-standard-gpt-6-astra',1,'openai','gpt-6-astra','standard','short',0,NULL,10000000,1000000,12500000,50000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
+  ('openai-standard-gpt-6-sol',1,'openai','gpt-6-sol','standard','short',0,NULL,2000000,200000,2500000,10000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
+  ('openai-standard-gpt-6-luna',1,'openai','gpt-6-luna','standard','short',0,NULL,100000,10000,125000,500000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
+  ('openai-standard-gpt-5.6-sol',1,'openai','gpt-5.6-sol','standard','short',0,NULL,4000000,400000,5000000,20000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card');
 CREATE TABLE IF NOT EXISTS repositories (
   repository_id TEXT PRIMARY KEY,
   root_path TEXT NOT NULL UNIQUE,
@@ -671,3 +703,52 @@ CREATE TABLE IF NOT EXISTS server_definitions (
 );
 CREATE INDEX IF NOT EXISTS server_definitions_project_name
   ON server_definitions(project, name);
+
+CREATE TABLE IF NOT EXISTS review_policies (
+ repository_id TEXT NOT NULL REFERENCES repositories(repository_id), workstream_key TEXT NOT NULL,
+ interval_ms INTEGER NOT NULL, escalation_ms INTEGER NOT NULL, active INTEGER NOT NULL,
+ window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, last_receipt TEXT,
+ owner_thread_id TEXT, alarm_namespace TEXT, lease_expires_at INTEGER,
+ PRIMARY KEY(repository_id,workstream_key)
+);
+CREATE TABLE IF NOT EXISTS review_reminders (
+ reminder_id INTEGER PRIMARY KEY AUTOINCREMENT, repository_id TEXT NOT NULL, workstream_key TEXT NOT NULL,
+ window_start_ms INTEGER NOT NULL, window_end_ms INTEGER NOT NULL, due_at_ms INTEGER NOT NULL, escalation INTEGER NOT NULL,
+ event_route TEXT, message_id TEXT, resolved INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(repository_id,workstream_key,window_start_ms,window_end_ms,escalation)
+);
+
+CREATE TABLE IF NOT EXISTS review_clock_history (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ repository_id TEXT NOT NULL,
+ workstream_key TEXT NOT NULL,
+ action TEXT NOT NULL,
+ source TEXT NOT NULL,
+ previous_window_start_ms INTEGER,
+ previous_window_end_ms INTEGER,
+ new_window_start_ms INTEGER,
+ new_window_end_ms INTEGER,
+ recorded_at_ms INTEGER NOT NULL,
+ explanation TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_clock_history_scope
+ ON review_clock_history(repository_id,workstream_key,id);
+
+-- The seeded card is a Standard API comparison schedule, not a claim about past invoices.
+INSERT OR IGNORE INTO usage_rate_cards
+SELECT card_id||'-long',version,provider,model_pattern,processing_tier,'long',effective_from_ms,
+ effective_to_ms,input_usd_micros_per_million*2,cached_input_usd_micros_per_million*2,
+ cache_write_usd_micros_per_million*2,output_usd_micros_per_million*3/2,source_ref,active,
+ created_at,created_by FROM usage_rate_cards WHERE created_by='system-rate-card' AND context_tier='short';
+CREATE TRIGGER IF NOT EXISTS usage_rate_cards_no_update BEFORE UPDATE ON usage_rate_cards BEGIN
+ SELECT RAISE(ABORT, 'rate-card versions are permanent');
+END;
+CREATE TRIGGER IF NOT EXISTS usage_rate_cards_no_delete BEFORE DELETE ON usage_rate_cards BEGIN
+ SELECT RAISE(ABORT, 'rate-card versions are permanent');
+END;
+CREATE TRIGGER IF NOT EXISTS review_clock_history_no_update BEFORE UPDATE ON review_clock_history BEGIN
+ SELECT RAISE(ABORT, 'clock history is permanent');
+END;
+CREATE TRIGGER IF NOT EXISTS review_clock_history_no_delete BEFORE DELETE ON review_clock_history BEGIN
+ SELECT RAISE(ABORT, 'clock history is permanent');
+END;

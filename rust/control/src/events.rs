@@ -737,7 +737,9 @@ impl EventVisibility {
         if self.unrestricted {
             return true;
         }
-        if matches!(event.event, OwnedEvent::Feedback(_)) {
+        if matches!(event.event, OwnedEvent::Feedback(_))
+            || matches!(&event.event, OwnedEvent::Other(other) if other.review.is_some())
+        {
             return false;
         }
         if let Some(deployment_id) = deployment_id(&event.event)
@@ -872,6 +874,7 @@ mod tests {
         NewEvent {
             occurred_at: occurred_at.to_owned(),
             event: OwnedEvent::Other(OtherOwnedEvent {
+                review: None,
                 kind: kind.to_owned(),
                 repository_id: repository_id.map(str::to_owned),
                 deployment_id: None,

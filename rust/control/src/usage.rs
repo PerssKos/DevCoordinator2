@@ -17,9 +17,9 @@ use devcoordinator2_api::params::{
     UsageRepository as UsageRepositoryParams,
 };
 use devcoordinator2_api::results::{
-    CoverageState, MeasuredTime, PhaseTime, ToolFamily, ToolOutcome, UsageActivity, UsageCoverage,
-    UsageRepositories, UsageRepository, UsageRepositoryRow, UsageSemantics, UsageSeriesPoint,
-    UsageTime, UsageTools, UsageTotals,
+    CoverageState, MeasuredTime, PhaseTime, ToolFamily, ToolOutcome, UsageActivity, UsageCost,
+    UsageCoverage, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
+    UsageRepositoryRow, UsageSemantics, UsageSeriesPoint, UsageTime, UsageTools, UsageTotals,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::{
@@ -31,7 +31,12 @@ use time::{format_description::FormatItem, macros::format_description};
 use crate::config::{CodexUsageSource, Config};
 use crate::database::{Database, DatabaseError};
 use crate::platform::{Clock, HostClock};
+use crate::rate_card::RateCardSnapshot;
 use crate::repository::Registry;
+
+#[path = "usage_cost.rs"]
+mod cost;
+use cost::{CostBuckets, RequestTokens, cost_from_buckets, merge_cost_bucket};
 
 #[path = "usage_cache.rs"]
 mod cache;
@@ -58,6 +63,7 @@ const SUPPORTED_TAXONOMY: u32 = 1;
 enum Projection {
     Full,
     Tokens,
+    PerformanceFast,
 }
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -83,6 +89,10 @@ const TOKEN_CATEGORIES: &[(&str, TokenField)] = &[
     (
         "output_tokens_details.reasoning_tokens",
         TokenField::Reasoning,
+    ),
+    (
+        "input_tokens_details.cache_write_tokens",
+        TokenField::CacheWrite,
     ),
 ];
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
@@ -143,6 +153,7 @@ enum TokenField {
     CachedInput,
     Output,
     Reasoning,
+    CacheWrite,
 }
 
 #[derive(Default)]
@@ -173,6 +184,8 @@ struct SourceReport {
     execution_unknown: u64,
     agent_unknown: u64,
     phase_unknown: BTreeMap<String, u64>,
+    activity_costs: BTreeMap<(String, String), CostBuckets>,
+    outcome_costs: BTreeMap<String, CostBuckets>,
 }
 
 #[derive(Clone)]
@@ -188,6 +201,9 @@ struct Operation {
     provenance: String,
     terminal_event: Option<String>,
     tool_family: Option<String>,
+    provider_kind: Option<String>,
+    model: Option<String>,
+    outcome_id: Option<String>,
 }
 
 impl UsageService {
@@ -219,7 +235,7 @@ impl UsageService {
         let report = self.usage.repositories(&records, params.range.clone())?;
         if params.wait_for_refresh {
             self.usage.wait_for_refresh(None);
-            return self.usage.repositories(&records, params.range);
+            return self.usage.repositories_tokens(&records, params.range);
         }
         Ok(report)
     }
@@ -235,12 +251,54 @@ impl UsageService {
             .ok_or_else(|| {
                 ProtocolError::new(ErrorCode::RepositoryNotFound, "no registered repository")
             })?;
-        let report = self.usage.repository(&repository, params.range.clone())?;
+        let mut report = self.usage.repository(&repository, params.range.clone())?;
+        self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
+            // Start the cost-capable projection before waiting; the initial
+            // fast snapshot and the complete snapshot use separate keys.
+            let _ = self
+                .usage
+                .repository_tokens(&repository, params.range.clone())?;
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            return self.usage.repository(&repository, params.range);
+            let mut report = self.usage.repository_tokens(&repository, params.range)?;
+            self.attach_outcome_titles(&mut report)?;
+            return Ok(report);
         }
         Ok(report)
+    }
+
+    fn attach_outcome_titles(&self, report: &mut UsageRepository) -> Result<(), ProtocolError> {
+        if report.outcomes.is_empty() {
+            return Ok(());
+        }
+        let ids = serde_json::to_string(
+            &report
+                .outcomes
+                .iter()
+                .map(|outcome| outcome.outcome_id.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(|_| ProtocolError::new(ErrorCode::InternalError, "cannot encode outcome ids"))?;
+        let repository_id = report.repository_id.clone();
+        let titles = self
+            .usage
+            .authority
+            .call(move |connection| {
+                let mut statement = connection.prepare(
+                    "SELECT task_id,title FROM tasks WHERE repository_id=?1 AND task_id IN (SELECT value FROM json_each(?2))",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![repository_id, ids], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                Ok(rows)
+            })
+            .map_err(database_error)?;
+        for outcome in &mut report.outcomes {
+            outcome.title = titles.get(&outcome.outcome_id).cloned();
+        }
+        Ok(())
     }
 
     pub(crate) fn review_window(
@@ -273,6 +331,79 @@ impl UsageService {
         )
     }
 
+    /// Fast token/cost projection used by the Performance overview. It uses
+    /// the same bounded repository cache as Usage, so the page can paint the
+    /// saved snapshot immediately while the indexed refresh runs in a worker.
+    pub(crate) fn performance_snapshot(
+        &self,
+        repository: &RepositoryRecord,
+        start: u64,
+        end: u64,
+        wait_for_refresh: bool,
+    ) -> Result<UsageRepository, ProtocolError> {
+        let now_ms = self.usage.now_ms()?;
+        let rate_cards = self.usage.rate_cards()?;
+        // Performance reads are an exact overview period, rather than the
+        // multi-bucket Usage chart. Keeping one bucket selects the indexed
+        // Performance reader for every requested period, including 7d/30d,
+        // so cost components and token totals share one bounded snapshot.
+        let range = UsageRange::Hours24;
+        let cached_start = start;
+        let cached_end = end;
+        let bucket = end.saturating_sub(start).max(1);
+        let count = 1;
+        let projection = if wait_for_refresh {
+            Projection::Tokens
+        } else {
+            Projection::PerformanceFast
+        };
+        let mut report = if wait_for_refresh {
+            // Start the cost-capable refresh before waiting. The fast and
+            // complete projections have separate cache keys, so waiting on
+            // the fast key first would return before cost enrichment starts.
+            self.usage.cached_window(
+                repository,
+                range.clone(),
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                Projection::Tokens,
+                rate_cards,
+            )?;
+            self.usage.wait_for_refresh(Some(&repository.repository_id));
+            self.usage.cached_window(
+                repository,
+                range,
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                Projection::Tokens,
+                self.usage.rate_cards()?,
+            )?
+        } else {
+            self.usage.cached_window(
+                repository,
+                range,
+                now_ms,
+                cached_start,
+                cached_end,
+                bucket,
+                count,
+                false,
+                projection,
+                rate_cards,
+            )?
+        };
+        self.attach_outcome_titles(&mut report)?;
+        Ok(report)
+    }
+
     pub(crate) fn performance_tokens(
         &self,
         repository: &RepositoryRecord,
@@ -280,6 +411,7 @@ impl UsageService {
         end: u64,
         now: u64,
     ) -> Result<UsageRepository, ProtocolError> {
+        let rate_cards = self.usage.rate_cards()?;
         self.usage.repository_window(
             repository,
             UsageRange::Hours24,
@@ -291,6 +423,7 @@ impl UsageService {
             true,
             Some(Instant::now() + QUERY_TIMEOUT),
             Projection::Tokens,
+            rate_cards,
         )
     }
 
@@ -352,6 +485,35 @@ impl CodexUsage {
                 model_requests: report.totals.model_requests,
                 tool_calls: report.totals.tool_calls,
                 execution_wall_ms: report.time.execution_wall.measured_ms,
+                cost: report.totals.cost.clone(),
+            });
+        }
+        Ok(UsageRepositories {
+            range,
+            generated_at_ms: now_ms,
+            repositories: rows,
+        })
+    }
+
+    pub fn repositories_tokens(
+        &self,
+        repositories: &[RepositoryRecord],
+        range: UsageRange,
+    ) -> Result<UsageRepositories, ProtocolError> {
+        let now_ms = self.now_ms()?;
+        let mut rows = Vec::new();
+        for repository in repositories {
+            let report = self.repository_tokens(repository, range.clone())?;
+            rows.push(UsageRepositoryRow {
+                repository_id: report.repository_id,
+                display_name: report.display_name,
+                range: report.range,
+                coverage: report.coverage,
+                total_tokens: report.totals.total_tokens,
+                model_requests: report.totals.model_requests,
+                tool_calls: report.totals.tool_calls,
+                execution_wall_ms: report.time.execution_wall.measured_ms,
+                cost: report.totals.cost.clone(),
             });
         }
         Ok(UsageRepositories {
@@ -370,18 +532,28 @@ impl CodexUsage {
         repository: &RepositoryRecord,
         range: UsageRange,
     ) -> Result<UsageRepository, ProtocolError> {
+        self.repository_projection(repository, range, Projection::PerformanceFast)
+    }
+
+    pub fn repository_tokens(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+    ) -> Result<UsageRepository, ProtocolError> {
+        self.repository_projection(repository, range, Projection::Tokens)
+    }
+
+    fn repository_projection(
+        &self,
+        repository: &RepositoryRecord,
+        range: UsageRange,
+        projection: Projection,
+    ) -> Result<UsageRepository, ProtocolError> {
         let now_ms = self.now_ms()?;
+        let rate_cards = self.rate_cards()?;
         let (start, end, bucket, count) = usage_window(&range, now_ms);
         self.cached_window(
-            repository,
-            range,
-            now_ms,
-            start,
-            end,
-            bucket,
-            count,
-            true,
-            Projection::Full,
+            repository, range, now_ms, start, end, bucket, count, true, projection, rate_cards,
         )
     }
 
@@ -392,6 +564,7 @@ impl CodexUsage {
         now_ms: u64,
     ) -> Result<UsageRepository, ProtocolError> {
         let (start, end, bucket, count) = usage_window(&range, now_ms);
+        let rate_cards = self.rate_cards()?;
         self.repository_window(
             repository,
             range,
@@ -403,6 +576,7 @@ impl CodexUsage {
             true,
             None,
             Projection::Full,
+            rate_cards,
         )
     }
 
@@ -430,6 +604,7 @@ impl CodexUsage {
         let start = aligned_end_ms.saturating_sub(
             bucket_ms.saturating_mul(u64::try_from(bucket_count).unwrap_or(u64::MAX)),
         );
+        let rate_cards = self.rate_cards()?;
         self.cached_window(
             repository,
             range,
@@ -440,6 +615,7 @@ impl CodexUsage {
             bucket_count,
             resolve_missing,
             Projection::Tokens,
+            rate_cards,
         )
     }
 
@@ -455,12 +631,14 @@ impl CodexUsage {
         bucket_count: usize,
         resolve_missing: bool,
         projection: Projection,
+        rate_cards: RateCardSnapshot,
     ) -> Result<UsageRepository, ProtocolError> {
         let key = format!(
-            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}:{projection:?}",
+            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}:{projection:?}:rate-{}",
             repository.repository_id,
             repository.root_path,
-            range_name(&range)
+            range_name(&range),
+            rate_cards.revision
         );
         let empty = combine(
             repository,
@@ -487,6 +665,7 @@ impl CodexUsage {
                 resolve_missing,
                 None,
                 projection,
+                rate_cards,
             )
         }))
     }
@@ -504,6 +683,7 @@ impl CodexUsage {
         resolve_missing: bool,
         deadline: Option<Instant>,
         projection: Projection,
+        rate_cards: RateCardSnapshot,
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
@@ -523,6 +703,7 @@ impl CodexUsage {
                         bucket_count,
                         deadline,
                         projection,
+                        &rate_cards.cards,
                     ) {
                         Ok(report) => reports.push((source.uid, report)),
                         Err(reason) if reason == "mapping_unavailable" && resolve_missing => {
@@ -539,6 +720,7 @@ impl CodexUsage {
                                         bucket_count,
                                         deadline,
                                         projection,
+                                        &rate_cards.cards,
                                     )
                                     .map_err(source_error)
                                 }) {
@@ -657,6 +839,7 @@ impl CodexUsage {
         bucket_count: usize,
         deadline: Option<Instant>,
         projection: Projection,
+        rate_cards: &[devcoordinator2_api::rate_card::RateCard],
     ) -> Result<SourceReport, String> {
         let inherited_deadline = deadline;
         let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
@@ -678,26 +861,98 @@ impl CodexUsage {
             if !repository_exists(&connection, &family)? {
                 return Err("mapping_unavailable".into());
             }
-            let read = match projection {
-                Projection::Full => source_report,
-                Projection::Tokens => source_token_report,
-            };
-            read(
-                &connection,
-                &family,
-                schema,
-                taxonomy,
-                start_ms,
-                end_ms,
-                bucket_ms,
-                bucket_count,
-            )
+            let canonical: bool = schema >= 7 && connection.query_row("SELECT COUNT(*)=1 FROM pragma_table_info('token_observations') WHERE name='source_event_id'",[],|r|r.get(0)).unwrap_or(false);
+            if canonical && matches!(projection, Projection::Tokens | Projection::PerformanceFast) {
+                if matches!(projection, Projection::PerformanceFast) && bucket_count > 1 {
+                    return source_token_report(
+                        &connection,
+                        &family,
+                        schema,
+                        taxonomy,
+                        start_ms,
+                        end_ms,
+                        bucket_ms,
+                        bucket_count,
+                    );
+                }
+                let mut facts = if matches!(projection, Projection::PerformanceFast) {
+                    performance::read_fast(&connection, &family, start_ms, end_ms)?
+                } else {
+                    performance::read(&connection, &family, start_ms, end_ms)?
+                }
+                .map(Ok)
+                .unwrap_or_else(|| review_facts::read(&connection, &family, start_ms, end_ms))?;
+                facts.rates = rate_cards.to_vec();
+                let mut series = vec![BTreeMap::new(); bucket_count];
+                let mut observed = vec![false; bucket_count];
+                let mut coverage = vec![CoverageState::Unobserved; bucket_count];
+                for token in &facts.tokens {
+                    if token.category != "total_tokens" {
+                        continue;
+                    }
+                    if let Some(index) = bucket_index(token.at, start_ms, bucket_ms, bucket_count) {
+                        observed[index] = true;
+                        if let (Some(value), Some(owner)) =
+                            (token.value, facts.operations.get(&token.owner))
+                        {
+                            *series[index]
+                                .entry(owner.operation.phase.clone())
+                                .or_insert(0u64) += value;
+                        }
+                        coverage[index] =
+                            if token.incomplete || coverage[index] == CoverageState::Partial {
+                                CoverageState::Partial
+                            } else {
+                                CoverageState::Complete
+                            };
+                    }
+                }
+                let (mut report, _) = if matches!(projection, Projection::Full) {
+                    review_aggregate::aggregate(&connection, facts, None, start_ms, end_ms)?
+                } else {
+                    review_aggregate::display(&connection, facts, None, start_ms, end_ms)?
+                };
+                report.phase_series = series;
+                report.token_buckets_observed = observed;
+                report.bucket_coverage = coverage;
+                report.database_schema = schema;
+                return Ok(report);
+            }
+            match projection {
+                Projection::Full => source_report(
+                    &connection,
+                    &family,
+                    schema,
+                    taxonomy,
+                    start_ms,
+                    end_ms,
+                    bucket_ms,
+                    bucket_count,
+                    rate_cards,
+                ),
+                Projection::Tokens | Projection::PerformanceFast => source_token_report(
+                    &connection,
+                    &family,
+                    schema,
+                    taxonomy,
+                    start_ms,
+                    end_ms,
+                    bucket_ms,
+                    bucket_count,
+                ),
+            }
         })();
         if Instant::now() >= deadline {
             Err("query_budget_exhausted".into())
         } else {
             result
         }
+    }
+
+    fn rate_cards(&self) -> Result<RateCardSnapshot, ProtocolError> {
+        self.authority
+            .call(|connection| Ok(crate::rate_card::snapshot_rows(connection)?))
+            .map_err(database_error)
     }
 
     fn now_ms(&self) -> Result<u64, ProtocolError> {
@@ -839,6 +1094,7 @@ fn source_report(
     end_ms: u64,
     bucket_ms: u64,
     bucket_count: usize,
+    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
 ) -> Result<SourceReport, String> {
     let mut values = family
         .iter()
@@ -847,8 +1103,37 @@ fn source_report(
         .collect::<Vec<_>>();
     values.push(SqlValue::Integer(i64_value(end_ms)?));
     values.push(SqlValue::Integer(i64_value(start_ms)?));
+    let has_model_metadata: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('model_requests') WHERE name='model' AND EXISTS(SELECT 1 FROM pragma_table_info('model_requests') WHERE name='provider_kind'))",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    let model_select = if has_model_metadata {
+        "request.provider_kind,request.model"
+    } else {
+        "NULL,NULL"
+    };
+    let has_context_table: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='operation_work_contexts')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+    let context_select = if schema >= 7 && has_context_table {
+        "context.outcome_id"
+    } else {
+        "NULL"
+    };
+    let context_join = if schema >= 7 && has_context_table {
+        "LEFT JOIN operation_work_contexts context ON context.operation_id=operation.id"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id WHERE operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution WHERE attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
+        "SELECT operation.id,operation.operation_kind,operation.agent_id,operation.started_at_ms,operation.phase,operation.activity,operation.activity_state,operation.attribution_provenance,terminal.occurred_at_ms,terminal.event_kind,tool.operation_family,tool.id,request.id,{model_select},{context_select} FROM operations operation LEFT JOIN operation_events terminal ON terminal.operation_id=operation.id AND terminal.terminal=1 LEFT JOIN tool_invocations tool ON tool.operation_id=operation.id LEFT JOIN model_requests request ON request.operation_id=operation.id {context_join} WHERE operation.id IN (SELECT attribution.operation_id FROM repository_attributions attribution WHERE attribution.repository_id IN ({})) AND operation.started_at_ms<? AND (terminal.occurred_at_ms IS NULL OR terminal.occurred_at_ms>?)",
         placeholders(family.len())
     );
     let mut statement = connection
@@ -915,6 +1200,9 @@ fn source_report(
                     .get::<_, Option<String>>(10)
                     .map_err(|_| "source_unavailable".to_owned())?
                     .map(|value| safe_label(&value)),
+                provider_kind: row.get(13).map_err(|_| "source_unavailable".to_owned())?,
+                model: row.get(14).map_err(|_| "source_unavailable".to_owned())?,
+                outcome_id: row.get(15).map_err(|_| "source_unavailable".to_owned())?,
             },
         );
     }
@@ -1015,6 +1303,7 @@ fn source_report(
         end_ms,
         bucket_ms,
         bucket_count,
+        rate_cards,
     )?;
     add_coverage(
         connection,
@@ -1165,7 +1454,9 @@ fn add_tokens(
     end_ms: u64,
     bucket_ms: u64,
     bucket_count: usize,
+    rate_cards: &[devcoordinator2_api::rate_card::RateCard],
 ) -> Result<(), String> {
+    let mut requests = BTreeMap::<String, RequestTokens>::new();
     for (column, source_operations) in [
         ("model_request_id", request_operations),
         ("tool_invocation_id", tool_operations),
@@ -1233,6 +1524,12 @@ fn add_tokens(
                     .get::<_, Option<i64>>(1)
                     .map_err(|_| "source_unavailable".to_owned())?
                     .and_then(|value| u64::try_from(value).ok());
+                requests.entry(operation.id.clone()).or_default().observe(
+                    &category,
+                    token_count,
+                    coverage != CoverageState::Complete,
+                    observed,
+                );
                 let Some(token_count) = token_count else {
                     continue;
                 };
@@ -1268,6 +1565,23 @@ fn add_tokens(
                     token_count,
                 );
             }
+        }
+    }
+    for (id, request) in requests {
+        let op = &operations[&id];
+        let bucket = cost::request_cost(op, &request, rate_cards);
+        merge_cost_bucket(
+            report
+                .activity_costs
+                .entry((op.phase.clone(), op.activity.clone()))
+                .or_default(),
+            &bucket,
+        );
+        if let Some(outcome) = &op.outcome_id {
+            merge_cost_bucket(
+                report.outcome_costs.entry(outcome.clone()).or_default(),
+                &bucket,
+            );
         }
     }
     Ok(())
@@ -1445,6 +1759,8 @@ fn combine(
     let mut agent_intervals: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut phase_intervals: BTreeMap<String, Vec<(u64, u64)>> = BTreeMap::new();
     let mut phase_unknown = BTreeMap::new();
+    let mut activity_costs = BTreeMap::<(String, String), CostBuckets>::new();
+    let mut outcome_costs = BTreeMap::<String, CostBuckets>::new();
     let mut request_unknown = 0_u64;
     let mut execution_unknown = 0_u64;
     let mut agent_unknown = 0_u64;
@@ -1483,6 +1799,12 @@ fn combine(
         merge_pair_counts(&mut activities, &report.activities);
         merge_pair_counts(&mut activity_operations, &report.activity_operations);
         merge_triple_counts(&mut activity_provenance, &report.activity_provenance);
+        for (key, value) in &report.activity_costs {
+            merge_cost_bucket(activity_costs.entry(key.clone()).or_default(), value);
+        }
+        for (key, value) in &report.outcome_costs {
+            merge_cost_bucket(outcome_costs.entry(key.clone()).or_default(), value);
+        }
         merge_counts(&mut outcomes, &report.tool_outcomes);
         merge_counts(&mut families, &report.tool_families);
         request_intervals.extend_from_slice(&report.request_intervals);
@@ -1541,6 +1863,46 @@ fn combine(
     let total_tokens = (!token_coverage.is_empty())
         .then(|| tokens.get("total_tokens").copied())
         .flatten();
+    let mut total_cost_buckets = CostBuckets::default();
+    for bucket in activity_costs.values() {
+        merge_cost_bucket(&mut total_cost_buckets, bucket);
+    }
+    total_cost_buckets.source_gaps += failures.values().sum::<u64>();
+    let total_cost = cost_from_buckets(&total_cost_buckets);
+    let mut model_rows = total_cost_buckets
+        .models
+        .iter()
+        .map(|(model, parts)| {
+            let cost = cost_from_buckets(&CostBuckets {
+                models: BTreeMap::from([(model.clone(), parts.clone())]),
+                tokens: parts.tokens,
+                operations: parts.requests,
+                ..Default::default()
+            });
+            UsageModelCost {
+                model: model
+                    .split_once('/')
+                    .map_or(model.as_str(), |(_, name)| name)
+                    .to_owned(),
+                total_tokens: parts.tokens,
+                share: total_tokens
+                    .filter(|total| *total > 0)
+                    .map(|total| parts.tokens as f64 / total as f64),
+                model_requests: parts.requests,
+                average_usd_micros: cost
+                    .estimated_usd_micros
+                    .and_then(|value| value.checked_div(parts.requests)),
+                cost,
+            }
+        })
+        .collect::<Vec<_>>();
+    model_rows.sort_by(|left, right| {
+        right
+            .cost
+            .estimated_usd_micros
+            .cmp(&left.cost.estimated_usd_micros)
+            .then_with(|| left.model.cmp(&right.model))
+    });
     let mut activity_rows = activities
         .keys()
         .chain(activity_operations.keys())
@@ -1568,6 +1930,11 @@ fn combine(
                     .filter(|((p, a, _), _)| p == &phase && a == &activity)
                     .map(|((_, _, provenance), count)| (provenance.clone(), *count))
                     .collect(),
+                cost: cost_from_buckets(
+                    activity_costs
+                        .get(&(phase.clone(), activity.clone()))
+                        .unwrap_or(&CostBuckets::default()),
+                ),
             }
         })
         .collect::<Vec<_>>();
@@ -1577,6 +1944,30 @@ fn combine(
             .cmp(&left.total_tokens)
             .then_with(|| left.phase.cmp(&right.phase))
             .then_with(|| left.activity.cmp(&right.activity))
+    });
+    let mut outcome_rows = outcome_costs
+        .iter()
+        .map(|(outcome_id, bucket)| {
+            let tokens = bucket.tokens;
+            UsageOutcome {
+                outcome_id: outcome_id.clone(),
+                title: None,
+                phase: None,
+                activity: None,
+                total_tokens: tokens,
+                share: total_tokens
+                    .filter(|total| *total > 0)
+                    .map(|total| tokens as f64 / total as f64),
+                operations: bucket.operations,
+                cost: cost_from_buckets(bucket),
+            }
+        })
+        .collect::<Vec<_>>();
+    outcome_rows.sort_by(|left, right| {
+        right
+            .cost
+            .estimated_usd_micros
+            .cmp(&left.cost.estimated_usd_micros)
     });
     let request_ms = request_intervals
         .iter()
@@ -1667,9 +2058,12 @@ fn combine(
             model_requests,
             tool_calls,
             operations: operation_count,
+            cost: total_cost,
         },
         series: points,
         activities: activity_rows,
+        models: model_rows,
+        outcomes: outcome_rows,
         time: UsageTime {
             request_to_delivery: MeasuredTime {
                 measured_ms: request_ms,
@@ -2164,6 +2558,7 @@ fn database_error(error: DatabaseError) -> ProtocolError {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use super::cost::{CostModel, select_card};
     use super::*;
     use crate::platform::FixedClock;
     use std::collections::HashSet;
@@ -2193,6 +2588,122 @@ pub(crate) mod tests {
     struct BlockingProbe {
         entered: AtomicU64,
         released: AtomicBool,
+    }
+
+    #[test]
+    fn api_equivalent_cost_uses_mutually_exclusive_standard_token_components() {
+        let mut buckets = CostBuckets::default();
+        buckets.models.insert(
+            "gpt-6-sol".into(),
+            CostModel {
+                amounts: [
+                    1_300_000_000_000,
+                    50_000_000_000,
+                    250_000_000_000,
+                    500_000_000_000,
+                ],
+                known_components: [true, true, true, true],
+                cards: BTreeMap::from([(
+                    "openai-standard-gpt-6-sol@1".into(),
+                    devcoordinator2_api::rate_card::RateCard {
+                        card_id: "openai-standard-gpt-6-sol".into(),
+                        version: 1,
+                        provider: "openai".into(),
+                        model_pattern: "gpt-6-sol".into(),
+                        processing_tier: "standard".into(),
+                        context_tier: "short".into(),
+                        effective_from_ms: 0,
+                        effective_to_ms: None,
+                        input_usd_micros_per_million: 2_000_000,
+                        cached_input_usd_micros_per_million: 200_000,
+                        cache_write_usd_micros_per_million: 2_500_000,
+                        output_usd_micros_per_million: 10_000_000,
+                        source_ref: "fixture".into(),
+                        active: true,
+                    },
+                )]),
+                tokens: 1_300_000,
+                requests: 1,
+                ..Default::default()
+            },
+        );
+        let cost = cost_from_buckets(&buckets);
+        assert_eq!(cost.status, "complete");
+        assert_eq!(cost.estimated_usd_micros, Some(2_100_000));
+        assert_eq!(cost.input_usd_micros, Some(1_300_000));
+        assert_eq!(cost.cached_input_usd_micros, Some(50_000));
+        assert_eq!(cost.cache_write_usd_micros, Some(250_000));
+        assert_eq!(cost.output_usd_micros, Some(500_000));
+        assert_eq!(cost.basis, "api_equivalent");
+    }
+
+    #[test]
+    fn api_equivalent_cost_is_partial_for_unknown_models() {
+        let mut buckets = CostBuckets::default();
+        buckets.models.insert(
+            "unknown-model".into(),
+            CostModel {
+                unknown_requests: 1,
+                unknown_tokens: 10,
+                tokens: 10,
+                ..Default::default()
+            },
+        );
+        let cost = cost_from_buckets(&buckets);
+        assert_eq!(cost.status, "unavailable");
+        assert_eq!(cost.estimated_usd_micros, None);
+        assert!(cost.unknown_observations > 0);
+    }
+
+    #[test]
+    fn api_equivalent_cost_selects_the_effective_rate_card_revision() {
+        let cards = vec![
+            devcoordinator2_api::rate_card::RateCard {
+                card_id: "standard-sol".into(),
+                version: 1,
+                provider: "openai".into(),
+                model_pattern: "gpt-custom".into(),
+                processing_tier: "standard".into(),
+                context_tier: "short".into(),
+                effective_from_ms: 0,
+                effective_to_ms: Some(2_000),
+                input_usd_micros_per_million: 1,
+                cached_input_usd_micros_per_million: 1,
+                cache_write_usd_micros_per_million: 1,
+                output_usd_micros_per_million: 1,
+                source_ref: "https://example.test/v1".into(),
+                active: true,
+            },
+            devcoordinator2_api::rate_card::RateCard {
+                card_id: "standard-sol".into(),
+                version: 2,
+                provider: "openai".into(),
+                model_pattern: "gpt-custom".into(),
+                processing_tier: "standard".into(),
+                context_tier: "short".into(),
+                effective_from_ms: 2_000,
+                effective_to_ms: None,
+                input_usd_micros_per_million: 2,
+                cached_input_usd_micros_per_million: 2,
+                cache_write_usd_micros_per_million: 2,
+                output_usd_micros_per_million: 2,
+                source_ref: "https://example.test/v2".into(),
+                active: true,
+            },
+        ];
+        assert_eq!(
+            select_card(&cards, "openai", "gpt-custom", 1, 1_999)
+                .unwrap()
+                .version,
+            1
+        );
+        assert_eq!(
+            select_card(&cards, "openai", "gpt-custom", 1, 2_000)
+                .unwrap()
+                .version,
+            2
+        );
+        assert!(select_card(&cards, "openai", "other", 1, 2_000).is_none());
     }
 
     impl RepositoryProbe for BlockingProbe {
@@ -2311,6 +2822,7 @@ pub(crate) mod tests {
             ("total_tokens", 100),
             ("input_tokens", 80),
             ("input_tokens_details.cached_tokens", 50),
+            ("input_tokens_details.cache_write_tokens", 0),
             ("output_tokens", 20),
             ("output_tokens_details.reasoning_tokens", 10),
         ] {
@@ -2503,6 +3015,7 @@ pub(crate) mod tests {
             Arc::new(FixedClock(datetime!(2026-09-04 00:00 UTC))),
             probe.clone(),
         );
+        let rate_cards = usage.rate_cards().unwrap();
         for (deadline, reason) in [
             (Instant::now(), "query_budget_exhausted"),
             (Instant::now() + QUERY_TIMEOUT, "mapping_pending"),
@@ -2519,6 +3032,7 @@ pub(crate) mod tests {
                     false,
                     Some(deadline),
                     Projection::Full,
+                    rate_cards.clone(),
                 )
                 .unwrap();
             assert!(report.coverage.has_gaps);
@@ -2562,6 +3076,13 @@ pub(crate) mod tests {
         let canonical_for_db = "c".repeat(64);
         let source_connection = Connection::open(codex_home.join("usage/usage.sqlite3")).unwrap();
         source_connection
+            .execute_batch(
+                "ALTER TABLE model_requests ADD COLUMN provider_kind TEXT;
+                 ALTER TABLE model_requests ADD COLUMN model TEXT;
+                 UPDATE model_requests SET provider_kind='openai', model='gpt-6-sol';",
+            )
+            .unwrap();
+        source_connection
             .execute("INSERT INTO repositories VALUES(?1)", [&canonical_for_db])
             .unwrap();
         let uid = rustix::process::getuid().as_raw();
@@ -2584,6 +3105,12 @@ pub(crate) mod tests {
         assert_eq!(report.totals.cached_input_tokens, Some(50));
         assert_eq!(report.totals.model_requests, 1);
         assert_eq!(report.totals.tool_calls, 1);
+        assert_eq!(report.totals.cost.status, "complete");
+        assert_eq!(report.totals.cost.estimated_usd_micros, Some(270));
+        assert_eq!(
+            report.totals.cost.rate_card_ref.as_deref(),
+            Some("openai-standard-gpt-6-sol@1")
+        );
         assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
         assert_eq!(report.time.execution_wall.measured_ms, 10_000);
         assert_eq!(report.time.summed_agent_active.measured_ms, 9_000);
