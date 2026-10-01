@@ -675,7 +675,7 @@ impl CodexUsage {
             range_name(&range),
             rate_cards.revision
         );
-        let empty = combine(
+        let mut empty = combine(
             repository,
             range.clone(),
             now_ms,
@@ -686,6 +686,32 @@ impl CodexUsage {
             BTreeMap::new(),
             self.config.codex_usage_sources.len(),
         );
+        let progress = self
+            .config
+            .codex_usage_sources
+            .iter()
+            .filter_map(source_progress)
+            .collect::<Vec<_>>();
+        if !progress.is_empty() {
+            let completed = progress
+                .iter()
+                .filter_map(|snapshot| snapshot.progress_completed)
+                .sum::<u64>();
+            let total = progress
+                .iter()
+                .filter_map(|snapshot| snapshot.progress_total)
+                .sum::<u64>();
+            empty.coverage.snapshot = Some(UsageSnapshot {
+                updated_at_ms: None,
+                refreshing: completed < total,
+                refresh_failed: false,
+                progress_completed: Some(completed),
+                progress_total: Some(total),
+                progress_stage: progress
+                    .iter()
+                    .find_map(|snapshot| snapshot.progress_stage.clone()),
+            });
+        }
         let usage = self.clone();
         let repository = repository.clone();
         Ok(self.cache.get(key, empty, move || {
