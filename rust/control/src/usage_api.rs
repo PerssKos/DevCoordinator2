@@ -65,8 +65,6 @@ pub(super) struct Summary {
     pub generated_at: u64,
     #[serde(default)]
     pub snapshot: Option<Snapshot>,
-    #[serde(default)]
-    pub cost: Option<UsageCost>,
 }
 #[derive(Clone, Deserialize)]
 pub(super) struct Snapshot {
@@ -83,14 +81,74 @@ pub(super) struct Snapshot {
 pub(super) struct Report {
     pub schema_version: u32,
     pub kind: String,
-    pub database_schema_version: u32,
-    pub taxonomy_version: u32,
+    pub database_schema_version: u64,
+    pub taxonomy_version: i64,
     pub scope: Scope,
     pub time_range: Option<TimeRange>,
     pub coverage: Coverage,
     pub counts: Counts,
     pub provider_tokens: Vec<Token>,
     pub provider_tokens_by_activity: Vec<Activity>,
+    #[serde(default)]
+    pub cost: Option<SourceCost>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SourceCost {
+    pub basis: String,
+    pub currency: String,
+    pub status: String,
+    pub processing_tier: String,
+    pub estimated_usd_micros: Option<u64>,
+    pub input_usd_micros: Option<u64>,
+    pub cached_input_usd_micros: Option<u64>,
+    pub cache_write_usd_micros: Option<u64>,
+    pub output_usd_micros: Option<u64>,
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub provider_total_tokens: u64,
+    pub priced_observations: u64,
+    pub unknown_observations: u64,
+    pub rate_card_refs: Vec<String>,
+}
+
+impl SourceCost {
+    fn usage_cost(&self) -> UsageCost {
+        UsageCost {
+            status: self.status.clone(),
+            basis: self.basis.clone(),
+            currency: self.currency.clone(),
+            processing_tier: self.processing_tier.clone(),
+            estimated_usd: self
+                .estimated_usd_micros
+                .map(|v| format!("{}.{:06}", v / 1_000_000, v % 1_000_000)),
+            estimated_usd_micros: self.estimated_usd_micros,
+            input_usd_micros: self.input_usd_micros,
+            cached_input_usd_micros: self.cached_input_usd_micros,
+            cache_write_usd_micros: self.cache_write_usd_micros,
+            output_usd_micros: self.output_usd_micros,
+            input_tokens: Some(self.input_tokens),
+            cached_input_tokens: Some(self.cached_input_tokens),
+            cache_write_tokens: Some(self.cache_write_tokens),
+            uncached_input_tokens: Some(self.uncached_input_tokens),
+            output_tokens: Some(self.output_tokens),
+            reasoning_tokens: Some(self.reasoning_tokens),
+            unknown_requests: 0,
+            unknown_tokens: 0,
+            unknown_observations: self.unknown_observations,
+            rate_card_ref: self.rate_card_refs.first().cloned(),
+            rate_card_refs: self.rate_card_refs.clone(),
+            model_requests: self.priced_observations,
+            priced_requests: self.priced_observations,
+            unavailable_reasons: BTreeMap::new(),
+            matched_rate_cards: Vec::new(),
+        }
+    }
 }
 #[derive(Clone, Deserialize)]
 pub(super) struct Scope {
@@ -218,7 +276,7 @@ fn fetch(
     deadline: Instant,
 ) -> Result<(Summary, usize), String> {
     let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-    let metadata = path.symlink_metadata().map_err(|_| "api_unavailable")?;
+    let metadata = path.metadata().map_err(|_| "api_unavailable")?;
     if !metadata.file_type().is_socket() || metadata.uid() != source.uid {
         return Err("api_unavailable".into());
     }
@@ -354,7 +412,7 @@ fn validate(
 ) -> Result<(), String> {
     let r = &summary.report;
     if r.schema_version != 1
-        || r.taxonomy_version != SUPPORTED_TAXONOMY
+        || r.taxonomy_version != i64::from(SUPPORTED_TAXONOMY)
         || r.kind != "usageSummary"
         || r.time_range.as_ref()
             != Some(&TimeRange {
@@ -388,7 +446,14 @@ fn validate(
             return Err("api_contract_unsupported".into());
         }
     }
-    if let Some(cost) = &summary.cost {
+    if let Some(cost) = &summary.report.cost {
+        let provider_total = summary
+            .report
+            .provider_tokens
+            .iter()
+            .filter(|token| token.category == "total_tokens")
+            .map(|token| token.measured_tokens)
+            .sum::<u64>();
         let components = [
             cost.input_usd_micros,
             cost.cached_input_usd_micros,
@@ -408,6 +473,7 @@ fn validate(
                     || total
                         .zip(cost.estimated_usd_micros)
                         .is_none_or(|(parts, total)| total < parts || total - parts > 3)
+                    || cost.provider_total_tokens != provider_total
                     || cost.rate_card_refs.is_empty()))
             || cost
                 .rate_card_refs
@@ -425,6 +491,7 @@ impl Summary {
         let r = &self.report;
         let partial = r.coverage.has_gaps || r.coverage.state != "complete";
         let mut result = SourceReport {
+            supplied_cost: r.cost.as_ref().map(SourceCost::usage_cost),
             snapshot: Some(devcoordinator2_api::results::UsageSnapshot {
                 updated_at_ms: Some(
                     self.snapshot
@@ -440,8 +507,8 @@ impl Summary {
                     .as_ref()
                     .is_some_and(|s| matches!(s.freshness.as_str(), "stale" | "failed")),
             }),
-            database_schema: r.database_schema_version,
-            taxonomy_version: r.taxonomy_version,
+            database_schema: u32::try_from(r.database_schema_version).unwrap_or(u32::MAX),
+            taxonomy_version: u32::try_from(r.taxonomy_version).unwrap_or(u32::MAX),
             freshest_at_ms: Some(
                 self.snapshot
                     .as_ref()
@@ -479,8 +546,7 @@ impl Summary {
             };
             *result.token_observations.entry(state.into()).or_default() += t.observation_count;
         }
-        if repository.is_none() {
-            result.supplied_cost = self.cost.clone();
+        {
             result.operation_count = r.counts.operations;
             result.model_request_count = r.counts.model_requests;
             result.tool_count = r.counts.tools;
@@ -496,7 +562,7 @@ impl Summary {
                 }
             }
         }
-        if buckets == 1 && repository.is_none() {
+        if buckets == 1 {
             for ((phase, _), value) in &result.activities {
                 *result.phase_series[0].entry(phase.clone()).or_default() += value;
             }
@@ -551,24 +617,22 @@ impl CodexUsage {
         let observed = now / 5_000 * 5_000;
         let (start, end, bucket, count) = usage_window(&range, observed);
         let deadline = Instant::now() + API_BUDGET;
-        let mut sources = Vec::new();
-        for source in &self.config.codex_usage_sources {
-            match self.api.summary(source, None, start, end, deadline) {
-                Ok(summary) => sources.push((source, summary)),
-                Err(_) => return Ok(None), // caller retains the bounded legacy path
-            }
-        }
         let mut rows = Vec::with_capacity(repositories.len());
         for repository in repositories {
             let mut reports = Vec::new();
             let mut failures = BTreeMap::new();
-            for (source, summary) in &sources {
+            for source in &self.config.codex_usage_sources {
                 match self.repository_key(source, repository, now, false) {
-                    Ok(key) => reports.push((source.uid, summary.source_report(Some(&key), count))),
+                    Ok(key) => match self.api.summary(source, Some(&key), start, end, deadline) {
+                        Ok(summary) => {
+                            reports.push((source.uid, summary.source_report(Some(&key), count)))
+                        }
+                        Err(_) => return Ok(None),
+                    },
                     Err(error) => increment(&mut failures, &error.message),
                 }
             }
-            let mut report = combine(
+            let report = combine(
                 repository,
                 range.clone(),
                 observed,
@@ -577,38 +641,17 @@ impl CodexUsage {
                 count,
                 &reports,
                 failures,
-                sources.len(),
+                self.config.codex_usage_sources.len(),
             );
-            report.coverage.snapshot = Some(devcoordinator2_api::results::UsageSnapshot {
-                updated_at_ms: Some(
-                    sources
-                        .iter()
-                        .map(|(_, s)| s.generated_at)
-                        .min()
-                        .unwrap_or(observed),
-                ),
-                refreshing: sources.iter().any(|(_, s)| {
-                    s.snapshot
-                        .as_ref()
-                        .is_some_and(|s| s.freshness == "refreshing")
-                }),
-                refresh_failed: sources.iter().any(|(_, s)| {
-                    s.snapshot
-                        .as_ref()
-                        .is_some_and(|s| matches!(s.freshness.as_str(), "stale" | "failed"))
-                }),
-            });
             rows.push(UsageRepositoryRow {
                 repository_id: report.repository_id,
                 display_name: report.display_name,
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                // The all-scope contract does not allocate counts or time by
-                // repository. Null is deliberate; never copy source totals.
-                model_requests: None,
-                tool_calls: None,
-                execution_wall_ms: None,
+                model_requests: Some(report.totals.model_requests),
+                tool_calls: Some(report.totals.tool_calls),
+                execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost,
             });
         }

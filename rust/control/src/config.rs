@@ -350,7 +350,8 @@ fn read_usage_policy(path: Option<&Path>) -> Result<Vec<CodexUsageSource>, Confi
         let api_socket = source
             .api_socket
             .map(|path| validate_absolute_policy_path("api_socket", path))
-            .transpose()?;
+            .transpose()?
+            .or_else(|| Some(codex_home.join("app-server-control/app-server-control.sock")));
         sources.push(CodexUsageSource {
             uid: source.uid,
             codex_home,

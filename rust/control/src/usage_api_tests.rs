@@ -121,9 +121,9 @@ fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
     assert_eq!(first, warm);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(first.repositories[0].total_tokens, Some(120));
-    assert_eq!(first.repositories[0].model_requests, None);
-    assert_eq!(first.repositories[0].tool_calls, None);
-    assert_eq!(first.repositories[0].execution_wall_ms, None);
+    assert_eq!(first.repositories[0].model_requests, Some(1));
+    assert_eq!(first.repositories[0].tool_calls, Some(1));
+    assert_eq!(first.repositories[0].execution_wall_ms, Some(0));
     assert_eq!(first.repositories[1].total_tokens, None);
     let wire = serde_json::to_string(&first).unwrap();
     for private in [
@@ -198,20 +198,13 @@ fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
     assert!(validate(&summary, Some(&"b".repeat(64)), 10, 21).is_err());
     value["snapshot"] =
         json!({"source_watermark":"42","generated_at":19,"freshness":"stale","refresh_id":null});
-    let mut cost = UsageCost {
-        status: "complete".into(),
-        basis: "api_equivalent".into(),
-        currency: "USD".into(),
-        processing_tier: "standard".into(),
-        estimated_usd_micros: Some(20),
-        input_usd_micros: Some(4),
-        cached_input_usd_micros: Some(2),
-        cache_write_usd_micros: Some(0),
-        output_usd_micros: Some(14),
-        rate_card_refs: vec!["fixture@1".into()],
-        ..Default::default()
-    };
-    value["cost"] = serde_json::to_value(&cost).unwrap();
+    let mut cost = json!({
+        "status":"complete","basis":"api_equivalent","currency":"USD","processingTier":"standard",
+        "estimatedUsdMicros":20,"inputUsdMicros":4,"cachedInputUsdMicros":2,"cacheWriteUsdMicros":0,"outputUsdMicros":14,
+        "inputTokens":100,"uncachedInputTokens":10,"cachedInputTokens":80,"cacheWriteTokens":10,"outputTokens":20,"reasoningTokens":5,
+        "providerTotalTokens":120,"pricedObservations":1,"unknownObservations":0,"rateCardRefs":["fixture@1"]
+    });
+    value["report"]["cost"] = cost.clone();
     let priced: Summary = serde_json::from_value(value.clone()).unwrap();
     validate(&priced, Some(&"b".repeat(64)), 10, 20).unwrap();
     assert_eq!(
@@ -222,8 +215,8 @@ fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
             .estimated_usd_micros,
         Some(20)
     );
-    cost.basis = "subscription".into();
-    value["cost"] = serde_json::to_value(cost).unwrap();
+    cost["basis"] = json!("subscription");
+    value["report"]["cost"] = cost;
     assert!(
         validate(
             &serde_json::from_value(value).unwrap(),
