@@ -333,6 +333,71 @@ contains values, thresholds, comparison, status, navigation type, LCP size,
 local-target flag, and timing source only—never the LCP element, its text, or a
 resource URL.
 
+## Initial Readiness Diagnostics
+
+`targetDefaults.initialReadinessDiagnostics` and a target override support this
+optional shape. Omission or `{ "enabled": false }` disables it. A target override
+replaces the defaults; resource/marker arrays are not concatenated.
+
+```json
+{
+  "initialReadinessDiagnostics": {
+    "enabled": true,
+    "resources": [{ "id": "session", "pathname": "/api/session" }],
+    "markers": [
+      { "id": "login", "selector": "#login-form" },
+      { "id": "ready", "selector": ".result-row" }
+    ]
+  }
+}
+```
+
+- Unknown keys and invalid shapes fail configuration. IDs are unique within
+  each list, non-sensitive lowercase ASCII aliases matching
+  `[a-z][a-z0-9-]{0,31}`. Each list has at most 16 entries. A resource pathname
+  is an exact same-origin path, without origin, query, fragment or credentials;
+  a marker is a standard CSS selector. Both strings are bounded to 256 characters.
+  Marker CSS syntax is checked in the blank verification page before navigation;
+  invalid syntax fails the cell without navigating it.
+- Passive listeners attach to the actual cell page before navigation. Matched
+  requests retain alias, method/resource-type enums, numeric response status,
+  event sequence and relative time only. Unmatched resources are counted by type.
+  Page errors retain a fixed error-name class, never a message/stack. No bodies,
+  headers, cookies, storage, console text, raw resource URLs or control/DOM values
+  enter diagnostics. Caller aliases must not contain sensitive facts. Public
+  configuration describes aliases only, not the resource paths/marker selectors.
+- The per-cell object is bounded to 64 events and 16 KiB. Dropped counts are
+  explicit. Pending matched requests and completed wait stages are recorded at
+  failure; marker evidence contains count/visibility and document ready state,
+  not page text/HTML. These observations distinguish visible boundaries; they
+  do not prove a root cause.
+- Initial navigation/readiness failure retains `navigation_error`, the original
+  failed stage and normalized error class, and the existing failed coverage/exit.
+  Opt-in failure reasons exclude raw browser error prose. The document HTTP
+  status is retained if navigation returned a response. Readiness timeouts and
+  application actions are not changed, retried or warmed up.
+- Before context cleanup, the verifier attempts initial-viewport then full-page
+  capture from that same page, using ordinary control redaction and caller
+  `screenshotMasks`. A three-second deadline covers diagnostic DOM/capture work;
+  if necessary the page is closed to interrupt pending browser operations.
+  Capture and close scheduling may finish just after the deadline. No recovery
+  navigation or verifier scrolling occurs. Snapshot/capture timestamps identify
+  the observed times; pixels are not claimed to be frozen at the timeout instant.
+  Masking failure, a closed browser or capture timeout is explicitly unavailable,
+  never an unmasked fallback. A partial image pair is valid diagnostic evidence,
+  not complete visual acceptance. Other sensitive visible regions still require
+  caller masks; arbitrary secret detection is not promised.
+- Failure images use the existing hashed screenshot descriptors in the private
+  report and journey-evidence bundle. The failed cell does not become `checked`
+  or enter the manual acceptance queue. No Console/API schema or public access
+  change is involved. Independent safe cells and normal context cleanup continue.
+- Successful opted cells record a bounded ready/counter summary and retain normal
+  verification. Listeners are removed before later interactions. Opted cells
+  neither read nor write development-cache evidence; subsequent invocations load
+  a real fresh page. Absent/disabled diagnostics preserve the existing path.
+  Authentication-profile setup, later interaction failures and historical pages
+  are not captured by this option.
+
 ## Review Inputs And Evidence
 
 - `repoRoot` is explicit and canonical. Each `reviewInputs` entry is a

@@ -87,6 +87,19 @@ declared UI inputs or journey/theme intent, never because dynamic pixels differ.
 Read [references/journey_review_contract.md](references/journey_review_contract.md)
 when preparing this contract or finalizing agent review.
 
+For a missing initial page or readiness signal, targets may explicitly enable
+`initialReadinessDiagnostics`. It passively records caller-defined resource
+aliases and DOM marker counts/visibility, not raw URLs, control values, bodies,
+headers, console text or error prose. Limits are 16 resources, 16 markers,
+64 events and 16 KiB per cell. On failure it attempts masked viewport and
+full-page images of that same page before cleanup, with a three-second capture
+deadline. Masking failure has no unmasked fallback. The original failure and
+coverage exit remain failures, not manual-review approvals. Successful opted
+cells remain successful; absent/disabled diagnostics retain ordinary behavior.
+Opted cells bypass evidence caching so a fresh-page diagnostic is never a replay.
+This does not capture authentication bootstrap failures or infer the cause of a
+previous run. Read the linked contract for privacy and partial-capture limits.
+
 This deterministic verification layer is not a replacement for human visual
 judgment. Use it before reporting changed web UI as done, and include its
 critical findings in the implementation or audit result.

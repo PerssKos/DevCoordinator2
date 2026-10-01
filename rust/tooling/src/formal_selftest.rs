@@ -728,6 +728,12 @@ fn run_verifier(
     }
     let receipt: Value = serde_json::from_str(receipt_text.trim())
         .map_err(|error| format!("default stdout is not a JSON receipt: {error}"))?;
+    write_bytes_nofollow(
+        &output.join("verifier-stdout.json"),
+        receipt_text.as_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     if receipt.get("exitCode") != Some(&json!(exit)) {
         return Err("formal verifier receipt exit code mismatch".to_owned());
     }
@@ -1011,6 +1017,478 @@ fn page_by_state<'a>(report: &'a Value, state: &str) -> Option<&'a Value> {
         .find(|page| page.pointer("/target/stateName") == Some(&json!(state)))
 }
 
+fn run_initial_readiness_diagnostics(
+    root: &Path,
+    static_server: &StaticServer,
+    work: &Path,
+    timeout: Duration,
+) -> Result<usize, String> {
+    let mut failures = Vec::new();
+    let mut image_hashes = BTreeMap::new();
+    let mut count = 0usize;
+    create_directory_all_nofollow(&work.join("cache"), 0o700).map_err(|error| error.to_string())?;
+    for mode in [
+        "pending",
+        "http-error",
+        "module-error",
+        "page-error",
+        "normal",
+        "delayed",
+        "opt-out",
+        "storm",
+        "mask-error",
+        "capture-deadline",
+        "canary-twin",
+        "visible-change",
+        "defaults",
+        "disabled",
+        "limit-boundary",
+        "marker-error",
+    ] {
+        let secret = if mode == "canary-twin" {
+            "PRIVATE-CANARY-SECOND"
+        } else {
+            "PRIVATE-CANARY-FIRST"
+        };
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let private_header_seen = Arc::new(AtomicBool::new(false));
+        let handler_gate = Arc::clone(&gate);
+        let handler_count = Arc::clone(&request_count);
+        let handler_header = Arc::clone(&private_header_seen);
+        let server = StaticServer::start_handler(Arc::new(move |request| {
+            let path = request.path.split('?').next().unwrap_or("/");
+            if path == "/fixture.html" {
+                handler_count.fetch_add(1, Ordering::AcqRel);
+                let source = match mode {
+                    "module-error" | "page-error" => format!(
+                        "<script type='module' src='/module/{secret}.mjs?token={secret}'></script>"
+                    ),
+                    "storm" | "limit-boundary" => format!(
+                        "<script>Promise.all(Array.from({{length:100}},()=>fetch('/session/{secret}'))).then(()=>fetch('/storm-finished'))</script>"
+                    ),
+                    _ => format!(
+                        "<script>console.error('{secret}');fetch('/session/{secret}?token={secret}#private-{secret}',{{method:'POST',headers:{{'X-Probe':'{secret}'}},body:'{secret}'}}).then(response=>response.json()).then(()=>{{if({})document.querySelector('main').id='ready'}});fetch('/private/{secret}');{}</script>",
+                        ["normal", "delayed", "defaults"].contains(&mode),
+                        if mode == "delayed" {
+                            "fetch('/release')"
+                        } else {
+                            ""
+                        }
+                    ),
+                };
+                let font = if mode == "capture-deadline" {
+                    "@font-face{font-family:Pending;src:url('/pending.woff2')}body{font-family:Pending,serif}"
+                } else {
+                    ""
+                };
+                return HttpResponse::html(html_page(
+                    &format!(
+                        "<meta name='diagnostic-source' content='diagnostic-fixture'><h1>Initial diagnostic fixture</h1><div id='visible' style='width:100px;height:40px;background:{}'></div><input value='{secret}' placeholder='{secret}'><textarea>{secret}</textarea><select><option>{secret}</option></select><div id='sensitive' style='width:200px;height:40px'>{secret}</div><p>Same page before cleanup</p>{source}",
+                        if mode == "visible-change" {
+                            "#0000ff"
+                        } else {
+                            "#00ff00"
+                        }
+                    ),
+                    &format!(
+                        "main{{min-height:1000px}}input,textarea,select{{display:block;width:220px;height:40px}}{font}"
+                    ),
+                ));
+            }
+            if path == "/healthy.html" {
+                return HttpResponse::html(html_page(
+                    "<meta name='diagnostic-source' content='diagnostic-fixture'><h1 id='ready'>Healthy independent page</h1>",
+                    "",
+                ));
+            }
+            if path == "/release" {
+                let (lock, signal) = &*handler_gate;
+                let state = lock.lock().unwrap();
+                let (mut state, _) = signal
+                    .wait_timeout_while(state, Duration::from_secs(5), |state| !state.1)
+                    .unwrap();
+                state.0 = true;
+                signal.notify_all();
+                return HttpResponse::status("200 OK", b"released".to_vec());
+            }
+            if path.starts_with("/session/") || path == "/pending.woff2" {
+                handler_header.fetch_or(
+                    request
+                        .headers
+                        .get("x-probe")
+                        .is_some_and(|value| value == secret),
+                    Ordering::AcqRel,
+                );
+                if mode == "pending" || mode == "delayed" || path == "/pending.woff2" {
+                    let (lock, signal) = &*handler_gate;
+                    let mut state = lock.lock().unwrap();
+                    state.1 = true;
+                    signal.notify_all();
+                    let _ = signal
+                        .wait_timeout_while(state, Duration::from_secs(15), |state| !state.0)
+                        .unwrap();
+                }
+                return HttpResponse {
+                    status: if [
+                        "http-error",
+                        "canary-twin",
+                        "visible-change",
+                        "mask-error",
+                        "opt-out",
+                    ]
+                    .contains(&mode)
+                    {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    },
+                    content_type: "application/json",
+                    headers: vec![("X-Private".into(), secret.into())],
+                    body: format!("{{\"private\":\"{secret}\"}}").into_bytes(),
+                    delay: Duration::ZERO,
+                };
+            }
+            if path.starts_with("/module/") && mode == "page-error" {
+                return HttpResponse {
+                    status: "200 OK",
+                    content_type: "text/javascript",
+                    headers: vec![],
+                    body: format!("console.error('{secret}');throw new TypeError('{secret}')")
+                        .into_bytes(),
+                    delay: Duration::ZERO,
+                };
+            }
+            HttpResponse::status(
+                if path == "/storm-finished" {
+                    "200 OK"
+                } else {
+                    "404 Not Found"
+                },
+                secret.as_bytes().to_vec(),
+            )
+        }))?;
+        let base = server.base_url();
+        let output = work.join(mode);
+        let checked = ["normal", "delayed", "defaults"].contains(&mode);
+        let expected_exit = if checked { 0 } else { 3 };
+        let mut diagnostics = json!({"enabled":true,"resources":[{"id":"session","pathname":format!("/session/{secret}")},{"id":"module","pathname":format!("/module/{secret}.mjs")}],"markers":[{"id":"content","selector":"main"},{"id":"ready","selector":"#ready"}]});
+        if mode == "limit-boundary" {
+            for index in 2..16 {
+                diagnostics["resources"].as_array_mut().unwrap().push(
+                    json!({"id":format!("resource-{index}"),"pathname":format!("/unused/{index}")}),
+                );
+                diagnostics["markers"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"id":format!("marker-{index}"),"selector":"main"}));
+            }
+        }
+        let mut target = json!({"name":"initial-diagnostic","url":format!("{base}/fixture.html"),"waitFor":{"selector":"#ready","timeoutMs":500},"screenshotMasks":[{"selector":"#sensitive","reason":"private fixture prose"}]});
+        if !["opt-out", "defaults"].contains(&mode) {
+            target["initialReadinessDiagnostics"] = if mode == "disabled" {
+                json!({"enabled":false})
+            } else {
+                diagnostics.clone()
+            };
+        }
+        if ["storm", "limit-boundary"].contains(&mode) {
+            target["waitFor"]["responseUrl"] = json!("**/storm-finished");
+        }
+        if mode == "mask-error" {
+            target["screenshotMasks"][0]["selector"] = json!("[");
+        }
+        if mode == "marker-error" {
+            target["initialReadinessDiagnostics"]["markers"][0]["selector"] = json!("[");
+        }
+        let mut config = contracted_config(
+            root,
+            json!({
+                "targets":[target,{"name":"healthy-sibling","url":format!("{base}/healthy.html"),"waitFor":{"selector":"#ready"}}],
+                "cookies":[{"name":"probe-cookie","value":secret,"url":base}],
+                "viewports":[{"name":"narrow","width":390,"height":640}],
+                    "development":{"cache":{"directory":work.join("cache"),"dataRevision":"diagnostic-fixture","mode":"read-write"}},
+                    "sourceBinding":{"expected":"diagnostic-fixture","responseHeader":null,"metaName":"diagnostic-source"}
+            }),
+        );
+        if ["defaults", "disabled"].contains(&mode) {
+            config["targetDefaults"]["initialReadinessDiagnostics"] = diagnostics;
+        }
+        let result = run_verifier(root, &config, &output, &[expected_exit], timeout, &[]);
+        let (lock, signal) = &*gate;
+        lock.lock().unwrap().0 = true;
+        signal.notify_all();
+        let assertions = (|| -> Result<(), String> {
+            let report = result?;
+            let page = report
+                .pointer("/pages/0")
+                .ok_or("missing diagnostic page")?;
+            if mode == "marker-error" {
+                if page.get("outcome") != Some(&json!("internal_cell_error"))
+                    || page.pointer("/cleanup/status") != Some(&json!("completed"))
+                    || report.pointer("/pages/1/outcome") != Some(&json!("checked"))
+                    || request_count.load(Ordering::Acquire) != 0
+                {
+                    return Err("invalid marker did not fail safely before navigation".into());
+                }
+                return Ok(());
+            }
+            if page.get("outcome")
+                != Some(&json!(if checked {
+                    "checked"
+                } else {
+                    "navigation_error"
+                }))
+                || report.pointer("/pages/1/outcome") != Some(&json!("checked"))
+                || page.pointer("/cleanup/status") != Some(&json!("completed"))
+                || request_count.load(Ordering::Acquire) != 1
+            {
+                return Err(
+                    "original outcome, single navigation, safe sibling or cleanup changed".into(),
+                );
+            }
+            if ["opt-out", "disabled"].contains(&mode) {
+                if page.get("initialReadinessDiagnostics").is_some()
+                    || !page
+                        .pointer("/screenshots/viewport")
+                        .is_some_and(Value::is_null)
+                {
+                    return Err("opt-out behavior changed".into());
+                }
+                return Ok(());
+            }
+            let diagnostic = page
+                .get("initialReadinessDiagnostics")
+                .ok_or("missing diagnostic evidence")?;
+            if page.pointer("/cache/hit") != Some(&json!(false))
+                || page.pointer("/cache/reason")
+                    != Some(&json!("initial-diagnostics-require-fresh-page"))
+                || page.pointer("/cache/write/written") != Some(&json!(false))
+            {
+                return Err("opted-in page incorrectly reused or wrote cache evidence".into());
+            }
+            if serde_json::to_vec(diagnostic).unwrap().len() > 16384
+                || diagnostic.get("listenersRemoved") != Some(&json!(true))
+                || diagnostic
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .is_some_and(|events| events.len() > 64)
+            {
+                return Err("diagnostic bound or listener cleanup failed".into());
+            }
+            if checked {
+                if diagnostic.get("status") != Some(&json!("ready")) {
+                    return Err("healthy page falsely failed".into());
+                }
+            } else {
+                if diagnostic.pointer("/failure/stage") != Some(&json!("initial-readiness"))
+                    || diagnostic.pointer("/failure/kind") != Some(&json!("TimeoutError"))
+                    || page.get("status") != Some(&json!(200))
+                {
+                    return Err("original timeout or HTTP document status lost".into());
+                }
+                let capture_failure = ["mask-error", "capture-deadline"].contains(&mode);
+                for kind in ["viewport", "fullPage"] {
+                    if capture_failure {
+                        if !page
+                            .pointer(&format!("/screenshots/{kind}"))
+                            .is_some_and(Value::is_null)
+                        {
+                            return Err("unsafe/over-budget capture was retained".into());
+                        }
+                    } else {
+                        let shot = page
+                            .pointer(&format!("/screenshots/{kind}"))
+                            .ok_or("missing shot")?;
+                        let path = shot
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .ok_or("missing shot path")?;
+                        let digest = sha256_file(Path::new(path))?;
+                        if shot.get("sha256") != Some(&json!(digest)) {
+                            return Err("screenshot binding changed".into());
+                        }
+                        image_hashes.insert((mode.to_owned(), kind.to_owned()), digest);
+                    }
+                }
+                if diagnostic
+                    .get("captureDurationMs")
+                    .and_then(Value::as_u64)
+                    .is_none_or(|duration| duration > 3500)
+                {
+                    return Err("diagnostic cleanup exceeded its bounded deadline tolerance".into());
+                }
+                let events = diagnostic
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .ok_or("missing events")?;
+                if mode == "pending"
+                    && diagnostic.pointer("/pendingResources/session") != Some(&json!(1))
+                {
+                    return Err("held session was not observed in flight".into());
+                }
+                if mode == "http-error"
+                    && !events
+                        .iter()
+                        .any(|event| event.get("status") == Some(&json!(503)))
+                {
+                    return Err("real HTTP failure was not observed".into());
+                }
+                if mode == "module-error"
+                    && !events.iter().any(|event| {
+                        event.get("resource") == Some(&json!("module"))
+                            && event.get("status") == Some(&json!(404))
+                    })
+                {
+                    return Err("real module failure was not observed".into());
+                }
+                if mode == "page-error"
+                    && !events.iter().any(|event| {
+                        event.get("event") == Some(&json!("page-error"))
+                            && event.get("kind") == Some(&json!("TypeError"))
+                    })
+                {
+                    return Err("real module error was not observed".into());
+                }
+                if ["storm", "limit-boundary"].contains(&mode)
+                    && diagnostic
+                        .get("droppedEvents")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        == 0
+                {
+                    return Err("event bound was not exercised".into());
+                }
+                let queue = load_json(
+                    &output.join("review-queue.json"),
+                    &output,
+                    "diagnostic queue",
+                )?;
+                if queue
+                    .get("entries")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .any(|cell| cell.get("reviewCellKey") == page.pointer("/review/reviewCellKey"))
+                {
+                    return Err("failed cell was promoted to manual acceptance".into());
+                }
+            }
+            if mode == "normal" {
+                let repeated = run_verifier(
+                    root,
+                    &config,
+                    &work.join("normal-repeat"),
+                    &[0],
+                    timeout,
+                    &[],
+                )?;
+                if request_count.load(Ordering::Acquire) != 2
+                    || repeated.pointer("/pages/0/cache/hit") != Some(&json!(false))
+                    || repeated.pointer("/pages/0/initialReadinessDiagnostics/status")
+                        != Some(&json!("ready"))
+                {
+                    return Err("repeat opt-in invocation did not load a fresh real page".into());
+                }
+            }
+            for filename in [
+                "report.json",
+                "report.md",
+                "journey-evidence.json",
+                "review-queue.json",
+                "verifier-stdout.json",
+                "progress.jsonl",
+            ] {
+                let bytes = read_bytes_nofollow(&output.join(filename), Some(&output))
+                    .map_err(|error| error.to_string())?
+                    .ok_or("missing diagnostic artifact")?;
+                if String::from_utf8_lossy(&bytes).contains(secret) {
+                    return Err(format!("private canary leaked in {filename}"));
+                }
+            }
+            if ["pending", "http-error", "normal", "delayed"].contains(&mode)
+                && !private_header_seen.load(Ordering::Acquire)
+            {
+                return Err("canary request did not reach the real fixture".into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = assertions {
+            failures.push(format!("{mode}: {error}"));
+        }
+        count += 1;
+        drop(server);
+    }
+    for kind in ["viewport", "fullPage"] {
+        let original = image_hashes.get(&("http-error".into(), kind.into()));
+        if original.is_none()
+            || original != image_hashes.get(&("canary-twin".into(), kind.into()))
+            || original == image_hashes.get(&("visible-change".into(), kind.into()))
+        {
+            failures.push(format!(
+                "{kind}: masked pixels leaked private values or hid visible content"
+            ));
+        }
+    }
+    let repeated = json!({"id":"same","pathname":"/session"});
+    for (name, settings) in [
+        (
+            "unknown-field",
+            json!({"enabled":true,"unexpected":"PRIVATE-CANARY-FIRST"}),
+        ),
+        (
+            "too-many-resources",
+            json!({"enabled":true,"resources":vec![repeated.clone();17]}),
+        ),
+        (
+            "too-many-markers",
+            json!({"enabled":true,"markers":vec![json!({"id":"content","selector":"main"});17]}),
+        ),
+        (
+            "duplicate-alias",
+            json!({"enabled":true,"resources":[repeated.clone(),repeated]}),
+        ),
+        (
+            "unsafe-path",
+            json!({"enabled":true,"resources":[{"id":"session","pathname":"https://private.invalid/PRIVATE-CANARY-FIRST"}]}),
+        ),
+        (
+            "query-path",
+            json!({"enabled":true,"resources":[{"id":"session","pathname":"/session?PRIVATE-CANARY-FIRST"}]}),
+        ),
+    ] {
+        let result = run_verifier(
+            root,
+            &contracted_config(
+                root,
+                json!({
+                    "targets":[{"name":"invalid-diagnostics","url":format!("{}/clean.html",static_server.base_url()),"initialReadinessDiagnostics":settings}],
+                    "viewports":[{"name":"narrow","width":390,"height":640}]
+                }),
+            ),
+            &work.join(name),
+            &[2],
+            timeout,
+            &[],
+        );
+        match result {
+            Ok(report)
+                if report.pointer("/error/message")
+                    == Some(&json!("invalid initialReadinessDiagnostics configuration")) => {}
+            Ok(_) => failures.push(format!(
+                "{name}: invalid diagnostics configuration was not rejected safely"
+            )),
+            Err(error) => failures.push(format!("{name}: {error}")),
+        }
+        count += 1;
+    }
+    if failures.is_empty() {
+        Ok(count)
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
 fn run_state_and_wait_phase(
     root: &Path,
     server: &StaticServer,
@@ -1019,6 +1497,35 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    let initial_missing = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "targets":[{"name":"initial-missing","url":format!("{base}/clean.html"),
+                    "waitFor":{"selector":"#never-ready","timeoutMs":150},
+                    "initialReadinessDiagnostics":{"enabled":true,"resources":[],"markers":[{"id":"content","selector":"main"}]}}],
+                "viewports":[{"name":"desktop","width":1280,"height":800}]
+            }),
+        ),
+        &work.join("initial-readiness-missing"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if initial_missing.pointer("/pages/0/outcome") != Some(&json!("navigation_error"))
+        || initial_missing
+            .pointer("/pages/0/screenshots/viewport/sha256")
+            .and_then(Value::as_str)
+            .is_none()
+        || initial_missing
+            .pointer("/pages/0/screenshots/fullPage/sha256")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        return Err("initial readiness failure lost its original page screenshots".to_owned());
+    }
+    scenarios += 1;
     run_node_probe(
         root,
         &format!(
@@ -1633,6 +2140,12 @@ fn run_state_and_wait_phase(
         return Err("a non-positive performance threshold was accepted".to_owned());
     }
     scenarios += 1;
+    scenarios += run_initial_readiness_diagnostics(
+        root,
+        server,
+        &work.join("initial-diagnostics"),
+        timeout,
+    )?;
     Ok(scenarios)
 }
 
@@ -4036,6 +4549,7 @@ fn validate_skill_contract(root: &Path) -> Result<(), String> {
         "sampled-only",
         "sourceBinding",
         "journey_review_contract.md",
+        "initialReadinessDiagnostics",
         "review-queue.json",
         "journey-evidence.json",
         "devcoordinator2-tooling formal-ui review",

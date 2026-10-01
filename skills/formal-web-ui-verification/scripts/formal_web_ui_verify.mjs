@@ -905,13 +905,14 @@ async function waitForRenderFrames(page, count, timeoutMs = 10000) {
   }), { frames: count, timeout: timeoutMs });
 }
 
-async function applyWaitFor(page, waitFor, armed = null) {
+async function applyWaitFor(page, waitFor, armed = null, onCompleted = null) {
   const evidence = [];
   const timeout = waitFor.timeoutMs ?? 10000;
   const record = async (kind, operation, detail = {}) => {
     const started = Date.now();
     const value = await operation();
     evidence.push({ kind, durationMs: Date.now() - started, ...detail });
+    onCompleted?.({ kind, durationMs: Date.now() - started });
     return value;
   };
   const handles = armed || armWaitFor(page, waitFor);
@@ -1158,6 +1159,39 @@ function resolveRenderedPerformance(...values) {
   return Object.assign({}, DEFAULT_RENDERED_PERFORMANCE, ...values.filter(Boolean));
 }
 
+function normalizeInitialReadinessDiagnostics(value) {
+  if (value === undefined || value === null) return null;
+  const invalid = () => { throw new Error("invalid initialReadinessDiagnostics configuration"); };
+  if (typeof value !== "object" || Array.isArray(value) || typeof value.enabled !== "boolean" ||
+      Object.keys(value).some((key) => !["enabled", "resources", "markers"].includes(key))) invalid();
+  const lists = {};
+  for (const [kind, field] of [["resources", "pathname"], ["markers", "selector"]]) {
+    const entries = value[kind] ?? [];
+    if (!Array.isArray(entries) || entries.length > 16) invalid();
+    const ids = new Set();
+    lists[kind] = entries.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+          Object.keys(entry).some((key) => !["id", field].includes(key)) ||
+          typeof entry.id !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(entry.id) || ids.has(entry.id) ||
+          typeof entry[field] !== "string" || !entry[field].trim() || entry[field].length > 256) invalid();
+      ids.add(entry.id);
+      if (field === "pathname") {
+        let parsed;
+        try { parsed = new URL(entry.pathname, "https://diagnostics.invalid"); } catch { invalid(); }
+        if (parsed.origin !== "https://diagnostics.invalid" || parsed.pathname !== entry.pathname ||
+            parsed.search || parsed.hash || parsed.username || parsed.password) invalid();
+      }
+      return { id: entry.id, [field]: entry[field] };
+    });
+  }
+  return value.enabled ? { enabled: true, ...lists } : null;
+}
+
+function publicInitialReadinessDiagnostics(value) {
+  if (!value?.enabled) return undefined;
+  return { enabled: true, resources: (value.resources || []).map(({ id }) => ({ id })), markers: (value.markers || []).map(({ id }) => ({ id })) };
+}
+
 function normalizeTargetDefaults(value) {
   if (value === undefined || value === null) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1177,6 +1211,7 @@ function normalizeTargetDefaults(value) {
     allowContrast: normalizeSelectorReasonList(value.allowContrast, "targetDefaults.allowContrast"),
     themeExceptions: normalizeSelectorReasonList(value.themeExceptions, "targetDefaults.themeExceptions"),
     screenshotMasks: normalizeSelectorReasonList(value.screenshotMasks, "targetDefaults.screenshotMasks"),
+    initialReadinessDiagnostics: normalizeInitialReadinessDiagnostics(value.initialReadinessDiagnostics),
     execution: normalizeExecution(value.execution, "targetDefaults.execution"),
     authProfile: normalizeAuthProfileName(value.authProfile, "targetDefaults.authProfile"),
     performance: normalizeRenderedPerformanceOverride(
@@ -1302,6 +1337,9 @@ function normalizeTargets(config, cli) {
             ...(targetDefaults.screenshotMasks || []),
             ...normalizeSelectorReasonList(item.screenshotMasks, `targets[${targetIndex}].screenshotMasks`),
           ],
+          initialReadinessDiagnostics: item.initialReadinessDiagnostics === undefined
+            ? targetDefaults.initialReadinessDiagnostics
+            : normalizeInitialReadinessDiagnostics(item.initialReadinessDiagnostics),
           breakpointProfile: normalizeBreakpointProfile(item.breakpointProfile, `targets[${targetIndex}].breakpointProfile`),
           sourceBinding: item.sourceBinding === undefined
             ? undefined
@@ -1638,6 +1676,7 @@ function privacySafeConfigContract(config) {
   }));
   const targets = (config.targets || []).map((target) => ({
     ...target,
+    initialReadinessDiagnostics: publicInitialReadinessDiagnostics(target.initialReadinessDiagnostics),
     waitFor: redactWaitFor(target.waitFor),
     states: redactActions(target.states),
   }));
@@ -1647,7 +1686,10 @@ function privacySafeConfigContract(config) {
   }));
   return {
     targets,
-    targetDefaults: config.targetDefaults,
+    targetDefaults: config.targetDefaults ? {
+      ...config.targetDefaults,
+      initialReadinessDiagnostics: publicInitialReadinessDiagnostics(config.targetDefaults.initialReadinessDiagnostics),
+    } : config.targetDefaults,
     viewports: config.viewports,
     waitFor: config.waitFor || null,
     areas: config.areas,
@@ -1921,8 +1963,9 @@ function publicExecutionPlan(cells, maxPageCount, selection = null, requiredCove
 }
 
 function publicTarget(target) {
-  const { states, verificationState, includeBase, repositoryRoot, targetGroupId, baseTargetName, ...safe } = target;
-  return safe;
+  const { states, verificationState, includeBase, repositoryRoot, targetGroupId, baseTargetName, initialReadinessDiagnostics, ...safe } = target;
+  const diagnostics = publicInitialReadinessDiagnostics(initialReadinessDiagnostics);
+  return diagnostics ? { ...safe, initialReadinessDiagnostics: diagnostics } : safe;
 }
 
 function publicViewport(viewport) {
@@ -4651,12 +4694,12 @@ function screenshotActionValues(target) {
   return [...new Set(values)];
 }
 
-async function screenshotMasks(page, target, config) {
+async function screenshotMasks(page, target, config, bounded = false) {
   const masks = [];
   for (const entry of [...config.screenshotMasks, ...(target.screenshotMasks || [])]) {
     const locator = page.locator(entry.selector);
     try {
-      await locator.count();
+      if (!bounded) await locator.count();
     } catch (error) {
       throw new Error(`screenshot mask selector could not be evaluated (${error.name || "selector error"})`);
     }
@@ -4675,12 +4718,13 @@ function screenshotArtifactPath(config, cellId, target, viewport, kind) {
   );
 }
 
-async function captureEvidenceScreenshot(page, target, viewport, config, cellId, kind) {
+async function captureEvidenceScreenshot(page, target, viewport, config, cellId, kind, deadline = null) {
   fs.mkdirSync(config.screenshotDir, { recursive: true, mode: 0o700 });
   const file = screenshotArtifactPath(config, cellId, target, viewport, kind);
-  const masks = await screenshotMasks(page, target, config);
+  const masks = await screenshotMasks(page, target, config, deadline !== null);
+  if (deadline !== null && Date.now() >= deadline) throw new Error("diagnostic capture deadline");
   const buffer = await page.screenshot({
-    path: file,
+    ...(deadline === null ? { path: file } : { timeout: Math.max(1, deadline - Date.now()) }),
     fullPage: kind === "full-page",
     animations: "disabled",
     caret: "hide",
@@ -4689,6 +4733,10 @@ async function captureEvidenceScreenshot(page, target, viewport, config, cellId,
     mask: masks,
     maskColor: "#777777",
   });
+  if (deadline !== null) {
+    if (Date.now() >= deadline) throw new Error("diagnostic capture deadline");
+    fs.writeFileSync(file, buffer, { mode: 0o600 });
+  }
   const dimensions = pngDimensions(buffer);
   return {
     kind,
@@ -4699,6 +4747,129 @@ async function captureEvidenceScreenshot(page, target, viewport, config, cellId,
     width: dimensions.width,
     height: dimensions.height,
     capturedAt: new Date().toISOString(),
+  };
+}
+
+function diagnosticErrorKind(error) {
+  return ["TimeoutError", "TypeError", "SyntaxError", "ReferenceError", "RangeError", "Error"].includes(error?.name)
+    ? error.name : "Error";
+}
+
+function startInitialReadinessDiagnostics(page, target) {
+  const settings = target.initialReadinessDiagnostics;
+  if (!settings?.enabled) return null;
+  const started = performance.now();
+  let origin = null;
+  try { origin = new URL(target.url).origin; } catch {}
+  const pending = new WeakMap();
+  const inflight = Object.fromEntries(settings.resources.map(({ id }) => [id, 0]));
+  const events = [];
+  const unknown = {};
+  const waitStages = [];
+  let total = 0;
+  let dropped = 0;
+  let detached = false;
+  const elapsed = () => Math.round(performance.now() - started);
+  const resourceType = (request) => ["document", "stylesheet", "image", "media", "font", "script", "xhr", "fetch", "websocket", "manifest"].includes(request.resourceType()) ? request.resourceType() : "other";
+  const record = (event) => {
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + 1);
+    if (events.length < 64) events.push({ sequence: total, elapsedMs: elapsed(), ...event });
+    else dropped = Math.min(Number.MAX_SAFE_INTEGER, dropped + 1);
+  };
+  const requestStarted = (request) => {
+    let url;
+    try { url = new URL(request.url()); } catch { return; }
+    const resource = url.origin === origin && settings.resources.find((entry) => entry.pathname === url.pathname);
+    const type = resourceType(request);
+    if (!resource) {
+      unknown[type] = Math.min(Number.MAX_SAFE_INTEGER, (unknown[type] || 0) + 1);
+      return;
+    }
+    const value = { resource: resource.id, resourceType: type, method: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(request.method()) ? request.method() : "other", sameOrigin: true };
+    pending.set(request, value);
+    inflight[resource.id] += 1;
+    record({ event: "request", ...value });
+  };
+  const responseReceived = (response) => {
+    const value = pending.get(response.request());
+    if (value) record({ event: "response", ...value, status: response.status() });
+  };
+  const requestEnded = (request, failed) => {
+    const value = pending.get(request);
+    if (!value) return;
+    pending.delete(request);
+    inflight[value.resource] = Math.max(0, inflight[value.resource] - 1);
+    record({ event: failed ? "request-failed" : "request-finished", ...value });
+  };
+  const handlers = {
+    request: requestStarted,
+    response: responseReceived,
+    requestfinished: (request) => requestEnded(request, false),
+    requestfailed: (request) => requestEnded(request, true),
+    pageerror: (error) => record({ event: "page-error", kind: diagnosticErrorKind(error) }),
+    crash: () => record({ event: "crash" }),
+  };
+  for (const [event, handler] of Object.entries(handlers)) page.on(event, handler);
+  const stop = () => {
+    if (detached) return;
+    for (const [event, handler] of Object.entries(handlers)) page.off(event, handler);
+    detached = Object.entries(handlers).every(([event, handler]) => !page.listeners(event).includes(handler));
+  };
+  const snapshot = (status) => ({ status, elapsedMs: elapsed(), totalEvents: total, droppedEvents: dropped, events: [...events], unknownResources: { ...unknown }, pendingResources: { ...inflight }, waitStages: [...waitStages], listenersRemoved: detached });
+  return {
+    stop,
+    completedWait: (entry) => { if (waitStages.length < 16) waitStages.push(entry); },
+    success: () => {
+      stop();
+      return { status: "ready", elapsedMs: elapsed(), totalEvents: total, droppedEvents: dropped, listenersRemoved: detached };
+    },
+    async failure(result, error, stage, config, viewport, cellId) {
+      const failedAt = Date.now();
+      const deadline = failedAt + 3000;
+      let closeOnDeadline = null;
+      const deadlineTimer = setTimeout(() => { closeOnDeadline = page.close().catch(() => {}); }, 3000);
+      stop();
+      const evidence = { ...snapshot("failed"), failure: { stage, kind: diagnosticErrorKind(error) }, document: { status: "unavailable" }, captures: {} };
+      try {
+        try {
+          const handle = await page.waitForFunction((markers) => {
+            const values = markers.map(({ id, selector }) => {
+              const elements = [...document.querySelectorAll(selector)];
+            return { id, count: elements.length, visible: elements.some((element) => {
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+              }) };
+            });
+            return { status: "captured", readyState: document.readyState, markers: values };
+          }, settings.markers, { timeout: Math.max(1, deadline - Date.now()) });
+          try { evidence.document = await handle.jsonValue(); } finally { await handle.dispose(); }
+        } catch {
+          evidence.document = { status: page.isClosed() ? "page-closed" : "unavailable" };
+        }
+        for (const [key, kind] of [["viewport", "initial-viewport"], ["fullPage", "full-page"]]) {
+          if (Date.now() >= deadline || page.isClosed()) {
+            evidence.captures[key] = page.isClosed() ? "page-closed" : "deadline";
+            continue;
+          }
+          try {
+            result.screenshots[key] = await captureEvidenceScreenshot(page, target, viewport, config, cellId, kind, deadline);
+            evidence.captures[key] = "captured";
+          } catch {
+            evidence.captures[key] = page.isClosed() ? "page-closed" : Date.now() >= deadline ? "deadline" : "capture-failed";
+          }
+        }
+        evidence.captureDurationMs = Date.now() - failedAt;
+        while (Buffer.byteLength(JSON.stringify(evidence)) > 16384 && evidence.events.length) {
+          evidence.events.pop();
+          evidence.droppedEvents += 1;
+        }
+        result.initialReadinessDiagnostics = evidence;
+      } finally {
+        clearTimeout(deadlineTimer);
+        if (closeOnDeadline) await closeOnDeadline;
+      }
+    },
   };
 }
 
@@ -4989,26 +5160,48 @@ async function verifyTarget(page, target, viewport, config, cellId) {
     return finish();
   }
   let response;
+  if (target.initialReadinessDiagnostics?.enabled) {
+    const valid = await page.evaluate((markers) => markers.every(({ selector }) => {
+      try { document.querySelector(selector); return true; } catch { return false; }
+    }), target.initialReadinessDiagnostics.markers);
+    if (!valid) throw new Error("invalid initialReadinessDiagnostics marker selector");
+  }
   const initialWait = mergeWaitFor(config.waitFor, target.waitFor);
   const initialArmed = armWaitFor(page, initialWait);
+  const diagnostics = startInitialReadinessDiagnostics(page, target);
+  let initialStage = "navigation";
   try {
     response = await stage("navigation", () => page.goto(
       target.url,
       { waitUntil: "domcontentloaded", timeout: 15000 },
     ));
+    initialStage = "initial-readiness";
     result.waitEvidence.push(...await stage(
       "initial-readiness",
-      () => applyWaitFor(page, initialWait, initialArmed),
+      () => applyWaitFor(page, initialWait, initialArmed, diagnostics?.completedWait),
     ));
   } catch (error) {
     result.skipped = true;
     result.outcome = "navigation_error";
-    result.skipReason = `navigation-failed: ${error.message}`;
+    result.skipReason = diagnostics
+      ? `navigation-failed: ${diagnosticErrorKind(error)} (${initialStage})`
+      : `navigation-failed: ${error.message}`;
     const finalRoute = routeEvidence(page.url());
     result.finalPath = finalRoute.path || null;
     result.finalOrigin = finalRoute.origin || null;
+    if (diagnostics) {
+      result.status = response?.status() ?? null;
+      try {
+        await diagnostics.failure(result, error, initialStage, config, viewport, cellId);
+      } catch {
+        result.initialReadinessDiagnostics = { status: "unavailable", failure: { stage: initialStage, kind: diagnosticErrorKind(error) } };
+      }
+    }
     return finish();
+  } finally {
+    diagnostics?.stop();
   }
+  if (diagnostics) result.initialReadinessDiagnostics = diagnostics.success();
   result.status = response ? response.status() : null;
   result.contentType = response ? response.headers()["content-type"] || "" : "";
   const finalRoute = routeEvidence(page.url());
@@ -6316,6 +6509,7 @@ function ensureExplicitCacheRoot(config) {
 }
 
 function cacheKeyForCell(cell, config, browserLabel) {
+  if (cell.target.initialReadinessDiagnostics?.enabled) return { key: null, reason: "initial-diagnostics-require-fresh-page" };
   const binding = cell.target.sourceBinding || config.sourceBinding;
   if (!binding?.expected) return { key: null, reason: "source-binding-required" };
   if (!cell.target.reviewEvidence?.fingerprint) return { key: null, reason: "review-input-fingerprint-required" };
