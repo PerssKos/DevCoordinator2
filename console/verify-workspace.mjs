@@ -164,11 +164,15 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('an unpublished sketch archive has a truthful empty state', await page.locator('.sketch-gallery-page').innerText().then(text => text.includes('0 sketches') && text.includes('No sketches have been published for this project yet.'))
     && await page.locator('.sketch-card').count() === 0);
   await page.goto(`${baseUrl}#/glossary/${repositoryId}`);
-  await page.locator('#workspace-aspects a[aria-current]').waitFor();
+  const glossaryAspect = page.locator(`#workspace-aspects a[aria-current][href="#/glossary/${repositoryId}"]`);
+  await glossaryAspect.waitFor({ state: 'visible' });
   await page.evaluate(() => new Promise(requestAnimationFrame));
-  const selectedAspect = await page.locator('#workspace-aspects a[aria-current]').boundingBox();
+  const selectedAspect = await glossaryAspect.boundingBox();
   const aspectStrip = await page.locator('#workspace-aspects').boundingBox();
-  verify('direct links reveal the entire selected aspect on narrow screens', selectedAspect.x >= aspectStrip.x - 1 && selectedAspect.x + selectedAspect.width <= aspectStrip.x + aspectStrip.width + 1);
+  const aspectVisible = !!(selectedAspect && aspectStrip && selectedAspect.width > 0 && selectedAspect.height > 0
+    && selectedAspect.x >= aspectStrip.x - 1 && selectedAspect.x + selectedAspect.width <= aspectStrip.x + aspectStrip.width + 1);
+  if (!aspectVisible) await page.screenshot({ path: path.join(output, `workspace-aspect-failure-${theme}-${viewport.width}.png`), fullPage: true });
+  verify('direct links reveal the entire selected aspect on narrow screens', aspectVisible, JSON.stringify({ selectedAspect, aspectStrip }));
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.locator('.plan-context').waitFor();
   await page.screenshot({ path: path.join(output, `workspace-${theme}-${viewport.width}.png`), fullPage: true });

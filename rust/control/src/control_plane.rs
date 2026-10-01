@@ -199,7 +199,7 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     sketches: SketchService,
-    tickets: crate::ticket_service::TicketService,
+    tickets: Option<crate::ticket_service::TicketService>,
     deployments: Deployments,
     servers: ServerService,
     events: EventService,
@@ -254,8 +254,15 @@ impl ControlPlane {
         let test_evidence =
             TestEvidenceService::with_clock(database.clone(), registry.clone(), Arc::clone(&clock));
         let sketches = SketchService::with_clock(&config, database.clone(), Arc::clone(&clock));
-        let tickets =
-            crate::ticket_service::TicketService::new(database.clone(), &config.base_domain)?;
+        // Public ticket identity needs a domain; the headless daemon does not.
+        let tickets = if config.base_domain.trim().is_empty() {
+            None
+        } else {
+            Some(crate::ticket_service::TicketService::new(
+                database.clone(),
+                &config.base_domain,
+            )?)
+        };
         let incidents =
             crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
@@ -458,11 +465,17 @@ impl ControlPlane {
         if operation.starts_with("ticket.") {
             let principal = self.access.principal(caller)?;
             let administrator = principal.local || principal.administrator;
+            let tickets = self.tickets.as_ref().ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::ConfigurationInvalid,
+                    "configure DEVCOORDINATOR2_BASE_DOMAIN to use feature-request tickets",
+                )
+            })?;
             return match operation {
-                "ticket.request" => encode(self.tickets.request(decode(params)?, administrator)?),
-                "ticket.settings" => encode(self.tickets.settings(administrator)?),
-                "ticket.configure" => encode(self.tickets.configure(decode(params)?)?),
-                "ticket.remote" => encode(self.tickets.remote(decode(params)?)?),
+                "ticket.request" => encode(tickets.request(decode(params)?, administrator)?),
+                "ticket.settings" => encode(tickets.settings(administrator)?),
+                "ticket.configure" => encode(tickets.configure(decode(params)?)?),
+                "ticket.remote" => encode(tickets.remote(decode(params)?)?),
                 _ => Err(ProtocolError::new(
                     ErrorCode::OperationUnknown,
                     "unknown ticket operation",
@@ -2034,6 +2047,20 @@ mod tests {
 
     #[test]
     fn composed_dispatch_authorizes_persists_and_publishes_typed_planning_results() {
+        for base_domain in ["example.test", ""] {
+            verify_composed_dispatch(base_domain);
+        }
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let mut configuration = config(temporary.path());
+        configuration.base_domain = "https://example.test/invalid-path".into();
+        let error = ControlPlane::new(configuration, database)
+            .err()
+            .expect("an invalid configured ticket origin must still be rejected");
+        assert_eq!(error.code, ErrorCode::ParamsInvalid);
+    }
+
+    fn verify_composed_dispatch(base_domain: &str) {
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         database
@@ -2043,13 +2070,55 @@ mod tests {
                 Ok(())
             })
             .expect("fixture");
+        let mut configuration = config(temporary.path());
+        configuration.base_domain = base_domain.into();
         let plane = ControlPlane::with_adapters(
-            config(temporary.path()),
+            configuration,
             database.clone(),
             Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
         )
         .expect("control plane");
+
+        assert!(
+            plane
+                .execute("ping", serde_json::json!({}), &local())
+                .is_ok()
+        );
+        if base_domain.is_empty() {
+            for (operation, parameters) in [
+                ("ticket.settings", serde_json::json!({})),
+                (
+                    "ticket.configure",
+                    serde_json::json!({"upstream":"local","expected_revision":0}),
+                ),
+                (
+                    "ticket.request",
+                    serde_json::json!({"target":"local","action":{"kind":"list"}}),
+                ),
+                (
+                    "ticket.remote",
+                    serde_json::json!({"action":{"kind":"list"}}),
+                ),
+            ] {
+                let error = plane.execute(operation, parameters, &local()).unwrap_err();
+                assert_eq!(error.code, ErrorCode::ConfigurationInvalid, "{operation}");
+                assert!(error.message.contains("DEVCOORDINATOR2_BASE_DOMAIN"));
+            }
+        } else {
+            let settings = plane
+                .execute("ticket.settings", serde_json::json!({}), &local())
+                .expect("configured ticket service");
+            assert_eq!(settings["local"], "https://example.test");
+        }
+        let forbidden = plane
+            .execute(
+                "ticket.configure",
+                serde_json::json!({"upstream":"local","expected_revision":0}),
+                &public("visitor@example.test"),
+            )
+            .expect_err("domain availability must not bypass authorization");
+        assert_eq!(forbidden.code, ErrorCode::PermissionDenied);
 
         let created = plane
             .execute(

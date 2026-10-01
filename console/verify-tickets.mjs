@@ -102,7 +102,19 @@ try {
   await check('public readers see comments and files but cannot mutate, spoof authority or read other Console data',async()=>{
     const result=await remote(upstream,{kind:'get',ticket_id:ticketId});assert.equal(result.ok,true);assert.equal(result.data.can_manage,false);const ticket=result.data.ticket;
     const comments=await remote(upstream,{kind:'comments',ticket_id:ticketId,offset:0,limit:20});assert.equal(comments.data.items.length,2);
-    const file=comments.data.items[0].attachments[0];const bytes=await remote(upstream,{kind:'file',ticket_id:ticketId,comment_id:comments.data.items[0].id,file_id:file.id,offset:0});assert.equal(bytes.ok,true);assert.equal(crypto.createHash('sha256').update(Buffer.from(bytes.data.data_base64,'base64')).digest('hex'),file.sha256);
+    const file=comments.data.items[0].attachments[0],chunks=[];let offset=0,nextOffset;
+    do {
+      const bytes=await remote(upstream,{kind:'file',ticket_id:ticketId,comment_id:comments.data.items[0].id,file_id:file.id,offset});
+      assert.equal(bytes.ok,true);assert.equal(bytes.data.offset,offset);assert.deepEqual(bytes.data.attachment,file);
+      const chunk=Buffer.from(bytes.data.data_base64,'base64');
+      assert.ok(chunk.length>0 || file.byte_size===0);assert.ok(chunk.length<=32768);
+      chunks.push(chunk);offset+=chunk.length;nextOffset=bytes.data.next_offset;
+      assert.ok(offset<=file.byte_size);assert.equal(nextOffset,offset<file.byte_size?offset:null);
+    } while(nextOffset!==null);
+    const complete=Buffer.concat(chunks);
+    assert.equal(complete.length,file.byte_size);
+    assert.equal(crypto.createHash('sha256').update(complete).digest('hex'),file.sha256);
+    await log('public-file-read.json',{chunks:chunks.length,bytes:complete.length,sha256:file.sha256});
     for(const credential of [null,'1'.repeat(64)]){
       const denied=await remote(upstream,{kind:'edit',ticket_id:ticketId,expected_revision:ticket.revision,title:'Unwanted change',body:'Rejected'},credential);assert.equal(denied.ok,false);assert.equal(denied.error.code,'permission_denied');
     }
