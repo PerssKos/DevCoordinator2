@@ -40,6 +40,8 @@ use cost::{CostBuckets, RequestTokens, cost_from_buckets, merge_cost_bucket};
 
 #[path = "usage_cache.rs"]
 mod cache;
+#[path = "usage_api.rs"]
+mod collector_api;
 #[path = "usage_performance.rs"]
 mod performance;
 #[path = "usage_review.rs"]
@@ -111,6 +113,7 @@ pub struct CodexUsage {
     clock: Arc<dyn Clock>,
     probe: Arc<dyn RepositoryProbe>,
     cache: cache::UsageCache,
+    api: collector_api::CollectorApi,
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +161,8 @@ enum TokenField {
 
 #[derive(Default)]
 struct SourceReport {
+    supplied_cost: Option<UsageCost>,
+    snapshot: Option<devcoordinator2_api::results::UsageSnapshot>,
     database_schema: u32,
     taxonomy_version: u32,
     evidence: bool,
@@ -252,6 +257,22 @@ impl UsageService {
                 ProtocolError::new(ErrorCode::RepositoryNotFound, "no registered repository")
             })?;
         let mut report = self.usage.repository(&repository, params.range.clone())?;
+        if !params.wait_for_refresh
+            && self
+                .usage
+                .config
+                .codex_usage_sources
+                .iter()
+                .any(|s| s.api_socket.is_some())
+            && report
+                .coverage
+                .snapshot
+                .as_ref()
+                .is_some_and(|s| s.updated_at_ms.is_none() && s.refreshing)
+        {
+            self.usage.wait_for_refresh(Some(&repository.repository_id));
+            report = self.usage.repository(&repository, params.range.clone())?;
+        }
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
             // Start the cost-capable projection before waiting; the initial
@@ -464,6 +485,7 @@ impl CodexUsage {
             clock,
             probe,
             cache: cache::UsageCache::default(),
+            api: collector_api::CollectorApi::default(),
         }
     }
 
@@ -472,6 +494,9 @@ impl CodexUsage {
         repositories: &[RepositoryRecord],
         range: UsageRange,
     ) -> Result<UsageRepositories, ProtocolError> {
+        if let Some(report) = self.api_repositories(repositories, range.clone())? {
+            return Ok(report);
+        }
         let now_ms = self.now_ms()?;
         let mut rows = Vec::new();
         for repository in repositories {
@@ -482,9 +507,9 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: report.totals.model_requests,
-                tool_calls: report.totals.tool_calls,
-                execution_wall_ms: report.time.execution_wall.measured_ms,
+                model_requests: Some(report.totals.model_requests),
+                tool_calls: Some(report.totals.tool_calls),
+                execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost.clone(),
             });
         }
@@ -510,9 +535,9 @@ impl CodexUsage {
                 range: report.range,
                 coverage: report.coverage,
                 total_tokens: report.totals.total_tokens,
-                model_requests: report.totals.model_requests,
-                tool_calls: report.totals.tool_calls,
-                execution_wall_ms: report.time.execution_wall.measured_ms,
+                model_requests: Some(report.totals.model_requests),
+                tool_calls: Some(report.totals.tool_calls),
+                execution_wall_ms: Some(report.time.execution_wall.measured_ms),
                 cost: report.totals.cost.clone(),
             });
         }
@@ -633,8 +658,11 @@ impl CodexUsage {
         projection: Projection,
         rate_cards: RateCardSnapshot,
     ) -> Result<UsageRepository, ProtocolError> {
+        // A single-bucket Performance window has exact end semantics. Live
+        // chart snapshots are reusable within their fixed UTC bucket window.
+        let end_key = if bucket_count == 1 { end_ms } else { 0 };
         let key = format!(
-            "{}:{:?}:{}:{start_ms}:{bucket_ms}:{bucket_count}:{projection:?}:rate-{}",
+            "{}:{:?}:{}:{start_ms}:{end_key}:{bucket_ms}:{bucket_count}:{projection:?}:rate-{}",
             repository.repository_id,
             repository.root_path,
             range_name(&range),
@@ -687,6 +715,7 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
+        let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
         for source in &self.config.codex_usage_sources {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 increment(&mut failures, "query_budget_exhausted");
@@ -845,6 +874,17 @@ impl CodexUsage {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT);
         if Instant::now() >= deadline {
             return Err("query_budget_exhausted".into());
+        }
+        if matches!(projection, Projection::PerformanceFast) && source.api_socket.is_some() {
+            if let Ok(summary) = self.api.summary(
+                source,
+                Some(repository_key),
+                start_ms,
+                end_ms,
+                deadline.min(Instant::now() + collector_api::API_BUDGET),
+            ) {
+                return Ok(summary.source_report(None, bucket_count));
+            }
         }
         let result = (|| {
             let connection = match inherited_deadline {
@@ -1006,6 +1046,17 @@ fn open_source_until(source: &CodexUsageSource, deadline: Instant) -> Result<Con
     connection
         .pragma_update(None, "query_only", true)
         .map_err(|_| "source_unavailable".to_owned())?;
+    // Derived joins may spill to disk; a large collector must not turn the
+    // daemon into an in-memory copy of its database or WAL.
+    connection
+        .pragma_update(None, "temp_store", "FILE")
+        .map_err(|_| "source_unavailable")?;
+    connection
+        .pragma_update(None, "cache_size", -4096)
+        .map_err(|_| "source_unavailable")?;
+    connection
+        .pragma_update(None, "mmap_size", 0)
+        .map_err(|_| "source_unavailable")?;
     connection
         .busy_timeout(Duration::from_millis(250))
         .map_err(|_| "source_unavailable".to_owned())?;
@@ -1868,7 +1919,26 @@ fn combine(
         merge_cost_bucket(&mut total_cost_buckets, bucket);
     }
     total_cost_buckets.source_gaps += failures.values().sum::<u64>();
-    let total_cost = cost_from_buckets(&total_cost_buckets);
+    let total_cost = if reports
+        .iter()
+        .any(|(_, report)| report.supplied_cost.is_some())
+    {
+        let estimates = reports
+            .iter()
+            .map(|(_, report)| {
+                report.supplied_cost.clone().unwrap_or_else(|| {
+                    let mut buckets = CostBuckets::default();
+                    for value in report.activity_costs.values() {
+                        merge_cost_bucket(&mut buckets, value);
+                    }
+                    cost_from_buckets(&buckets)
+                })
+            })
+            .collect::<Vec<_>>();
+        collector_api::merge_costs(&estimates, !failures.is_empty())
+    } else {
+        cost_from_buckets(&total_cost_buckets)
+    };
     let mut model_rows = total_cost_buckets
         .models
         .iter()
@@ -1923,8 +1993,7 @@ fn combine(
                     .map(|total| value as f64 / total as f64),
                 operations: activity_operations
                     .get(&(phase.clone(), activity.clone()))
-                    .copied()
-                    .unwrap_or(0),
+                    .copied(),
                 provenance: activity_provenance
                     .iter()
                     .filter(|((p, a, _), _)| p == &phase && a == &activity)
@@ -2028,13 +2097,22 @@ fn combine(
             .then_with(|| left.family.cmp(&right.family))
     });
     family_rows.truncate(12);
+    let snapshots = reports
+        .iter()
+        .filter_map(|(_, report)| report.snapshot.as_ref())
+        .collect::<Vec<_>>();
+    let snapshot = (!snapshots.is_empty()).then(|| devcoordinator2_api::results::UsageSnapshot {
+        updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
+        refreshing: snapshots.iter().any(|s| s.refreshing),
+        refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
+    });
     UsageRepository {
         repository_id: repository.repository_id.clone(),
         display_name: repository.display_name.clone(),
         range,
         generated_at_ms: now_ms,
         coverage: UsageCoverage {
-            snapshot: None,
+            snapshot,
             state: coverage_state.clone(),
             has_gaps: coverage_state != CoverageState::Complete,
             configured_collectors: u32::try_from(configured).unwrap_or(u32::MAX),
@@ -2889,7 +2967,7 @@ pub(crate) mod tests {
         (canonical, now_ms)
     }
 
-    fn config(root: &Path, codex_home: PathBuf) -> Config {
+    pub(crate) fn config(root: &Path, codex_home: PathBuf) -> Config {
         Config {
             socket_path: root.join("daemon.sock"),
             sandbox_bridge_dir: root.join("bridge"),
@@ -2908,6 +2986,7 @@ pub(crate) mod tests {
             compose_env_authorizations: HashSet::new(),
             codex_usage_sources_file: None,
             codex_usage_sources: vec![CodexUsageSource {
+                api_socket: None,
                 uid: rustix::process::getuid().as_raw(),
                 codex_home,
                 executable: root.join("codex"),
@@ -3386,6 +3465,7 @@ pub(crate) mod tests {
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         let source = CodexUsageSource {
+            api_socket: None,
             uid: rustix::process::getuid().as_raw(),
             codex_home,
             executable,
@@ -3405,6 +3485,7 @@ pub(crate) mod tests {
         Connection::open(&outside).unwrap();
         symlink(&outside, codex_home.join("usage/usage.sqlite3")).unwrap();
         let source = CodexUsageSource {
+            api_socket: None,
             uid: rustix::process::getuid().as_raw(),
             codex_home,
             executable: temporary.path().join("codex"),
@@ -3417,6 +3498,7 @@ pub(crate) mod tests {
         let temporary = tempdir().unwrap();
         let executable = temporary.path().join("probe");
         let source = CodexUsageSource {
+            api_socket: None,
             uid: rustix::process::getuid().as_raw(),
             codex_home: temporary.path().to_path_buf(),
             executable: executable.clone(),

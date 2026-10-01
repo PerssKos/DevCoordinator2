@@ -949,7 +949,7 @@ async function main() {
             daemon.setScenario({ ...SCENARIOS.populated, cacheState });
             const operation = route === 'usage' ? 'usage.repositories' : route.startsWith('progress') ? 'progress.repository' : 'usage.repository';
             const failed = ['failed', 'unavailable'].includes(cacheState);
-            const waitRequest = failed ? null : page.waitForRequest(request => request.url().endsWith('/api/v2/' + operation) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
+            const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v2/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
             await page.waitForFunction(() => /Loading usage|Saved usage|Refresh failed|refresh failed/i.test(document.querySelector('main').innerText));
             const before = await page.locator('main').innerText();
@@ -965,7 +965,9 @@ async function main() {
               daemon.releaseDelayed();
               await page.waitForFunction(() => !/Loading usage|Saved usage · updating|Updating saved usage/.test(document.querySelector('main').innerText));
               if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
-              check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === operation && call.params.wait_for_refresh === true));
+              const renderedOperation = page.url().includes('#/usage/') ? 'usage.repository' : operation;
+              check('cache ' + route + ': completion uses bounded event wait', daemon.calls.some(call => call.operation === renderedOperation && call.params.wait_for_refresh === true));
+              if (renderedOperation === 'usage.repository') check('repository Usage does not load unrelated repository measurements', !daemon.calls.some(call => call.operation === 'usage.repositories'));
             }
             check('cache ' + viewport.width + ' ' + route + ': no document overflow', await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
             await page.screenshot({ path: path.join(OUT, viewport.width + '-' + route.replaceAll('/', '-') + '-' + cacheState + '-initial.png') });

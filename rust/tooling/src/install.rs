@@ -176,6 +176,8 @@ pub struct CodexUsageSource {
     pub uid: u32,
     pub codex_home: String,
     pub executable: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_socket: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -966,6 +968,7 @@ where
             return Err(format!("Codex usage source is not installed for {name}"));
         }
         sources.insert(CodexUsageSource {
+            api_socket: None,
             uid: account.uid,
             codex_home: path_text(&codex_home)?,
             executable: path_text(&executable)?,
@@ -991,7 +994,18 @@ pub fn merge_codex_usage_sources(
         (_, None) => Vec::new(),
     };
     let mut by_uid = BTreeMap::new();
-    for source in existing.into_iter().chain(additions.iter().cloned()) {
+    for source in existing {
+        by_uid.insert(source.uid, source);
+    }
+    for mut source in additions.iter().cloned() {
+        if source.api_socket.is_none() {
+            source.api_socket = by_uid
+                .get(&source.uid)
+                .filter(|old| {
+                    old.codex_home == source.codex_home && old.executable == source.executable
+                })
+                .and_then(|old| old.api_socket.clone());
+        }
         by_uid.insert(source.uid, source);
     }
     let policy = UsagePolicy {
@@ -2332,6 +2346,7 @@ mod tests {
 
         let usage = temporary.path().join("usage.json");
         let first = CodexUsageSource {
+            api_socket: Some("/home/one/.codex/app-server-control/app-server-control.sock".into()),
             uid: 1000,
             codex_home: "/home/one/.codex".to_owned(),
             executable: "/home/one/.local/bin/codex".to_owned(),
@@ -2343,6 +2358,7 @@ mod tests {
             merge_codex_usage_sources(
                 &usage,
                 &[CodexUsageSource {
+                    api_socket: None,
                     uid: 1001,
                     codex_home: "/home/two/.codex".to_owned(),
                     executable: "/home/two/.local/bin/codex".to_owned(),
@@ -2354,6 +2370,9 @@ mod tests {
         let policy: UsagePolicy = serde_json::from_slice(&std::fs::read(&usage).unwrap()).unwrap();
         assert_eq!(policy.sources.len(), 2);
         assert_eq!(policy.sources[0], first);
+        let mut rediscovered = first.clone();
+        rediscovered.api_socket = None;
+        assert!(!merge_codex_usage_sources(&usage, &[rediscovered], (uid, gid)).unwrap());
         assert_eq!(std::fs::metadata(&usage).unwrap().mode() & 0o777, 0o600);
     }
 
@@ -2409,6 +2428,7 @@ mod tests {
         assert_eq!(
             sources,
             [CodexUsageSource {
+                api_socket: None,
                 uid: 1234,
                 codex_home: home.join(".codex").display().to_string(),
                 executable: home.join(".local/bin/codex").display().to_string(),
@@ -2586,6 +2606,7 @@ mod tests {
                 path: "private/dev.env".to_owned(),
             }],
             usage_sources: vec![CodexUsageSource {
+                api_socket: None,
                 uid,
                 codex_home: "/home/developer/.codex".to_owned(),
                 executable: "/home/developer/.local/bin/codex".to_owned(),

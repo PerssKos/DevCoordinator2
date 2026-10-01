@@ -187,6 +187,15 @@ untracked `instance/` directory and in the installed instance configuration
 
 ## Codex usage analytics boundary
 
+- The authorized API consumer uses only the explicitly configured same-owner
+  local CodexMulti app-server socket. It verifies the socket owner, kernel peer
+  UID and returned Codex home before requesting content-free summaries. It adds
+  no network collector, listener or credentials. The approved source-policy,
+  operator/administrator audience, identity exclusion and single accounting
+  truth assumptions below also apply to these responses. Socket preference is
+  optional and preserves the read-only SQLite fallback
+  (DC2-USAGE-API-CONSUMER-20260929).
+
 - The owner explicitly authorizes the root daemon to read the content-free
   usage databases of every same-owner Unix account listed in a private,
   explicitly configured source policy and to combine those measurements by
