@@ -2178,6 +2178,23 @@ async function main() {
   // alternatives, persistence, recovery, preview request, feedback, and drop.
   await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
   await page.waitForSelector('.gantt');
+  check('plan: completed root tasks are hidden by default',
+    await page.locator(`[data-task-row="${P_D1}"].ghidden`).count() === 1
+    && await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden)`).count() === 0
+    && await page.locator(`[data-minimap-task="${P_D1}"]`).count() === 0);
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}?task=${P_D1}`);
+  await page.waitForSelector(`[data-task-row="${P_D1}"].selected`);
+  check('plan: an explicit link still reveals a hidden completed task',
+    await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden).selected`).count() === 1);
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
+  await page.waitForSelector('.gantt');
+  const initialPlanViewport = page.locator('[data-plan-viewport]');
+  await initialPlanViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; element.scrollLeft = 0; });
+  await page.waitForTimeout(80);
+  const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
+  check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
+  await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
+  await page.waitForTimeout(80);
   await chooseRepository(page, LONG);
   await page.waitForURL(/#\/plan\/r2$/);
   check('plan: shared repository selection keeps the current aspect', (await page.locator('#workspace-heading').innerText()) === LONG);
@@ -2405,7 +2422,7 @@ async function main() {
     return { box: { x: box.x, y: box.y, width: box.width, height: box.height },
       hit: hit?.className || hit?.tagName || '' };
   });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"]`, { x: 100, y: 28 });
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"] .glabel`, { x: 100, y: 28 });
   await waitForSettledCall(daemon, page, 'task.update');
   const reorderCall = daemon.calls.find((c) => c.operation === 'task.update');
   const dragEvents = await page.evaluate(() => window.__planDragEvents);
@@ -2425,7 +2442,7 @@ async function main() {
     const target = document.querySelector(`[data-drop-release="${releaseId}"]`);
     if (viewport && sourceRow && target) viewport.scrollTop = Math.max(0, ((sourceRow.offsetTop + target.offsetTop) / 2) - (viewport.clientHeight / 2));
   }, { sourceId: P_C2, releaseId: V_R2 });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`, { x: 45 });
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"] .glabel`, { x: 45 });
   await waitForSettledCall(daemon, page, 'task.update');
   const dragMoveCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
