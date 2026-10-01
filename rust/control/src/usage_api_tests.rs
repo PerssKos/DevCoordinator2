@@ -255,3 +255,31 @@ fn slow_api_is_cancelled_within_the_shared_read_budget() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     server.join().unwrap();
 }
+
+#[test]
+fn source_backfill_progress_is_reported_without_scanning_raw_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("collector");
+    super::super::tests::source_database(&home, 5);
+    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
+             INSERT INTO _usage_report_backfill VALUES('operations', 20, 20),('token_observations', 30, 100),('coverage_events', 5, 5);",
+        )
+        .unwrap();
+    let source = CodexUsageSource {
+        uid: rustix::process::getuid().as_raw(),
+        codex_home: home,
+        executable: "/unused".into(),
+        api_socket: None,
+    };
+    let snapshot = source_progress(&source).expect("progress row");
+    assert_eq!(snapshot.progress_completed, Some(55));
+    assert_eq!(snapshot.progress_total, Some(125));
+    assert_eq!(
+        snapshot.progress_stage.as_deref(),
+        Some("token_observations")
+    );
+    assert!(snapshot.refreshing);
+}

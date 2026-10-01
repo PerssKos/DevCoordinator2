@@ -218,7 +218,7 @@ const fixtures = (scenario) => {
   const usageSourceFailureCoverage = { ...usageMappingPendingCoverage,
     unavailable_reasons: { source_unavailable: 4 } };
   const usageIndexingCoverage = { ...usageMappingPendingCoverage,
-    unavailable_reasons: { indexing: 4 }, snapshot: { updated_at_ms: null, refreshing: true, refresh_failed: false } };
+    unavailable_reasons: { indexing: 4 }, snapshot: { updated_at_ms: null, refreshing: true, refresh_failed: false, progress_completed: 3426, progress_total: 3926, progress_stage: 'token_observations' } };
   const usageSeries = usageHasNoMeasurements ? [] : Array.from({ length: 24 }, (_, index) => {
     const start = Date.UTC(2026, 7, 28, 19 + index);
     const phases = {
@@ -519,7 +519,9 @@ async function startFakeDaemon(dir) {
           const failed = ['failed', 'unavailable'].includes(scenario.cacheState);
           const cold = scenario.cacheState === 'unavailable' || scenario.cacheState === 'loading' && !ready;
           const snapshot = { updated_at_ms: cold ? null : Date.UTC(2026, 8, 4, 12),
-            refreshing: !ready && !failed, refresh_failed: failed };
+            refreshing: !ready && !failed, refresh_failed: failed,
+            progress_completed: cold ? 3426 : 3926, progress_total: 3926,
+            progress_stage: cold ? 'token_observations' : null };
           const items = req.operation === 'usage.repositories' ? payload.data.repositories : [payload.data];
           for (const item of items) {
             const coverage = req.operation === 'progress.repository' ? item.coverage.tokens : item.coverage;
@@ -956,6 +958,7 @@ async function main() {
             check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage/i.test(before));
             if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
+            if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
             if (cacheState === 'loading' && route === 'progress/' + REPO) check('cache cold Progress leaves token evidence blank', await page.locator('[data-progress-evidence="tokens"] > strong').textContent() === '—');
             const details = route === 'progress/' + REPO ? '.progress-exact' : route === 'usage/' + REPO ? '.usage-provenance' : null;
             if (cacheState === 'stale' && details) await page.locator(details + ' summary').click();
@@ -1943,6 +1946,18 @@ async function main() {
     await page.locator('.usage-phase-chart rect').count() >= 6
     && /Planning/.test(await page.innerText('.usage-legend'))
     && /Unattributed/.test(await page.innerText('.usage-legend')));
+  check('usage: cost ledger exposes selected-model detail',
+    await page.locator('[data-usage-model-ledger]').count() === 1
+    && await page.locator('.usage-model-row').count() >= 2
+    && await page.locator('[data-usage-model-detail]').count() === 1);
+  await page.locator('.usage-model-row').nth(1).click();
+  check('interaction: selecting a model updates its token and cost detail',
+    await page.locator('.usage-model-row').nth(1).getAttribute('aria-pressed') === 'true'
+    && (await page.locator('[data-usage-model-detail]').innerText()).includes('Total tokens'));
+  await page.locator('.usage-phase-chart rect').first().hover();
+  check('interaction: hovering a phase bar shows token and cost details',
+    await page.locator('[data-usage-chart-tooltip]:visible').count() === 1
+    && /Phase tokens/.test(await page.locator('[data-usage-chart-tooltip]').innerText()));
   const axisTitleBox = await page.locator('.usage-axis-title').boundingBox();
   const topTickBox = await page.locator('.usage-y-label').last().boundingBox();
   check('usage: large scale labels cannot overlap the y-axis title',
