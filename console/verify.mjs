@@ -540,6 +540,7 @@ async function startFakeDaemon(dir) {
       };
       if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
+      if (scenario.holdWorkspaceUsage && cmd === 'usage.repositories' && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
         mutable.taskUpdates.clear();
@@ -949,15 +950,30 @@ async function main() {
         for (const route of ['usage', 'usage/' + REPO, 'progress/' + REPO, 'deployments'].filter(route => !process.env.CONSOLE_VERIFY_CACHE_ROUTE || route.startsWith(process.env.CONSOLE_VERIFY_CACHE_ROUTE))) {
           for (const cacheState of ['loading', 'stale', 'failed', 'unavailable']) {
             try {
-            daemon.setScenario({ ...SCENARIOS.populated, cacheState });
+            daemon.setScenario({ ...SCENARIOS.populated, cacheState, holdWorkspaceUsage: route === 'deployments' });
             if (route === 'deployments') {
-              await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
+              const sidebarRequest = page.waitForRequest(request => request.url().endsWith('/api/v2/usage.repositories')).catch(error => ({ error }));
+              let sidebarReplyReceived = false;
+              const sidebarReply = page.waitForResponse(response => response.url().endsWith('/api/v2/usage.repositories'))
+                .then(response => { sidebarReplyReceived = true; return response; }).catch(error => ({ error }));
+              await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route + '?repository=' + REPO);
               await page.locator('.deployments-dashboard .deployment-record').first().waitFor();
+              const received = await sidebarRequest;
+              if (received.error) throw received.error;
               check('cache ' + viewport.width + ' deployments ' + cacheState + ': repository records render independently of usage',
                 await page.locator('#workspace-heading').innerText() === 'repo-one'
                 && await page.locator('.deployments-dashboard .deployment-record').count() > 0
                 && daemon.calls.some(call => call.operation === 'deployment.list')
-                && !daemon.calls.some(call => ['usage.repository', 'usage.repositories', 'progress.repository'].includes(call.operation)));
+                && !sidebarReplyReceived
+                && !daemon.calls.some(call => ['usage.repository', 'progress.repository'].includes(call.operation)));
+              daemon.releaseDelayed();
+              const replied = await sidebarReply;
+              if (replied.error) throw replied.error;
+              await daemon.waitForCall('usage.repositories');
+              check('cache ' + viewport.width + ' deployments ' + cacheState + ': optional sidebar usage settles without replacing records',
+                replied.status() === 200
+                && await page.locator('#workspace-heading').innerText() === 'repo-one'
+                && await page.locator('.deployments-dashboard .deployment-record').count() > 0);
               check('cache ' + viewport.width + ' deployments ' + cacheState + ': no obsolete usage summary',
                 await page.locator('[data-summary="usage"]').count() === 0);
               check('cache ' + viewport.width + ' deployments: no document overflow',
