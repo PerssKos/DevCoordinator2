@@ -18,7 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .nth(1)
             .ok_or("an unused external fixture directory is required")?,
     );
-    std::fs::create_dir(&root)?;
+    let tickets = std::env::args().nth(2).as_deref() == Some("tickets");
+    if !tickets || !root.join("glossary-fixture.marker").is_file() {
+        std::fs::create_dir(&root)?;
+    }
     std::fs::write(
         root.join("glossary-fixture.marker"),
         "isolated glossary acceptance fixture",
@@ -26,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let database = Database::open(root.join("authority.sqlite3"))?;
     let health = std::env::args().nth(2).as_deref() == Some("health");
     database.transaction(|connection| {
+        if connection.query_row("SELECT COUNT(*) FROM users", [], |row| row.get::<_, i64>(0))? > 0 { return Ok(()); }
         for (identity, name) in [("r1111111111111111", "Vocabulary project"), ("r2222222222222222", "Other project")] {
             connection.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,?2,?3,'now',1000,'now')", rusqlite::params![identity, format!("/fixture/{identity}"), name])?;
         }
@@ -60,7 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         slice_name: "unused-fixture.slice".into(),
         client_group: "unused-fixture".into(),
         port_range: (40000, 40100),
-        base_domain: "example.test".into(),
+        base_domain: if tickets {
+            std::env::args()
+                .nth(3)
+                .unwrap_or_else(|| "example.test".into())
+        } else {
+            "example.test".into()
+        },
         edge_uid: Some(999),
         admin_emails: Vec::new(),
         telegram_token_file: None,

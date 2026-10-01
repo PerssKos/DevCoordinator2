@@ -587,10 +587,13 @@ pub fn validate_registered_repository_configs(
     connection
         .pragma_update(None, "query_only", true)
         .map_err(|error| format!("cannot protect registered repository query: {error}"))?;
+    // Activation protects the daemon against an invalid canonical repository
+    // configuration. Historical and temporary worktrees are independently
+    // validated when a test or deployment uses them; making every retired
+    // worktree a global activation prerequisite lets stale scratch state block
+    // an otherwise safe daemon update.
     let mut statement = connection
-        .prepare(
-            "SELECT w.worktree_path FROM worktrees w JOIN repositories r ON r.repository_id=w.repository_id WHERE r.archived_at IS NULL ORDER BY w.worktree_path",
-        )
+        .prepare("SELECT root_path FROM repositories WHERE archived_at IS NULL ORDER BY root_path")
         .map_err(|error| format!("cannot inventory registered repository configs: {error}"))?;
     let worktrees = statement
         .query_map([], |row| row.get::<_, String>(0))
@@ -2434,11 +2437,18 @@ mod tests {
     }
 
     #[test]
-    fn every_registered_schema_two_configuration_is_validated_by_the_built_binary() {
+    fn every_active_repository_root_configuration_is_validated_by_the_built_binary() {
         let temporary = tempfile::tempdir().unwrap();
         let worktree = temporary.path().join("repo");
         std::fs::create_dir(&worktree).unwrap();
         std::fs::write(worktree.join(".devcoordinator.toml"), "schema = 2\n").unwrap();
+        let retired = temporary.path().join("retired-worktree");
+        std::fs::create_dir(&retired).unwrap();
+        std::fs::write(
+            retired.join(".devcoordinator.toml"),
+            format!("schema = 2\n# {}\n", "x".repeat(262_000)),
+        )
+        .unwrap();
         let database = temporary.path().join("authority.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
@@ -2454,6 +2464,12 @@ mod tests {
             .execute(
                 "INSERT INTO worktrees VALUES('w1','r1',?1,'t','t')",
                 [worktree.display().to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO worktrees VALUES('w2','r1',?1,'t','t')",
+                [retired.display().to_string()],
             )
             .unwrap();
         drop(connection);

@@ -126,6 +126,28 @@ untracked `instance/` directory and in the installed instance configuration
   input, path escape, and lost replies are credible operational failures and
   are handled as such, not as security incidents.
 
+## Public feature requests
+
+- The owner confirmed on 2026-09-29 that feature-request tickets are public
+  (DC2-PUBLIC-FEATURE-REQUESTS-20260929). The ticket description, discussion and
+  attachments on the request and every comment may be read without sign-in.
+  This exception is confined to the dedicated ticket surface; existing Console,
+  repository, deployment and private evidence access does not change.
+- Independent installations may submit requests without an upstream approval
+  queue, consistent with the requested availability to all DevCoordinator users.
+  Each originating installation proves its identity with a random credential
+  unique to that upstream, retained only in private authority state. Remote
+  server labels are descriptive, not verified domain ownership or public user
+  identities. Do not publish Console email or Unix account attribution.
+- A submitting server may edit, remove, close and discuss its own tickets.
+  Upstream administrators may manage received tickets and discuss them. Public
+  readers have no mutation authority. Remote requests never inherit the edge's
+  trusted local authority and never select an arbitrary daemon operation.
+- File bytes are untrusted public content. Preview supported image, PDF and
+  text formats in bounded, isolated viewers; other formats remain downloadable.
+  Filenames and document text never become executable markup. Credentials do
+  not enter public responses, request histories or diagnostics.
+
 ## Glossary boundary
 
 - The approved glossary interface reuses the existing Console roles and

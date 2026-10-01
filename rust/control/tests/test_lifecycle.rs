@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use devcoordinator2_api::ErrorCode;
@@ -2589,21 +2588,19 @@ fn reconciler_preserves_a_live_supervised_test() {
 #[test]
 fn reconciler_interrupts_unsupervised_state_once_and_preserves_history() {
     let world = LifecycleWorld::new();
+    let (finished, completion) = std::sync::mpsc::channel();
+    world
+        .lifecycle
+        .set_event_sink(Arc::new(move |event: TestLifecycleEvent| {
+            if event.kind == "test.finished" {
+                let _ = finished.send(());
+            }
+        }));
     let run = world.start();
     world.systemd.finish(&run.unit);
     // Wait for the actual fixture completion, then simulate a lost durable
     // terminal write. Reconciliation must not resurrect or repeat the run.
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while world
-        .lifecycle
-        .status(world.worktree.to_str().unwrap(), &world.caller)
-        .unwrap()
-        .status
-        == TestStatus::Running
-    {
-        assert!(Instant::now() < deadline);
-        thread::yield_now();
-    }
+    completion.recv_timeout(Duration::from_secs(10)).unwrap();
     let store = TestRunStore;
     let current = store.open_current(&world.worktree).unwrap().unwrap();
     let mut summary = store

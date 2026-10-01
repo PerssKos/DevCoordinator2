@@ -165,7 +165,7 @@ fn tool_model(tool: McpToolDefinition) -> Tool {
     .with_annotations(ToolAnnotations::from_raw(
         None,
         Some(tool.operation.policy.read_only()),
-        Some(tool.operation.policy.destructive()),
+        Some(tool.operation.policy.destructive() || tool.operation.name == "ticket.request"),
         Some(tool.operation.policy.idempotent),
         Some(tool.operation.policy.open_world()),
     ))
@@ -218,6 +218,14 @@ mod tests {
             mcp_tools().iter().map(|tool| tool.name).collect::<Vec<_>>()
         );
         assert!(tools.windows(2).all(|pair| pair[0].name < pair[1].name));
+        let ticket = tools
+            .iter()
+            .find(|tool| tool.name == "ticket_request")
+            .unwrap();
+        let annotations = serde_json::to_value(ticket.annotations.as_ref().unwrap()).unwrap();
+        assert_eq!(annotations["destructiveHint"], true);
+        assert_eq!(annotations["openWorldHint"], true);
+        assert_eq!(annotations["readOnlyHint"], false);
         for tool in &tools {
             assert!(
                 tool.output_schema.is_some(),

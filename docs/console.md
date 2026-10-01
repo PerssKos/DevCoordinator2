@@ -49,6 +49,10 @@ or Escape and restore focus after keyboard dismissal.
 
 The shared catalogue combines authorized planning, usage, progress, deployment,
 and test indexes. Only verified origin keys combine separate checkout records.
+Temporary governed-test repositories nested below a registered checkout's
+`.devcoordinator/test/current/scratch` directory are shown under that owning
+project while their exact repository and worktree identities remain available
+in the checkout disclosure.
 The checkout disclosure preserves access to separate plans and decision records;
 test and deployment actions always use their original exact identifiers.
 This is presentation grouping, not a database ownership merge

@@ -72,6 +72,2016 @@
     },
     {
       "cli": {
+        "excludedReason": "Use Console or MCP ticket_request.",
+        "routes": []
+      },
+      "description": "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.",
+      "inputSchema": {
+        "$defs": {
+          "Action": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "list",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mine": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "get",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "comments",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "create",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "edit",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "remove",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "close",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "closed"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "comment",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "request_key",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "byte_size": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "upload_start",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "name",
+                  "byte_size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "data_base64": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_chunk",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id",
+                  "offset",
+                  "data_base64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "upload_remove",
+                    "type": "string"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "comment_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "file_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "file_id"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/Action"
+          },
+          "target": {
+            "description": "Omit for configured upstream; use \"local\" to manage received tickets.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "Request",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Action": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "closed": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "kind": {
+                        "const": "list",
+                        "type": "string"
+                      },
+                      "limit": {
+                        "default": 20,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "mine": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "get",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "comments",
+                        "type": "string"
+                      },
+                      "limit": {
+                        "default": 20,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attachments": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "create",
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "request_key",
+                      "title",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "body": {
+                        "type": "string"
+                      },
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "edit",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      },
+                      "title": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision",
+                      "title",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "remove",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "expected_revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "close",
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "expected_revision",
+                      "closed"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "attachments": {
+                        "default": [],
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "body": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "comment",
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "request_key",
+                      "body"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "byte_size": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "const": "upload_start",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "request_key": {
+                        "type": "string"
+                      },
+                      "sha256": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "request_key",
+                      "name",
+                      "byte_size",
+                      "sha256"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "data_base64": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "upload_chunk",
+                        "type": "string"
+                      },
+                      "offset": {
+                        "format": "uint32",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "upload_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "upload_id",
+                      "offset",
+                      "data_base64"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "kind": {
+                        "const": "upload_remove",
+                        "type": "string"
+                      },
+                      "upload_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "upload_id"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "comment_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "file_id": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "file",
+                        "type": "string"
+                      },
+                      "offset": {
+                        "default": 0,
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "ticket_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "ticket_id",
+                      "file_id"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "target": {
+                "description": "Omit for configured upstream; use \"local\" to manage received tickets.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "title": "Request",
+            "type": "object"
+          },
+          "name": "ticket_request",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.request",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Author": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "server",
+              "name"
+            ],
+            "type": "object"
+          },
+          "Comment": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "author",
+              "body",
+              "created_at",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "Ticket": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count",
+              "author",
+              "body",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "TicketSummary": {
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TicketSummary"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "tickets",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "can_comment": {
+                "type": "boolean"
+              },
+              "can_manage": {
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "ticket",
+                "type": "string"
+              },
+              "ticket": {
+                "$ref": "#/$defs/Ticket"
+              }
+            },
+            "required": [
+              "kind",
+              "ticket",
+              "can_manage",
+              "can_comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Comment"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "comments",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "comment": {
+                "$ref": "#/$defs/Comment"
+              },
+              "kind": {
+                "const": "comment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "upload",
+                "type": "string"
+              },
+              "offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "upload_id",
+              "offset"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "attachment": {
+                "$ref": "#/$defs/Attachment"
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "attachment",
+              "offset",
+              "data_base64"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "removed",
+                "type": "string"
+              },
+              "removed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "removed"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "Reply"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP ticket_settings.",
+        "routes": []
+      },
+      "description": "Read the feature request upstream, default vr.ae, and prior ticket destinations.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "EmptyParams",
+            "type": "object"
+          },
+          "name": "ticket_settings",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.settings",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "can_configure": {
+            "type": "boolean"
+          },
+          "local": {
+            "type": "string"
+          },
+          "previous_upstreams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "revision",
+          "local",
+          "previous_upstreams",
+          "can_configure"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP ticket_configure.",
+        "routes": []
+      },
+      "description": "Set the feature request upstream without moving existing tickets; local uses this server.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "expected_revision"
+        ],
+        "title": "Configure",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "upstream",
+              "expected_revision"
+            ],
+            "title": "Configure",
+            "type": "object"
+          },
+          "name": "ticket_configure",
+          "transform": "identity"
+        }
+      ],
+      "name": "ticket.configure",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "can_configure": {
+            "type": "boolean"
+          },
+          "local": {
+            "type": "string"
+          },
+          "previous_upstreams": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upstream": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upstream",
+          "revision",
+          "local",
+          "previous_upstreams",
+          "can_configure"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Used only by the dedicated edge ticket endpoint.",
+        "routes": []
+      },
+      "description": "Dedicated federation adapter. Public reads and credential-bound originating-server writes; no inherited administrator authority.",
+      "inputSchema": {
+        "$defs": {
+          "Action": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "list",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "mine": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "get",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "comments",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "create",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "type": "string"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "edit",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "title",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "remove",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "closed": {
+                    "type": "boolean"
+                  },
+                  "expected_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "close",
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "expected_revision",
+                  "closed"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "body": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "comment",
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "request_key",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "byte_size": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "const": "upload_start",
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "request_key",
+                  "name",
+                  "byte_size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "data_base64": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_chunk",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id",
+                  "offset",
+                  "data_base64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "upload_remove",
+                    "type": "string"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "upload_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "comment_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "file_id": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "ticket_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ticket_id",
+                  "file_id"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/Action"
+          },
+          "credential": {
+            "description": "Transport credential, never returned or logged. Omit for public reads.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RemoteRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "ticket.remote",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Author": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "server": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "server",
+              "name"
+            ],
+            "type": "object"
+          },
+          "Comment": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "author",
+              "body",
+              "created_at",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "Ticket": {
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "author": {
+                "$ref": "#/$defs/Author"
+              },
+              "body": {
+                "type": "string"
+              },
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count",
+              "author",
+              "body",
+              "attachments"
+            ],
+            "type": "object"
+          },
+          "TicketSummary": {
+            "properties": {
+              "closed": {
+                "type": "boolean"
+              },
+              "comment_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "upstream": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "upstream",
+              "origin",
+              "title",
+              "closed",
+              "revision",
+              "created_at",
+              "updated_at",
+              "comment_count"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/TicketSummary"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "tickets",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "can_comment": {
+                "type": "boolean"
+              },
+              "can_manage": {
+                "type": "boolean"
+              },
+              "kind": {
+                "const": "ticket",
+                "type": "string"
+              },
+              "ticket": {
+                "$ref": "#/$defs/Ticket"
+              }
+            },
+            "required": [
+              "kind",
+              "ticket",
+              "can_manage",
+              "can_comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Comment"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "comments",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "items"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "comment": {
+                "$ref": "#/$defs/Comment"
+              },
+              "kind": {
+                "const": "comment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "comment"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "upload",
+                "type": "string"
+              },
+              "offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "upload_id",
+              "offset"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "attachment": {
+                "$ref": "#/$defs/Attachment"
+              },
+              "data_base64": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "file",
+                "type": "string"
+              },
+              "next_offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "attachment",
+              "offset",
+              "data_base64"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "removed",
+                "type": "string"
+              },
+              "removed": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "kind",
+              "removed"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "Reply"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "anonymous",
+        "scope": "public"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": "The signed-in identity is served directly by the Console edge.",
         "routes": []
       },
@@ -27798,6 +29808,11 @@
             "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
             "type": "boolean"
           },
+          "wait_for_refresh": {
+            "default": false,
+            "description": "Return the current cached snapshot immediately unless this is set,\nin which case wait for the bounded background refresh once.",
+            "type": "boolean"
+          },
           "window_end_ms": {
             "format": "uint64",
             "minimum": 0,
@@ -27846,6 +29861,11 @@
               "totals_only": {
                 "default": false,
                 "description": "A separate lightweight request keeps lifetime totals from delaying the page.",
+                "type": "boolean"
+              },
+              "wait_for_refresh": {
+                "default": false,
+                "description": "Return the current cached snapshot immediately unless this is set,\nin which case wait for the bounded background refresh once.",
                 "type": "boolean"
               },
               "window_end_ms": {
@@ -28314,7 +30334,23 @@
               "basis": {
                 "type": "string"
               },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -28348,6 +30384,15 @@
                   "null"
                 ]
               },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "input_usd_micros": {
                 "format": "uint64",
                 "minimum": 0,
@@ -28367,6 +30412,14 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_usd_micros": {
                 "format": "uint64",
@@ -28398,6 +30451,14 @@
                 },
                 "type": "array"
               },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -28408,6 +30469,14 @@
                   "type": "integer"
                 },
                 "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_observations": {
                 "default": 0,
@@ -28713,6 +30782,17 @@
           },
           "total_tokens": {
             "$ref": "#/$defs/OutcomeMeasurement"
+          },
+          "totals": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTotals"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lightweight token/cost components for the headline total. This is\npopulated even when the full outcome projection is intentionally not\nrequested, so the detail popover does not trigger another scan."
           },
           "usage": {
             "anyOf": [
@@ -30080,7 +32160,23 @@
               "basis": {
                 "type": "string"
               },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -30114,6 +32210,15 @@
                   "null"
                 ]
               },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "input_usd_micros": {
                 "format": "uint64",
                 "minimum": 0,
@@ -30133,6 +32238,14 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_usd_micros": {
                 "format": "uint64",
@@ -30164,6 +32277,14 @@
                 },
                 "type": "array"
               },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -30174,6 +32295,14 @@
                   "type": "integer"
                 },
                 "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_observations": {
                 "default": 0,
@@ -32103,7 +34232,23 @@
               "basis": {
                 "type": "string"
               },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -32137,6 +34282,15 @@
                   "null"
                 ]
               },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "input_usd_micros": {
                 "format": "uint64",
                 "minimum": 0,
@@ -32156,6 +34310,14 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_usd_micros": {
                 "format": "uint64",
@@ -32187,6 +34349,14 @@
                 },
                 "type": "array"
               },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -32197,6 +34367,14 @@
                   "type": "integer"
                 },
                 "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_observations": {
                 "default": 0,
@@ -36063,7 +38241,23 @@
               "basis": {
                 "type": "string"
               },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -36097,6 +38291,15 @@
                   "null"
                 ]
               },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "input_usd_micros": {
                 "format": "uint64",
                 "minimum": 0,
@@ -36116,6 +38319,14 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_usd_micros": {
                 "format": "uint64",
@@ -36147,6 +38358,14 @@
                 },
                 "type": "array"
               },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -36157,6 +38376,14 @@
                   "type": "integer"
                 },
                 "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_observations": {
                 "default": 0,
@@ -36666,7 +38893,23 @@
               "basis": {
                 "type": "string"
               },
+              "cache_write_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "cache_write_usd_micros": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cached_input_tokens": {
                 "format": "uint64",
                 "minimum": 0,
                 "type": [
@@ -36700,6 +38943,15 @@
                   "null"
                 ]
               },
+              "input_tokens": {
+                "description": "Provider-reported token components used by the cost/detail popover.\nUnavailable components remain null; they are never inferred as zero.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "input_usd_micros": {
                 "format": "uint64",
                 "minimum": 0,
@@ -36719,6 +38971,14 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "output_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "output_usd_micros": {
                 "format": "uint64",
@@ -36750,6 +39010,14 @@
                 },
                 "type": "array"
               },
+              "reasoning_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "status": {
                 "type": "string"
               },
@@ -36760,6 +39028,14 @@
                   "type": "integer"
                 },
                 "type": "object"
+              },
+              "uncached_input_tokens": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "unknown_observations": {
                 "default": 0,
@@ -39913,6 +42189,13 @@
             "minimum": 1,
             "type": "integer"
           },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 4000000,
+            "minimum": 0,
+            "type": "integer"
+          },
           "repository_id": {
             "pattern": "^r[0-9a-f]{16}$",
             "type": "string"
@@ -39971,6 +42254,13 @@
                 "format": "uint16",
                 "maximum": 100,
                 "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 4000000,
+                "minimum": 0,
                 "type": "integer"
               },
               "repository_id": {
