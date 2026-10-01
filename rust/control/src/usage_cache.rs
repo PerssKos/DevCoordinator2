@@ -56,6 +56,9 @@ impl UsageCache {
                     updated_at_ms: None,
                     refreshing: false,
                     refresh_failed: true,
+                    progress_completed: None,
+                    progress_total: None,
+                    progress_stage: None,
                 });
                 return empty;
             }
@@ -84,6 +87,9 @@ impl UsageCache {
             refreshing: entry.refreshing || source.as_ref().is_some_and(|s| s.refreshing),
             refresh_failed: entry.refresh_failed
                 || source.as_ref().is_some_and(|s| s.refresh_failed),
+            progress_completed: source.as_ref().and_then(|s| s.progress_completed),
+            progress_total: source.as_ref().and_then(|s| s.progress_total),
+            progress_stage: source.as_ref().and_then(|s| s.progress_stage.clone()),
         });
         if start && room {
             state.pending.push_back((key, Box::new(load)));
@@ -330,6 +336,9 @@ mod tests {
                 updated_at_ms: Some(100),
                 refreshing: false,
                 refresh_failed: false,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
             })
         );
     }
@@ -472,6 +481,9 @@ mod tests {
                 updated_at_ms: None,
                 refreshing: false,
                 refresh_failed: true,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
             })
         );
     }

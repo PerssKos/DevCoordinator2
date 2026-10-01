@@ -19,7 +19,8 @@ use devcoordinator2_api::params::{
 use devcoordinator2_api::results::{
     CoverageState, MeasuredTime, PhaseTime, ToolFamily, ToolOutcome, UsageActivity, UsageCost,
     UsageCoverage, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
-    UsageRepositoryRow, UsageSemantics, UsageSeriesPoint, UsageTime, UsageTools, UsageTotals,
+    UsageRepositoryRow, UsageSemantics, UsageSeriesPoint, UsageSnapshot, UsageTime, UsageTools,
+    UsageTotals,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::{
@@ -721,8 +722,12 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
+        let mut progress = Vec::new();
         let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
         for source in &self.config.codex_usage_sources {
+            if let Some(snapshot) = source_progress(source) {
+                progress.push(snapshot);
+            }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 increment(&mut failures, "query_budget_exhausted");
                 continue;
@@ -769,7 +774,7 @@ impl CodexUsage {
                 Err(error) => increment(&mut failures, &error.message),
             }
         }
-        Ok(combine(
+        let mut report = combine(
             repository,
             range,
             now_ms,
@@ -779,7 +784,34 @@ impl CodexUsage {
             &reports,
             failures,
             self.config.codex_usage_sources.len(),
-        ))
+        );
+        if !progress.is_empty() {
+            let completed = progress
+                .iter()
+                .filter_map(|snapshot| snapshot.progress_completed)
+                .sum::<u64>();
+            let total = progress
+                .iter()
+                .filter_map(|snapshot| snapshot.progress_total)
+                .sum::<u64>();
+            let stage = progress
+                .iter()
+                .find_map(|snapshot| snapshot.progress_stage.clone());
+            let mut snapshot = report.coverage.snapshot.take().unwrap_or(UsageSnapshot {
+                updated_at_ms: None,
+                refreshing: false,
+                refresh_failed: false,
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
+            });
+            snapshot.progress_completed = Some(completed);
+            snapshot.progress_total = Some(total);
+            snapshot.progress_stage = stage;
+            snapshot.refreshing |= completed < total;
+            report.coverage.snapshot = Some(snapshot);
+        }
+        Ok(report)
     }
 
     fn repository_key(
@@ -1026,6 +1058,45 @@ impl CodexUsage {
                     .with_detail(error.to_string())
             })
     }
+}
+
+fn source_progress(source: &CodexUsageSource) -> Option<UsageSnapshot> {
+    let connection = open_source_until(source, Instant::now() + Duration::from_millis(100)).ok()?;
+    let mut rows = connection
+        .prepare("SELECT source,cursor,high_water FROM _usage_report_backfill")
+        .ok()?;
+    let mut completed = 0_u64;
+    let mut total = 0_u64;
+    let mut stage = None;
+    let mut found = false;
+    let entries = rows
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .ok()?;
+    for entry in entries {
+        let (name, cursor, high_water) = entry.ok()?;
+        let cursor = u64::try_from(cursor).ok()?;
+        let high_water = u64::try_from(high_water).ok()?;
+        completed = completed.saturating_add(cursor);
+        total = total.saturating_add(high_water);
+        if cursor < high_water && stage.is_none() {
+            stage = Some(name);
+        }
+        found = true;
+    }
+    found.then_some(UsageSnapshot {
+        updated_at_ms: None,
+        refreshing: completed < total,
+        refresh_failed: false,
+        progress_completed: Some(completed),
+        progress_total: Some(total),
+        progress_stage: stage,
+    })
 }
 
 fn open_source(source: &CodexUsageSource) -> Result<Connection, String> {
@@ -2118,6 +2189,9 @@ fn combine(
         updated_at_ms: snapshots.iter().filter_map(|s| s.updated_at_ms).min(),
         refreshing: snapshots.iter().any(|s| s.refreshing),
         refresh_failed: snapshots.iter().any(|s| s.refresh_failed),
+        progress_completed: snapshots.iter().filter_map(|s| s.progress_completed).min(),
+        progress_total: snapshots.iter().filter_map(|s| s.progress_total).max(),
+        progress_stage: snapshots.iter().find_map(|s| s.progress_stage.clone()),
     });
     UsageRepository {
         repository_id: repository.repository_id.clone(),

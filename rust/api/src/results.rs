@@ -1971,6 +1971,12 @@ pub struct UsageSnapshot {
     pub updated_at_ms: Option<u64>,
     pub refreshing: bool,
     pub refresh_failed: bool,
+    #[serde(default)]
+    pub progress_completed: Option<u64>,
+    #[serde(default)]
+    pub progress_total: Option<u64>,
+    #[serde(default)]
+    pub progress_stage: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

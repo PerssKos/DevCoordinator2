@@ -506,6 +506,9 @@ impl Summary {
                     .snapshot
                     .as_ref()
                     .is_some_and(|s| matches!(s.freshness.as_str(), "stale" | "failed")),
+                progress_completed: None,
+                progress_total: None,
+                progress_stage: None,
             }),
             database_schema: u32::try_from(r.database_schema_version).unwrap_or(u32::MAX),
             taxonomy_version: u32::try_from(r.taxonomy_version).unwrap_or(u32::MAX),
