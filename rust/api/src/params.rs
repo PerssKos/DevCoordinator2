@@ -1200,6 +1200,9 @@ pub struct SketchList {
     pub decision: Option<SketchDecision>,
     #[serde(default)]
     pub sketch_set: Option<String>,
+    #[serde(default)]
+    #[schemars(range(max = 4000000))]
+    pub offset: u32,
     #[serde(default = "default_sketch_limit")]
     #[schemars(range(min = 1, max = 100))]
     pub limit: u16,

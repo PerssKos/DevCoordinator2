@@ -62,6 +62,10 @@ const state = {
   sketchDrawerLoading: false,
   sketchSetGroup: null,
   sketchSetDetails: new Map(),
+  sketchGalleryOffset: 0,
+  sketchGalleryHasMore: false,
+  sketchGalleryLoadingMore: false,
+  sketchGalleryLoadToken: 0,
   collapsedDeploymentRepositories: new Set(),
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
@@ -2576,6 +2580,26 @@ async function sketchImageUrl(repositoryId, sketch) {
   return promise;
 }
 
+const sketchImageQueue = [];
+let sketchImageLoads = 0;
+const SKETCH_IMAGE_CONCURRENCY = 4;
+function pumpSketchImageQueue() {
+  while (sketchImageLoads < SKETCH_IMAGE_CONCURRENCY && sketchImageQueue.length) {
+    const job = sketchImageQueue.shift();
+    sketchImageLoads += 1;
+    Promise.resolve().then(job.run).then(job.resolve, job.reject).finally(() => {
+      sketchImageLoads -= 1;
+      pumpSketchImageQueue();
+    });
+  }
+}
+function enqueueSketchImage(run) {
+  return new Promise((resolve, reject) => {
+    sketchImageQueue.push({ run, resolve, reject });
+    pumpSketchImageQueue();
+  });
+}
+
 function sketchEvidence(detail) {
   const s = detail.sketch;
   return {
@@ -2625,7 +2649,7 @@ function renderSketchCard(repositoryId, group, sketch) {
   const toggleLabel = selected ? 'Selected' : sketch.decision === 'reject' ? 'Select again' : 'Select';
   return `<article class="sketch-card${selected ? ' is-selected' : ''}">
     <div class="sketch-card-image-wrap">
-      <a class="sketch-card-image" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><img alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a>
+      <a class="sketch-card-image" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><img loading="lazy" decoding="async" alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a>
       <button type="button" class="sketch-card-select${selected ? ' active' : ''}" data-sketch-toggle="${esc(sketch.sketch_id)}" aria-pressed="${selected}"><i aria-hidden="true">${selected ? '✓' : ''}</i><span>${toggleLabel}</span></button>
     </div>
     <div class="sketch-card-body"><h3>${esc(sketch.title)}</h3><p class="muted">${esc(sketch.source_skill)}</p><p>${badge(sketch.decision, sketch.decision === 'keep' ? 'ok' : sketch.decision === 'reject' ? 'bad' : '')}</p><div class="actions"><button class="btn btn-small" type="button" data-sketch-review-set="${esc(group.key)}" data-sketch-review-sketch="${esc(sketch.sketch_id)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><span data-i18n="sketches.open_sketch_3ccc5c">Open sketch</span></a></div></div>
@@ -2645,7 +2669,7 @@ function renderSketchDrawer(repositoryId, group) {
     <section class="sketch-set-drawer" data-ui-allow-overlap="Sketch set comparison drawer is intentionally positioned above the gallery surface">
       <header class="sketch-set-drawer-head"><div><p class="eyebrow"><span data-i18n="sketches.sketch_set_review_1e4713">Sketch set review</span></p><h2 id="sketch-drawer-title">${esc(group.key)}</h2><p class="muted">${window.DevCoordinatorI18n.markup("sketches.value2_selected_value3_options_b64a24", {value2: summary.selected.length, value3: group.sketches.length})}</p></div><button type="button" class="btn btn-small" data-sketch-drawer-close aria-label="Close set review" data-i18n-attrs='{"aria-label":"sketches.close_set_review_2680d1"}'><span data-i18n="sketches.close_7d9eb7">Close</span></button></header>
       <div class="sketch-drawer-mode" role="group" aria-label="Selection mode" data-i18n-attrs='{"aria-label":"sketches.selection_mode_1935ae"}'><span><span data-i18n="sketches.selection_mode_1935ae">Selection mode</span></span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}"><span data-i18n="sketches.single_choice_45a76a">Single choice</span></button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}"><span data-i18n="sketches.choose_multiple_b76dc5">Choose multiple</span></button></div>
-      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${(sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.selected_57fd7a") : (sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : window.DevCoordinatorI18n.markup("sketches.undecided_00cc36")))}</small></button>`).join('')}</div></div>
+      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img loading="eager" decoding="async" alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img loading="lazy" decoding="async" alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${(sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.selected_57fd7a") : (sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : window.DevCoordinatorI18n.markup("sketches.undecided_00cc36")))}</small></button>`).join('')}</div></div>
       <section class="sketch-drawer-decision"><div><h3><span data-i18n="sketches.current_option_f4a3f8">Current option</span></h3><p class="muted">${current?.title ? esc(current?.title) : window.DevCoordinatorI18n.markup("sketches.option_unavailable_d03e4e")}</p></div><div class="actions">${['keep','reject','undecided'].map((decision) => `<button type="button" class="btn btn-small${current?.decision === decision ? ' active' : ''}" data-sketch-drawer-decision="${decision}" data-sketch-drawer-sketch="${esc(current?.sketch_id || '')}">${(decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.select_2a7802") : (decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.reject_ab604a") : window.DevCoordinatorI18n.markup("sketches.leave_undecided_65c5c0")))}</button>`).join('')}</div></section>
       <section class="sketch-drawer-comments"><div class="sketch-drawer-section-title"><h3><span data-i18n="sketches.comments_355f79">Comments</span></h3><span>${annotations.length}</span></div><div class="sketch-drawer-comment-list">${comments}</div><form data-sketch-comment-form><label class="f" for="sketch-comment-body">${window.DevCoordinatorI18n.markup("sketches.selectedOptionContext", { count: commentTargets })}<textarea id="sketch-comment-body" name="body" rows="3" maxlength="2000" placeholder="Explain why you chose this option or set of options." data-i18n-attrs='{"placeholder":"sketches.explain_why_you_chose_this_option_or_set_of_opti_15e84b"}'></textarea></label><button class="btn btn-primary" type="submit" data-sketch-add-comment>${commentLabel}</button></form></section>
       <footer class="sketch-set-drawer-foot"><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, current?.sketch_id))}"><span data-i18n="sketches.open_full_review_canvas_26fc95">Open full review canvas</span></a><span class="muted"><span data-i18n="sketches.selections_save_as_keep_reject_or_undecided_e5bbd4">Selections save as Keep, Reject, or Undecided.</span></span></footer>
@@ -2670,12 +2694,32 @@ function renderSketchGalleryPage(repositoryId, sketches, activeSet = null, activ
 }
 
 async function loadSketchGalleryImages(repositoryId) {
-  const sketches = state.sketchGalleryData || [];
-  await Promise.all([...main.querySelectorAll('[data-sketch-thumb], [data-sketch-drawer-thumb], [data-sketch-drawer-image]')].map(async (image) => {
+  const images = [...main.querySelectorAll('[data-sketch-thumb], [data-sketch-drawer-thumb], [data-sketch-drawer-image]')];
+  const load = (image) => {
+    if (image.dataset.sketchLoaded === 'true' || image.dataset.sketchLoading === 'true') return;
     const sketch = sketchGallerySketch(image.dataset.sketchThumb || image.dataset.sketchDrawerThumb || image.dataset.sketchDrawerImage);
     if (!sketch) return;
-    try { image.src = await sketchImageUrl(repositoryId, sketch); } catch { image.alt = 'Sketch image unavailable'; image.classList.add('is-unavailable'); }
-  }));
+    image.dataset.sketchLoading = 'true';
+    const attempt = Number(image.dataset.sketchAttempts || 0) + 1;
+    image.dataset.sketchAttempts = String(attempt);
+    enqueueSketchImage(() => document.contains(image)
+      ? sketchImageUrl(repositoryId, sketch)
+      : Promise.reject(new ApiError('stale', 'sketch card is no longer visible'))).then((url) => {
+      if (!document.contains(image)) return;
+      image.src = url; image.dataset.sketchLoaded = 'true'; image.classList.remove('is-unavailable');
+    }).catch(() => {
+      image.classList.add('is-unavailable');
+      if (attempt < 2 && document.contains(image)) {
+        image.dataset.sketchLoading = '';
+        window.setTimeout(() => load(image), 500 * attempt);
+      }
+    }).finally(() => { image.dataset.sketchLoading = ''; });
+  };
+  if (!('IntersectionObserver' in window)) { images.forEach(load); return; }
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => { if (entry.isIntersecting) { observer.unobserve(entry.target); load(entry.target); } });
+  }, { rootMargin: '480px 0px' });
+  images.forEach((image) => observer.observe(image));
 }
 
 async function loadSketchDrawerDetail(repositoryId, group, sketchId) {
@@ -2769,13 +2813,70 @@ async function saveSketchDecisions(repositoryId, sketch, decision, rationale) {
     for (const other of group.sketches.filter((item) => item.sketch_id !== sketch.sketch_id && item.decision === 'keep')) updates.push({ sketch: other, decision: 'undecided' });
   }
   updates.push({ sketch, decision });
+  state.sketchGalleryLoadToken += 1;
+  const galleryToken = state.sketchGalleryLoadToken;
   try {
     for (const update of updates) await api('design.sketch.decision', { repository_id: repositoryId, sketch_id: update.sketch.sketch_id, expected_revision: update.sketch.decision_revision, decision: update.decision, rationale }, false);
-    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100 });
+    const result = await listAllSketches(repositoryId);
     state.sketchDrawerDetail = null;
     toast(() => window.DevCoordinatorI18n.t("common.sketch_selection_saved_3e6e70"), 'ok');
+    state.sketchGalleryHasMore = false;
+    state.sketchGalleryOffset = result.sketches.length;
     renderSketchGalleryPage(repositoryId, result.sketches, state.sketchDrawerSet, state.sketchDrawerSketchId);
-  } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.selection_failed_value1_7204fa", {value1: error.message}), 'bad'); }
+  } catch (error) {
+    if (state.sketchGalleryHasMore) void loadMoreSketches(repositoryId, galleryToken).catch(() => {});
+    toast(() => window.DevCoordinatorI18n.t("common.selection_failed_value1_7204fa", {value1: error.message}), 'bad');
+  }
+}
+
+const SKETCH_PAGE_SIZE = 40;
+async function listSketchPage(repositoryId, offset = 0, sketchSet = null) {
+  const params = {
+    repository_id: repositoryId,
+    limit: SKETCH_PAGE_SIZE,
+    ...(sketchSet ? { sketch_set: sketchSet } : {}),
+  };
+  if (offset) params.offset = offset;
+  return api('design.sketch.list', params);
+}
+async function listAllSketches(repositoryId, sketchSet = null) {
+  const sketches = [];
+  let offset = 0;
+  let hasMore = true;
+  for (let page = 0; page < 100 && hasMore; page += 1) {
+    const result = await listSketchPage(repositoryId, offset, sketchSet);
+    const next = result.sketches || [];
+    if (!next.length && result.has_more) throw new ApiError('bad_response', 'Sketch list pagination did not advance');
+    sketches.push(...next);
+    offset += next.length;
+    hasMore = Boolean(result.has_more);
+  }
+  if (hasMore) throw new ApiError('bad_response', 'Sketch list has too many pages');
+  return { repository_id: repositoryId, sketches, has_more: false };
+}
+
+async function loadMoreSketches(repositoryId, token) {
+  if (!state.sketchGalleryHasMore || state.sketchGalleryLoadingMore || token !== state.sketchGalleryLoadToken) return;
+  state.sketchGalleryLoadingMore = true;
+  try {
+    const result = await listSketchPage(repositoryId, state.sketchGalleryOffset);
+    const current = state.sketchGalleryData || [];
+    const seen = new Set(current.map((sketch) => sketch.sketch_id));
+    const next = (result.sketches || []).filter((sketch) => !seen.has(sketch.sketch_id));
+    if (!next.length && result.has_more) throw new ApiError('bad_response', 'Sketch list pagination did not advance');
+    state.sketchGalleryData = current.concat(next);
+    state.sketchGalleryOffset += (result.sketches || []).length;
+    state.sketchGalleryHasMore = Boolean(result.has_more);
+    if (token === state.sketchGalleryLoadToken && state.evidenceSource === 'test') {
+      renderSketchGalleryPage(repositoryId, state.sketchGalleryData, state.sketchDrawerSet, state.sketchDrawerSketchId);
+    }
+  } finally {
+    state.sketchGalleryLoadingMore = false;
+  }
+  if (state.sketchGalleryHasMore && token === state.sketchGalleryLoadToken) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return loadMoreSketches(repositoryId, token);
+  }
 }
 
 function sketchSetEvidenceData(group, details) {
@@ -2817,7 +2918,7 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
-    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100, sketch_set: setName });
+    const result = await listAllSketches(repositoryId, setName);
     const group = sketchSetGroups(result.sketches).find((item) => item.key === setName);
     if (!group) { main.innerHTML = `${pageHeading('Sketches', '#/sketches')}${stateBlock('empty', window.DevCoordinatorI18n.t("evidence.sketchSetUnavailable"))}`; return; }
     return viewSketchSetEvidence(repositoryId, group, sketchId);
@@ -2831,8 +2932,15 @@ const viewSketches = guard(async (repositoryId, sketchId = null, setName = null)
   }
   state.evidenceSource = 'test'; state.sketchDrawerSet = setName; state.sketchDrawerSketchId = sketchId;
   main.innerHTML = `${pageHeading('Sketches', '#/sketches', 'Loading')}<div class="sketch-set-list">${skeleton(6)}</div>`;
-  const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100 });
+  const result = await listSketchPage(repositoryId);
+  state.sketchGalleryOffset = result.sketches.length;
+  state.sketchGalleryHasMore = Boolean(result.has_more);
+  state.sketchGalleryLoadToken += 1;
+  const token = state.sketchGalleryLoadToken;
   renderSketchGalleryPage(repositoryId, result.sketches, setName, sketchId);
+  if (state.sketchGalleryHasMore) void loadMoreSketches(repositoryId, token).catch((error) => {
+    if (error.code !== 'stale') toast(() => window.DevCoordinatorI18n.t("common.error_request") + ` [${error.code}]`, 'bad');
+  });
 });
 
 // --- Health --------------------------------------------------------------
