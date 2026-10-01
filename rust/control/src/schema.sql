@@ -31,6 +31,7 @@ INSERT OR IGNORE INTO usage_rate_cards(
   created_at,created_by
 ) VALUES
   ('openai-standard-gpt-6-astra',1,'openai','gpt-6-astra','standard','short',0,NULL,10000000,1000000,12500000,50000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
+  ('openai-standard-gpt-6.1-sol',1,'openai','gpt-6.1-sol','standard','short',0,NULL,2000000,100000,2500000,10000000,'https://developers.openai.com/api/docs/pricing',1,'2026-10-01T00:00:00Z','system-rate-card'),
   ('openai-standard-gpt-6-sol',1,'openai','gpt-6-sol','standard','short',0,NULL,2000000,200000,2500000,10000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
   ('openai-standard-gpt-6-luna',1,'openai','gpt-6-luna','standard','short',0,NULL,100000,10000,125000,500000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card'),
   ('openai-standard-gpt-5.6-sol',1,'openai','gpt-5.6-sol','standard','short',0,NULL,4000000,400000,5000000,20000000,'https://developers.openai.com/api/docs/pricing',1,'2026-09-01T00:00:00Z','system-rate-card');

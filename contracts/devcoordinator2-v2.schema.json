@@ -42189,6 +42189,13 @@
             "minimum": 1,
             "type": "integer"
           },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 4000000,
+            "minimum": 0,
+            "type": "integer"
+          },
           "repository_id": {
             "pattern": "^r[0-9a-f]{16}$",
             "type": "string"
@@ -42247,6 +42254,13 @@
                 "format": "uint16",
                 "maximum": 100,
                 "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 4000000,
+                "minimum": 0,
                 "type": "integer"
               },
               "repository_id": {

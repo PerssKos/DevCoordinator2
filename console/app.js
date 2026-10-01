@@ -62,6 +62,10 @@ const state = {
   sketchDrawerLoading: false,
   sketchSetGroup: null,
   sketchSetDetails: new Map(),
+  sketchGalleryOffset: 0,
+  sketchGalleryHasMore: false,
+  sketchGalleryLoadingMore: false,
+  sketchGalleryLoadToken: 0,
   collapsedDeploymentRepositories: new Set(),
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
@@ -2576,6 +2580,26 @@ async function sketchImageUrl(repositoryId, sketch) {
   return promise;
 }
 
+const sketchImageQueue = [];
+let sketchImageLoads = 0;
+const SKETCH_IMAGE_CONCURRENCY = 4;
+function pumpSketchImageQueue() {
+  while (sketchImageLoads < SKETCH_IMAGE_CONCURRENCY && sketchImageQueue.length) {
+    const job = sketchImageQueue.shift();
+    sketchImageLoads += 1;
+    Promise.resolve().then(job.run).then(job.resolve, job.reject).finally(() => {
+      sketchImageLoads -= 1;
+      pumpSketchImageQueue();
+    });
+  }
+}
+function enqueueSketchImage(run) {
+  return new Promise((resolve, reject) => {
+    sketchImageQueue.push({ run, resolve, reject });
+    pumpSketchImageQueue();
+  });
+}
+
 function sketchEvidence(detail) {
   const s = detail.sketch;
   return {
@@ -2625,7 +2649,7 @@ function renderSketchCard(repositoryId, group, sketch) {
   const toggleLabel = selected ? 'Selected' : sketch.decision === 'reject' ? 'Select again' : 'Select';
   return `<article class="sketch-card${selected ? ' is-selected' : ''}">
     <div class="sketch-card-image-wrap">
-      <a class="sketch-card-image" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><img alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a>
+      <a class="sketch-card-image" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><img loading="lazy" decoding="async" alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a>
       <button type="button" class="sketch-card-select${selected ? ' active' : ''}" data-sketch-toggle="${esc(sketch.sketch_id)}" aria-pressed="${selected}"><i aria-hidden="true">${selected ? '✓' : ''}</i><span>${toggleLabel}</span></button>
     </div>
     <div class="sketch-card-body"><h3>${esc(sketch.title)}</h3><p class="muted">${esc(sketch.source_skill)}</p><p>${badge(sketch.decision, sketch.decision === 'keep' ? 'ok' : sketch.decision === 'reject' ? 'bad' : '')}</p><div class="actions"><button class="btn btn-small" type="button" data-sketch-review-set="${esc(group.key)}" data-sketch-review-sketch="${esc(sketch.sketch_id)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><span data-i18n="sketches.open_sketch_3ccc5c">Open sketch</span></a></div></div>
@@ -2645,7 +2669,7 @@ function renderSketchDrawer(repositoryId, group) {
     <section class="sketch-set-drawer" data-ui-allow-overlap="Sketch set comparison drawer is intentionally positioned above the gallery surface">
       <header class="sketch-set-drawer-head"><div><p class="eyebrow"><span data-i18n="sketches.sketch_set_review_1e4713">Sketch set review</span></p><h2 id="sketch-drawer-title">${esc(group.key)}</h2><p class="muted">${window.DevCoordinatorI18n.markup("sketches.value2_selected_value3_options_b64a24", {value2: summary.selected.length, value3: group.sketches.length})}</p></div><button type="button" class="btn btn-small" data-sketch-drawer-close aria-label="Close set review" data-i18n-attrs='{"aria-label":"sketches.close_set_review_2680d1"}'><span data-i18n="sketches.close_7d9eb7">Close</span></button></header>
       <div class="sketch-drawer-mode" role="group" aria-label="Selection mode" data-i18n-attrs='{"aria-label":"sketches.selection_mode_1935ae"}'><span><span data-i18n="sketches.selection_mode_1935ae">Selection mode</span></span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}"><span data-i18n="sketches.single_choice_45a76a">Single choice</span></button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}"><span data-i18n="sketches.choose_multiple_b76dc5">Choose multiple</span></button></div>
-      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${(sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.selected_57fd7a") : (sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : window.DevCoordinatorI18n.markup("sketches.undecided_00cc36")))}</small></button>`).join('')}</div></div>
+      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img loading="eager" decoding="async" alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img loading="lazy" decoding="async" alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${(sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.selected_57fd7a") : (sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : window.DevCoordinatorI18n.markup("sketches.undecided_00cc36")))}</small></button>`).join('')}</div></div>
       <section class="sketch-drawer-decision"><div><h3><span data-i18n="sketches.current_option_f4a3f8">Current option</span></h3><p class="muted">${current?.title ? esc(current?.title) : window.DevCoordinatorI18n.markup("sketches.option_unavailable_d03e4e")}</p></div><div class="actions">${['keep','reject','undecided'].map((decision) => `<button type="button" class="btn btn-small${current?.decision === decision ? ' active' : ''}" data-sketch-drawer-decision="${decision}" data-sketch-drawer-sketch="${esc(current?.sketch_id || '')}">${(decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.select_2a7802") : (decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.reject_ab604a") : window.DevCoordinatorI18n.markup("sketches.leave_undecided_65c5c0")))}</button>`).join('')}</div></section>
       <section class="sketch-drawer-comments"><div class="sketch-drawer-section-title"><h3><span data-i18n="sketches.comments_355f79">Comments</span></h3><span>${annotations.length}</span></div><div class="sketch-drawer-comment-list">${comments}</div><form data-sketch-comment-form><label class="f" for="sketch-comment-body">${window.DevCoordinatorI18n.markup("sketches.selectedOptionContext", { count: commentTargets })}<textarea id="sketch-comment-body" name="body" rows="3" maxlength="2000" placeholder="Explain why you chose this option or set of options." data-i18n-attrs='{"placeholder":"sketches.explain_why_you_chose_this_option_or_set_of_opti_15e84b"}'></textarea></label><button class="btn btn-primary" type="submit" data-sketch-add-comment>${commentLabel}</button></form></section>
       <footer class="sketch-set-drawer-foot"><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, current?.sketch_id))}"><span data-i18n="sketches.open_full_review_canvas_26fc95">Open full review canvas</span></a><span class="muted"><span data-i18n="sketches.selections_save_as_keep_reject_or_undecided_e5bbd4">Selections save as Keep, Reject, or Undecided.</span></span></footer>
@@ -2670,12 +2694,32 @@ function renderSketchGalleryPage(repositoryId, sketches, activeSet = null, activ
 }
 
 async function loadSketchGalleryImages(repositoryId) {
-  const sketches = state.sketchGalleryData || [];
-  await Promise.all([...main.querySelectorAll('[data-sketch-thumb], [data-sketch-drawer-thumb], [data-sketch-drawer-image]')].map(async (image) => {
+  const images = [...main.querySelectorAll('[data-sketch-thumb], [data-sketch-drawer-thumb], [data-sketch-drawer-image]')];
+  const load = (image) => {
+    if (image.dataset.sketchLoaded === 'true' || image.dataset.sketchLoading === 'true') return;
     const sketch = sketchGallerySketch(image.dataset.sketchThumb || image.dataset.sketchDrawerThumb || image.dataset.sketchDrawerImage);
     if (!sketch) return;
-    try { image.src = await sketchImageUrl(repositoryId, sketch); } catch { image.alt = 'Sketch image unavailable'; image.classList.add('is-unavailable'); }
-  }));
+    image.dataset.sketchLoading = 'true';
+    const attempt = Number(image.dataset.sketchAttempts || 0) + 1;
+    image.dataset.sketchAttempts = String(attempt);
+    enqueueSketchImage(() => document.contains(image)
+      ? sketchImageUrl(repositoryId, sketch)
+      : Promise.reject(new ApiError('stale', 'sketch card is no longer visible'))).then((url) => {
+      if (!document.contains(image)) return;
+      image.src = url; image.dataset.sketchLoaded = 'true'; image.classList.remove('is-unavailable');
+    }).catch(() => {
+      image.classList.add('is-unavailable');
+      if (attempt < 2 && document.contains(image)) {
+        image.dataset.sketchLoading = '';
+        window.setTimeout(() => load(image), 500 * attempt);
+      }
+    }).finally(() => { image.dataset.sketchLoading = ''; });
+  };
+  if (!('IntersectionObserver' in window)) { images.forEach(load); return; }
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => { if (entry.isIntersecting) { observer.unobserve(entry.target); load(entry.target); } });
+  }, { rootMargin: '480px 0px' });
+  images.forEach((image) => observer.observe(image));
 }
 
 async function loadSketchDrawerDetail(repositoryId, group, sketchId) {
@@ -2769,13 +2813,70 @@ async function saveSketchDecisions(repositoryId, sketch, decision, rationale) {
     for (const other of group.sketches.filter((item) => item.sketch_id !== sketch.sketch_id && item.decision === 'keep')) updates.push({ sketch: other, decision: 'undecided' });
   }
   updates.push({ sketch, decision });
+  state.sketchGalleryLoadToken += 1;
+  const galleryToken = state.sketchGalleryLoadToken;
   try {
     for (const update of updates) await api('design.sketch.decision', { repository_id: repositoryId, sketch_id: update.sketch.sketch_id, expected_revision: update.sketch.decision_revision, decision: update.decision, rationale }, false);
-    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100 });
+    const result = await listAllSketches(repositoryId);
     state.sketchDrawerDetail = null;
     toast(() => window.DevCoordinatorI18n.t("common.sketch_selection_saved_3e6e70"), 'ok');
+    state.sketchGalleryHasMore = false;
+    state.sketchGalleryOffset = result.sketches.length;
     renderSketchGalleryPage(repositoryId, result.sketches, state.sketchDrawerSet, state.sketchDrawerSketchId);
-  } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.selection_failed_value1_7204fa", {value1: error.message}), 'bad'); }
+  } catch (error) {
+    if (state.sketchGalleryHasMore) void loadMoreSketches(repositoryId, galleryToken).catch(() => {});
+    toast(() => window.DevCoordinatorI18n.t("common.selection_failed_value1_7204fa", {value1: error.message}), 'bad');
+  }
+}
+
+const SKETCH_PAGE_SIZE = 40;
+async function listSketchPage(repositoryId, offset = 0, sketchSet = null) {
+  const params = {
+    repository_id: repositoryId,
+    limit: SKETCH_PAGE_SIZE,
+    ...(sketchSet ? { sketch_set: sketchSet } : {}),
+  };
+  if (offset) params.offset = offset;
+  return api('design.sketch.list', params);
+}
+async function listAllSketches(repositoryId, sketchSet = null) {
+  const sketches = [];
+  let offset = 0;
+  let hasMore = true;
+  for (let page = 0; page < 100 && hasMore; page += 1) {
+    const result = await listSketchPage(repositoryId, offset, sketchSet);
+    const next = result.sketches || [];
+    if (!next.length && result.has_more) throw new ApiError('bad_response', 'Sketch list pagination did not advance');
+    sketches.push(...next);
+    offset += next.length;
+    hasMore = Boolean(result.has_more);
+  }
+  if (hasMore) throw new ApiError('bad_response', 'Sketch list has too many pages');
+  return { repository_id: repositoryId, sketches, has_more: false };
+}
+
+async function loadMoreSketches(repositoryId, token) {
+  if (!state.sketchGalleryHasMore || state.sketchGalleryLoadingMore || token !== state.sketchGalleryLoadToken) return;
+  state.sketchGalleryLoadingMore = true;
+  try {
+    const result = await listSketchPage(repositoryId, state.sketchGalleryOffset);
+    const current = state.sketchGalleryData || [];
+    const seen = new Set(current.map((sketch) => sketch.sketch_id));
+    const next = (result.sketches || []).filter((sketch) => !seen.has(sketch.sketch_id));
+    if (!next.length && result.has_more) throw new ApiError('bad_response', 'Sketch list pagination did not advance');
+    state.sketchGalleryData = current.concat(next);
+    state.sketchGalleryOffset += (result.sketches || []).length;
+    state.sketchGalleryHasMore = Boolean(result.has_more);
+    if (token === state.sketchGalleryLoadToken && state.evidenceSource === 'test') {
+      renderSketchGalleryPage(repositoryId, state.sketchGalleryData, state.sketchDrawerSet, state.sketchDrawerSketchId);
+    }
+  } finally {
+    state.sketchGalleryLoadingMore = false;
+  }
+  if (state.sketchGalleryHasMore && token === state.sketchGalleryLoadToken) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return loadMoreSketches(repositoryId, token);
+  }
 }
 
 function sketchSetEvidenceData(group, details) {
@@ -2817,7 +2918,7 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
-    const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100, sketch_set: setName });
+    const result = await listAllSketches(repositoryId, setName);
     const group = sketchSetGroups(result.sketches).find((item) => item.key === setName);
     if (!group) { main.innerHTML = `${pageHeading('Sketches', '#/sketches')}${stateBlock('empty', window.DevCoordinatorI18n.t("evidence.sketchSetUnavailable"))}`; return; }
     return viewSketchSetEvidence(repositoryId, group, sketchId);
@@ -2831,8 +2932,15 @@ const viewSketches = guard(async (repositoryId, sketchId = null, setName = null)
   }
   state.evidenceSource = 'test'; state.sketchDrawerSet = setName; state.sketchDrawerSketchId = sketchId;
   main.innerHTML = `${pageHeading('Sketches', '#/sketches', 'Loading')}<div class="sketch-set-list">${skeleton(6)}</div>`;
-  const result = await api('design.sketch.list', { repository_id: repositoryId, limit: 100 });
+  const result = await listSketchPage(repositoryId);
+  state.sketchGalleryOffset = result.sketches.length;
+  state.sketchGalleryHasMore = Boolean(result.has_more);
+  state.sketchGalleryLoadToken += 1;
+  const token = state.sketchGalleryLoadToken;
   renderSketchGalleryPage(repositoryId, result.sketches, setName, sketchId);
+  if (state.sketchGalleryHasMore) void loadMoreSketches(repositoryId, token).catch((error) => {
+    if (error.code !== 'stale') toast(() => window.DevCoordinatorI18n.t("common.error_request") + ` [${error.code}]`, 'bad');
+  });
 });
 
 // --- Health --------------------------------------------------------------
@@ -2911,10 +3019,24 @@ function utcBucket(ms, includeDate = false) {
 function usageSnapshotText(coverage) {
   const snapshot = coverage?.snapshot;
   if (!snapshot) return '';
+  if (snapshot.refreshing && snapshot.progress_total > 0) {
+    const percent = Math.min(100, Math.round((Number(snapshot.progress_completed || 0) / Number(snapshot.progress_total)) * 100));
+    return `Indexing usage cache · ${percent}%`;
+  }
   if (!snapshot.updated_at_ms) return (snapshot.refreshing ? window.DevCoordinatorI18n.t("common.loading_usage_0134e9") : window.DevCoordinatorI18n.t("common.usage_unavailable_refresh_failed_a2ed62"));
   const saved = ago(new Date(snapshot.updated_at_ms).toISOString());
   if (snapshot.refresh_failed) return 'Refresh failed; showing saved usage · ' + saved;
   return (snapshot.refreshing ? 'Updating saved usage · ' : 'Usage snapshot · ') + saved;
+}
+
+function usageRebuildProgress(coverage) {
+  const snapshot = coverage?.snapshot;
+  const total = Number(snapshot?.progress_total);
+  const completed = Number(snapshot?.progress_completed || 0);
+  if (!snapshot || !Number.isFinite(total) || total <= 0 || completed >= total) return '';
+  const percent = Math.min(100, Math.max(0, Math.round((completed / total) * 100)));
+  const stage = String(snapshot.progress_stage || 'usage cache').replaceAll('_', ' ');
+  return `<div class="usage-rebuild-progress" role="status" aria-live="polite"><div class="usage-rebuild-progress-head"><strong>Rebuilding usage cache</strong><span>${esc(stage)}</span><b>${percent}%</b></div><progress max="${total}" value="${Math.min(completed, total)}">${percent}%</progress><small>${window.DevCoordinatorI18n.formatted('number', completed)} / ${window.DevCoordinatorI18n.formatted('number', total)} records</small></div>`;
 }
 
 function usageViewIdentity() {
@@ -3065,7 +3187,7 @@ function phaseLegend() {
   return `<div class="usage-legend" aria-label="Work phase legend" data-i18n-attrs='{"aria-label":"usage.work_phase_legend_0886c1"}'>${USAGE_PHASES.map((phase) => `<span><i class="usage-phase-${phase}" aria-hidden="true"></i>${window.DevCoordinatorI18n.markup("common.phase_" + phase)}</span>`).join('')}</div>`;
 }
 
-function usagePhaseChart(series) {
+function usagePhaseChart(series, totalCost = null) {
   if (!series.some((point) => point.total_tokens > 0)) {
     return stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_provider_reported_total_tokens_in_this_window_b714e4"));
   }
@@ -3080,14 +3202,19 @@ function usagePhaseChart(series) {
     const y = top + ih - ih * fraction;
     return `<line x1="${left}" x2="${width - right}" y1="${y}" y2="${y}" class="usage-gridline"/><text x="${left - 8}" y="${y + 4}" text-anchor="end" class="usage-y-label">${esc(compactNumber(roundedMax * fraction))}</text>`;
   }).join('');
+  const allTokens = series.reduce((sum, point) => sum + Number(point.total_tokens || 0), 0);
+  const overallCost = costValue(totalCost);
   const bars = series.map((point, index) => {
     const x = left + index * column + (column - barWidth) / 2;
     let y = top + ih;
+    const pointTokens = Number(point.total_tokens || 0);
+    const proportionalCost = overallCost != null && allTokens > 0 ? overallCost * pointTokens / allTokens : null;
     return USAGE_PHASES.map((phase) => {
       const value = Number(point.phases?.[phase] || 0);
       if (!value) return '';
       const h = (value / roundedMax) * ih; y -= h;
-      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${Math.max(.5, h).toFixed(2)}" class="usage-phase-${phase}"><title>${esc(`${utcBucket(point.bucket_start_ms, true)} · ${window.DevCoordinatorI18n.t("common.phase_" + phase)} · ${Number(value).toLocaleString(window.DevCoordinatorI18n.locale)} tokens · ${bucketDataStatus(point.coverage)}`)}</title></rect>`;
+      const tooltip = `${utcBucket(point.bucket_start_ms, true)} · ${window.DevCoordinatorI18n.t("common.phase_" + phase)} · ${Number(value).toLocaleString(window.DevCoordinatorI18n.locale)} tokens · ${proportionalCost == null ? 'cost unavailable' : `${new Intl.NumberFormat(window.DevCoordinatorI18n.locale, { style: 'currency', currency: 'USD' }).format(proportionalCost)} proportional estimate`}`;
+      return `<rect tabindex="0" role="button" data-usage-chart-point="${index}" data-usage-chart-start="${point.bucket_start_ms}" data-usage-chart-phase="${esc(phase)}" data-usage-chart-tokens="${value}" data-usage-chart-total="${pointTokens}" data-usage-chart-cost="${proportionalCost == null ? '' : proportionalCost}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${Math.max(.5, h).toFixed(2)}" class="usage-phase-${phase}"><title>${esc(tooltip)}</title></rect>`;
     }).join('');
   }).join('');
   const labelEvery = Math.max(1, Math.ceil(series.length / 8));
@@ -3096,7 +3223,36 @@ function usagePhaseChart(series) {
     const x = left + index * column + column / 2;
     return `<text x="${x.toFixed(2)}" y="${height - 13}" text-anchor="middle">${esc(utcBucket(point.bucket_start_ms, index === 0))}</text>`;
   }).join('');
-  return `<div class="usage-chart-scroll" tabindex="0" aria-label="Scrollable token chart" data-i18n-attrs='{"aria-label":"usage.scrollable_token_chart_83cb1f"}'><svg class="usage-phase-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="usage-chart-title usage-chart-desc"><title id="usage-chart-title" data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</title><desc id="usage-chart-desc" data-i18n="usage.stacked_utc_time_buckets_exact_values_are_listed_993096">Stacked UTC time buckets. Exact values are listed after the charts.</desc>${grid}${bars}${labels}<text x="4" y="${top + 3}" class="usage-axis-title" data-i18n="usage.tokens_a039df">Tokens</text></svg></div>`;
+  return `<div class="usage-chart-scroll" tabindex="0" aria-label="Scrollable token chart" data-i18n-attrs='{"aria-label":"usage.scrollable_token_chart_83cb1f"}'><svg class="usage-phase-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="usage-chart-title usage-chart-desc"><title id="usage-chart-title" data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</title><desc id="usage-chart-desc" data-i18n="usage.stacked_utc_time_buckets_exact_values_are_listed_993096">Stacked UTC time buckets. Exact values are listed after the charts.</desc>${grid}${bars}${labels}<text x="4" y="${top + 3}" class="usage-axis-title" data-i18n="usage.tokens_a039df">Tokens</text></svg><div class="usage-chart-tooltip" data-usage-chart-tooltip role="status" hidden></div></div>`;
+}
+
+function bindUsageChartTooltip(root) {
+  const chart = root.querySelector('.usage-chart-scroll');
+  const tooltip = chart?.querySelector('[data-usage-chart-tooltip]');
+  if (!chart || !tooltip) return;
+  const show = (point) => {
+    const index = Number(point.dataset.usageChartPoint);
+    const phase = point.dataset.usageChartPhase.replaceAll('_', ' ');
+    const tokens = Number(point.dataset.usageChartTokens || 0);
+    const total = Number(point.dataset.usageChartTotal || 0);
+    const cost = point.dataset.usageChartCost === '' ? null : Number(point.dataset.usageChartCost);
+    const rect = point.getBoundingClientRect();
+    const box = chart.getBoundingClientRect();
+    tooltip.innerHTML = `<strong>${esc(phase)}</strong><span>${esc(utcBucket(Number(point.dataset.usageChartStart), true))} · bucket ${index + 1}</span><dl><div><dt>Phase tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', tokens)}</dd></div><div><dt>Bucket tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', total)}</dd></div><div><dt>Estimated cost</dt><dd>${cost == null ? '—' : esc(costAmount({ estimated_usd_micros: Math.round(cost * 1000000), status: 'partial' }))}</dd></div></dl><small>Proportional API-equivalent allocation · hover or focus another bar</small>`;
+    tooltip.hidden = false;
+    const x = Math.max(8, Math.min(rect.left - box.left + rect.width / 2 - 110, box.width - 228));
+    tooltip.style.left = `${x}px`;
+    tooltip.style.top = `${Math.max(8, rect.top - box.top - tooltip.offsetHeight - 10)}px`;
+  };
+  chart.querySelectorAll('[data-usage-chart-point]').forEach((point) => {
+    point.addEventListener('pointerenter', () => show(point));
+    point.addEventListener('focus', () => show(point));
+    point.addEventListener('click', () => show(point));
+    point.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { tooltip.hidden = true; point.blur(); }
+    });
+  });
+  chart.addEventListener('pointerleave', () => { if (!chart.contains(document.activeElement)) tooltip.hidden = true; });
 }
 
 function usageMetric(label, value, detail = '') {
@@ -3159,18 +3315,53 @@ function outcomeCostPulse(data) {
 }
 
 function modelCostPulse(data) {
-  const rows = [...(data.models || [])].sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)).slice(0, 8);
+  const rows = [...(data.models || [])]
+    .sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)
+      || Number(b.total_tokens || 0) - Number(a.total_tokens || 0))
+    .slice(0, 8);
   if (!rows.length) return '';
   const palette = ['var(--chart-blue)', 'var(--chart-teal)', 'var(--chart-violet)', 'var(--line-strong)'];
-  const total = rows.reduce((sum, row) => sum + (row.cost?.estimated_usd_micros || 0), 0);
-  let cursor = 0;
-  const segments = rows.map((row, index) => {
-    const share = total ? ((row.cost?.estimated_usd_micros || 0) / total) * 100 : 0;
-    const segment = `${palette[index % palette.length]} ${cursor.toFixed(2)}% ${(cursor + share).toFixed(2)}%`;
-    cursor += share;
-    return segment;
-  }).join(', ');
-  return `<section class="usage-model-pulse"><div class="usage-section-title"><div><h2>Cost by model</h2><p class="muted">API-equivalent estimate per provider model request.</p></div></div><div class="usage-model-summary"><div class="usage-model-donut" style="background:conic-gradient(${segments})"><span>${esc(costAmount({ estimated_usd_micros: total, status: total ? 'complete' : 'unavailable' }))}<small>est. USD</small></span></div><div class="usage-model-legend">${rows.map((row, index) => `<div><span><i style="background:${palette[index % palette.length]}"></i>${esc(row.model)}</span><strong>${esc(costAmount(row.cost))}</strong><em>${total ? `${(((row.cost?.estimated_usd_micros || 0) / total) * 100).toFixed(1)}%` : '—'}</em></div>`).join('')}</div></div><div class="tablewrap"><table><thead><tr><th>Model</th><th>Tokens</th><th>Requests</th><th>Estimate</th><th>Average / request</th><th>Coverage</th></tr></thead><tbody>${rows.map((row) => `<tr><td class="wrap"><strong>${esc(row.model)}</strong></td><td>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${row.average_usd_micros == null ? '—' : esc(costAmount({ estimated_usd_micros: row.average_usd_micros, status: 'complete' }))}</td><td>${row.cost?.status === 'complete' ? '<span class="badge ok">Complete</span>' : row.cost?.status === 'partial' ? '<span class="badge warn">Partial</span>' : '<span class="badge">Unavailable</span>'}</td></tr>`).join('')}</tbody></table></div></section>`;
+  const total = costValue(data.totals?.cost);
+  const first = rows[0];
+  const detail = (row) => `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong>${esc(row.model)}</strong><span>${row.cost?.status === 'complete' ? 'Complete estimate' : row.cost?.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(row.cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(row.cost))}${row.cost?.rate_card_refs?.length ? ` · ${esc(row.cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+  const rowsMarkup = rows.map((row, index) => {
+    const knownCost = row.cost?.estimated_usd_micros != null;
+    const share = total != null && knownCost ? (Number(row.cost.estimated_usd_micros) / (total * 1000000) * 100) : null;
+    const bar = share == null ? 0 : Math.max(2, Math.min(100, share));
+    const status = row.cost?.status === 'complete' ? 'Complete' : row.cost?.status === 'partial' ? 'Partial' : 'Unpriced';
+    return `<button type="button" class="usage-model-row${index === 0 ? ' selected' : ''}" data-usage-model-index="${index}" aria-pressed="${index === 0}"><span class="usage-model-swatch" style="background:${palette[index % palette.length]}"></span><span class="usage-model-name"><strong>${esc(row.model)}</strong><small>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })} tokens · ${window.DevCoordinatorI18n.formatted('number', row.model_requests)} requests</small></span><span class="usage-model-bar"><i style="width:${bar.toFixed(1)}%"></i></span><strong class="usage-model-amount">${esc(costAmount(row.cost))}</strong><span class="usage-model-share">${share == null ? '—' : `${share.toFixed(1)}%`}</span><span class="badge ${status === 'Complete' ? 'ok' : status === 'Partial' ? 'warn' : ''}">${status}</span><span class="usage-model-chevron" aria-hidden="true">›</span></button>`;
+  }).join('');
+  return `<section class="usage-model-pulse" data-usage-model-ledger><div class="usage-section-title"><div><h2>Cost ledger by model</h2><p class="muted">Select a model to inspect token components, rate coverage, and request cost.</p></div><span class="muted">${rows.length} models</span></div><div class="usage-model-ledger-list">${rowsMarkup}</div><aside class="usage-model-detail" data-usage-model-detail>${detail(first)}</aside></section>`;
+}
+
+function bindUsageModelLedger(root, data) {
+  const ledger = root.querySelector('[data-usage-model-ledger]');
+  if (!ledger) return;
+  const detail = ledger.querySelector('[data-usage-model-detail]');
+  const rows = [...ledger.querySelectorAll('[data-usage-model-index]')];
+  const models = [...(data.models || [])]
+    .sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)
+      || Number(b.total_tokens || 0) - Number(a.total_tokens || 0))
+    .slice(0, rows.length);
+  const render = (index) => {
+    rows.forEach((row, rowIndex) => {
+      const selected = rowIndex === index;
+      row.classList.toggle('selected', selected);
+      row.setAttribute('aria-pressed', String(selected));
+    });
+    const model = models[index];
+    if (!model || !detail) return;
+    const cost = model.cost || {};
+    detail.innerHTML = `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong>${esc(model.model)}</strong><span>${cost.status === 'complete' ? 'Complete estimate' : cost.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(cost))}${cost.rate_card_refs?.length ? ` · ${esc(cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+  };
+  rows.forEach((row, index) => row.addEventListener('click', () => render(index)));
+  rows.forEach((row, index) => row.addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length;
+    rows[next].focus();
+    render(next);
+  }));
 }
 
 function timeRails(data) {
@@ -3204,7 +3395,8 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
   const rows = result.repositories || [];
   const measured = (row) => ['complete', 'partial'].includes(row.coverage.state)
     || Number(row.coverage.contributing_collectors || 0) > 0;
-  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${rows.length ? `<div class="tablewrap usage-collection-tablewrap"><table class="usage-collection-table"><thead><tr><th><span data-i18n="usage.repository_13d6ff">Repository</span></th><th><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent estimate</th><th><span data-i18n="usage.model_requests_888826">Model requests</span></th><th><span data-i18n="usage.tool_calls_da5122">Tool calls</span></th><th><span data-i18n="usage.execution_time_1069e2">Execution time</span></th><th><span data-i18n="usage.data_included_217858">Data included</span></th></tr></thead><tbody>${rows.map((row) => `<tr><td data-label="Repository" data-i18n-attrs='{"data-label":"usage.repository_13d6ff"}'><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td data-label="Total tokens" data-i18n-attrs='{"data-label":"usage.total_tokens_e7601c"}'>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td data-label="API-equivalent estimate"><strong>${esc(costAmount(row.cost))}</strong></td><td data-label="Model requests" data-i18n-attrs='{"data-label":"usage.model_requests_888826"}'>${measured(row) ? Number(row.model_requests).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Tool calls" data-i18n-attrs='{"data-label":"usage.tool_calls_da5122"}'>${measured(row) ? Number(row.tool_calls).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Execution time" data-i18n-attrs='{"data-label":"usage.execution_time_1069e2"}'>${measured(row) ? esc(durationMs(row.execution_wall_ms)) : '—'}</td><td data-label="Data included" data-i18n-attrs='{"data-label":"usage.data_included_217858"}'>${coverageMark(row.coverage, true)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_repositories_are_available_for_codex_usage_an_1d8f6d"))}</section>`;
+  const collectionCoverage = rows.find((row) => row.coverage?.snapshot)?.coverage;
+  main.innerHTML = `<section data-ui-region="codex-usage-repositories"><div class="usage-collection-head">${pageHeading('Codex Usage', '#/usage')}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div>${usageRebuildProgress(collectionCoverage)}${rows.length ? `<div class="tablewrap usage-collection-tablewrap"><table class="usage-collection-table"><thead><tr><th><span data-i18n="usage.repository_13d6ff">Repository</span></th><th><span data-i18n="usage.total_tokens_e7601c">Total tokens</span></th><th>API-equivalent estimate</th><th><span data-i18n="usage.model_requests_888826">Model requests</span></th><th><span data-i18n="usage.tool_calls_da5122">Tool calls</span></th><th><span data-i18n="usage.execution_time_1069e2">Execution time</span></th><th><span data-i18n="usage.data_included_217858">Data included</span></th></tr></thead><tbody>${rows.map((row) => `<tr><td data-label="Repository" data-i18n-attrs='{"data-label":"usage.repository_13d6ff"}'><a href="#/usage/${esc(row.repository_id)}"><strong>${esc(row.display_name)}</strong></a></td><td data-label="Total tokens" data-i18n-attrs='{"data-label":"usage.total_tokens_e7601c"}'>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td data-label="API-equivalent estimate"><strong>${esc(costAmount(row.cost))}</strong></td><td data-label="Model requests" data-i18n-attrs='{"data-label":"usage.model_requests_888826"}'>${measured(row) && row.model_requests != null ? Number(row.model_requests).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Tool calls" data-i18n-attrs='{"data-label":"usage.tool_calls_da5122"}'>${measured(row) && row.tool_calls != null ? Number(row.tool_calls).toLocaleString(window.DevCoordinatorI18n.locale) : '—'}</td><td data-label="Execution time" data-i18n-attrs='{"data-label":"usage.execution_time_1069e2"}'>${measured(row) && row.execution_wall_ms != null ? esc(durationMs(row.execution_wall_ms)) : '—'}</td><td data-label="Data included" data-i18n-attrs='{"data-label":"usage.data_included_217858"}'>${coverageMark(row.coverage, true)}</td></tr>`).join('')}</tbody></table></div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_repositories_are_available_for_codex_usage_an_1d8f6d"))}</section>`;
   bindSeg(main, 'codex-range', (range) => {
     state.codexUsageRange = range;
     render().then(() => $(`[data-codex-range="${range}"]`, main)?.focus());
@@ -3218,7 +3410,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
   const [data, projectList] = await Promise.all([
     api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
-    api('usage.repositories', { range: state.codexUsageRange }),
+    workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
@@ -3230,15 +3422,17 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
     ['output', data.totals.output_tokens], ['reasoning', data.totals.reasoning_tokens],
   ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${compactNumber(value)}`).join(' · ');
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span></div></div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
     <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>
-    <div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series)}</section>${modelCostPulse(data)}</div>
+    <div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
     ${outcomeCostPulse(data)}
     <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>
     <details class="usage-provenance"><summary><strong><span data-i18n="usage.data_completeness_c7114d">Data completeness</span></strong><span>${window.DevCoordinatorI18n.computedMarkup(() => coverageText(data.coverage))}</span><strong><span data-i18n="usage.counting_method_7a480a">Counting method</span></strong><span><span data-i18n="usage.provider_reported_total_tokens_cached_input_and__9908f6">Provider-reported total tokens; cached input and reasoning are subsets.</span></span></summary><div><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(data.coverage))}</p><p>${(subsets ? esc(subsets) : window.DevCoordinatorI18n.markup("usage.token_subsets_unavailable_4cec86"))}</p><p class="usage-cost-basis-line"><strong>API-equivalent estimate</strong> · ${esc(costBasis(data.totals.cost))} · ${esc(costRateCardLabel(data.totals.cost))}<br><span class="muted">${esc(costComponents(data.totals.cost) || 'Component values unavailable')}</span></p><p>${window.DevCoordinatorI18n.markup("usage.schema_value19_taxonomy_value20_cdddf8", {value19: data.coverage.database_schemas.join(', ') || 'unavailable', value20: data.coverage.taxonomy_versions.join(', ') || 'unavailable'})}</p><p>${window.DevCoordinatorI18n.markup("usage.value21_environments_that_supplied_no_data_and_u_cbbc39", {value21: data.semantics.time})}</p>${exactUsageTable(data)}</div></details>
   </section>`;
   bindProjectPicker(main);
   bindCoverageHint(main);
+  bindUsageModelLedger(main, data);
+  bindUsageChartTooltip(main);
   if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {
     main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower, .usage-provenance').forEach((element) => element.remove());
     main.querySelector('.usage-coverage > .muted')?.remove();

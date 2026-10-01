@@ -12,6 +12,7 @@ fn live_readonly_review_probe() {
         std::path::PathBuf::from(std::env::var("CXM_LIVE_REVIEW_PROBE").expect("probe input"));
     let scope: Value = serde_json::from_slice(&std::fs::read(&input).unwrap()).unwrap();
     let source = CodexUsageSource {
+        api_socket: None,
         uid: rustix::process::getuid().as_raw(),
         codex_home: scope["home"].as_str().unwrap().into(),
         executable: input.clone(),
@@ -76,6 +77,7 @@ fn isolated_coordinator_daily_window_scale_probe() {
     let start_ms = scopes["window_start_ms"].as_u64().unwrap();
     let end_ms = scopes["window_end_ms"].as_u64().unwrap();
     let source = CodexUsageSource {
+        api_socket: None,
         uid: rustix::process::getuid().as_raw(),
         codex_home: directory.clone(),
         executable: directory.join("unused"),
@@ -385,6 +387,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
     std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
     let uid = rustix::process::getuid().as_raw();
     environment.config.codex_usage_sources = vec![CodexUsageSource {
+        api_socket: None,
         uid,
         codex_home: home.clone(),
         executable: probe.clone(),
@@ -547,6 +550,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
     mixed_config.codex_usage_sources.insert(
         0,
         CodexUsageSource {
+            api_socket: None,
             uid: slow_uid,
             codex_home: home.clone(),
             executable: probe,

@@ -143,6 +143,7 @@ impl SketchService {
         let skill = p.source_skill.clone();
         let dec = p.decision.clone();
         let set = p.sketch_set.clone();
+        let offset = p.offset;
         let limit = p.limit.clamp(1, 100);
         self.database.call(move|c|{
             let mut sql="SELECT sketches.sketch_id,sketches.repository_id,sketch_batches.sketch_set,sketch_batches.source_skill,sketches.title,sketches.sha256,sketches.byte_size,sketches.width,sketches.height,sketches.created_at,sketches.decision,sketches.decision_revision FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1".to_owned();
@@ -150,9 +151,13 @@ impl SketchService {
             if let Some(v)=skill { sql.push_str(" AND source_skill=?"); vals.push(v.into()); }
             if let Some(v)=set { sql.push_str(" AND sketch_set=?"); vals.push(v.into()); }
             if let Some(v)=dec { sql.push_str(" AND decision=?"); vals.push(serde_json::to_string(&v).unwrap().trim_matches('"').to_owned().into()); }
-            sql.push_str(&format!(" ORDER BY sketches.created_at DESC LIMIT {}",limit));
+            // Fetch one extra row so callers can continue without losing the
+            // newest records when a repository has more than one page.
+            sql.push_str(&format!(" ORDER BY sketches.created_at DESC, sketches.rowid DESC LIMIT {} OFFSET {}", u32::from(limit) + 1, offset));
             let mut st=c.prepare(&sql)?; let rows=st.query_map(rusqlite::params_from_iter(vals),summary_row)?.collect::<Result<Vec<_>,_>>()?;
-            Ok(results::SketchListResult{repository_id:repo,has_more:rows.len()==usize::from(limit),sketches:rows})
+            let has_more = rows.len() > usize::from(limit);
+            let sketches = rows.into_iter().take(usize::from(limit)).collect();
+            Ok(results::SketchListResult{repository_id:repo,has_more,sketches})
         }).map_err(db_error)
     }
     pub fn get(
@@ -585,16 +590,49 @@ mod tests {
             .unwrap();
         assert_eq!(batch.sketches.len(), 1);
         let sketch = &batch.sketches[0];
+        let second_batch = service
+            .publish(
+                params::SketchPublish {
+                    repository_id: batch.repository_id.clone(),
+                    sketch_set: "set".into(),
+                    source_skill: "Image Gen".into(),
+                    generation_record_path: record.to_string_lossy().into_owned(),
+                    images: vec![params::SketchImageInput {
+                        title: "Second".into(),
+                        path: image.to_string_lossy().into_owned(),
+                    }],
+                    idempotency_key: "fixture-2".into(),
+                },
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(second_batch.sketches.len(), 1);
         let list = service
             .list(params::SketchList {
                 repository_id: batch.repository_id.clone(),
                 source_skill: None,
                 decision: None,
                 sketch_set: None,
-                limit: 50,
+                offset: 0,
+                limit: 1,
             })
             .unwrap();
         assert_eq!(list.sketches.len(), 1);
+        assert_eq!(list.sketches[0].title, "Second");
+        assert!(list.has_more);
+        let next = service
+            .list(params::SketchList {
+                repository_id: batch.repository_id.clone(),
+                source_skill: None,
+                decision: None,
+                sketch_set: None,
+                offset: 1,
+                limit: 1,
+            })
+            .unwrap();
+        assert_eq!(next.sketches.len(), 1);
+        assert_eq!(next.sketches[0].title, "First");
+        assert!(!next.has_more);
         let chunk = service
             .image(params::SketchImage {
                 repository_id: batch.repository_id.clone(),

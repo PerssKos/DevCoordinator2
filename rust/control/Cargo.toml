@@ -51,6 +51,7 @@ toml.workspace = true
 tracing.workspace = true
 unicode-normalization.workspace = true
 tracing-subscriber.workspace = true
+tungstenite = { version = "=0.28.0", default-features = false, features = ["handshake"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

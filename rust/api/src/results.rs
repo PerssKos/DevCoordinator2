@@ -1971,6 +1971,12 @@ pub struct UsageSnapshot {
     pub updated_at_ms: Option<u64>,
     pub refreshing: bool,
     pub refresh_failed: bool,
+    #[serde(default)]
+    pub progress_completed: Option<u64>,
+    #[serde(default)]
+    pub progress_total: Option<u64>,
+    #[serde(default)]
+    pub progress_stage: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1981,9 +1987,9 @@ pub struct UsageRepositoryRow {
     pub range: crate::params::UsageRange,
     pub coverage: UsageCoverage,
     pub total_tokens: Option<u64>,
-    pub model_requests: u64,
-    pub tool_calls: u64,
-    pub execution_wall_ms: u64,
+    pub model_requests: Option<u64>,
+    pub tool_calls: Option<u64>,
+    pub execution_wall_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
     pub cost: UsageCost,
 }
@@ -2094,7 +2100,7 @@ pub struct UsageActivity {
     pub activity: String,
     pub total_tokens: u64,
     pub share: Option<f64>,
-    pub operations: u64,
+    pub operations: Option<u64>,
     pub provenance: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "UsageCost::is_empty")]
     pub cost: UsageCost,
