@@ -43,7 +43,7 @@ const V_EARLY = 'v0000000000000001'; const V_DONE = 'v0000000000000002';
 const V_R1 = 'v0000000000000003'; const V_R2 = 'v0000000000000004';
 const P_PAR = 'p1111111111111101'; const P_C1 = 'p1111111111111102';
 const P_C2 = 'p1111111111111103'; const P_G1 = 'p1111111111111104';
-const P_D1 = 'p1111111111111105'; const P_FB = 'p1111111111111106';
+const P_D1 = 'p1111111111111105'; const P_D2 = 'p1111111111111110'; const P_FB = 'p1111111111111106';
 const P_LT = 'p1111111111111107'; const P_UNSIZED = 'p1111111111111108';
 const P_UNSIZED_PARENT = 'p1111111111111109';
 const TEST_RUN = 't20260101T000100Z-def456';
@@ -350,6 +350,7 @@ const fixtures = (scenario) => {
       tasks: scenario.empty ? [] : [
         { task_id: 'p1111111111111100', parent_task_id: null, release_id: V_EARLY, seq: 0, position: 1, title: 'First greeting text', impact: null, status: 'done', kind: 'goal', estimated_loc: 150 },
         { task_id: P_D1, parent_task_id: null, release_id: V_DONE, seq: 1, position: 1, title: 'Show the welcome page', impact: null, status: 'done', kind: 'goal', estimated_loc: 400, elaboration_needed: true },
+        { task_id: P_D2, parent_task_id: P_D1, release_id: V_DONE, seq: 1, position: 1, title: 'Render the welcome message', impact: null, status: 'done', kind: 'improvement', estimated_loc: 40 },
         { task_id: P_PAR, parent_task_id: null, release_id: V_R1, seq: 2, position: 1, title: 'Sign-in works', impact: 'Nobody can sign in yet.', status: 'planned', kind: 'goal', estimated_loc: null },
         { task_id: P_C1, parent_task_id: P_PAR, release_id: V_R1, seq: 3, position: 1, title: 'Sign-in form', impact: null, status: 'in_progress', kind: 'goal', estimated_loc: 300 },
         { task_id: P_G1, parent_task_id: P_C1, release_id: V_R1, seq: 4, position: 1, title: 'E-mail field checks its spelling', impact: null, status: 'planned', kind: 'stub', estimated_loc: 100 },
@@ -2178,6 +2179,44 @@ async function main() {
   // alternatives, persistence, recovery, preview request, feedback, and drop.
   await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
   await page.waitForSelector('.gantt');
+  check('plan: completed root tasks are hidden by default',
+    await page.locator(`[data-task-row="${P_D1}"].ghidden`).count() === 1
+    && await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden)`).count() === 0
+    && await page.locator(`[data-minimap-task="${P_D1}"]`).count() === 0);
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}?task=${P_D1}`);
+  await page.waitForSelector(`[data-task-row="${P_D1}"].selected`);
+  check('plan: an explicit link still reveals a hidden completed task',
+    await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden).selected`).count() === 1);
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}?task=${P_D2}`);
+  await page.waitForSelector(`[data-task-row="${P_D2}"].selected`);
+  check('plan: a deep link reveals its completed root and selected descendant',
+    await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden)`).count() === 1
+    && await page.locator(`[data-task-row="${P_D2}"]:not(.ghidden).selected`).count() === 1);
+  await page.click(`[data-collapse="${P_C1}"]`);
+  check('plan: unrelated tree toggles preserve explicitly revealed task context',
+    await page.locator(`[data-task-row="${P_D1}"]:not(.ghidden)`).count() === 1
+    && await page.locator(`[data-task-row="${P_D2}"]:not(.ghidden).selected`).count() === 1);
+  await page.click(`[data-collapse="${P_C1}"]`);
+  await page.goto(`http://${HOST}:${port}/#/plan/${REPO}`);
+  await page.waitForSelector('.gantt');
+  check('plan: returning to the base route restores default completed-task visibility',
+    await page.locator(`[data-task-row="${P_D1}"].ghidden`).count() === 1
+    && await page.locator(`[data-task-row="${P_D2}"].ghidden`).count() === 1);
+  const initialPlanViewport = page.locator('[data-plan-viewport]');
+  await initialPlanViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; element.scrollLeft = 0; });
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
+  const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
+  check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
+  await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) === 0);
+  await initialPlanViewport.evaluate((element, taskId) => {
+    const row = element.querySelector(`[data-task-row="${taskId}"]`);
+    element.scrollTop = row?.offsetTop || 0;
+    element.scrollLeft = 0;
+  }, P_UNSIZED_PARENT);
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
+  const unsizedParentTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
+  check('plan: vertical scrolling aligns an unsized-only parent with the unsized chart band', unsizedParentTimelineScroll > 0, String(unsizedParentTimelineScroll));
   await chooseRepository(page, LONG);
   await page.waitForURL(/#\/plan\/r2$/);
   check('plan: shared repository selection keeps the current aspect', (await page.locator('#workspace-heading').innerText()) === LONG);
@@ -2405,7 +2444,7 @@ async function main() {
     return { box: { x: box.x, y: box.y, width: box.width, height: box.height },
       hit: hit?.className || hit?.tagName || '' };
   });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"]`, { x: 100, y: 28 });
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-task-row="${P_C1}"] .glabel`, { x: 100, y: 28 });
   await waitForSettledCall(daemon, page, 'task.update');
   const reorderCall = daemon.calls.find((c) => c.operation === 'task.update');
   const dragEvents = await page.evaluate(() => window.__planDragEvents);
@@ -2425,7 +2464,7 @@ async function main() {
     const target = document.querySelector(`[data-drop-release="${releaseId}"]`);
     if (viewport && sourceRow && target) viewport.scrollTop = Math.max(0, ((sourceRow.offsetTop + target.offsetTop) / 2) - (viewport.clientHeight / 2));
   }, { sourceId: P_C2, releaseId: V_R2 });
-  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"]`, { x: 45 });
+  await pointerDrag(`[data-drag-task="${P_C2}"]`, `[data-drop-release="${V_R2}"] .glabel`, { x: 45 });
   await waitForSettledCall(daemon, page, 'task.update');
   const dragMoveCall = daemon.calls.find((c) => c.operation === 'task.update' && c.params.task_id === P_C2);
   check('interaction: dropping a task on a release header moves it into that release',
