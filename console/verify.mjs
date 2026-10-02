@@ -2284,11 +2284,23 @@ async function main() {
     !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1);
 
-  await page.hover(`[data-hover-task="${P_G1}"]`);
+  const hoverTask = page.locator(`[data-hover-task="${P_G1}"]`);
+  // Earlier steps leave this bar behind the sticky task navigator. Use the
+  // visible Fit control so hover does not race automatic scroll/realignment.
+  await page.locator('[data-plan-zoom="fit"]').click();
+  await waitForRenderFrame(page);
+  await hoverTask.hover();
   await page.waitForSelector('#plan-tooltip:not([hidden])');
   check('interaction: hovering a task bar reveals its anchored detail badge',
     /E-mail field checks its spelling/.test(await page.innerText('#plan-tooltip'))
     && /100/.test(await page.innerText('#plan-tooltip')));
+  await waitForRenderFrame(page);
+  check('interaction: the task detail badge stays visible after timeline alignment',
+    await hoverTask.evaluate((bar) => bar.matches(':hover'))
+    && await page.locator('#plan-tooltip:not([hidden])').isVisible());
+  await page.locator('[data-plan-selection-toggle]').hover();
+  check('interaction: leaving the task bar dismisses its detail badge',
+    await page.locator('#plan-tooltip').isHidden());
 
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-task-row="${P_C2}"].selected`);

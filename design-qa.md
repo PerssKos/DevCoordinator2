@@ -854,13 +854,21 @@ final result: blocked
 
 ## Current verification state
 
-- Policy, API, migration, Console source, and focused Rust/JavaScript checks
-  are implemented.
-- The locked Playwright runtime is installed under `ci/playwright` and a
-  focused Console design pass completed 425 checks with zero failures.
-- The complete Console matrix remains blocked by an existing unrelated Plan
-  journey timeout while waiting for `#plan-tooltip:not([hidden])`; the run
-  does not provide a complete formal receipt for this candidate.
+- Policy, API, migration, and Console source changes exist. Their complete
+  acceptance path has not yet been verified.
+- The locked Playwright runtime is installed under `ci/playwright`. The
+  425-check run covered the existing Tests page and contained no Sketches
+  assertions. It does not verify mockup history, continuation selection, or
+  description editing. The previous Sketches browser-pass claim is withdrawn
+  under `DC2-SKETCH-EVIDENCE-SCOPE-CORRECTION-20261002`.
+- The complete Console matrix stopped while waiting for
+  `#plan-tooltip:not([hidden])`. Rendered event tracing reproduced the popup
+  opening and then closing when scheduled timeline alignment moved its task
+  bar away from the pointer. The hover journey now uses the visible Fit control
+  before aiming the pointer and checks appearance, continued visibility, and
+  dismissal. The corrected complete Console regression run passed 3,130 checks
+  with zero failures. It still contains no Sketches acceptance assertions and
+  does not establish the required formal UI receipt for mockup history.
 - No manual-review or Product Design pass receipt is recorded. The history
   surface remains preliminary until a fresh rendered candidate is captured and
   the fail-closed UI handoff pipeline passes.
