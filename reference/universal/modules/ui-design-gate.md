@@ -69,19 +69,50 @@ journey and interaction verification still apply. An approved target that
 cannot be retrieved is a blocker, not an absent-target exemption. This gate
 does not reopen design selection for repairs that restore the approved target.
 
+This audit is the third stage of the fail-closed handoff pipeline:
+
+```text
+formal.result == passed
+    -> manual.result == passed
+        -> Product Design audit (when applicable)
+            -> live deployment/source-identity verification
+                -> qualified delivery receipt
+```
+
+Do not open screenshots for manual review or run `$product-design:audit` unless
+the exact candidate's formal receipt has `formal.result == passed`. A formal
+receipt uses only these results: `passed`, `failed`, `blocked`, or
+`incomplete`. `passed` requires a fresh complete all-cell run, readiness-eligible
+coverage, no blocking findings, and retained report, journey evidence, review
+queue, and screenshot artifacts. A development pass, cache hit, exit status,
+health check, or prose summary does not establish `passed`.
+
+If formal verification is `failed`, `blocked`, or `incomplete`, preserve the
+report and all diagnostic artifacts, do not create a manual-review or Product
+Design pass receipt, repair the product, and rerun the complete formal check on
+a fresh candidate. A later gate failure also blocks handoff and requires the
+repair plus a fresh applicable review. Missing authentication, screenshots,
+audit tooling, Coordinator evidence, or source identity keeps the result
+blocked or preliminary.
+
 Before final handoff or a completion claim:
 
-1. Resolve the selected visual target and its journey from the current
+1. Verify the upstream formal receipt and the separate manual-review receipt.
+   The manual receipt must bind to the formal run and enumerate every reviewed
+   target/state/theme/viewport cell with its initial and full-page screenshot
+   identities, reviewer decision, note, and review timestamp. `manual.result`
+   is `passed` only when every required cell is reviewed and passes.
+2. Resolve the selected visual target and its journey from the current
    Coordinator sketch/decision and project requirements. Bind the audit to the
    exact source identity, version, and implementation state being reviewed.
-2. Load and follow `$product-design:audit` and its index, user-context, and
+3. Load and follow `$product-design:audit` and its index, user-context, and
    critical-overrides contracts, including the user-context preflight when
    local shell access is available. Run its combined UX/design/accessibility
    audit. Also load `$product-design:design-qa` for paired visual comparison
    and the `design-qa.md` report. Resolve both from the active skill/plugin
    catalog, not a version-specific cache path. Design QA alone does not satisfy
    the required audit.
-3. Open the exact retained approved source and capture the current rendered
+4. Open the exact retained approved source and capture the current rendered
    implementation. Match viewport, route, state, theme, content condition
    (using the same fixture or documenting why live data differs), density, and
    auth conditions. Keep the approved mockup as the reference; do not
@@ -91,28 +122,28 @@ Before final handoff or a completion claim:
    flow steps, states, supported themes, and relevant wide/narrow layouts. For
    states the mockup does not show, verify requirements and identify the visual
    comparison limit rather than inventing a reference.
-4. Tie each step to its screenshots and observations. Review strengths, UX and
+5. Tie each step to its screenshots and observations. Review strengths, UX and
    design findings, accessibility risks, evidence limits, and the real rendered
    behavior of navigation, focus, controls, validation, cancellation, errors,
    persistence, and recovery. Screenshots do not replace the rendered
    interaction pass.
-5. Explicitly inspect typography and copy, spacing and layout rhythm, colors
+6. Explicitly inspect typography and copy, spacing and layout rhythm, colors
    and tokens, image and asset fidelity, hierarchy, responsive reflow, and the
    interaction states represented by the target. Record the concrete difference,
    its user impact, and the fix for every finding.
-6. Classify findings as P0 (blocking use or severe accessibility failure), P1
+7. Classify findings as P0 (blocking use or severe accessibility failure), P1
    (major visual or usability mismatch), P2 (moderate visual, responsive, or
    state drift), or P3 (minor polish). P0, P1, and P2 are significant findings
    and block handoff. P3 findings may remain only as an explicit follow-up list.
-7. A complete first audit may pass when it finds no actionable P0-P2 issue and
+8. A complete first audit may pass when it finds no actionable P0-P2 issue and
    makes no visual fixes. Otherwise fix in-scope findings, capture the revised
    implementation under the same conditions, and repeat the audit until clear.
    Each later pass links earlier findings, fixes, and post-fix evidence. A fix,
    successful build, or exhausted iteration count is not a passing audit.
-8. If a required skill, approved source, implementation, capture tool, or
+9. If a required skill, approved source, implementation, capture tool, or
    required evidence is unavailable, report the exact blocker and keep final
    handoff blocked while independent authorized work continues.
-9. Accept an intentional deviation only with a rationale citing an applicable
+10. Accept an intentional deviation only with a rationale citing an applicable
    confirmed requirement or user-authorized decision. Material changes to the
    selected direction require renewed user selection or approval. Do not
    rewrite the reference or downgrade findings merely to obtain a pass.
@@ -126,7 +157,11 @@ approval ledger; diagnosed gaps follow the existing ledger rules. Render the
 accepted screenshots and numbered step verdicts in a concise inline audit
 report unless the user has selected another format.
 
-Require `final result: passed` before final handoff, with no actionable P0-P2
+The retained Product Design receipt must include the numbered journey steps,
+fresh screenshot identities, source and implementation identities, UX and
+accessibility findings, evidence limits, P0-P3 classifications, iteration
+history, and the exact text `final result: passed`. Require `final result: passed`
+before final handoff, with no actionable P0-P2
 finding or required evidence gap and with rendered interaction verification
 complete. Otherwise record `final result: blocked` and the reason. Documented
 P3 polish is optional follow-up; missing agreed functionality cannot be called

@@ -105,6 +105,86 @@ other hidden-by-default surfaces explicitly. The verifier never infers an open
 state from the presence of its closed trigger or from text in an unexecuted DOM
 branch.
 
+## Exact browser, layout, data-shape, and geometry coverage
+
+Every user-reported browser condition is a required cell. Add
+`reportedBrowserStates` when a report names an exact route, state, theme,
+viewport, device or user agent, authentication condition, zoom, or width/height:
+
+```json
+{
+  "reportedBrowserStates": [{
+    "id": "registry-compact-chromium",
+    "target": "registry",
+    "state": "base",
+    "theme": "light",
+    "viewport": {"name": "reported-1024", "width": 1024, "height": 768},
+    "device": "desktop",
+    "userAgent": "reported-browser",
+    "auth": "signed-in",
+    "zoom": 1
+  }]
+}
+```
+
+Each entry must resolve to exactly one `requiredCoverage` cell with the same
+route, state, theme, viewport dimensions, device/browser condition, and auth
+condition. A different viewport name, a narrow desktop substitute for a phone,
+or a default state substituted for the reported interaction is missing
+coverage. In addition to exact reported cells, every supported layout class
+(`phone`, `intermediate`, `desktop`, and `wide`) and every affected theme and
+interaction state must be represented. Every declared breakpoint still expands
+to width−1, width, and width+1; those generated cells are mandatory, not
+optional samples.
+
+Declare every layout-changing production data shape for each affected target:
+
+```json
+{
+  "fixtureDataShapes": [{
+    "id": "symmetry-family",
+    "revision": "fixture-2026-09-01",
+    "route": "/registry",
+    "state": "base",
+    "conditionalDom": [
+      "[data-ui-region='explorer-grid']",
+      "[data-ui-track='hidden-navigation']"
+    ],
+    "layoutEffect": "activates the hidden explorer grid track"
+  }]
+}
+```
+
+The route fixture must actually render each declared shape and conditional DOM
+structure. An empty, simplified, or mocked response that omits a symmetry
+family, hidden navigation track, or other higher-specificity layout branch is
+not evidence for that shape. Missing shape declarations or unrendered fixture
+branches make the formal result `incomplete`.
+
+Each affected target/state must also declare `geometryAssertions`. Assertions
+are stable, privacy-safe IDs with selectors or region bindings and measured
+results for every applicable cell. The required assertion kinds are:
+
+- `hidden-navigation-track`: prove hidden tracks do not consume unintended
+  primary-content width or create a collapsed one-character column;
+- `primary-content-width`: record the rendered width and enforce the declared
+  minimum or viewport-relative bound;
+- `readable-heading` and `readable-canonical-identifier`: prove visibility,
+  usable width, no clipping, and recognizable text layout;
+- `no-character-wrapping`: fail when a heading or canonical identifier wraps
+  character by character rather than within the intended text measure;
+- `document-horizontal-overflow`: record document `scrollWidth` and
+  `clientWidth`, failing unexplained overflow;
+- `initial-viewport-placement`: prove primary content intersects the initial
+  viewport before scrolling; and
+- `clipping`: record self and ancestor clipping for the primary content and
+  named readable text.
+
+An assertion without a measured result, a selector that cannot resolve, or a
+data shape without its applicable assertion cells is incomplete evidence. A
+formal pass requires every required assertion to pass or have an explicit,
+reviewed allowance retained in the report.
+
 ## Journey And Region Rules
 
 - Journey IDs are stable. Each definition includes `frequencyPercent` and
@@ -359,11 +439,140 @@ resource URL.
 - Screenshot SHA-256 values bind evidence integrity only. Pixel changes never
   enter the manual-review queue.
 
-## Changed Visual Review
+## Ordered review receipts
 
-After the formal verifier and all other automatic tests finish, read only
-`review-queue.json`. Open both images for each queued cell, record decisions in
-a small JSON artifact, and finalize the immutable reviewed manifest:
+Formal verification is the first gate. Its receipt has this required shape:
+
+```json
+{
+  "formal": {
+    "result": "passed",
+    "runId": "formal-web-ui-...",
+    "candidateId": "...",
+    "exitCode": 0,
+    "freshComplete": true,
+    "sourceSha256": "...",
+    "configSha256": "...",
+    "verifierSha256": "...",
+    "coverage": {"status": "passed", "readinessEligible": true},
+    "evidence": {
+      "report": "report.json",
+      "journeyEvidence": "journey-evidence.json",
+      "reviewQueue": "review-queue.json",
+      "screenshots": "screenshots/",
+      "manifestSha256": "..."
+    }
+  }
+}
+```
+
+`formal.result` is exactly `passed`, `failed`, `blocked`, or `incomplete`.
+Only a fresh complete all-cell run with exit `0`, readiness-eligible coverage,
+all required cells and assertions satisfied, no blocking findings, and retained
+evidence is `passed`. A blocking finding is `failed`; unavailable authentication,
+rendering, screenshots, tooling, or Coordinator evidence is `blocked`; a subset,
+cache hit, skipped cell, missing shape, or partial matrix is `incomplete`.
+Preserve non-passing artifacts as diagnostic evidence and do not replace them
+with prose. Repair the product and rerun formal verification on a fresh
+candidate before starting any downstream gate.
+
+### Manual screenshot review
+
+Run this stage only when `formal.result == passed`. Read only
+`review-queue.json`, open the initial-viewport and full-page pair for every
+queued cell, carry unchanged cells by their prior hash-bound screenshot
+identity and decision without reopening them, and finalize an independent
+manual receipt:
+
+```json
+{
+  "manual": {
+    "result": "passed",
+    "formalRunId": "formal-web-ui-...",
+    "formalManifestSha256": "...",
+    "reviewer": "...",
+    "reviewedAt": "2026-10-02T00:00:00Z",
+    "cells": [
+      {
+        "cellId": "registry/base/light/desktop",
+        "target": "registry",
+        "state": "base",
+        "theme": "light",
+        "viewport": {"name": "desktop", "width": 1440, "height": 900},
+        "screenshots": {
+          "initialViewportSha256": "...",
+          "fullPageSha256": "..."
+        },
+        "decision": "pass",
+        "note": ""
+      }
+    ]
+  }
+}
+```
+
+The receipt must enumerate every formal target/state/theme/viewport cell,
+including carried cells, and bind each screenshot identity to the formal run.
+`manual.result == passed` requires every cell to have a reviewer decision of
+`pass`; `gap`, `blocked`, missing cells, missing screenshots, or missing notes
+where required keep it non-passing. A formal failure means no screenshot is
+opened and no manual pass receipt is created.
+
+The existing finalizer remains the required command:
+
+```bash
+devcoordinator2-tooling formal-ui review \
+  --report /path/report.json \
+  --queue /path/review-queue.json \
+  --decisions /path/decisions.json \
+  --out /path/manual-review.json
+```
+
+Use `gap` or `blocked` with a concrete note when appropriate. The finalizer
+returns `1` while any decision blocks delivery and `2` for an invalid or
+tampered evidence chain.
+
+### Product Design and deployment receipts
+
+When an approved visual target exists, run `$product-design:audit` only after
+`manual.result == passed`. Its receipt must include the numbered journey steps,
+fresh screenshot identities, source and implementation identities, UX and
+accessibility findings, evidence limits, P0–P3 classification, iteration
+history, and the exact text `final result: passed`. Design QA alone is not this
+receipt. Any P0–P2 finding or missing evidence blocks handoff.
+
+After the applicable Product Design receipt passes, bind live verification to
+the same candidate with this minimum deployment receipt:
+
+```json
+{
+  "deployment": {
+    "result": "passed",
+    "formalRunId": "formal-web-ui-...",
+    "manualReceiptId": "manual-...",
+    "productDesignReceiptId": "audit-...",
+    "sourceSha256": "...",
+    "artifactManifestSha256": "...",
+    "imageDigest": "...",
+    "deploymentGeneration": 3,
+    "liveRoute": "https://preview.example.test/registry",
+    "renderedEvidence": ["screenshot-sha256:..."],
+    "httpStatus": 200,
+    "contentType": "text/html"
+  }
+}
+```
+
+The Product Design receipt ID is omitted only when no approved target exists,
+with that applicability decision retained. HTTP 200, container health,
+matching static assets, or a successful deployment command cannot establish
+this gate alone. Finish with the Coordinator's qualified
+`release.deliver_evidence` receipt; a deployment metadata row is not delivery
+proof.
+
+### Changed visual review compatibility
+
+The existing changed-review finalizer still accepts the compact input shape:
 
 ```json
 {
@@ -384,10 +593,6 @@ devcoordinator2-tooling formal-ui review \
   --decisions /path/decisions.json \
   --out /path/manual-review.json
 ```
-
-Use `gap` or `blocked` with a concrete note when appropriate. The finalizer
-returns `1` while any decision blocks delivery and `2` for an invalid or
-tampered evidence chain.
 
 Supply a prior reviewed manifest explicitly on the next run:
 
