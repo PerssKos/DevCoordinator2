@@ -28,6 +28,7 @@ const state = {
   planScrollLeft: 0,
   planScrollTop: 0,
   planRequestedTaskId: null,
+  planExplicitVisibleTaskIds: new Set(),
   evidenceRunId: null,
   evidenceRun: null,
   evidenceData: null,
@@ -3914,7 +3915,7 @@ function seedPlanCollapsedDoneParents(releases, tasks, collapsed) {
   }
 }
 
-function computeGantt(releases, tasks, collapsed) {
+function computeGantt(releases, tasks, collapsed, explicitVisibleTaskIds = new Set()) {
   const known = new Set(releases.map((r) => r.release_id));
   const byId = new Map(tasks.map((t) => [t.task_id, t]));
   const groupOf = (t) => (t.release_id && known.has(t.release_id) ? t.release_id : null);
@@ -3932,7 +3933,8 @@ function computeGantt(releases, tasks, collapsed) {
     const children = kids.get(t.task_id) || [];
     const rootDone = depth === 0 && t.status === 'done';
     const nestedDoneLeaf = depth > 0 && t.status === 'done' && children.length === 0;
-    const row = { task: t, depth, isParent: children.length > 0, hidden: hidden || rootDone || nestedDoneLeaf, start: cursor, width: 0, subtreeLoc: 0, doneLoc: 0, unsizedCount: 0, isUnsized: false, collapsed: collapsed.has(t.task_id) };
+    const explicitlyVisible = explicitVisibleTaskIds.has(t.task_id);
+    const row = { task: t, depth, isParent: children.length > 0, hidden: hidden || (!explicitlyVisible && (rootDone || nestedDoneLeaf)), start: cursor, width: 0, subtreeLoc: 0, doneLoc: 0, unsizedCount: 0, isUnsized: false, collapsed: collapsed.has(t.task_id) };
     rows.push(row);
     if (!children.length) {
       if (t.estimated_loc == null) {
@@ -4021,6 +4023,7 @@ const viewPlan = guard(async (repoId) => {
     // Collapse defaults belong to one plan. Reset them when switching
     // repositories so stale task ids cannot affect a different tree.
     state.collapsed = new Set();
+    state.planExplicitVisibleTaskIds = new Set();
     state.planVisibilitySeededRepositoryId = null;
     state.planSelectedTaskId = requestedTaskId;
     state.planScrollLeft = 0;
@@ -4044,24 +4047,28 @@ const viewPlan = guard(async (repoId) => {
     state.planVisibilitySeededRepositoryId = repoId;
   }
   if (requestedTaskId) {
+    state.planExplicitVisibleTaskIds = new Set();
     const byId = new Map(model.tasks.map((task) => [task.task_id, task]));
     let ancestor = byId.get(requestedTaskId);
-    while (ancestor?.parent_task_id) {
+    while (ancestor) {
+      state.planExplicitVisibleTaskIds.add(ancestor.task_id);
+      if (!ancestor.parent_task_id) break;
       state.collapsed.delete(ancestor.parent_task_id);
       ancestor = byId.get(ancestor.parent_task_id);
     }
+  } else {
+    state.planExplicitVisibleTaskIds = new Set();
   }
-  const { groups, total, unsizedCount } = computeGantt(model.releases, model.tasks, state.collapsed);
+  const { groups, total, unsizedCount } = computeGantt(model.releases, model.tasks, state.collapsed, state.planExplicitVisibleTaskIds);
   const rows = groups.flatMap((g) => g.rows);
-  const requestedRow = requestedTaskId ? rows.find((row) => row.task.task_id === requestedTaskId) : null;
-  if (requestedRow) requestedRow.hidden = false;
   const releaseById = new Map(model.releases.map((r) => [r.release_id, r]));
   const unsizedShare = unsizedCount ? (total ? 0.18 : 1) : 0;
   const sizedShare = 1 - unsizedShare;
   const pctOf = (v) => `${(total ? (v / total) * sizedShare * 100 : 0).toFixed(3)}%`;
   const unsizedLeft = `${(sizedShare * 100 + (unsizedShare ? 1 : 0)).toFixed(3)}%`;
   const unsizedWidth = `${Math.max(0, unsizedShare * 100 - (unsizedShare ? 2 : 0)).toFixed(3)}%`;
-  let selectedRow = requestedRow || rows.find((row) => row.task.task_id === state.planSelectedTaskId && !row.hidden);
+  let selectedRow = requestedTaskId ? rows.find((row) => row.task.task_id === requestedTaskId) : null;
+  selectedRow ||= rows.find((row) => row.task.task_id === state.planSelectedTaskId && !row.hidden);
   if (!selectedRow) {
     selectedRow = rows.find((row) => !row.hidden && row.isParent && row.task.status !== 'done')
       || rows.find((row) => !row.hidden && row.task.status === 'in_progress')
@@ -4190,7 +4197,7 @@ const viewPlan = guard(async (repoId) => {
   bind(main);
   bindProjectPicker(main);
   bindMoveButtons(main, model);
-  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin });
+  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin, explicitVisibleTaskIds: state.planExplicitVisibleTaskIds });
   $('[data-plan-feedback]', main)?.addEventListener('click', () => openFeedbackDialog(repoId));
   if (admin) bindGanttDrag(main, model);
 });
@@ -4351,7 +4358,7 @@ function syncPlanCollapsedRows(root, layout) {
   for (const group of layout.groups) {
     const groupRows = new Map(group.rows.map((row) => [row.task.task_id, row]));
     for (const row of group.rows) {
-      let parent = groupRows.get(row.task.parent_task_id); let hidden = (row.depth === 0 || !row.isParent && row.depth > 0) && row.task.status === 'done';
+      let parent = groupRows.get(row.task.parent_task_id); let hidden = !layout.explicitVisibleTaskIds.has(row.task.task_id) && (row.depth === 0 || !row.isParent && row.depth > 0) && row.task.status === 'done';
       while (parent) {
         if (state.collapsed.has(parent.task.task_id)) { hidden = true; break; }
         parent = groupRows.get(parent.task.parent_task_id);
@@ -4418,7 +4425,8 @@ function bindPlanWorkspace(root, model, layout) {
     const visibleWidth = visibleChartWidth();
     const maxScroll = Math.max(0, contentWidth - visibleWidth);
     const sizedShare = layout.sizedShare ?? 1;
-    const chartOffset = row.isUnsized
+    const hasUnsizedBar = row.isUnsized || (row.isParent && row.width === 0 && row.unsizedCount > 0);
+    const chartOffset = hasUnsizedBar
       ? sizedShare * contentWidth
       : (total ? (row.start / total) * sizedShare * contentWidth : 0);
     const nextScroll = Math.max(0, Math.min(maxScroll, chartOffset));
