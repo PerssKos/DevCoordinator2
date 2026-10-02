@@ -2204,17 +2204,17 @@ async function main() {
     && await page.locator(`[data-task-row="${P_D2}"].ghidden`).count() === 1);
   const initialPlanViewport = page.locator('[data-plan-viewport]');
   await initialPlanViewport.evaluate((element) => { element.scrollTop = element.scrollHeight; element.scrollLeft = 0; });
-  await page.waitForTimeout(80);
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
   await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
-  await page.waitForTimeout(80);
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) === 0);
   await initialPlanViewport.evaluate((element, taskId) => {
     const row = element.querySelector(`[data-task-row="${taskId}"]`);
     element.scrollTop = row?.offsetTop || 0;
     element.scrollLeft = 0;
   }, P_UNSIZED_PARENT);
-  await page.waitForTimeout(80);
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
   const unsizedParentTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling aligns an unsized-only parent with the unsized chart band', unsizedParentTimelineScroll > 0, String(unsizedParentTimelineScroll));
   await chooseRepository(page, LONG);

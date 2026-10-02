@@ -64,6 +64,14 @@ fn peer(
                 request["params"]["toAt"].as_u64().unwrap(),
             );
             mutate(&mut result);
+            if result
+                .get("__wait_for_disconnect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let _ = socket.read();
+                continue;
+            }
             let _ = socket.send(Message::Text(
                 json!({"id":2,"result":result}).to_string().into(),
             ));
@@ -239,8 +247,8 @@ fn slow_api_is_cancelled_within_the_shared_read_budget() {
         executable: "/unused".into(),
         api_socket: Some(socket.clone()),
     };
-    let (server, calls) = peer(&socket, &home, 1, |_| {
-        std::thread::sleep(Duration::from_millis(300))
+    let (server, calls) = peer(&socket, &home, 1, |result| {
+        result["__wait_for_disconnect"] = Value::Bool(true);
     });
     let began = Instant::now();
     let result = CollectorApi::default().summary(
