@@ -61,6 +61,11 @@ decisions, and execution evidence remain in their authoritative services.
 - Mockup-backed UI completion now requires a combined `$product-design:audit`
   against the confirmed visual target, paired source/rendered evidence at the
   same state and viewport, and repeat passes until no P0-P2 finding remains.
+  Generated mockups are immutable one-surface/window files with an
+  agent-authored searchable manifest, explicit parent lineage, preserved
+  rejected options, and an explicit possibly-multiple current continuation
+  set. Current-source resolution is refreshed after every generation or user
+  adjustment; legacy records remain historical.
   `ui-design-gate` owns the detail; Section 5 separates admission from handoff
   and Section 9 preserves rendered interaction proof. P3 polish is documented
   follow-up. No confirmed target means no fidelity gate; an unavailable approved

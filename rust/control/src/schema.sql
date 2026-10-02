@@ -535,6 +535,7 @@ CREATE TABLE IF NOT EXISTS sketch_batches (
   generation_record_path TEXT NOT NULL,
   generation_record_size INTEGER NOT NULL,
   generation_record_sha256 TEXT NOT NULL,
+  manifest_version INTEGER NOT NULL DEFAULT 1,
   idempotency_key TEXT NOT NULL,
   created_at TEXT NOT NULL,
   created_by TEXT NOT NULL,
@@ -554,11 +555,28 @@ CREATE TABLE IF NOT EXISTS sketches (
   height INTEGER NOT NULL,
   decision TEXT NOT NULL CHECK(decision IN ('keep','reject','undecided')),
   decision_revision INTEGER NOT NULL DEFAULT 0,
+  surface_id TEXT,
+  surface_title TEXT,
+  element_ids_json TEXT NOT NULL DEFAULT '[]',
+  state_name TEXT,
+  theme TEXT,
+  viewport TEXT,
+  description TEXT NOT NULL DEFAULT '',
+  journey TEXT NOT NULL DEFAULT '',
+  decisions TEXT NOT NULL DEFAULT '',
+  instructions TEXT NOT NULL DEFAULT '',
+  constraints TEXT NOT NULL DEFAULT '',
+  transition_note TEXT NOT NULL DEFAULT '',
+  manifest_version INTEGER,
+  legacy INTEGER NOT NULL DEFAULT 1 CHECK(legacy IN (0,1)),
+  description_revision INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   created_by TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sketches_repository ON sketches(repository_id,created_at);
 CREATE INDEX IF NOT EXISTS sketches_decision ON sketches(repository_id,decision);
+CREATE INDEX IF NOT EXISTS sketches_surface ON sketches(repository_id,surface_id,created_at);
+CREATE INDEX IF NOT EXISTS sketches_legacy ON sketches(repository_id,legacy);
 CREATE TABLE IF NOT EXISTS sketch_decision_history (
   sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
   revision INTEGER NOT NULL,
@@ -580,6 +598,52 @@ CREATE TABLE IF NOT EXISTS sketch_annotations (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sketch_annotations_sketch ON sketch_annotations(sketch_id,created_at);
+CREATE TABLE IF NOT EXISTS sketch_lineage (
+  lineage_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  parent_sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
+  child_sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
+  relation TEXT NOT NULL CHECK(relation IN ('derived_from','adjusted_from','supersedes','reintroduced_from')),
+  rationale TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(parent_sketch_id,child_sketch_id,relation)
+);
+CREATE INDEX IF NOT EXISTS sketch_lineage_parent ON sketch_lineage(repository_id,parent_sketch_id,created_at);
+CREATE INDEX IF NOT EXISTS sketch_lineage_child ON sketch_lineage(repository_id,child_sketch_id,created_at);
+CREATE TABLE IF NOT EXISTS sketch_description_history (
+  sketch_id TEXT NOT NULL REFERENCES sketches(sketch_id),
+  revision INTEGER NOT NULL,
+  description TEXT NOT NULL,
+  journey TEXT NOT NULL,
+  decisions TEXT NOT NULL,
+  instructions TEXT NOT NULL,
+  constraints TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(sketch_id,revision)
+);
+CREATE INDEX IF NOT EXISTS sketch_description_history_sketch ON sketch_description_history(sketch_id,revision);
+CREATE TABLE IF NOT EXISTS sketch_surface_activations (
+  activation_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  surface_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('select','restore','supersede')),
+  sketch_ids_json TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(repository_id,surface_id,revision)
+);
+CREATE INDEX IF NOT EXISTS sketch_surface_activations_current ON sketch_surface_activations(repository_id,surface_id,revision DESC);
+CREATE VIRTUAL TABLE IF NOT EXISTS sketches_fts USING fts5(
+  sketch_id UNINDEXED,
+  repository_id UNINDEXED,
+  surface_id UNINDEXED,
+  searchable
+);
 CREATE TABLE IF NOT EXISTS agent_messages (
   message_id TEXT PRIMARY KEY,
   repository_id TEXT NOT NULL REFERENCES repositories(repository_id),

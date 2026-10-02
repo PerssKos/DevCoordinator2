@@ -312,6 +312,25 @@ Non-administrators see only the destinations and data their grants allow;
 server-wide health and the Containers/Tests/Administration views render an
 explicit permission-denied notice instead of partial data.
 
+## Sketch history and continuation sets
+
+The Sketches destination groups manifest-complete records by one logical
+surface/window. Each option remains a separate image file with its state,
+theme, viewport, depicted elements, and agent-authored initial description.
+Legacy records remain visible as historical rows but cannot become current.
+
+Opening a surface keeps the current mockup prominent and collapses the current
+version summary by default. The review drawer shows the searchable initial
+description, later context revisions and comments, lineage history, and every
+option from the generation batch. Rejected options remain visible and marked
+Rejected. The owner may check several options and save them together through
+`design.sketch.activate`; the resulting current-head set is read back through
+`design.sketch.resolve` and persists after reload. Search uses
+`design.sketch.search` across descriptions, journey context, decisions,
+instructions, constraints, and transition notes. Agents use
+`design.sketch.story` to inspect the full branch history before implementation
+or after a new generation.
+
 ## Interaction inventory
 
 | Control | API call | Proof of state change |

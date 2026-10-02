@@ -54,6 +54,18 @@ The universal cross-repository policy is `reference/universal/AGENTS.md`.
   universal gate's applicability rules. Keep the shared server available and
   describe previews with outstanding audit work as preliminary and incomplete.
 
+## Sketch scope and history
+
+- New sketch records must identify one surface/window, state, theme, viewport,
+  and the controls depicted inside that window. Do not publish contact sheets,
+  multiple windows, or combined theme/state alternatives as one mockup file.
+- Require the agent-authored initial description and searchable design context
+  at publication. Later comments or adjustment instructions append context
+  revisions while preserving the initial text and every rejected option.
+- Use the explicit Coordinator continuation set for implementation and audit.
+  Multiple selected options may continue together; legacy records remain
+  historical and cannot be used as the current source.
+
 ## Authoritative project context
 
 - Read `security-assumptions.md`, relevant requirements, and applicable

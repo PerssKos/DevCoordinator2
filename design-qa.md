@@ -836,3 +836,31 @@ recorded in the feature catalog; it is not claimed as translated coverage.
 
 **Final result: passed.** Shared-source comparison and rendered interactions
 are complete; the temporary acceptance ticket was removed after verification.
+# Mockup history and continuation-set surface — preliminary
+
+final result: blocked
+
+## Selected source
+
+- Selected displayed direction: revised option 1, Story Ledger with a collapsed
+  current-version summary, visible rejected options, multiple continuation
+  selections, and separate initial/latest context.
+- Source image: retained generated artifact bound to the Coordinator decision
+  `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
+- Source SHA-256: `383a9bd5d8881c3c841ff9512a4650afd7648eb605470de416a381765286a226`.
+- Displayed ideation set retained in Coordinator decision
+  `DC2-SKETCH-HISTORY-SURFACE-DIRECTIONS-20261002`; selected direction is
+  `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
+
+## Current verification state
+
+- Policy, API, migration, Console source, and focused Rust/JavaScript checks
+  are implemented.
+- The locked Playwright runtime is installed under `ci/playwright` and a
+  focused Console design pass completed 425 checks with zero failures.
+- The complete Console matrix remains blocked by an existing unrelated Plan
+  journey timeout while waiting for `#plan-tooltip:not([hidden])`; the run
+  does not provide a complete formal receipt for this candidate.
+- No manual-review or Product Design pass receipt is recorded. The history
+  surface remains preliminary until a fresh rendered candidate is captured and
+  the fail-closed UI handoff pipeline passes.

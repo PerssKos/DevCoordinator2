@@ -1164,12 +1164,64 @@ pub enum SketchDecision {
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchLineageRelation {
+    DerivedFrom,
+    AdjustedFrom,
+    Supersedes,
+    ReintroducedFrom,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchLineageInput {
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub parent_sketch_id: String,
+    pub relation: SketchLineageRelation,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchManifest {
+    #[schemars(length(min = 1, max = 160))]
+    pub surface_id: String,
+    #[schemars(length(min = 1, max = 200))]
+    pub surface_title: String,
+    #[schemars(length(max = 64))]
+    pub element_ids: Vec<String>,
+    #[schemars(length(min = 1, max = 120))]
+    pub state: String,
+    #[schemars(length(min = 1, max = 40))]
+    pub theme: String,
+    #[schemars(length(min = 1, max = 80))]
+    pub viewport: String,
+    /// The agent-authored initial explanation of what this window shows and why.
+    #[schemars(length(min = 20, max = 8000))]
+    pub description: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub journey: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub decisions: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub instructions: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub constraints: String,
+    #[schemars(length(max = 64))]
+    pub parent_relations: Vec<SketchLineageInput>,
+    #[schemars(length(max = 2000))]
+    pub transition_note: String,
+    #[schemars(range(min = 1, max = 1))]
+    pub window_count: u8,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SketchImageInput {
     #[schemars(length(min = 1, max = 120))]
     pub title: String,
     #[schemars(length(min = 1, max = 4096))]
     pub path: String,
+    pub manifest: SketchManifest,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1181,6 +1233,8 @@ pub struct SketchPublish {
     pub sketch_set: String,
     #[schemars(length(min = 1, max = 80))]
     pub source_skill: String,
+    #[schemars(range(min = 2, max = 2))]
+    pub manifest_version: u8,
     #[schemars(length(min = 1, max = 4096))]
     pub generation_record_path: String,
     #[schemars(length(min = 1, max = 64))]
@@ -1201,6 +1255,13 @@ pub struct SketchList {
     #[serde(default)]
     pub sketch_set: Option<String>,
     #[serde(default)]
+    #[schemars(length(max = 160))]
+    pub surface_id: Option<String>,
+    #[serde(default)]
+    pub current_only: bool,
+    #[serde(default = "default_include_legacy")]
+    pub include_legacy: bool,
+    #[serde(default)]
     #[schemars(range(max = 4000000))]
     pub offset: u32,
     #[serde(default = "default_sketch_limit")]
@@ -1208,8 +1269,105 @@ pub struct SketchList {
     pub limit: u16,
 }
 
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchSearch {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 256))]
+    pub query: String,
+    #[serde(default)]
+    pub surface_id: Option<String>,
+    #[serde(default)]
+    pub current_only: bool,
+    #[serde(default)]
+    pub include_legacy: bool,
+    #[serde(default)]
+    #[schemars(range(max = 4000000))]
+    pub offset: u32,
+    #[serde(default = "default_sketch_limit")]
+    #[schemars(range(min = 1, max = 100))]
+    pub limit: u16,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchStory {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 160))]
+    pub surface_id: String,
+    #[serde(default = "default_story_limit")]
+    #[schemars(range(min = 1, max = 200))]
+    pub limit: u16,
+    #[serde(default)]
+    pub include_legacy: bool,
+}
+
+fn default_story_limit() -> u16 {
+    100
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchResolve {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 160))]
+    pub surface_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchActivationAction {
+    Select,
+    Restore,
+    Supersede,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchActivate {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 1, max = 160))]
+    pub surface_id: String,
+    #[schemars(length(min = 1, max = 64))]
+    pub sketch_ids: Vec<String>,
+    pub expected_revision: u32,
+    pub action: SketchActivationAction,
+    #[schemars(length(min = 1, max = 2000))]
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDescriptionChange {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
+    pub sketch_id: String,
+    pub expected_revision: u32,
+    #[schemars(length(min = 20, max = 8000))]
+    pub description: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub journey: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub decisions: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub instructions: String,
+    #[schemars(length(min = 1, max = 4000))]
+    pub constraints: String,
+    #[schemars(length(min = 1, max = 2000))]
+    pub rationale: String,
+}
+
 fn default_sketch_limit() -> u16 {
     50
+}
+
+fn default_include_legacy() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

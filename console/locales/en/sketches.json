@@ -45,5 +45,24 @@
       "one": "{count} set",
       "other": "{count} sets"
     }
-  }
+  },
+  "current_version": "Current version",
+  "current_head": "Current head",
+  "no_current_head": "No current head",
+  "search_history": "Search descriptions, decisions, or instructions",
+  "initial_description_from_agent": "Initial description (from agent)",
+  "latest_context_and_comments": "Latest context and comments",
+  "save_context_update": "Save context update",
+  "why_this_changed": "Why this changed",
+  "continue_with_selected": "Continue with selected",
+  "selected_for_continuation": "Selected for continuation",
+  "legacy_history": "Legacy history",
+  "available": "Available",
+  "kept": "Kept",
+  "surface_window": "Surface / window",
+  "elements": "Elements",
+  "state_theme": "State / theme",
+  "viewport": "Viewport",
+  "context_update_saved": "Context update saved.",
+  "continuation_set_saved": "Continuation set saved."
 }

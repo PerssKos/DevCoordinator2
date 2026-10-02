@@ -35,6 +35,19 @@ actually displayed. Keep that display order bound to the retained evidence;
 submission order, completion order, retries, and array indexes do not define
 the user-facing option number.
 
+Every generated option is one immutable image file for one surface/window,
+one state, one theme, and one viewport. A file may contain several named
+controls from that window, but it may not contain multiple windows, themes,
+states, or a contact sheet of alternatives. The generating agent must provide
+an agent-authored manifest with the surface identity, depicted element IDs,
+visible-content description, user journey, decisions, instructions,
+constraints, and parent nodes. Publish that manifest with the image; a missing
+initial description is invalid. Preserve every option, including rejected
+ones, and allow a continuation set to contain multiple selected options.
+Later generations append new files and explicit lineage rather than replacing
+an earlier file. The Coordinator's current-head resolution is the only source
+for implementation; timestamps and an old Keep decision are not sufficient.
+
 Pause all implementation while the admission gate is pending. Do not edit product
 code, scaffold, start a preview, run implementation work, or publish a build.
 Read-only discovery and preparation of the three design artifacts may continue.

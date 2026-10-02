@@ -30293,7 +30293,10 @@
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "phase": {
                 "type": "string"
@@ -30323,7 +30326,6 @@
               "phase",
               "activity",
               "total_tokens",
-              "operations",
               "provenance"
             ],
             "type": "object"
@@ -30624,6 +30626,31 @@
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -32119,7 +32146,10 @@
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "phase": {
                 "type": "string"
@@ -32149,7 +32179,6 @@
               "phase",
               "activity",
               "total_tokens",
-              "operations",
               "provenance"
             ],
             "type": "object"
@@ -32450,6 +32479,31 @@
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -34191,7 +34245,10 @@
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "phase": {
                 "type": "string"
@@ -34221,7 +34278,6 @@
               "phase",
               "activity",
               "total_tokens",
-              "operations",
               "provenance"
             ],
             "type": "object"
@@ -34522,6 +34578,31 @@
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -38531,12 +38612,18 @@
               "execution_wall_ms": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "model_requests": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "range": {
                 "$ref": "#/$defs/UsageRange"
@@ -38547,7 +38634,10 @@
               "tool_calls": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "total_tokens": {
                 "format": "uint64",
@@ -38562,16 +38652,38 @@
               "repository_id",
               "display_name",
               "range",
-              "coverage",
-              "model_requests",
-              "tool_calls",
-              "execution_wall_ms"
+              "coverage"
             ],
             "type": "object"
           },
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -38852,7 +38964,10 @@
               "operations": {
                 "format": "uint64",
                 "minimum": 0,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "phase": {
                 "type": "string"
@@ -38882,7 +38997,6 @@
               "phase",
               "activity",
               "total_tokens",
-              "operations",
               "provenance"
             ],
             "type": "object"
@@ -39326,6 +39440,31 @@
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -40749,6 +40888,31 @@
           "UsageSnapshot": {
             "additionalProperties": false,
             "properties": {
+              "progress_completed": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "progress_stage": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "progress_total": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "refresh_failed": {
                 "type": "boolean"
               },
@@ -41872,6 +42036,9 @@
           "SketchImageInput": {
             "additionalProperties": false,
             "properties": {
+              "manifest": {
+                "$ref": "#/$defs/SketchManifest"
+              },
               "path": {
                 "maxLength": 4096,
                 "minLength": 1,
@@ -41885,7 +42052,131 @@
             },
             "required": [
               "title",
-              "path"
+              "path",
+              "manifest"
+            ],
+            "type": "object"
+          },
+          "SketchLineageInput": {
+            "additionalProperties": false,
+            "properties": {
+              "parent_sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "relation": {
+                "$ref": "#/$defs/SketchLineageRelation"
+              }
+            },
+            "required": [
+              "parent_sketch_id",
+              "relation"
+            ],
+            "type": "object"
+          },
+          "SketchLineageRelation": {
+            "enum": [
+              "derived_from",
+              "adjusted_from",
+              "supersedes",
+              "reintroduced_from"
+            ],
+            "type": "string"
+          },
+          "SketchManifest": {
+            "additionalProperties": false,
+            "properties": {
+              "constraints": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "decisions": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "description": {
+                "description": "The agent-authored initial explanation of what this window shows and why.",
+                "maxLength": 8000,
+                "minLength": 20,
+                "type": "string"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "instructions": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "journey": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "parent_relations": {
+                "items": {
+                  "$ref": "#/$defs/SketchLineageInput"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "state": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              "surface_id": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "surface_title": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "theme": {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              "transition_note": {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              "viewport": {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              "window_count": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "surface_id",
+              "surface_title",
+              "element_ids",
+              "state",
+              "theme",
+              "viewport",
+              "description",
+              "journey",
+              "decisions",
+              "instructions",
+              "constraints",
+              "parent_relations",
+              "transition_note",
+              "window_count"
             ],
             "type": "object"
           }
@@ -41911,6 +42202,12 @@
             "minItems": 1,
             "type": "array"
           },
+          "manifest_version": {
+            "format": "uint8",
+            "maximum": 2,
+            "minimum": 2,
+            "type": "integer"
+          },
           "repository_id": {
             "pattern": "^r[0-9a-f]{16}$",
             "type": "string"
@@ -41930,6 +42227,7 @@
           "repository_id",
           "sketch_set",
           "source_skill",
+          "manifest_version",
           "generation_record_path",
           "images",
           "idempotency_key"
@@ -41945,6 +42243,9 @@
               "SketchImageInput": {
                 "additionalProperties": false,
                 "properties": {
+                  "manifest": {
+                    "$ref": "#/$defs/SketchManifest"
+                  },
                   "path": {
                     "maxLength": 4096,
                     "minLength": 1,
@@ -41958,7 +42259,131 @@
                 },
                 "required": [
                   "title",
-                  "path"
+                  "path",
+                  "manifest"
+                ],
+                "type": "object"
+              },
+              "SketchLineageInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "parent_sketch_id": {
+                    "pattern": "^s[0-9a-f]{16}$",
+                    "type": "string"
+                  },
+                  "relation": {
+                    "$ref": "#/$defs/SketchLineageRelation"
+                  }
+                },
+                "required": [
+                  "parent_sketch_id",
+                  "relation"
+                ],
+                "type": "object"
+              },
+              "SketchLineageRelation": {
+                "enum": [
+                  "derived_from",
+                  "adjusted_from",
+                  "supersedes",
+                  "reintroduced_from"
+                ],
+                "type": "string"
+              },
+              "SketchManifest": {
+                "additionalProperties": false,
+                "properties": {
+                  "constraints": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "decisions": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "The agent-authored initial explanation of what this window shows and why.",
+                    "maxLength": 8000,
+                    "minLength": 20,
+                    "type": "string"
+                  },
+                  "element_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "instructions": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "journey": {
+                    "maxLength": 4000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "parent_relations": {
+                    "items": {
+                      "$ref": "#/$defs/SketchLineageInput"
+                    },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "state": {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "surface_id": {
+                    "maxLength": 160,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "surface_title": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "theme": {
+                    "maxLength": 40,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "transition_note": {
+                    "maxLength": 2000,
+                    "type": "string"
+                  },
+                  "viewport": {
+                    "maxLength": 80,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "window_count": {
+                    "format": "uint8",
+                    "maximum": 1,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "surface_id",
+                  "surface_title",
+                  "element_ids",
+                  "state",
+                  "theme",
+                  "viewport",
+                  "description",
+                  "journey",
+                  "decisions",
+                  "instructions",
+                  "constraints",
+                  "parent_relations",
+                  "transition_note",
+                  "window_count"
                 ],
                 "type": "object"
               }
@@ -41984,6 +42409,12 @@
                 "minItems": 1,
                 "type": "array"
               },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 2,
+                "minimum": 2,
+                "type": "integer"
+              },
               "repository_id": {
                 "pattern": "^r[0-9a-f]{16}$",
                 "type": "string"
@@ -42003,6 +42434,7 @@
               "repository_id",
               "sketch_set",
               "source_skill",
+              "manifest_version",
               "generation_record_path",
               "images",
               "idempotency_key"
@@ -42033,8 +42465,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "created_at": {
                 "type": "string"
+              },
+              "current": {
+                "type": "boolean"
               },
               "decision": {
                 "$ref": "#/$defs/SketchDecision"
@@ -42044,6 +42485,29 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "height": {
                 "format": "uint32",
                 "minimum": 0,
@@ -42051,6 +42515,30 @@
               },
               "image_id": {
                 "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "mime": {
                 "type": "string"
@@ -42070,8 +42558,44 @@
               "source_skill": {
                 "type": "string"
               },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "title": {
                 "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "width": {
                 "format": "uint32",
@@ -42093,7 +42617,11 @@
               "height",
               "created_at",
               "decision",
-              "decision_revision"
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
             ],
             "type": "object"
           }
@@ -42171,6 +42699,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "current_only": {
+            "default": false,
+            "type": "boolean"
+          },
           "decision": {
             "anyOf": [
               {
@@ -42181,6 +42713,10 @@
               }
             ],
             "default": null
+          },
+          "include_legacy": {
+            "default": true,
+            "type": "boolean"
           },
           "limit": {
             "default": 50,
@@ -42213,6 +42749,14 @@
               "string",
               "null"
             ]
+          },
+          "surface_id": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -42238,6 +42782,10 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "current_only": {
+                "default": false,
+                "type": "boolean"
+              },
               "decision": {
                 "anyOf": [
                   {
@@ -42248,6 +42796,10 @@
                   }
                 ],
                 "default": null
+              },
+              "include_legacy": {
+                "default": true,
+                "type": "boolean"
               },
               "limit": {
                 "default": 50,
@@ -42276,6 +42828,14 @@
               },
               "source_skill": {
                 "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "default": null,
+                "maxLength": 160,
                 "type": [
                   "string",
                   "null"
@@ -42311,8 +42871,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "created_at": {
                 "type": "string"
+              },
+              "current": {
+                "type": "boolean"
               },
               "decision": {
                 "$ref": "#/$defs/SketchDecision"
@@ -42322,6 +42891,29 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "height": {
                 "format": "uint32",
                 "minimum": 0,
@@ -42329,6 +42921,30 @@
               },
               "image_id": {
                 "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "mime": {
                 "type": "string"
@@ -42348,8 +42964,44 @@
               "source_skill": {
                 "type": "string"
               },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "title": {
                 "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "width": {
                 "format": "uint32",
@@ -42371,7 +43023,11 @@
               "height",
               "created_at",
               "decision",
-              "decision_revision"
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
             ],
             "type": "object"
           }
@@ -42398,6 +43054,1024 @@
           "has_more"
         ],
         "title": "SketchListResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Search retained sketch descriptions, decisions, and lineage context.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "current_only": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_legacy": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "maximum": 4000000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "surface_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "query"
+        ],
+        "title": "SketchSearch",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "current_only": {
+                "default": false,
+                "type": "boolean"
+              },
+              "include_legacy": {
+                "default": false,
+                "type": "boolean"
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 100,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "maximum": 4000000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "query": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "surface_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "repository_id",
+              "query"
+            ],
+            "title": "SketchSearch",
+            "type": "object"
+          },
+          "name": "design_sketch_search",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.search",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "has_more": {
+            "type": "boolean"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "sketches": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketches",
+          "has_more"
+        ],
+        "title": "SketchListResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Read one surface's mockup history graph and current heads.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "include_legacy": {
+            "default": false,
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 100,
+            "format": "uint16",
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "surface_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "surface_id"
+        ],
+        "title": "SketchStory",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "include_legacy": {
+                "default": false,
+                "type": "boolean"
+              },
+              "limit": {
+                "default": 100,
+                "format": "uint16",
+                "maximum": 200,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "surface_id": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "surface_id"
+            ],
+            "title": "SketchStory",
+            "type": "object"
+          },
+          "name": "design_sketch_story",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.story",
+      "outputSchema": {
+        "$defs": {
+          "SketchActivationAction": {
+            "enum": [
+              "select",
+              "restore",
+              "supersede"
+            ],
+            "type": "string"
+          },
+          "SketchActivationEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/SketchActivationAction"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sketch_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "revision",
+              "action",
+              "sketch_ids",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
+            ],
+            "type": "object"
+          },
+          "SketchLineageEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "child_sketch_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "parent_sketch_id": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "relation": {
+                "$ref": "#/$defs/SketchLineageRelation"
+              }
+            },
+            "required": [
+              "parent_sketch_id",
+              "child_sketch_id",
+              "relation",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchLineageRelation": {
+            "enum": [
+              "derived_from",
+              "adjusted_from",
+              "supersedes",
+              "reintroduced_from"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "activations": {
+            "items": {
+              "$ref": "#/$defs/SketchActivationEvent"
+            },
+            "type": "array"
+          },
+          "current": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "lineage": {
+            "items": {
+              "$ref": "#/$defs/SketchLineageEvent"
+            },
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "surface_id": {
+            "type": "string"
+          },
+          "surface_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "repository_id",
+          "surface_id",
+          "current",
+          "nodes",
+          "lineage",
+          "activations",
+          "has_more"
+        ],
+        "title": "SketchStoryResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Resolve the explicit current mockup head for one surface.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "surface_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "surface_id"
+        ],
+        "title": "SketchResolve",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "surface_id": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "surface_id"
+            ],
+            "title": "SketchResolve",
+            "type": "object"
+          },
+          "name": "design_sketch_resolve",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.resolve",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
+            ],
+            "type": "object"
+          },
+          "SketchResolveStatus": {
+            "enum": [
+              "resolved",
+              "ambiguous",
+              "unavailable",
+              "legacy_only"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/$defs/SketchResolveStatus"
+          },
+          "surface_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "surface_id",
+          "status",
+          "revision",
+          "rationale",
+          "current"
+        ],
+        "title": "SketchResolveResult",
         "type": "object"
       },
       "policy": {
@@ -42806,6 +44480,52 @@
             ],
             "type": "object"
           },
+          "SketchDescriptionRevision": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "constraints": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decisions": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "journey": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "description",
+              "journey",
+              "decisions",
+              "instructions",
+              "constraints",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
@@ -42814,8 +44534,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "created_at": {
                 "type": "string"
+              },
+              "current": {
+                "type": "boolean"
               },
               "decision": {
                 "$ref": "#/$defs/SketchDecision"
@@ -42825,6 +44554,29 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "height": {
                 "format": "uint32",
                 "minimum": 0,
@@ -42832,6 +44584,30 @@
               },
               "image_id": {
                 "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "mime": {
                 "type": "string"
@@ -42851,8 +44627,44 @@
               "source_skill": {
                 "type": "string"
               },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "title": {
                 "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "width": {
                 "format": "uint32",
@@ -42874,9 +44686,54 @@
               "height",
               "created_at",
               "decision",
-              "decision_revision"
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
             ],
             "type": "object"
+          },
+          "SketchLineageEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "child_sketch_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "parent_sketch_id": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "relation": {
+                "$ref": "#/$defs/SketchLineageRelation"
+              }
+            },
+            "required": [
+              "parent_sketch_id",
+              "child_sketch_id",
+              "relation",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchLineageRelation": {
+            "enum": [
+              "derived_from",
+              "adjusted_from",
+              "supersedes",
+              "reintroduced_from"
+            ],
+            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -42885,6 +44742,12 @@
           "annotations": {
             "items": {
               "$ref": "#/$defs/SketchAnnotation"
+            },
+            "type": "array"
+          },
+          "description_history": {
+            "items": {
+              "$ref": "#/$defs/SketchDescriptionRevision"
             },
             "type": "array"
           },
@@ -42902,6 +44765,12 @@
             },
             "type": "array"
           },
+          "lineage": {
+            "items": {
+              "$ref": "#/$defs/SketchLineageEvent"
+            },
+            "type": "array"
+          },
           "sketch": {
             "$ref": "#/$defs/SketchImageSummary"
           }
@@ -42911,7 +44780,9 @@
           "generation_record_size",
           "generation_record_sha256",
           "history",
-          "annotations"
+          "annotations",
+          "lineage",
+          "description_history"
         ],
         "title": "SketchDetail",
         "type": "object"
@@ -43351,8 +45222,17 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "created_at": {
                 "type": "string"
+              },
+              "current": {
+                "type": "boolean"
               },
               "decision": {
                 "$ref": "#/$defs/SketchDecision"
@@ -43362,6 +45242,29 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "height": {
                 "format": "uint32",
                 "minimum": 0,
@@ -43369,6 +45272,30 @@
               },
               "image_id": {
                 "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "mime": {
                 "type": "string"
@@ -43388,8 +45315,44 @@
               "source_skill": {
                 "type": "string"
               },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "title": {
                 "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "width": {
                 "format": "uint32",
@@ -43411,7 +45374,11 @@
               "height",
               "created_at",
               "decision",
-              "decision_revision"
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
             ],
             "type": "object"
           }
@@ -43431,6 +45398,780 @@
           "event"
         ],
         "title": "SketchDecisionResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Record the explicit current continuation set for one surface.",
+      "inputSchema": {
+        "$defs": {
+          "SketchActivationAction": {
+            "enum": [
+              "select",
+              "restore",
+              "supersede"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/SketchActivationAction"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "surface_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "surface_id",
+          "sketch_ids",
+          "expected_revision",
+          "action",
+          "rationale"
+        ],
+        "title": "SketchActivate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "SketchActivationAction": {
+                "enum": [
+                  "select",
+                  "restore",
+                  "supersede"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/SketchActivationAction"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "rationale": {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "surface_id": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "surface_id",
+              "sketch_ids",
+              "expected_revision",
+              "action",
+              "rationale"
+            ],
+            "title": "SketchActivate",
+            "type": "object"
+          },
+          "name": "design_sketch_activate",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.activate",
+      "outputSchema": {
+        "$defs": {
+          "SketchActivationAction": {
+            "enum": [
+              "select",
+              "restore",
+              "supersede"
+            ],
+            "type": "string"
+          },
+          "SketchActivationEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/SketchActivationAction"
+              },
+              "actor": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "sketch_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "revision",
+              "action",
+              "sketch_ids",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "items": {
+              "$ref": "#/$defs/SketchImageSummary"
+            },
+            "type": "array"
+          },
+          "event": {
+            "$ref": "#/$defs/SketchActivationEvent"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "surface_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface_id",
+          "revision",
+          "current",
+          "event"
+        ],
+        "title": "SketchActivationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use the typed API or MCP adapter.",
+        "routes": []
+      },
+      "description": "Append a revised mockup description and context revision.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "constraints": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "decisions": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 8000,
+            "minLength": 20,
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "instructions": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "journey": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "sketch_id": {
+            "pattern": "^s[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "sketch_id",
+          "expected_revision",
+          "description",
+          "journey",
+          "decisions",
+          "instructions",
+          "constraints",
+          "rationale"
+        ],
+        "title": "SketchDescriptionChange",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "constraints": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "decisions": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "description": {
+                "maxLength": 8000,
+                "minLength": 20,
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "instructions": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "journey": {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "rationale": {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              },
+              "sketch_id": {
+                "pattern": "^s[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "sketch_id",
+              "expected_revision",
+              "description",
+              "journey",
+              "decisions",
+              "instructions",
+              "constraints",
+              "rationale"
+            ],
+            "title": "SketchDescriptionChange",
+            "type": "object"
+          },
+          "name": "design_sketch_description",
+          "transform": "identity"
+        }
+      ],
+      "name": "design.sketch.description",
+      "outputSchema": {
+        "$defs": {
+          "SketchDecision": {
+            "enum": [
+              "keep",
+              "reject",
+              "undecided"
+            ],
+            "type": "string"
+          },
+          "SketchDescriptionRevision": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "constraints": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "decisions": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "journey": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "revision",
+              "description",
+              "journey",
+              "decisions",
+              "instructions",
+              "constraints",
+              "rationale",
+              "actor",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "SketchImageSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "constraints": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "current": {
+                "type": "boolean"
+              },
+              "decision": {
+                "$ref": "#/$defs/SketchDecision"
+              },
+              "decision_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "decisions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "description_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "element_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "height": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "journey": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "legacy": {
+                "type": "boolean"
+              },
+              "manifest_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "mime": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "sketch_id": {
+                "type": "string"
+              },
+              "sketch_set": {
+                "type": "string"
+              },
+              "source_skill": {
+                "type": "string"
+              },
+              "state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "surface_title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "transition_note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "width": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "sketch_id",
+              "repository_id",
+              "sketch_set",
+              "source_skill",
+              "title",
+              "image_id",
+              "mime",
+              "byte_size",
+              "sha256",
+              "width",
+              "height",
+              "created_at",
+              "decision",
+              "decision_revision",
+              "element_ids",
+              "legacy",
+              "current",
+              "description_revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "$ref": "#/$defs/SketchDescriptionRevision"
+          },
+          "sketch": {
+            "$ref": "#/$defs/SketchImageSummary"
+          }
+        },
+        "required": [
+          "sketch",
+          "revision"
+        ],
+        "title": "SketchDescriptionResult",
         "type": "object"
       },
       "policy": {

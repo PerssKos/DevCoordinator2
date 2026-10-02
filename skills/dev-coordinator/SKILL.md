@@ -27,9 +27,16 @@ devcoordinator2 health --help
   trees. Catalogue first; materialization writes only a new caller-owned local
   destination and rechecks every file/tree hash.
 - Use the typed MCP operations `design_sketch_publish`, `design_sketch_list`,
-  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`, and
-  `design_sketch_decision` to retain and review project sketches. A generating
-  skill should publish the complete image batch and generation record once;
+  `design_sketch_search`, `design_sketch_story`, `design_sketch_resolve`,
+  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`,
+  `design_sketch_decision`, `design_sketch_activate`, and
+  `design_sketch_description` to retain and review project sketches. A
+  generating skill must publish each image with an agent-authored manifest for
+  one surface/window, state, theme, and viewport. A batch may contain many
+  options, but each option is a distinct immutable file; preserve rejected
+  options and record multiple selected continuation heads explicitly. Later
+  generations link to parents instead of replacing them. Resolve the current
+  surface before implementation and after every new generation or adjustment;
   never scan runtime folders or infer project ownership from a path.
 - Use `agent_message_poll`, `agent_message_claim`, and `agent_message_ack` for
   repository-scoped sketch decisions and annotation notifications. Leave the

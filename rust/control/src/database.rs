@@ -229,12 +229,110 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
     )?;
     ensure_column(&connection, "port_assignments", "lease_id", "TEXT")?;
     ensure_column(&connection, "domain_routes", "lease_id", "TEXT")?;
+    ensure_column(
+        &connection,
+        "sketch_batches",
+        "manifest_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(&connection, "sketches", "surface_id", "TEXT")?;
+    ensure_column(&connection, "sketches", "surface_title", "TEXT")?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "element_ids_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    ensure_column(&connection, "sketches", "state_name", "TEXT")?;
+    ensure_column(&connection, "sketches", "theme", "TEXT")?;
+    ensure_column(&connection, "sketches", "viewport", "TEXT")?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "description",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "journey",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "decisions",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "instructions",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "constraints",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "transition_note",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(&connection, "sketches", "manifest_version", "INTEGER")?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "legacy",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+    ensure_column(
+        &connection,
+        "sketches",
+        "description_revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     backfill_lease_ids(&connection)?;
+    refresh_sketch_search_index(&connection)?;
     connection.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1)",
         [DATABASE_SCHEMA_VERSION.to_string()],
     )?;
     Ok(connection)
+}
+
+fn refresh_sketch_search_index(connection: &Connection) -> Result<(), DatabaseError> {
+    connection.execute("DELETE FROM sketches_fts", [])?;
+    let mut statement = connection.prepare(
+        "SELECT sketch_id,repository_id,COALESCE(surface_id,''),
+                title,COALESCE(surface_title,''),element_ids_json,
+                COALESCE(state_name,''),COALESCE(theme,''),COALESCE(viewport,''),
+                description,journey,decisions,instructions,constraints,transition_note
+         FROM sketches",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            let fields = (3..15)
+                .map(|index| row.get::<_, String>(index))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                fields.join(" "),
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (sketch_id, repository_id, surface_id, searchable) in rows {
+        connection.execute(
+            "INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![sketch_id, repository_id, surface_id, searchable],
+        )?;
+    }
+    Ok(())
 }
 
 fn backfill_lease_ids(connection: &Connection) -> Result<(), DatabaseError> {
