@@ -41,7 +41,7 @@ Read-only discovery and preparation of the three design artifacts may continue.
 
 Resume implementation only after one of these conditions is recorded:
 
-1. The user selects one displayed option; or
+1. The user selects at least one displayed option; or
 2. The user explicitly authorizes autonomous selection, after which the agent
    selects the strongest option, records the authorization and rationale, and
    continues without another approval round.

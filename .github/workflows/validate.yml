@@ -14,8 +14,62 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validation_scope:
+    name: Determine validation scope
+    runs-on: ubuntu-24.04
+    outputs:
+      policy_only: ${{ steps.scope.outputs.policy_only }}
+      full: ${{ steps.scope.outputs.full }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - name: Classify changed scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "policy_only=false" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA...$HEAD_SHA")
+          policy_only=true
+          if ((${#changed[@]} == 0)); then
+            policy_only=false
+          fi
+          for path in "${changed[@]}"; do
+            case "$path" in
+              reference/universal/*) ;;
+              *) policy_only=false; break ;;
+            esac
+          done
+          echo "policy_only=$policy_only" >> "$GITHUB_OUTPUT"
+          echo "full=$([[ "$policy_only" == true ]] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+
+  policy:
+    name: Policy contract
+    needs: validation_scope
+    if: needs.validation_scope.outputs.policy_only == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Check app-wide policy
+        run: cargo run --locked -p devcoordinator2-tooling -- check app-wide-policy --root .
+
   rust:
     name: Rust control plane
+    needs: validation_scope
+    if: needs.validation_scope.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -38,6 +92,8 @@ jobs:
 
   edge:
     name: Edge runtime
+    needs: validation_scope
+    if: needs.validation_scope.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -55,6 +111,8 @@ jobs:
 
   six-skill-validation:
     name: Six canonical skills (${{ matrix.os }})
+    needs: validation_scope
+    if: needs.validation_scope.outputs.full == 'true'
     strategy:
       fail-fast: false
       matrix:

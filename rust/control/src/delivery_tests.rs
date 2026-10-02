@@ -27,7 +27,15 @@ struct World {
 }
 
 impl World {
-    fn new(kind: Kind, mut proof: Option<Verification>) -> Self {
+    fn new(kind: Kind, proof: Option<Verification>) -> Self {
+        Self::new_with_completion(kind, proof, None)
+    }
+
+    fn new_with_completion(
+        kind: Kind,
+        mut proof: Option<Verification>,
+        completion_override: Option<serde_json::Value>,
+    ) -> Self {
         let fixture = Fixture::new();
         let native = kind == Kind::NativeConsole;
         let source = if native {
@@ -74,9 +82,8 @@ impl World {
                 b"fixture executable bytes".to_vec()
             },
         )];
-        files.push((
-            "completion.json".into(),
-            serde_json::to_vec(&json!({
+        let completion = completion_override.unwrap_or_else(|| {
+            json!({
                 "schema_version": 1,
                 "claim": "complete",
                 "source_sha256": source,
@@ -87,8 +94,11 @@ impl World {
                     "expected_result": "the retained delivery fixture is available",
                     "evidence_refs": [format!("run/{}", RUN)]
                 }]
-            }))
-            .unwrap(),
+            })
+        });
+        files.push((
+            "completion.json".into(),
+            serde_json::to_vec(&completion).unwrap(),
         ));
         let proof_present = proof.is_some();
         if let Some(proof) = proof {
@@ -391,6 +401,51 @@ fn delivery_rejects_failed_tampered_wrong_source_and_wrong_repository_evidence()
             "mode {mode}"
         );
     }
+}
+
+#[test]
+fn delivery_completion_failure_reports_actionable_findings() {
+    let world = World::new_with_completion(
+        Kind::Artifact,
+        Some(proof(Kind::Artifact)),
+        Some(json!({
+            "schema_version": 1,
+            "claim": "preliminary",
+            "source_sha256": "a".repeat(64),
+            "capabilities": [{
+                "id": "research-performance",
+                "scope": "product",
+                "state": "deferred",
+                "expected_result": "the representative-ingestion performance journey remains open",
+                "task_id": "p-done-performance",
+                "evidence_refs": []
+            }]
+        })),
+    );
+    world
+        .fixture
+        .database
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('p-done-performance','project-alpha',3,1,'Performance','Performance remains open','stub','done','1970-01-01T00:16:40Z','fixture','1970-01-01T00:16:40Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let error = world
+        .service
+        .deliver(world.params, &world.caller, "fixture", FINISHED + 500)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ParamsInvalid);
+    assert_eq!(
+        error.message,
+        "Capability inventory does not support the requested delivery claim"
+    );
+    assert!(error.detail.contains("research-performance"));
+    assert!(error.detail.contains("unfinished_outcome_closed"));
+    assert!(error.detail.contains("p-done-performance"));
 }
 
 #[test]

@@ -15,6 +15,36 @@ use crate::review::timestamp;
 use crate::review_validation::{database_error, invalid, page, text};
 use crate::test_artifacts::TestArtifactService;
 
+const MAX_COMPLETION_FINDINGS_IN_ERROR: usize = 8;
+const MAX_COMPLETION_FINDING_DETAIL_CHARS: usize = 256;
+
+fn completion_failure_detail(findings: &[devcoordinator2_api::completion::Finding]) -> String {
+    let mut detail = format!("{} finding(s)", findings.len());
+    for finding in findings.iter().take(MAX_COMPLETION_FINDINGS_IN_ERROR) {
+        let task = finding
+            .task_id
+            .as_deref()
+            .map(|task_id| format!(" task={task_id}"))
+            .unwrap_or_default();
+        let finding_detail = finding
+            .detail
+            .chars()
+            .take(MAX_COMPLETION_FINDING_DETAIL_CHARS)
+            .collect::<String>();
+        detail.push_str(&format!(
+            "; {} [{}]{task}: {}",
+            finding.capability_id, finding.code, finding_detail
+        ));
+    }
+    if findings.len() > MAX_COMPLETION_FINDINGS_IN_ERROR {
+        detail.push_str(&format!(
+            "; {} additional finding(s) omitted",
+            findings.len() - MAX_COMPLETION_FINDINGS_IN_ERROR
+        ));
+    }
+    detail
+}
+
 #[derive(Clone)]
 pub(crate) struct DeliveryService {
     database: Database,
@@ -120,7 +150,8 @@ impl DeliveryService {
         if !completion.valid {
             return Err(invalid(
                 "Capability inventory does not support the requested delivery claim",
-            ));
+            )
+            .with_detail(completion_failure_detail(&completion.findings)));
         }
         let mut receipt = Receipt {
             receipt_id: String::new(), release_id: params.release_id.clone(), repository_id,
