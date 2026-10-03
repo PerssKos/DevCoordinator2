@@ -127,14 +127,11 @@ impl StorageService {
             .config
             .unit_prefix
             .starts_with("devcoordinator2-rustint-")
-        {
-            if let Ok(value) =
+            && let Ok(value) =
                 std::fs::read_to_string(self.config.state_dir.join("storage-test-clock-ms"))
-            {
-                if let Ok(value) = value.trim().parse::<u64>() {
-                    return value;
-                }
-            }
+            && let Ok(value) = value.trim().parse::<u64>()
+        {
+            return value;
         }
         self.clock
             .now_utc()
