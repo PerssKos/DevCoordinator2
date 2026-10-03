@@ -43,6 +43,33 @@ impl HostBackend {
         None
     }
 
+    pub(super) fn fixture_engine_socket(&self) -> Result<Option<PathBuf>, ProtocolError> {
+        if self.fixture_namespace().is_none() {
+            return Ok(None);
+        }
+        let file = self.config.state_dir.join("storage-fixture-engine.json");
+        if !file.exists() {
+            return Ok(None);
+        }
+        let path: PathBuf =
+            serde_json::from_slice(&super::mounts::private_read(&file, 4096, true)?)
+                .map_err(|_| blocked("fixture_engine_identity_invalid"))?;
+        let root = self
+            .config
+            .state_dir
+            .parent()
+            .ok_or_else(|| blocked("fixture_engine_identity_invalid"))?;
+        if !path.starts_with(root)
+            || !path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(blocked("fixture_engine_identity_invalid"));
+        }
+        Ok(Some(path))
+    }
+
     fn discovery_arguments(&self, mut args: Vec<String>) -> Vec<String> {
         if let Some(namespace) = self.fixture_namespace() {
             args.extend([
@@ -166,7 +193,13 @@ impl HostBackend {
         Ok(())
     }
 
-    fn docker_output(&self, args: Vec<String>) -> Result<String, ProtocolError> {
+    pub(super) fn docker_output(&self, mut args: Vec<String>) -> Result<String, ProtocolError> {
+        if let Some(socket) = self.fixture_engine_socket()? {
+            args.splice(
+                0..0,
+                ["--host".into(), format!("unix://{}", socket.display())],
+            );
+        }
         let request = DockerInvocation::new(
             args.into_iter().map(Into::into).collect(),
             Duration::from_secs(120),
@@ -639,53 +672,87 @@ impl HostBackend {
     }
 
     fn discover_build_cache(&self, context: &Context, out: &mut Discovery) {
-        if self.fixture_namespace().is_some() {
-            // The host's default builder is not owned by an isolated fixture.
-            out.coverage_gaps
-                .push("fixture_builder_not_configured".into());
-            return;
-        }
-        let result=self.docker_output(vec!["buildx".into(),"du".into(),"--builder".into(),"default".into(),"--format".into(),r#"{"id":{{json .ID}},"in_use":{{json .InUse}},"shared":{{json .Shared}},"size":{{json .Size}},"last_used":{{json .LastUsedAt}}}"#.into()]);
-        let Ok(text) = result else {
-            out.coverage_gaps
-                .push("build_cache_observation_unavailable".into());
-            return;
-        };
-        for line in text.lines() {
-            let Ok(v) = serde_json::from_str::<Value>(line) else {
+        let isolated_fixture = self.fixture_engine_socket().ok().flatten().is_some();
+        let fixture_ids = if self.fixture_namespace().is_some() && !isolated_fixture {
+            let path = self.config.state_dir.join("storage-fixture-cache-ids.json");
+            let ids = super::mounts::private_read(&path, 16384, true)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<BTreeSet<String>>(&bytes).ok());
+            let Some(ids) = ids.filter(|ids| !ids.is_empty() && ids.len() <= 32) else {
                 out.coverage_gaps
-                    .push("build_cache_metadata_invalid".into());
-                continue;
+                    .push("fixture_builder_not_configured".into());
+                return;
             };
-            let id = s(&v, "id");
-            if id.is_empty() {
+            Some(ids)
+        } else {
+            None
+        };
+        let rows = match self.engine_cache_rows() {
+            Ok(rows) => rows,
+            Err(error) => {
+                out.coverage_gaps.push(error.message);
+                return;
+            }
+        };
+        let filesystem = self.engine_data_root().ok().and_then(|path| {
+            fs::filesystem(&path, context.now_ms, "Docker storage")
+                .ok()
+                .map(|measurement| (path, measurement))
+        });
+        if let Some((_, measurement)) = &filesystem {
+            out.filesystems.push(measurement.clone());
+        }
+        for value in rows {
+            let id = s(&value, "ID");
+            if fixture_ids.as_ref().is_some_and(|ids| !ids.contains(id)) {
                 continue;
             }
-            let Ok(mut r) = candidate(
+            let created = s(&value, "CreatedAt");
+            if id.is_empty() || created.is_empty() {
+                out.coverage_gaps
+                    .push("build_cache_identity_unverified".into());
+                continue;
+            }
+            let Ok(mut record) = candidate(
                 api::Kind::BuildCache,
                 api::Effect::Rebuildable,
-                format!("Build cache {}", id),
+                "Local builder cache".into(),
                 Locator::Docker {
                     object_type: "build_cache".into(),
                     identity: id.into(),
-                    created: String::new(),
+                    created: created.into(),
                 },
                 context,
             ) else {
                 continue;
             };
-            r.artifact.ownership = "local_builder_cache".into();
-            r.artifact.allocated_bytes = v.get("size").and_then(Value::as_u64);
-            if v.get("in_use").and_then(Value::as_bool).unwrap_or(true) {
-                r.blockers.push("active_consumer".into());
+            record.artifact.group_id = Some("docker-default-builder".into());
+            record.artifact.group_name = Some("Docker build cache".into());
+            record.artifact.ownership = "local_builder_cache".into();
+            if let Some((path, measurement)) = &filesystem {
+                record.private_aliases.push(path.clone());
+                record.artifact.filesystem_id = Some(measurement.filesystem_id.clone());
             }
-            if v.get("shared").and_then(Value::as_bool).unwrap_or(true) {
-                r.blockers.push("shared_image_layers".into());
-                r.artifact.allocated_bytes = None;
+            if fixture_ids.is_some() || isolated_fixture {
+                record.artifact.repository_id = context.repositories.first().map(|r| r.id.clone());
+                record.artifact.repository_name =
+                    context.repositories.first().map(|r| r.name.clone());
             }
-            r.last_activity_signature = s(&v, "last_used").into();
-            r.artifact.last_used_at_ms = date_ms(s(&v, "last_used"));
-            out.records.push(r);
+            record.artifact.allocated_bytes = value.get("Size").and_then(Value::as_u64);
+            if value.get("InUse").and_then(Value::as_bool).unwrap_or(true) {
+                record.blockers.push("active_consumer".into());
+            }
+            if value.get("Shared").and_then(Value::as_bool).unwrap_or(true) {
+                record.blockers.push("shared_image_layers".into());
+                record.artifact.allocated_bytes = None;
+            }
+            record.last_activity_signature = format!(
+                "{}:{}",
+                s(&value, "LastUsedAt"),
+                value.get("UsageCount").and_then(Value::as_u64).unwrap_or(0)
+            );
+            record.artifact.last_used_at_ms = date_ms(s(&value, "LastUsedAt"));
+            out.records.push(record);
         }
     }
 
@@ -722,6 +789,9 @@ impl HostBackend {
                 .ok_or_else(|| blocked("build_cache_identity_unverified"))?;
             if !current.blockers.is_empty() {
                 return Err(blocked(&current.blockers[0]));
+            }
+            if current.last_activity_signature != r.last_activity_signature {
+                return Err(blocked("activity_changed"));
             }
             return Ok(());
         }
@@ -880,21 +950,10 @@ impl HostBackend {
         {
             return Err(blocked("native_identity_invalid"));
         }
-        let args = if object_type == "build_cache" {
-            vec![
-                "buildx".into(),
-                "prune".into(),
-                "--builder".into(),
-                "default".into(),
-                "--filter".into(),
-                format!("id={identity}"),
-                "--filter".into(),
-                "inuse=false".into(),
-                "--force".into(),
-            ]
-        } else {
-            vec![object_type.clone(), "rm".into(), identity.clone()]
-        };
+        if object_type == "build_cache" {
+            return self.engine_cache_remove(identity);
+        }
+        let args = vec![object_type.clone(), "rm".into(), identity.clone()];
         self.docker_output(args)?;
         Ok(())
     }

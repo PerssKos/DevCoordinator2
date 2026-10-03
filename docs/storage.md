@@ -60,6 +60,13 @@ does not broaden the ordinary daemon's filesystem sandbox.
 
 ## Policies, roots and recovery
 
+The local Docker builder uses the Engine's structured cache inventory and
+exact-ID removal API, including on hosts whose Buildx version lacks JSON
+formatting. Active and shared records remain blocked. Raw build descriptions
+are private because they can contain command arguments. Remote builder
+endpoints require a provider and are reported as unavailable. Root acceptance
+uses a separate Docker daemon and a private network namespace for these checks.
+
 Global defaults are three inactive days for build outputs, dependencies and
 caches, and fourteen for other unused disposable resources. Use `storage policy
 show` or `storage policy set --file <request.json>` for global settings; include

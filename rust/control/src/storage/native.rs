@@ -1,5 +1,6 @@
 //! Native storage observation and exact-target mutations; no shell commands.
 mod docker;
+mod docker_engine;
 mod evidence;
 mod mounts;
 mod sources;

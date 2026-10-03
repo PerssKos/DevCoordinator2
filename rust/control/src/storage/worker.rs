@@ -617,6 +617,7 @@ impl StorageService {
                     .private_aliases
                     .iter()
                     .filter_map(|p| p.parent())
+                    .chain(record.private_aliases.iter().map(|p| p.as_path()))
                     .find_map(|parent| {
                         super::fs::filesystem(parent, self.now_ms(), "Storage")
                             .ok()

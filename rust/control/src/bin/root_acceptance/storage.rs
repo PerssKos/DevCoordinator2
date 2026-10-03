@@ -4,6 +4,253 @@ use devcoordinator2_control::deployment_state::{
     DeploymentStore, ObservedContainerInput, ObservedDeploymentInput,
 };
 
+pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
+    world.write_config("schema = 2\n")?;
+    let socket = world.base.join("builder.sock");
+    let config = world.base.join("builder.json");
+    write_private_json(&config, &json!({}))?;
+    let unit = format!("{}-builder.service", world.unit_prefix);
+    run_status(
+        "systemd-run",
+        &[
+            "--quiet",
+            "--collect",
+            &format!("--unit={unit}"),
+            "--property=Type=notify",
+            "--property=TimeoutStartSec=90",
+            "--property=TimeoutStopSec=15",
+            "--property=PrivateNetwork=yes",
+            "/usr/sbin/dockerd",
+            "--config-file",
+            config.to_str().unwrap(),
+            "--host",
+            &format!("unix://{}", socket.display()),
+            "--data-root",
+            world.base.join("builder-data").to_str().unwrap(),
+            "--exec-root",
+            world.base.join("builder-exec").to_str().unwrap(),
+            "--pidfile",
+            world.base.join("builder.pid").to_str().unwrap(),
+            "--bridge=none",
+            "--iptables=false",
+            "--ip-masq=false",
+            "--storage-driver=vfs",
+        ],
+    )?;
+    write_private_json(
+        &world.state.join("storage-fixture-engine.json"),
+        &json!(socket),
+    )?;
+    let registration = world.call("repository.register", json!({"path":world.repo}))?;
+    let repository = data(&registration)?["repository_id"]
+        .as_str()
+        .ok_or("fixture repository missing")?
+        .to_owned();
+    let host = format!("unix://{}", socket.display());
+    let label = format!("devcoordinator2.instance={}", world.unit_prefix);
+    let network = format!("{}-network", world.unit_prefix);
+    run_status(
+        "docker",
+        &[
+            "--host", &host, "network", "create", "--label", &label, &network,
+        ],
+    )?;
+    let mut tags = Vec::new();
+    for name in ["selected", "retained"] {
+        let context = world.repo.join(name);
+        fs::create_dir(&context).map_err(|e| e.to_string())?;
+        fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nCOPY payload /payload\n",
+        )
+        .map_err(|e| e.to_string())?;
+        fs::write(
+            context.join("payload"),
+            format!("{}-{name}", world.unit_prefix),
+        )
+        .map_err(|e| e.to_string())?;
+        let tag = format!("{}-{name}:fixture", world.unit_prefix);
+        run_status(
+            "docker",
+            &[
+                "--host",
+                &host,
+                "build",
+                "--network=none",
+                "--label",
+                &label,
+                "--tag",
+                &tag,
+                context.to_str().unwrap(),
+            ],
+        )?;
+        tags.push(tag);
+    }
+    let scan = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"engine-cache-initial"}),
+    )?;
+    ensure!(
+        wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?["state"] == "completed",
+        "Engine API cache discovery failed"
+    );
+    let inventory = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"build_cache","limit":100}),
+    )?;
+    let networks = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"network","query":network,"limit":20}),
+    )?;
+    let network_row = networks["artifacts"]
+        .as_array()
+        .and_then(|r| r.first())
+        .ok_or("isolated network was not inventoried")?;
+    let network_plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[network_row["artifact_id"]]}),
+    )?;
+    ensure!(
+        network_plan["ready"] == true,
+        "unused isolated network was not removable"
+    );
+    let network_job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":network_plan["plan_id"],"idempotency_key":"remove-isolated-network"}),
+    )?;
+    ensure!(
+        wait_job(world, network_job["job_id"].as_str().unwrap())?["state"] == "completed",
+        "exact network cleanup did not complete"
+    );
+    let initial = inventory["artifacts"]
+        .as_array()
+        .ok_or("cache rows missing")?;
+    ensure!(
+        !initial.is_empty(),
+        "old Buildx formatter prevented structured Engine cache discovery"
+    );
+    ensure!(
+        initial.iter().any(|r| r["reasons"]
+            .as_array()
+            .is_some_and(|v| v.contains(&json!("shared_image_layers")))),
+        "shared image cache was not protected"
+    );
+    let shared = initial
+        .iter()
+        .find(|r| {
+            r["reasons"]
+                .as_array()
+                .is_some_and(|v| v.contains(&json!("shared_image_layers")))
+        })
+        .unwrap();
+    let refusal = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[shared["artifact_id"]]}),
+    )?;
+    ensure!(
+        refusal["ready"] == false,
+        "a shared cache entry acquired a removal plan"
+    );
+    // Release only our selected image through the normal storage contract.
+    let images = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"image","query":tags[0],"limit":100}),
+    )?;
+    let image = images["artifacts"]
+        .as_array()
+        .and_then(|v| v.first())
+        .ok_or("owned fixture image missing")?;
+    mcp(
+        world,
+        "storage_register",
+        json!({"artifact_id":image["artifact_id"],"expected_revision":image["revision"],"repository_id":repository,"effect":"rebuildable","reason":"Owned isolated builder fixture image"}),
+    )?;
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[image["artifact_id"]]}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "fixture image removal was blocked: {}",
+        bounded_json(&plan)
+    );
+    let job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"remove-cache-image"}),
+    )?;
+    ensure!(
+        wait_job(world, job["job_id"].as_str().unwrap())?["state"] == "completed",
+        "fixture image was not removed"
+    );
+    let scan = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"engine-cache-after-image"}),
+    )?;
+    ensure!(
+        wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?["state"] == "completed",
+        "cache refresh failed"
+    );
+    let inventory = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"build_cache","limit":100}),
+    )?;
+    let rows = inventory["artifacts"].as_array().unwrap();
+    let selected = rows
+        .iter()
+        .find(|r| r["deletable"] == true)
+        .ok_or("no unused isolated cache record became removable")?;
+    let protected = rows
+        .iter()
+        .find(|r| r["deletable"] == false)
+        .ok_or("retained image cache disappeared")?;
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[selected["artifact_id"]]}),
+    )?;
+    ensure!(plan["ready"] == true, "unused cache plan was blocked");
+    let job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"remove-one-engine-cache"}),
+    )?;
+    let result = wait_job(world, job["job_id"].as_str().unwrap())?;
+    ensure!(
+        result["state"] == "completed",
+        "exact Engine cache removal failed: {}",
+        bounded_json(&result)
+    );
+    let kept = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":protected["artifact_id"]}),
+    )?;
+    ensure!(
+        kept["removed_at_ms"].is_null(),
+        "exact cache pruning removed an unselected shared record"
+    );
+    ensure!(
+        result["unmeasured_items"] == 0,
+        "cache removal did not retain its filesystem measurement"
+    );
+    run_status(
+        "docker",
+        &[
+            "--host", &host, "image", "inspect", "--format", "{{.Id}}", &tags[1],
+        ],
+    )?;
+    Ok(())
+}
+
 pub(super) fn retained_evidence_after_run(world: &World, run_id: &str) -> Result<(), String> {
     let repository = ids::repository_id(&world.repo).map_err(|e| e.to_string())?;
     let inventory = scanned(world, &repository, "retained-evidence-inventory")?;

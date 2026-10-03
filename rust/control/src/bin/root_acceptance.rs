@@ -6475,6 +6475,10 @@ health={{path="/healthz",timeout_seconds=30}}
 fn cases() -> Vec<Case> {
     vec![
         (
+            "storage_engine_cache_cleanup",
+            storage_cases::engine_cache_cleanup,
+        ),
+        (
             "storage_shared_alias_protection",
             storage_cases::shared_alias_protection,
         ),
