@@ -451,6 +451,20 @@ impl HostCutover {
             .map(|binary| PathBuf::from(&binary.path))
             .ok_or_else(|| format!("candidate manifest has no {name} binary"))
     }
+
+    fn verify_candidate_binaries(&self) -> Result<(), String> {
+        let verified = install::verify_release_binaries(
+            Path::new(&self.manifest.source_root),
+            &self.manifest.source_commit,
+            self.runner.as_ref(),
+        )?;
+        if verified != self.manifest.binaries {
+            return Err(
+                "candidate release binaries changed after the cutover plan was verified".to_owned(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl CutoverAdapter for HostCutover {
@@ -462,7 +476,8 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn wait_for_quiescence(&mut self, _drain: &Self::Drain) -> Result<(), String> {
-        wait_for_zero_activity(&self.config.runtime_dir)
+        wait_for_zero_activity(&self.config.runtime_dir)?;
+        self.verify_candidate_binaries()
     }
 
     fn wait_for_connections(&mut self) -> Result<(), String> {
@@ -607,6 +622,11 @@ impl CutoverAdapter for HostCutover {
             &self.manifest,
             self.expected_owner,
         )?;
+        // The candidate paths are mutable checkout artifacts. Revalidate after
+        // quiescence and immediately before exposing any managed link so a
+        // build that ran while activation drained cannot silently install a
+        // different source or binary hash.
+        self.verify_candidate_binaries()?;
         replace_captured_target(
             &self.config.cli_link,
             &self.installed_binary("devcoordinator2")?,
@@ -2260,6 +2280,38 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+    }
+
+    #[test]
+    fn concrete_host_adapter_rejects_candidate_binary_drift_after_admission_drains() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        let manifest: crate::install::InstallManifest =
+            serde_json::from_slice(&std::fs::read(&world.config.candidate_manifest).unwrap())
+                .unwrap();
+        let drifted = PathBuf::from(&manifest.binaries[0].path);
+        std::fs::write(&drifted, b"candidate-built-after-plan").unwrap();
+
+        let error = activate(&mut host).unwrap_err();
+
+        assert!(error.contains("candidate release binaries changed"));
+        assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        assert!(
+            !world
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
+            world.old_daemon
+        );
     }
 
     #[test]
