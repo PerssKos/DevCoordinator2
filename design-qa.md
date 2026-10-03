@@ -836,39 +836,74 @@ recorded in the feature catalog; it is not claimed as translated coverage.
 
 **Final result: passed.** Shared-source comparison and rendered interactions
 are complete; the temporary acceptance ticket was removed after verification.
-# Mockup history and continuation-set surface — preliminary
+# Mockup history and continuation-set surface
 
-final result: blocked
+final result: passed
 
-## Selected source
+## Selected source and implementation identity
 
-- Selected displayed direction: revised option 1, Story Ledger with a collapsed
-  current-version summary, visible rejected options, multiple continuation
-  selections, and separate initial/latest context.
-- Source image: retained generated artifact bound to the Coordinator decision
+- The user selected revised option 1 (“First option looks great!”). The source
+  is the immutable Coordinator image bound to
   `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
-- Source SHA-256: `383a9bd5d8881c3c841ff9512a4650afd7648eb605470de416a381765286a226`.
-- Displayed ideation set retained in Coordinator decision
-  `DC2-SKETCH-HISTORY-SURFACE-DIRECTIONS-20261002`; selected direction is
-  `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
+- Source image: `/var/tmp/dc2-mockup-history-sources/revised-1.png`;
+  SHA-256 `383a9bd5d8881c3c841ff9512a4650afd7648eb605470de416a381765286a226`;
+  1487 × 1058 pixels; one dark-theme desktop Console surface at the declared
+  1440 × 1024 viewport.
+- The implementation was captured from the rendered Sketches route in the
+  fresh formal candidate. Representative evidence is
+  `/tmp/dc2-sketch-integrated/formal-dark/screenshots/cell-0012-story-dark-wide-viewport.png`
+  (1487 × 1058 CSS pixels at device scale 1), with matching light, desktop,
+  intermediate, and phone captures in the same run.
+- The live daemon reports source commit
+  `ce6c717b8d545d7cda7f47df103addd92264b131`; the shared Console source and
+  static assets were checked against the installed canonical tree. The exact
+  Coordinator records resolve to one current node, six graph nodes, and three
+  `adjusted_from` edges.
 
-## Current verification state
+## Comparison and interaction evidence
 
-- Policy, API, migration, and Console source changes exist. Their complete
-  acceptance path has not yet been verified.
-- The locked Playwright runtime is installed under `ci/playwright`. The
-  425-check run covered the existing Tests page and contained no Sketches
-  assertions. It does not verify mockup history, continuation selection, or
-  description editing. The previous Sketches browser-pass claim is withdrawn
-  under `DC2-SKETCH-EVIDENCE-SCOPE-CORRECTION-20261002`.
-- The complete Console matrix stopped while waiting for
-  `#plan-tooltip:not([hidden])`. Rendered event tracing reproduced the popup
-  opening and then closing when scheduled timeline alignment moved its task
-  bar away from the pointer. The hover journey now uses the visible Fit control
-  before aiming the pointer and checks appearance, continued visibility, and
-  dismissal. The corrected complete Console regression run passed 3,130 checks
-  with zero failures. It still contains no Sketches acceptance assertions and
-  does not establish the required formal UI receipt for mockup history.
-- No manual-review or Product Design pass receipt is recorded. The history
-  surface remains preliminary until a fresh rendered candidate is captured and
-  the fail-closed UI handoff pipeline passes.
+- Full-view comparison checked the collapsed current-version summary, one
+  selected surface scope, the visible batch option strip, current status,
+  story context, and the branch-aware history column. The source and render
+  use the same layout and state; the fixture's diagram text is intentionally
+  different test content, so no invented product content was treated as a
+  visual defect.
+- Focused comparisons checked the current-version disclosure, multi-option
+  continuation cards, rejected/undecided statuses, initial agent context,
+  latest comments, annotations, and the history timeline. No additional
+  focused crop was needed for typography or controls because those regions are
+  legible in the wide and narrow captures.
+- The formal browser receipt passed 32 cells in each theme, including gallery,
+  bounded search, story, scope, context, comments, editor, and empty-search
+  states across phone, intermediate, desktop, and wide sizes. The manual
+  receipt passed every corresponding cell. The real API journey passed 36
+  checks, including publish validation, duplicate digest and cycle rejection,
+  multi-selection persistence, legacy non-promotion, description revisions,
+  paging, restart persistence, and stale-write prevention.
+- Product Design audit findings: no actionable P0, P1, or P2 differences.
+  Typography, spacing/layout rhythm, colors/tokens, image treatment, copy,
+  focus, responsive reflow, and current/history semantics were reviewed in
+  both themes. The only evidence limit is that screenshots cannot prove full
+  assistive-technology conformance; keyboard and rendered interaction checks
+  covered the declared journey controls.
+
+## Comparison history
+
+- Earlier evidence was intentionally marked blocked because it covered only
+  the general Console and had no Sketches assertions. That record remains
+  historical and was not reused as a pass.
+- The fresh formal candidate added the complete Sketches matrix, the paired
+  manual review, and the real publish → search → story → resolve → reload
+  journey. It found no P0–P2 issue, so no visual fix or direction change was
+  required after the selected source was confirmed.
+
+## Final checklist
+
+- One immutable image per surface/state/theme/viewport, with agent-authored
+  searchable context and parent lineage: passed.
+- All options, rejected nodes, multiple continuation selections, mutable
+  comments, and legacy records remain inspectable: passed.
+- Current implementation source comes only from explicit Coordinator
+  resolution, never timestamps or stale Keep flags: passed.
+- Formal receipt, manual receipt, Product Design comparison, live source
+  identity, and real API persistence evidence are retained: passed.
