@@ -2704,7 +2704,118 @@ mod tests {
             "schema_version":1,"claim":"preliminary","source_sha256":"a".repeat(64),
             "capabilities":[{"id":"fixture","scope":"test_only","state":"fixture_only","expected_result":"fixture available"}]
         })).unwrap()).unwrap();
+        let storage_registration = glossary_inputs.path().join("storage-register.json");
+        let storage_policy = glossary_inputs.path().join("storage-policy.json");
+        let storage_root = glossary_inputs.path().join("storage-root.json");
+        let storage_lease = glossary_inputs.path().join("storage-lease.json");
+        for (path, value) in [
+            (
+                &storage_registration,
+                json!({"artifact_id":"artifact","expected_revision":1,"effect":"rebuildable","reason":"Owned disposable fixture"}),
+            ),
+            (
+                &storage_policy,
+                json!({"expected_revision":0,"automatic":true,"cache_idle_seconds":259200,"data_idle_seconds":1209600,"minimum_verified_backups":2}),
+            ),
+            (
+                &storage_root,
+                json!({"expected_revision":0,"label":"Cache","path":"/tmp/repository/cache","kind":"dependency_cache"}),
+            ),
+            (
+                &storage_lease,
+                json!({"artifact_ids":["artifact"],"duration_seconds":60}),
+            ),
+        ] {
+            std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
         let cases: &[(&[&str], &str)] = &[
+            (&["storage", "inventory"], "storage.inventory"),
+            (&["storage", "show", "artifact"], "storage.artifact.get"),
+            (
+                &["storage", "scan", "--idempotency-key", "fixture"],
+                "storage.scan",
+            ),
+            (
+                &[
+                    "storage",
+                    "register",
+                    "--file",
+                    storage_registration.to_str().unwrap(),
+                ],
+                "storage.register",
+            ),
+            (
+                &[
+                    "storage",
+                    "legacy-register",
+                    "--deployment-id",
+                    "deployment",
+                    "--expected-inventory-revision",
+                    "1",
+                    "--reason",
+                    "Owned disposable fixture",
+                ],
+                "storage.legacy.register",
+            ),
+            (
+                &["storage", "protect", "artifact", "--expected-revision", "1"],
+                "storage.protection.set",
+            ),
+            (&["storage", "policy", "show"], "storage.policy.get"),
+            (
+                &[
+                    "storage",
+                    "policy",
+                    "set",
+                    "--file",
+                    storage_policy.to_str().unwrap(),
+                ],
+                "storage.policy.set",
+            ),
+            (&["storage", "roots", "list"], "storage.roots.list"),
+            (
+                &[
+                    "storage",
+                    "roots",
+                    "set",
+                    "--file",
+                    storage_root.to_str().unwrap(),
+                ],
+                "storage.roots.set",
+            ),
+            (
+                &["storage", "cleanup", "plan", "--artifact-id", "artifact"],
+                "storage.cleanup.plan",
+            ),
+            (
+                &[
+                    "storage",
+                    "cleanup",
+                    "start",
+                    "--plan-id",
+                    "plan",
+                    "--idempotency-key",
+                    "fixture",
+                ],
+                "storage.cleanup.start",
+            ),
+            (&["storage", "job", "status", "job"], "storage.job.status"),
+            (&["storage", "job", "cancel", "job"], "storage.job.cancel"),
+            (&["storage", "history"], "storage.history"),
+            (
+                &[
+                    "storage",
+                    "lease",
+                    "set",
+                    "--file",
+                    storage_lease.to_str().unwrap(),
+                ],
+                "storage.lease.set",
+            ),
+            (
+                &["storage", "lease", "release", "lease"],
+                "storage.lease.release",
+            ),
             (
                 &[
                     "completion",

@@ -32,17 +32,15 @@ pub(crate) fn protected_runs(
     }
     for value in records {
         let record: Record = parse(&value)?;
-        if record.artifact.protected || active.contains(&record.artifact.artifact_id) {
-            if let Locator::Evidence {
+        if (record.artifact.protected || active.contains(&record.artifact.artifact_id))
+            && let Locator::Evidence {
                 worktree: root,
                 run_id,
                 ..
             } = record.locator
-            {
-                if root == worktree {
-                    protected.insert(run_id);
-                }
-            }
+            && root == worktree
+        {
+            protected.insert(run_id);
         }
     }
     let mut latest_targets = BTreeSet::new();

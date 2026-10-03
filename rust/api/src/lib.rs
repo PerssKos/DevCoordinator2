@@ -26,7 +26,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 30;
+pub const DATABASE_SCHEMA_VERSION: u32 = 31;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -612,6 +612,15 @@ macro_rules! mcp_exclusion {
 
 pub static OPERATIONS: &[OperationDefinition] = &[
     operation!(
+        "ping",
+        "Report daemon, schema, protocol, source, and socket identity.",
+        READ_PUBLIC,
+        Protocol["ping"],
+        [],
+        EmptyParams,
+        PingData
+    ),
+    operation!(
         "storage.inventory",
         "List measured artifacts and evidence-backed deletion safety.",
         READ_SERVER_ADMIN,
@@ -763,15 +772,6 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["storage_lease_release"],
         storage::LeaseRelease,
         storage::Lease
-    ),
-    operation!(
-        "ping",
-        "Report daemon, schema, protocol, source, and socket identity.",
-        READ_PUBLIC,
-        Protocol["ping"],
-        [],
-        EmptyParams,
-        PingData
     ),
     operation!("ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, excluded "Use Console or MCP ticket_request.", ["ticket_request"], tickets::Request, tickets::Reply),
     operation!("ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, excluded "Use Console or MCP ticket_settings.", ["ticket_settings"], EmptyParams, tickets::Settings),
@@ -2268,9 +2268,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 136);
-        assert_eq!(tools.len(), 107);
-        assert_eq!(cli_routes.len(), 101);
+        assert_eq!(OPERATIONS.len(), 153);
+        assert_eq!(tools.len(), 124);
+        assert_eq!(cli_routes.len(), 118);
     }
 
     #[test]

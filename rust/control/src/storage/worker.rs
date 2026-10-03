@@ -62,7 +62,7 @@ impl StorageService {
                         job,
                         record.artifact.artifact_id,
                         record.fingerprint,
-                        revision as i64,
+                        { revision },
                         now as i64
                     ],
                 )?;
@@ -186,6 +186,7 @@ impl StorageService {
             .filter(|r| r.artifact.protected && r.artifact.removed_at_ms.is_none())
         {
             context.protected_resources.push(record.resource_key);
+            context.protected_ancestors.extend(record.ancestor_keys);
         }
         let (age,depth)=self.database.call(|c|c.query_row("SELECT max_age_seconds,case_depth FROM test_log_retention_state WHERE singleton=1",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).map_err(DatabaseError::from)).map_err(db_error)?;
         context.retention_age_seconds = age.max(1) as u64;
@@ -238,6 +239,7 @@ impl StorageService {
             .filter(|r| context.leased_artifacts.contains(&r.artifact.artifact_id))
         {
             context.leased_resources.push(record.resource_key);
+            context.leased_ancestors.extend(record.ancestor_keys);
         }
         context.current_paths.sort();
         context.current_paths.dedup();
@@ -274,6 +276,8 @@ impl StorageService {
         let mut active = BTreeSet::new();
         let mut next_scan = self.now_ms();
         let mut event_cursor = None;
+        let mut event_retry = Duration::from_secs(1);
+        let mut rescan_requested = false;
         loop {
             if *shutdown.borrow() {
                 break;
@@ -287,38 +291,43 @@ impl StorageService {
             if self.now_ms() >= next_scan {
                 let now = self.now_ms();
                 let caller = system_caller();
-                let _ = self.scan(
-                    api::Scan {
-                        repository_id: None,
-                        idempotency_key: format!("scheduled-{now}-{}", event_cursor.unwrap_or(0)),
-                    },
-                    &caller,
-                );
+                let scanning = self.database.call(|c| c.query_row("SELECT EXISTS(SELECT 1 FROM storage_jobs WHERE kind='scan' AND state IN ('queued','running') AND json_extract(request_json,'$.repository_id') IS NULL)",[],|r|r.get::<_,bool>(0)).map_err(DatabaseError::from)).unwrap_or(true);
+                if scanning {
+                    rescan_requested = true;
+                } else {
+                    let _ = self.scan(
+                        api::Scan {
+                            repository_id: None,
+                            idempotency_key: format!(
+                                "scheduled-{now}-{}",
+                                event_cursor.unwrap_or(0)
+                            ),
+                        },
+                        &caller,
+                    );
+                }
                 next_scan = now.saturating_add(3_600_000);
             }
             // The observation window and lease end are deadlines, not merely
             // hints for the next hourly scan. Deletion still follows a fresh scan.
-            if let Ok(deadline) = self.next_eligibility_deadline() {
-                if let Some(deadline) = deadline {
-                    next_scan = next_scan.min(deadline);
-                }
+            if let Ok(deadline) = self.next_eligibility_deadline()
+                && let Some(deadline) = deadline
+            {
+                next_scan = next_scan.min(deadline);
             }
-            match self.pending_jobs() {
-                Ok(jobs) => {
-                    for (job, uid) in jobs {
-                        if !active.insert(job.job_id.clone()) {
-                            continue;
-                        }
-                        let service = self.clone();
-                        let signal = shutdown.clone();
-                        let id = job.job_id.clone();
-                        workers.spawn(async move {
-                            service.run_job(job, uid, signal).await;
-                            (id, ())
-                        });
+            if let Ok(jobs) = self.pending_jobs() {
+                for (job, uid) in jobs {
+                    if !active.insert(job.job_id.clone()) {
+                        continue;
                     }
+                    let service = self.clone();
+                    let signal = shutdown.clone();
+                    let id = job.job_id.clone();
+                    workers.spawn(async move {
+                        service.run_job(job, uid, signal).await;
+                        (id, ())
+                    });
                 }
-                Err(_) => {}
             }
             let delay = Duration::from_millis(
                 next_scan
@@ -339,25 +348,38 @@ impl StorageService {
                         repository_ids: Vec::new(),
                         deployment_ids: Vec::new(),
                         deadline_at: Some(
-                            (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
-                                .format(&time::format_description::well_known::Rfc3339)
-                                .unwrap_or_default(),
+                            (time::OffsetDateTime::now_utc()
+                                + time::Duration::milliseconds(delay.as_millis() as i64))
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default(),
                         ),
                     }],
                 },
                 crate::events::EventVisibility::unrestricted(),
             );
+            let retry_delay = event_retry;
+            event_retry = if subscription.is_ok() {
+                Duration::from_secs(1)
+            } else {
+                (event_retry * 2).min(Duration::from_secs(30))
+            };
             let lifecycle = async {
                 match subscription {
                     Ok(subscription) => subscription.receive().await.ok(),
-                    Err(_) => std::future::pending().await,
+                    // Only a denied/unavailable event subscription uses this
+                    // service-owned bounded retry. A timeout never means success.
+                    Err(_) => {
+                        let _ = tokio::time::timeout(retry_delay, self.wake.notified()).await;
+                        None
+                    }
                 }
             };
             tokio::select! {
                 _=self.wake.notified()=>{},
-                _=tokio::time::sleep(delay)=>{},
+                // The event deadline is a wakeup, not proof that the storage
+                // clock advanced. Recheck next_scan at the top of the loop.
                 event=lifecycle=>{if let Some(event)=event {event_cursor=Some(event.cursor);if !event.events.is_empty(){next_scan=next_scan.min(self.now_ms().saturating_add(1000));}}},
-                result=workers.join_next(),if !workers.is_empty()=>{if let Some(Ok((id,())))=result{active.remove(&id);}},
+                result=workers.join_next(),if !workers.is_empty()=>{if let Some(Ok((id,())))=result{active.remove(&id);if rescan_requested {next_scan=self.now_ms();rescan_requested=false;}}},
                 changed=shutdown.changed()=>{if changed.is_err()||*shutdown.borrow(){break;}},
             }
         }
@@ -487,6 +509,21 @@ impl StorageService {
         let _resources = self.lock_resources(&job.job_id, &plan.records)?;
         let mut failed = BTreeSet::new();
         let prior = self.job(&job.job_id)?;
+        // Retain the whole group's private definitions before the first
+        // destructive step. Existing files are immutable and reused on restart.
+        for record in &plan.records {
+            let state = self.job(&job.job_id)?.state;
+            if matches!(state, api::JobState::Cancelling | api::JobState::Cancelled) {
+                return self.finish(&job.job_id, api::JobState::Cancelled, None);
+            }
+            if !prior
+                .receipts
+                .iter()
+                .any(|r| r.artifact_id == record.artifact.artifact_id && r.status == "removed")
+            {
+                self.backend.save_recovery(record, &job.job_id)?;
+            }
+        }
         let mut completed_resources = BTreeSet::new();
         for receipt in &prior.receipts {
             if receipt.status != "removed" {
@@ -525,6 +562,7 @@ impl StorageService {
                     return Err(blocked("dependency_failed"));
                 }
                 if original.fingerprint != record.fingerprint
+                    || original.resource_key != record.resource_key
                     || original.artifact.revision != record.artifact.revision
                 {
                     return Err(conflict("artifact_changed"));
@@ -561,6 +599,13 @@ impl StorageService {
                     {
                         return Err(conflict("policy_changed"));
                     }
+                }
+                if plan.public.automatic
+                    && !self
+                        .project_with(record.clone(), &self.projection()?)?
+                        .automatic_eligible
+                {
+                    return Err(blocked("automatic_policy_not_due"));
                 }
                 self.backend.validate(&record, &context, &selected)?;
                 self.persist_intent(&job.job_id, &record)?;
@@ -731,6 +776,14 @@ impl StorageService {
             }
             seen.insert(r.artifact.artifact_id.clone());
             if let Some(old) = existing.get(&r.artifact.artifact_id) {
+                if old.artifact.removed_at_ms.is_some() || old.resource_key != r.resource_key {
+                    r.artifact.revision = old.artifact.revision + 1;
+                    r.artifact.observed_since_ms = now;
+                    r.artifact.protected = old.artifact.protected;
+                    // A replacement never inherits a past disposal declaration,
+                    // even when a provider reuses a name or filesystem identity.
+                    continue;
+                }
                 r.artifact.observed_since_ms = old.artifact.observed_since_ms;
                 r.artifact.protected = old.artifact.protected;
                 r.disposal_approved = old.disposal_approved;
@@ -760,6 +813,7 @@ impl StorageService {
                         r.artifact.last_used_at_ms.max(old.artifact.last_used_at_ms);
                 }
                 let changed = old.fingerprint != r.fingerprint
+                    || old.ancestor_keys != r.ancestor_keys
                     || old.last_activity_signature != r.last_activity_signature
                     || old.blockers != r.blockers
                     || old.artifact.dependencies != r.artifact.dependencies;
@@ -768,10 +822,10 @@ impl StorageService {
         }
         let mut recovery: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (i, r) in discovery.records.iter().enumerate() {
-            if r.recovery_verified {
-                if let Some(lineage) = &r.recovery_lineage {
-                    recovery.entry(lineage.clone()).or_default().push(i);
-                }
+            if r.recovery_verified
+                && let Some(lineage) = &r.recovery_lineage
+            {
+                recovery.entry(lineage.clone()).or_default().push(i);
             }
         }
         for rows in recovery.values_mut() {
@@ -942,42 +996,40 @@ impl StorageService {
                 };
                 job.error_code = if cancelled { None } else { error };
                 job.completed_at_ms.get_or_insert(now);
-                if cancelled {
-                    if let Some(plan_id) = &job.plan_id {
-                        let value = c.query_row(
-                            "SELECT plan_json FROM storage_plans WHERE plan_id=?1",
-                            [plan_id],
-                            |r| r.get::<_, String>(0),
-                        )?;
-                        let plan: super::model::StoredPlan =
-                            parse(&value).map_err(DatabaseError::Domain)?;
-                        for item in plan.public.items {
-                            if job
-                                .receipts
-                                .iter()
-                                .any(|r| r.artifact_id == item.artifact_id)
-                            {
-                                continue;
-                            }
-                            let receipt = api::ItemReceipt {
-                                artifact_id: item.artifact_id,
-                                status: "cancelled".into(),
-                                code: Some("cleanup_cancelled".into()),
-                                measured_bytes_before: item.allocated_bytes,
-                                removed_at_ms: None,
-                                space_change: None,
-                            };
-                            c.execute(
-                                "INSERT INTO storage_item_receipts VALUES(?1,?2,?3,?4)",
-                                rusqlite::params![
-                                    id,
-                                    receipt.artifact_id,
-                                    job.receipts.len() as i64,
-                                    json(&receipt).map_err(DatabaseError::Domain)?
-                                ],
-                            )?;
-                            job.receipts.push(receipt);
+                if cancelled && let Some(plan_id) = &job.plan_id {
+                    let value = c.query_row(
+                        "SELECT plan_json FROM storage_plans WHERE plan_id=?1",
+                        [plan_id],
+                        |r| r.get::<_, String>(0),
+                    )?;
+                    let plan: super::model::StoredPlan =
+                        parse(&value).map_err(DatabaseError::Domain)?;
+                    for item in plan.public.items {
+                        if job
+                            .receipts
+                            .iter()
+                            .any(|r| r.artifact_id == item.artifact_id)
+                        {
+                            continue;
                         }
+                        let receipt = api::ItemReceipt {
+                            artifact_id: item.artifact_id,
+                            status: "cancelled".into(),
+                            code: Some("cleanup_cancelled".into()),
+                            measured_bytes_before: item.allocated_bytes,
+                            removed_at_ms: None,
+                            space_change: None,
+                        };
+                        c.execute(
+                            "INSERT INTO storage_item_receipts VALUES(?1,?2,?3,?4)",
+                            rusqlite::params![
+                                id,
+                                receipt.artifact_id,
+                                job.receipts.len() as i64,
+                                json(&receipt).map_err(DatabaseError::Domain)?
+                            ],
+                        )?;
+                        job.receipts.push(receipt);
                     }
                 }
                 c.execute(

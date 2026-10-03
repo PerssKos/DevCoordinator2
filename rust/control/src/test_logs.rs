@@ -212,20 +212,19 @@ impl TestLogService {
             }) {
                 Ok(receipt) => {
                     let result = receipt.summary;
-                    if !receipt.removed_runs.is_empty() {
-                        if crate::storage::evidence::record_expired(
+                    if !receipt.removed_runs.is_empty()
+                        && crate::storage::evidence::record_expired(
                             &self.database,
                             &worktree,
                             &receipt.removed_runs,
                         )
                         .is_err()
-                        {
-                            push_maintenance_error(
-                                &mut errors,
-                                &mut error_count,
-                                repository_id.clone(),
-                            );
-                        }
+                    {
+                        push_maintenance_error(
+                            &mut errors,
+                            &mut error_count,
+                            repository_id.clone(),
+                        );
                     }
                     removed_leaf_folders =
                         removed_leaf_folders.saturating_add(result.removed_leaf_folders);

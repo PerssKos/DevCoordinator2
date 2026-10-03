@@ -66,6 +66,25 @@ impl StorageService {
     }
 }
 
+pub(super) fn ensure_tree_editable(
+    c: &rusqlite::Connection,
+    resource: &str,
+    ancestors: &[String],
+    job: Option<&str>,
+) -> Result<(), DatabaseError> {
+    ensure_editable(c, resource, job)?;
+    for ancestor in ancestors {
+        let busy=c.query_row("SELECT EXISTS(SELECT 1 FROM storage_resource_locks WHERE resource_key=?1 AND exclusive=1 AND (?2 IS NULL OR job_id<>?2))",rusqlite::params![ancestor,job],|r|r.get::<_,bool>(0))?;
+        if busy {
+            return Err(DatabaseError::Domain(ProtocolError::new(
+                ErrorCode::Busy,
+                "artifact_cleanup_in_progress",
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn ensure_editable(
     c: &rusqlite::Connection,
     resource: &str,

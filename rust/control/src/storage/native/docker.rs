@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const CONTAINER_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"state":{{json .State.Status}},"finished":{{json .State.FinishedAt}},"image":{{json .Image}},"repository":{{json (index .Config.Labels "devcoordinator2.repository")}},"deployment":{{json (index .Config.Labels "devcoordinator2.deployment")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"name":{{json (index $m "Name")}},"source":{{json (index $m "Source")}}}{{end}}]}"#;
+const CONTAINER_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"state":{{json .State.Status}},"finished":{{json .State.FinishedAt}},"image":{{json .Image}},"instance":{{json (index .Config.Labels "devcoordinator2.instance")}},"repository":{{json (index .Config.Labels "devcoordinator2.repository")}},"deployment":{{json (index .Config.Labels "devcoordinator2.deployment")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"name":{{json (index $m "Name")}},"source":{{json (index $m "Source")}}}{{end}}]}"#;
 const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
 const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}}}"#;
 const NETWORK_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"driver":{{json .Driver}},"project":{{json (index .Labels "com.docker.compose.project")}},"containers":[{{$sep := ""}}{{range $i,$c := .Containers}}{{$sep}}{{json $i}}{{$sep = ","}}{{end}}]}"#;
@@ -31,6 +31,28 @@ fn inactive(v: &Value) -> bool {
 }
 
 impl HostBackend {
+    fn fixture_namespace(&self) -> Option<&str> {
+        #[cfg(feature = "root-acceptance")]
+        if self
+            .config
+            .unit_prefix
+            .starts_with("devcoordinator2-rustint-")
+        {
+            return Some(&self.config.unit_prefix);
+        }
+        None
+    }
+
+    fn discovery_arguments(&self, mut args: Vec<String>) -> Vec<String> {
+        if let Some(namespace) = self.fixture_namespace() {
+            args.extend([
+                "--filter".into(),
+                format!("label=devcoordinator2.instance={namespace}"),
+            ]);
+        }
+        args
+    }
+
     pub(super) fn save_private_definition(
         &self,
         r: &Record,
@@ -225,6 +247,12 @@ impl HostBackend {
         }
         let mut container_records = BTreeMap::new();
         for c in containers.iter() {
+            if self
+                .fixture_namespace()
+                .is_some_and(|namespace| s(c, "instance") != namespace)
+            {
+                continue;
+            }
             let id = s(c, "id");
             let mut r = candidate(
                 api::Kind::Container,
@@ -288,11 +316,31 @@ impl HostBackend {
             container_records.insert(id.to_owned(), r.clone());
             out.records.push(r);
         }
-        let volumes = self
-            .docker_output(vec!["volume".into(), "ls".into(), "--quiet".into()])?
+        let mut volumes = self
+            .docker_output(self.discovery_arguments(vec![
+                "volume".into(),
+                "ls".into(),
+                "--quiet".into(),
+            ]))?
             .lines()
             .map(str::to_owned)
-            .collect::<Vec<_>>();
+            .collect::<BTreeSet<_>>();
+        if self.fixture_namespace().is_some() {
+            // Managed persistent volumes need not carry the fixture label, but
+            // their exact consumers do. Include only those owned references.
+            for container in containers
+                .iter()
+                .filter(|c| container_records.contains_key(s(c, "id")))
+            {
+                for mount in array(container, "mounts")
+                    .iter()
+                    .filter(|m| s(m, "type") == "volume")
+                {
+                    volumes.insert(s(mount, "name").to_owned());
+                }
+            }
+        }
+        let volumes = volumes.into_iter().collect::<Vec<_>>();
         let mount_entries = self.mount_entries()?;
         for v in self.inspect_rows("volume", &volumes, VOLUME_FORMAT)? {
             let name = s(&v, "name");
@@ -479,12 +527,12 @@ impl HostBackend {
         known: &BTreeMap<String, Record>,
     ) -> Result<(), ProtocolError> {
         let ids = self
-            .docker_output(vec![
+            .docker_output(self.discovery_arguments(vec![
                 "image".into(),
                 "ls".into(),
                 "--quiet".into(),
                 "--no-trunc".into(),
-            ])?
+            ]))?
             .lines()
             .map(str::to_owned)
             .collect::<BTreeSet<_>>()
@@ -543,12 +591,12 @@ impl HostBackend {
             out.records.push(r);
         }
         let ids = self
-            .docker_output(vec![
+            .docker_output(self.discovery_arguments(vec![
                 "network".into(),
                 "ls".into(),
                 "--quiet".into(),
                 "--no-trunc".into(),
-            ])?
+            ]))?
             .lines()
             .map(str::to_owned)
             .collect::<Vec<_>>();
@@ -591,6 +639,12 @@ impl HostBackend {
     }
 
     fn discover_build_cache(&self, context: &Context, out: &mut Discovery) {
+        if self.fixture_namespace().is_some() {
+            // The host's default builder is not owned by an isolated fixture.
+            out.coverage_gaps
+                .push("fixture_builder_not_configured".into());
+            return;
+        }
         let result=self.docker_output(vec!["buildx".into(),"du".into(),"--builder".into(),"default".into(),"--format".into(),r#"{"id":{{json .ID}},"in_use":{{json .InUse}},"shared":{{json .Shared}},"size":{{json .Size}},"last_used":{{json .LastUsedAt}}}"#.into()]);
         let Ok(text) = result else {
             out.coverage_gaps
@@ -744,18 +798,16 @@ impl HostBackend {
                         inode,
                         ..
                     } = record.locator
+                        && target == mountpoint
+                        && r.resource_key == format!("fs:{device}:{inode}")
+                        && fs::identity(&source)? == (device, inode)
+                        && !fs::mount_targets()?.contains(&target)
+                        && !self
+                            .mount_entries()?
+                            .iter()
+                            .any(|entry| entry.target == target)
                     {
-                        if target == mountpoint
-                            && r.resource_key == format!("fs:{device}:{inode}")
-                            && fs::identity(&source)? == (device, inode)
-                            && !fs::mount_targets()?.contains(&target)
-                            && !self
-                                .mount_entries()?
-                                .iter()
-                                .any(|entry| entry.target == target)
-                        {
-                            retired = true;
-                        }
+                        retired = true;
                     }
                 }
                 if !retired || fs::measure(mountpoint)?.entries != 0 {

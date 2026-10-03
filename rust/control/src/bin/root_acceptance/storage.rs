@@ -358,6 +358,79 @@ pub(super) fn shared_alias_protection(world: &mut World) -> Result<(), String> {
             == 1,
         "cleanup tried to delete the same data twice"
     );
+    world.write_owned("cache/tree/leaf/data", vec![8u8; 4096])?;
+    world.write_owned("cache/sibling/data", vec![9u8; 4096])?;
+    data(&world.call("storage.roots.set",json!({"repository_id":repo,"expected_revision":0,"label":"Nested cache","path":world.repo.join("cache/tree"),"kind":"dependency_cache"}))?)?;
+    let inventory = scanned(world, &repo, "nested-protection")?;
+    let all = inventory["artifacts"].as_array().unwrap();
+    let leaf = all
+        .iter()
+        .find(|r| r["name"] == "leaf")
+        .ok_or("nested leaf missing")?;
+    let tree = all
+        .iter()
+        .find(|r| r["name"] == "tree")
+        .ok_or("parent tree missing")?;
+    let sibling = all
+        .iter()
+        .find(|r| r["name"] == "sibling")
+        .ok_or("sibling tree missing")?;
+    let pin = mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":leaf["artifact_id"],"expected_revision":leaf["revision"],"protected":true}),
+    )?;
+    let parent = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":tree["artifact_id"]}),
+    )?;
+    ensure!(
+        parent["safety"] == "protected" && parent["deletable"] == false,
+        "parent removal bypassed a protected descendant"
+    );
+    let unrelated = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":sibling["artifact_id"]}),
+    )?;
+    ensure!(
+        unrelated["deletable"] == true,
+        "nested protection incorrectly blocked a sibling"
+    );
+    mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":leaf["artifact_id"],"expected_revision":pin["revision"],"protected":false}),
+    )?;
+    let lease = mcp(
+        world,
+        "storage_lease_set",
+        json!({"artifact_ids":[leaf["artifact_id"]],"duration_seconds":300}),
+    )?;
+    let parent = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":tree["artifact_id"]}),
+    )?;
+    ensure!(
+        parent["safety"] == "in_use" && parent["deletable"] == false,
+        "parent removal bypassed a descendant lease"
+    );
+    let released = mcp(
+        world,
+        "storage_lease_release",
+        json!({"lease_id":lease["lease_id"]}),
+    )?;
+    let parent = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":tree["artifact_id"]}),
+    )?;
+    ensure!(
+        parent["last_used_at_ms"].as_u64() >= released["expires_at_ms"].as_u64(),
+        "parent inactivity ignored recent descendant use"
+    );
     Ok(())
 }
 
@@ -596,16 +669,65 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
             == 2),
         "cleanup omitted a real consumer"
     );
+    fs::write(
+        world.state.join("storage-crash-after-remove"),
+        b"verify whole-group recovery metadata",
+    )
+    .map_err(|e| e.to_string())?;
     let start = world.call(
         "storage.cleanup.start",
         json!({"plan_id":plan["plan_id"],"idempotency_key":"retire-legacy"}),
     )?;
-    let result = wait_job(
-        world,
-        data(&start)?["job_id"]
-            .as_str()
-            .ok_or("cleanup job missing")?,
-    )?;
+    let cleanup_id = data(&start)?["job_id"]
+        .as_str()
+        .ok_or("cleanup job missing")?
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        if world
+            .daemon
+            .as_mut()
+            .ok_or("fixture daemon missing")?
+            .try_wait()
+            .map_err(|e| e.to_string())?
+            .is_some()
+        {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "legacy cleanup did not reach its interruption boundary"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    world.daemon.take();
+    let recovery = fs::read_dir(world.state.join("storage-recovery"))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        recovery.len() == 4,
+        "the whole group's recovery metadata was not saved before removal"
+    );
+    let mut metadata_bytes = 0;
+    for item in recovery {
+        let metadata = item.metadata().map_err(|e| e.to_string())?;
+        ensure!(
+            metadata.uid() == 0 && metadata.mode() & 0o077 == 0,
+            "recovery metadata was not private"
+        );
+        metadata_bytes += metadata.len();
+    }
+    ensure!(
+        metadata_bytes < 1024 * 1024,
+        "cleanup copied disposable data instead of recovery metadata"
+    );
+    ensure!(
+        volume_exists(&volume)? && backing.join("storage-fixture").is_file(),
+        "interruption removed data before retiring its consumers"
+    );
+    world.start_daemon(None, None, None)?;
+    let result = wait_job(world, &cleanup_id)?;
     ensure!(
         result["state"] == "completed",
         "legacy cleanup failed: {}",
@@ -828,6 +950,19 @@ pub(super) fn automatic_policy_boundaries(world: &mut World) -> Result<(), Strin
     )?;
     data(&lease)?;
     scanned(world, &repo, "before-three-days")?;
+    let history = mcp(world, "storage_history", json!({"limit":50}))?;
+    let pending_scans = history["jobs"]
+        .as_array()
+        .ok_or("scan history missing")?
+        .iter()
+        .filter(|job| {
+            job["kind"] == "scan" && matches!(job["state"].as_str(), Some("queued" | "running"))
+        })
+        .count();
+    ensure!(
+        pending_scans <= 1,
+        "the storage clock queued duplicate background scans before eligibility"
+    );
     ensure!(
         world.repo.join("cache/due/output").exists(),
         "cache was deleted before the three-day boundary"

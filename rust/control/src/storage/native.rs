@@ -97,6 +97,9 @@ impl Backend for HostBackend {
         }
     }
     fn save_recovery(&self, r: &Record, job_id: &str) -> Result<(), ProtocolError> {
+        if matches!(r.locator, Locator::Mount { .. }) {
+            return self.save_mount_recovery(r, job_id);
+        }
         self.save_private_definition(r, job_id)
     }
 
@@ -172,10 +175,14 @@ impl Backend for HostBackend {
         if r.artifact.protected {
             return Err(blocked("explicitly_protected"));
         }
-        if context.protected_resources.contains(&r.resource_key) {
+        if context.protected_resources.contains(&r.resource_key)
+            || context.protected_ancestors.contains(&r.resource_key)
+        {
             return Err(blocked("protected_shared_data"));
         }
-        if context.leased_resources.contains(&r.resource_key) {
+        if context.leased_resources.contains(&r.resource_key)
+            || context.leased_ancestors.contains(&r.resource_key)
+        {
             return Err(blocked("active_lease"));
         }
         for alias in &r.private_aliases {
@@ -256,8 +263,8 @@ impl Backend for HostBackend {
                 }
                 if r.artifact.kind == api::Kind::Worktree {
                     self.validate_worktree(path, git_root.as_deref(), context)?;
-                } else if let Some(git) = git_root {
-                    if !git_bytes(
+                } else if let Some(git) = git_root
+                    && !git_bytes(
                         git,
                         &[
                             "ls-files",
@@ -268,9 +275,8 @@ impl Backend for HostBackend {
                         context,
                     )?
                     .is_empty()
-                    {
-                        return Err(blocked("tracked_source"));
-                    }
+                {
+                    return Err(blocked("tracked_source"));
                 }
                 let allowed_mount = r
                     .artifact

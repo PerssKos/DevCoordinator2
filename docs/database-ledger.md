@@ -1,6 +1,6 @@
 # Database Completion Ledger
 
-## Schema version 30 — tracked storage cleanup
+## Schema version 31 — tracked storage cleanup
 
 The storage registry records current artifact identities and private locators,
 revisioned policies and configured roots, expiring exact-target plans, durable

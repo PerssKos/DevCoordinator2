@@ -41,6 +41,25 @@ fn fstab_path(config: &crate::config::Config) -> PathBuf {
 }
 
 impl HostBackend {
+    pub(super) fn save_mount_recovery(&self, r: &Record, job: &str) -> Result<(), ProtocolError> {
+        let directory = self.config.state_dir.join("storage-recovery");
+        std::fs::create_dir_all(&directory)
+            .map_err(|_| unavailable("private_recovery_unavailable"))?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| unavailable("private_recovery_unavailable"))?;
+        let path =
+            request_path(&directory, job, &r.artifact.artifact_id)?.with_extension("fstab.before");
+        if path.exists() {
+            private_read(&path, 1024 * 1024, true)?;
+        } else {
+            write_private_new(
+                &path,
+                &private_read(&fstab_path(&self.config), 1024 * 1024, false)?,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn validate_mount_recovery(
         &self,
         r: &Record,
@@ -674,10 +693,11 @@ fn systemctl(args: &[&str]) -> Result<(), ProtocolError> {
                 Path::new("/usr/bin/systemctl"),
                 &inspect,
                 Duration::from_secs(10),
-            ) {
-                if state.status.success() && !state.truncated && state.stdout == b"not-found\n" {
-                    return Ok(());
-                }
+            ) && state.status.success()
+                && !state.truncated
+                && state.stdout == b"not-found\n"
+            {
+                return Ok(());
             }
         }
         return Err(unavailable("mount_manager_action_failed"));
