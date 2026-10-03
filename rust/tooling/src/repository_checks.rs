@@ -2583,7 +2583,6 @@ const DESIGN_GATE_TERMS: &[&str] = &[
     "submission order, completion order, retries, and array indexes do not define",
     "pause all implementation while the admission gate is pending",
     "read-only discovery and preparation",
-    "user selects one displayed option",
     "user explicitly authorizes autonomous selection",
     "configured coordinator's existing sketch/evidence and decision records",
     "do not create a markdown approval ledger",

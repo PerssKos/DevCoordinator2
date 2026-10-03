@@ -156,13 +156,13 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('.plan-context').waitFor();
   verify('returning from host tools remembers the repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   await page.locator(`#workspace-aspects a[href="#/sketches/${repositoryId}"]`).click();
-  await page.locator('.sketch-gallery-page').waitFor();
+  await page.locator('.mockup-gallery [data-collection] .notice').waitFor();
   verify('Sketches navigation reads the selected repository archive', page.url().endsWith(`#/sketches/${repositoryId}`)
     && await page.locator('#workspace-heading').innerText() === 'repo-one'
     && await page.locator('#workspace-aspects a[aria-current]').innerText() === 'Sketches'
-    && daemon.calls.some(call => call.operation === 'design.sketch.list' && call.params.repository_id === repositoryId && call.params.limit === 40 && !call.params.offset));
-  verify('an unpublished sketch archive has a truthful empty state', await page.locator('.sketch-gallery-page').innerText().then(text => text.includes('0 sketches') && text.includes('No sketches have been published for this project yet.'))
-    && await page.locator('.sketch-card').count() === 0);
+    && daemon.calls.some(call => call.operation === 'design.sketch.list' && call.params.repository_id === repositoryId && call.params.limit === 24 && !call.params.offset));
+  verify('an unpublished sketch archive has a truthful empty state', await page.locator('.mockup-gallery [data-collection]').innerText().then(text => text.includes('No sketches have been published for this project yet.'))
+    && await page.locator('.mockup-card').count() === 0);
   await page.goto(`${baseUrl}#/glossary/${repositoryId}`);
   const glossaryAspect = page.locator(`#workspace-aspects a[aria-current][href="#/glossary/${repositoryId}"]`);
   await glossaryAspect.waitFor({ state: 'visible' });
