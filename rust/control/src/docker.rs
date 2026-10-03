@@ -979,22 +979,96 @@ pub trait DockerControl: Send + Sync {
             .iter()
             .map(|(name, value)| (OsString::from(name), OsString::from(value)))
             .collect();
-        let output = self.invoke(
+        let output = match self.invoke(
             DockerInvocation::new(argv, DEFAULT_DOCKER_TIMEOUT)?.with_environment(environment),
-        )?;
+        ) {
+            Ok(output) => output,
+            Err(error) => {
+                let cleanup = self.cleanup_failed_run_container(&request.name);
+                return Err(DockerError::Command(format!(
+                    "docker run invocation failed (kind={:?}; cleanup={cleanup})",
+                    error.kind()
+                )));
+            }
+        };
         if !output.success() {
             // This command carries secret values in its environment. Docker's
-            // diagnostics are not returned because a hostile executable could
-            // echo them.
-            return Err(DockerError::Command("docker run failed".to_owned()));
+            // diagnostics are intentionally not returned because a hostile
+            // executable could echo them. A failed detached run can still
+            // leave a Created container, so remove only the exact requested
+            // name and expose the safe exit/cleanup facts.
+            let cleanup = self.cleanup_failed_run_container(&request.name);
+            return Err(DockerError::Command(format!(
+                "docker run failed (exit_code={}; cleanup={cleanup})",
+                output.exit_code
+            )));
         }
-        ensure_exact_output(&output, "run")?;
-        ExactContainerId::parse(output.stdout.trim().to_owned()).map_err(|_| {
-            DockerError::InvalidOutput(format!(
-                "unexpected docker run output: {:?}",
-                bounded_prefix(output.stdout.trim(), 80)
-            ))
-        })
+        if ensure_exact_output(&output, "run").is_err() {
+            let cleanup = self.cleanup_failed_run_container(&request.name);
+            return Err(DockerError::Command(format!(
+                "docker run output exceeded the bounded capture (cleanup={cleanup})"
+            )));
+        }
+        match ExactContainerId::parse(output.stdout.trim().to_owned()) {
+            Ok(container) => Ok(container),
+            Err(_) => {
+                let cleanup = self.cleanup_failed_run_container(&request.name);
+                Err(DockerError::Command(format!(
+                    "docker run returned an invalid container id (cleanup={cleanup})"
+                )))
+            }
+        }
+    }
+
+    /// A detached Docker run may create a container before its start phase
+    /// fails. Query by the exact requested name, verify the returned name, and
+    /// remove only that container. The Docker stderr remains private; callers
+    /// receive only a bounded cleanup outcome.
+    fn cleanup_failed_run_container(&self, name: &str) -> String {
+        let invocation = match DockerInvocation::new(
+            vec![
+                "ps".into(),
+                "--all".into(),
+                "--no-trunc".into(),
+                "--format".into(),
+                "{{.ID}}\\t{{.Names}}".into(),
+                "--filter".into(),
+                format!("name={name}").into(),
+            ],
+            Duration::from_secs(30),
+        ) {
+            Ok(invocation) => invocation,
+            Err(_) => return "query-failed".to_owned(),
+        };
+        let output = match self.invoke(invocation) {
+            Ok(output)
+                if output.success() && !output.stdout_truncated && !output.stderr_truncated =>
+            {
+                output
+            }
+            _ => return "query-failed".to_owned(),
+        };
+        let mut removed = 0usize;
+        for line in output.stdout.lines() {
+            let Some((id, actual_name)) = line.trim().split_once('\t') else {
+                continue;
+            };
+            if actual_name != name {
+                continue;
+            }
+            let Ok(container) = ExactContainerId::parse(id.to_owned()) else {
+                return format!("invalid-id-after-{removed}");
+            };
+            if self.remove_container(&container, true).is_err() {
+                return format!("remove-failed-after-{removed}");
+            }
+            removed += 1;
+        }
+        if removed == 0 {
+            "none".to_owned()
+        } else {
+            format!("removed:{removed}")
+        }
     }
 
     fn create_container(
@@ -2560,6 +2634,52 @@ mod tests {
                 .map(String::as_str),
             Some("top-secret")
         );
+    }
+
+    #[test]
+    fn failed_detached_run_cleans_only_exact_name_and_redacts_diagnostics() {
+        let container_id = "a".repeat(64);
+        let other_id = "b".repeat(64);
+        let fake = FakeDocker::new(vec![
+            output(
+                1,
+                "",
+                "POSTGRES_PASSWORD=fixture-value\nport allocation failed",
+            ),
+            output(
+                0,
+                format!("{container_id}\tfixture\n{other_id}\tfixture-sibling\n"),
+                "",
+            ),
+            output(0, "", ""),
+        ]);
+        let error = fake
+            .run_detached(&RunDetachedRequest {
+                name: "fixture".into(),
+                image: "postgres:16-alpine".into(),
+                label_context: labels(),
+                labels: BTreeMap::new(),
+                env_names: vec!["POSTGRES_PASSWORD".into()],
+                env_values: BTreeMap::from([("POSTGRES_PASSWORD".into(), "fixture-value".into())]),
+                publish: vec!["127.0.0.1::5432".into()],
+                tmpfs: vec!["/tmp:rw,noexec".into()],
+                command: vec!["postgres".into()],
+            })
+            .expect_err("Docker run failure should be reported");
+        let message = error.to_string();
+        assert!(message.contains("exit_code=1"));
+        assert!(message.contains("cleanup=removed:1"));
+        assert!(!message.contains("fixture-value"));
+        let calls = fake.calls();
+        assert_eq!(calls[1].args[0], "ps");
+        assert!(
+            calls[1]
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--filter" && pair[1] == "name=fixture")
+        );
+        assert_eq!(&calls[2].args[..2], ["rm", "--force"]);
+        assert_eq!(calls.len(), 3, "the sibling name must not be removed");
     }
 
     #[test]
