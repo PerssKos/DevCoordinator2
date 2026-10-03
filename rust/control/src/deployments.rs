@@ -3302,7 +3302,7 @@ impl Deployments {
                 .tcp_ready(host, port, Duration::from_secs(10), &|| None));
         }
         if component.kind == ComponentKind::Postgres {
-            let (identity, credentials) = if let Some(shared) = &component.shared_from {
+            let (identity, credentials, port) = if let Some(shared) = &component.shared_from {
                 let (deployment, name) = shared.split_once('/').ok_or_else(|| {
                     ProtocolError::new(
                         ErrorCode::RepositoryConfigInvalid,
@@ -3331,7 +3331,11 @@ impl Deployments {
                             "shared PostgreSQL credentials are unavailable",
                         )
                     })?;
-                (identity, credentials)
+                let port = crate::ports::assigned(&self.database, deployment, 0)
+                    .map_err(runtime_error)?
+                    .get(name)
+                    .copied();
+                (identity, credentials, port)
             } else {
                 let credentials = self
                     .files
@@ -3343,7 +3347,11 @@ impl Deployments {
                             "PostgreSQL credentials are unavailable",
                         )
                     })?;
-                (binding.1.clone(), credentials)
+                (
+                    binding.1.clone(),
+                    credentials,
+                    port_map.get(&component.name).copied(),
+                )
             };
             let identity = ExactContainerId::parse(identity).map_err(|_| {
                 ProtocolError::new(
@@ -3355,7 +3363,7 @@ impl Deployments {
             if !readiness.ready {
                 return Ok(readiness);
             }
-            let Some(port) = port_map.get(&component.name).copied() else {
+            let Some(port) = port else {
                 return Ok(Readiness::failed(
                     "PostgreSQL component has no allocated host port",
                 ));
@@ -6893,6 +6901,55 @@ database="app"
         let serialized = serde_json::to_string(&applied).unwrap();
         assert!(!serialized.contains("password"));
         assert!(!serialized.contains("postgresql://"));
+
+        let configuration = worktree.join(".devcoordinator.toml");
+        let original = std::fs::read_to_string(&configuration).unwrap();
+        std::fs::write(
+            &configuration,
+            format!(
+                "{original}\n[deployment.borrower]\nsource=\"worktree\"\ncomponents=[\"borrowed\"]\n[deployment.borrower.component.borrowed]\ntype=\"postgres\"\nshared_from=\"{}/db\"\n",
+                applied.deployment_id
+            ),
+        )
+        .unwrap();
+        host_tcp_ready.store(false, Ordering::SeqCst);
+        let shared_failure = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("borrower"),
+                None,
+                &caller,
+            )
+            .unwrap_err();
+        assert!(
+            shared_failure
+                .message
+                .contains("PostgreSQL host port 41000"),
+            "{shared_failure:?}"
+        );
+        host_tcp_ready.store(true, Ordering::SeqCst);
+        let borrowed = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("borrower"),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert!(!borrowed.components[0].owned);
+        assert_eq!(borrowed.components[0].port, None);
+        let borrowed_removed = deployments
+            .remove(None, None, Some(&borrowed.deployment_id), true, &caller)
+            .unwrap();
+        assert!(borrowed_removed.deleted_volumes.is_empty());
+        assert_eq!(
+            deployments
+                .store
+                .components(&applied.deployment_id)
+                .unwrap()
+                .len(),
+            1
+        );
 
         host_tcp_ready.store(false, Ordering::SeqCst);
         let failure = deployments

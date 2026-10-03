@@ -2504,6 +2504,158 @@ command=["/usr/bin/true"]
     Ok(())
 }
 
+fn case_shared_postgres_deployment_uses_owner_port(world: &mut World) -> Result<(), String> {
+    let owner_config = r#"schema=2
+[deployment.owner]
+source="worktree"
+components=["db"]
+[deployment.owner.component.db]
+type="postgres"
+image="postgres:16-alpine"
+database="app"
+user="app"
+"#;
+    world.write_config(owner_config)?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "shared database owner fixture"])?;
+    let owner = data(&world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"owner"}),
+    )?)?
+    .clone();
+    let owner_id = owner["deployment_id"].as_str().ok_or("missing owner")?;
+    let container = component(&owner, "db")?
+        .pointer("/binding/identity")
+        .and_then(Value::as_str)
+        .ok_or("missing owner database")?;
+    world.track_volume(format!("devcoordinator2-{owner_id}-db-pgdata"));
+    docker_exec(
+        container,
+        &[
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "app",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE TABLE shared_marker(value integer); INSERT INTO shared_marker VALUES(7)",
+        ],
+    )?;
+    let command = command_json(&fixture_command(world, &["sleep", "3600"]))?;
+    world.write_config(&format!(
+        r#"{owner_config}
+[deployment.borrower]
+source="worktree"
+components=["borrowed","api"]
+[deployment.borrower.component.borrowed]
+type="postgres"
+shared_from="{owner_id}/db"
+[deployment.borrower.component.api]
+type="process"
+command={command}
+depends_on=["borrowed"]
+"#
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "shared database consumer fixture"])?;
+    let borrower = data(&world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"borrower"}),
+    )?)?
+    .clone();
+    let borrower_id = borrower["deployment_id"]
+        .as_str()
+        .ok_or("missing borrower")?;
+    let generation = borrower["current_generation"]
+        .as_u64()
+        .ok_or("missing generation")?;
+    let borrowed = component(&borrower, "borrowed")?;
+    ensure!(
+        borrowed["owned"] == false && borrowed["port"].is_null(),
+        "borrower acquired an owned database or port"
+    );
+    ensure!(
+        borrowed["state"] == "running" && borrowed["health"] == "healthy",
+        "shared database is not ready"
+    );
+    let database_url = deployment_database_url(world, borrower_id, generation)?;
+    let connection =
+        reqwest::Url::parse(&database_url).map_err(|_| "borrower database URL is invalid")?;
+    let query = Command::new("/usr/bin/psql")
+        .env(
+            "PGHOST",
+            connection.host_str().ok_or("missing database host")?,
+        )
+        .env(
+            "PGPORT",
+            connection
+                .port()
+                .ok_or("missing database port")?
+                .to_string(),
+        )
+        .env("PGUSER", connection.username())
+        .env(
+            "PGPASSWORD",
+            connection.password().ok_or("missing database password")?,
+        )
+        .env("PGDATABASE", connection.path().trim_start_matches('/'))
+        .env("PGCONNECT_TIMEOUT", "5")
+        .args([
+            "--no-psqlrc",
+            "--set=ON_ERROR_STOP=1",
+            "-tA",
+            "-c",
+            "SELECT value FROM shared_marker",
+        ])
+        .output()
+        .map_err(|error| error.to_string())?;
+    let public = serde_json::to_string(&borrower).map_err(|error| error.to_string())?;
+    ensure!(
+        !public.contains("postgresql://") && !public.contains("password"),
+        "borrower response exposed connection credentials"
+    );
+    let removed = data(&world.call(
+        "deployment.remove",
+        json!({"deployment_id":borrower_id,"delete_data":true}),
+    )?)?
+    .clone();
+    ensure!(
+        removed["deleted_volumes"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "borrower removal deleted shared data"
+    );
+    let owner_after =
+        data(&world.call("deployment.status", json!({"deployment_id":owner_id}))?)?.clone();
+    ensure!(
+        component(&owner_after, "db")?["binding"] == component(&owner, "db")?["binding"],
+        "borrower changed the owner database identity"
+    );
+    ensure!(
+        docker_exec(
+            container,
+            &[
+                "psql",
+                "-U",
+                "app",
+                "-d",
+                "app",
+                "-tA",
+                "-c",
+                "SELECT value FROM shared_marker"
+            ]
+        )? == "7",
+        "owner data did not survive borrower removal"
+    );
+    ensure!(
+        query.status.success() && String::from_utf8_lossy(&query.stdout).trim() == "7",
+        "borrower connection does not reach the owner database"
+    );
+    Ok(())
+}
+
 fn case_deployment_events_follow_successful_owned_mutations(
     world: &mut World,
 ) -> Result<(), String> {
@@ -6574,6 +6726,10 @@ fn cases() -> Vec<Case> {
         (
             "composed_runs_respect_resources_without_blocking_independent_targets",
             case_composed_runs_respect_resources_without_blocking_independent_targets,
+        ),
+        (
+            "shared_postgres_deployment_uses_owner_port",
+            case_shared_postgres_deployment_uses_owner_port,
         ),
         (
             "deployment_events_follow_successful_owned_mutations",
