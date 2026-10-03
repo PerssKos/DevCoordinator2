@@ -244,6 +244,9 @@ impl Backend for HostBackend {
                     return Err(blocked("active_process"));
                 }
                 let measured = fs::measure(path)?;
+                if measured.protected_metadata && generated_kind(r.artifact.kind) {
+                    return Err(blocked("protected_source_or_credentials"));
+                }
                 if !context.discovering
                     && matches!(
                         r.artifact.kind,
@@ -335,7 +338,12 @@ impl Backend for HostBackend {
                     }
                     Ok(())
                 } else {
-                    fs::remove_tree(path, (*device, *inode), false)
+                    fs::remove_tree(
+                        path,
+                        (*device, *inode),
+                        false,
+                        generated_kind(r.artifact.kind),
+                    )
                 }
             }
             Locator::Docker { .. } => self.remove_docker(r),
@@ -395,8 +403,15 @@ pub fn validate_root(path: &Path, config: &Config) -> Result<(), ProtocolError> 
     {
         return Err(blocked("protected_system_data"));
     }
-    if path.components().any(|p|matches!(p,std::path::Component::Normal(s) if s==".git" || s==".ssh" || s=="sessions" || s=="archived_sessions")) {return Err(blocked("protected_source_or_credentials"));}
+    if path.components().any(|p|matches!(p,std::path::Component::Normal(s) if s==".git" || fs::protected_metadata_name(s))) {return Err(blocked("protected_source_or_credentials"));}
     Ok(())
+}
+
+fn generated_kind(kind: api::Kind) -> bool {
+    matches!(
+        kind,
+        api::Kind::BuildOutput | api::Kind::DependencyCache | api::Kind::Unknown
+    )
 }
 
 pub(super) fn candidate(

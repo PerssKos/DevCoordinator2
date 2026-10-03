@@ -7,7 +7,28 @@ pub struct Measurement {
     pub newest_modified_ns: i128,
     pub entries: usize,
     pub nested_git: bool,
+    pub protected_metadata: bool,
     pub multiply_linked: bool,
+}
+
+pub(crate) fn protected_metadata_name(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some(
+            ".ssh"
+                | ".aws"
+                | ".gnupg"
+                | "sessions"
+                | "archived_sessions"
+                | ".env"
+                | ".netrc"
+                | ".npmrc"
+                | "auth.json"
+                | "credentials.json"
+                | "id_rsa"
+                | "id_ed25519"
+        )
+    )
 }
 
 #[cfg(target_os = "linux")]

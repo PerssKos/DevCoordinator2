@@ -26,7 +26,7 @@ pub fn measure(_: &Path) -> Result<Measurement, ProtocolError> {
 pub fn mount_targets() -> Result<Vec<PathBuf>, ProtocolError> {
     unsupported()
 }
-pub fn remove_tree(_: &Path, _: (u64, u64), _: bool) -> Result<(), ProtocolError> {
+pub fn remove_tree(_: &Path, _: (u64, u64), _: bool, _: bool) -> Result<(), ProtocolError> {
     unsupported()
 }
 pub fn filesystem(_: &Path, _: u64, _: &str) -> Result<Filesystem, ProtocolError> {

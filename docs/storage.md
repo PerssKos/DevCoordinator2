@@ -89,6 +89,11 @@ the actual directory identity; links and replacements require fresh review.
 Unrecognized directories are visible but blocked until `storage register`
 records verified ownership and disposal intent. Canonical sources, credentials,
 chat history and the authoritative Coordinator database remain protected.
+Generated directories containing recognized credential or chat metadata are
+blocked even when the directory was explicitly declared as rebuildable. The
+check examines names rather than secret contents; public examples such as
+`.env.example` remain eligible. Verified backup copies retain their own
+recovery-generation policy.
 
 Worktrees need an explicit disposal declaration, no current owner/runtime use,
 a clean Git state, no unique commits and a verified remote baseline. Backup

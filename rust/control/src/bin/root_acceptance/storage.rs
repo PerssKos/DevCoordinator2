@@ -1794,6 +1794,187 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
         "restart invented a reclaimed-space measurement"
     );
     stale_discovery_order(world, &repo)?;
+    generated_output_safety(world, &repo)?;
+    Ok(())
+}
+
+fn generated_output_safety(world: &World, repo: &str) -> Result<(), String> {
+    world.write_owned(
+        "program.c",
+        "#include <unistd.h>\nint main(void) { for (;;) pause(); }\n",
+    )?;
+    world.write_owned("generated/compiler/.keep", "")?;
+    for directory in ["generated", "generated/compiler"] {
+        chown_path(
+            &world.repo.join(directory),
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+        )?;
+    }
+    let metadata = [
+        ".ssh/key",
+        ".aws/credentials",
+        ".gnupg/key",
+        "sessions/chat",
+        "archived_sessions/chat",
+        ".env",
+        ".netrc",
+        ".npmrc",
+        "auth.json",
+        "credentials.json",
+        "id_rsa",
+        "id_ed25519",
+    ];
+    for (index, name) in metadata.iter().enumerate() {
+        world.write_owned(
+            &format!("generated/protected-{index}/{name}"),
+            "fixture protected metadata",
+        )?;
+    }
+    for name in [
+        ".env.example",
+        ".ssh-example/config",
+        "credentials.md",
+        "id_rsa.pub",
+    ] {
+        world.write_owned(
+            &format!("generated/compiler/{name}"),
+            "public generated example",
+        )?;
+    }
+    world.write_owned("build/unclassified", "unknown historical output")?;
+    run_as(
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+        &world.repo,
+        "/usr/bin/cc",
+        &["program.c", "-o", "generated/compiler/program"],
+        &world.base,
+    )?;
+    data(&world.call("storage.roots.set", json!({"repository_id":repo,"expected_revision":0,"label":"Declared compiler outputs","path":world.repo.join("generated"),"kind":"build_output"}))?)?;
+    struct RunningOutput(Child);
+    impl Drop for RunningOutput {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let executable = world.repo.join("generated/compiler/program");
+    let mut running = RunningOutput(
+        Command::new("setpriv")
+            .args([
+                format!("--reuid={}", world.harness.caller_uid),
+                format!("--regid={}", world.harness.caller_gid),
+                "--clear-groups".into(),
+                "--".into(),
+            ])
+            .arg(&executable)
+            .current_dir(&world.repo)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?,
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fs::read_link(format!("/proc/{}/exe", running.0.id()))
+        .ok()
+        .as_ref()
+        != Some(&executable)
+    {
+        ensure!(
+            running.0.try_wait().map_err(|e| e.to_string())?.is_none() && Instant::now() < deadline,
+            "compiled fixture did not start"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let active = scanned(world, repo, "generated-active")?;
+    let rows = active["artifacts"]
+        .as_array()
+        .ok_or("generated rows missing")?;
+    let find = |name: &str| {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .ok_or_else(|| format!("generated {name} missing"))
+    };
+    let build = find("compiler")?;
+    let unknown = find("build")?;
+    let mut failures = Vec::new();
+    if build["deletable"] != false
+        || !build["reasons"]
+            .as_array()
+            .is_some_and(|r| r.contains(&json!("active_process")))
+    {
+        failures.push("a running generated executable was removable");
+    }
+    for (index, _) in metadata.iter().enumerate() {
+        let protected = find(&format!("protected-{index}"))?;
+        if protected["deletable"] != false
+            || !protected["reasons"]
+                .as_array()
+                .is_some_and(|r| r.contains(&json!("protected_source_or_credentials")))
+        {
+            failures
+                .push("declaring generated output made nested credentials or history removable");
+        }
+    }
+    if unknown["deletable"] != false {
+        failures.push("unrecognized output was removable without ownership evidence");
+    }
+    drop(running);
+    scanned(world, repo, "generated-inactive")?;
+    let request = cli(
+        world,
+        &[
+            "storage",
+            "cleanup",
+            "plan",
+            "--artifact-id",
+            build["artifact_id"].as_str().ok_or("build id missing")?,
+        ],
+    )?;
+    let plan = data(&request)?;
+    ensure!(
+        plan["ready"] == true,
+        "unused compiled output did not become removable"
+    );
+    let started = cli(
+        world,
+        &[
+            "storage",
+            "cleanup",
+            "start",
+            "--plan-id",
+            plan["plan_id"].as_str().ok_or("build plan missing")?,
+            "--idempotency-key",
+            "remove-compiled-output",
+        ],
+    )?;
+    let done = wait_job(
+        world,
+        data(&started)?["job_id"]
+            .as_str()
+            .ok_or("build job missing")?,
+    )?;
+    if done["state"] != "completed"
+        || executable.exists()
+        || !world.repo.join("program.c").is_file()
+        || metadata.iter().enumerate().any(|(index, name)| {
+            !world
+                .repo
+                .join(format!("generated/protected-{index}/{name}"))
+                .is_file()
+        })
+        || !world.repo.join("build/unclassified").is_file()
+    {
+        failures.push("compiled output cleanup did not preserve source and unrelated data");
+    }
+    ensure!(
+        failures.is_empty(),
+        "generated output safety failures: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 
