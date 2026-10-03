@@ -79,10 +79,13 @@ show` or `storage policy set --file <request.json>` for global settings; include
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
-Unused volumes retain verified ownership from their managed labels or earlier
-recorded consumers only while their creation identity and backing inode still
-match. Removing the final container does not erase that evidence. Volumes with
-unknown ownership remain blocked, including after the inactivity deadline.
+Unused volumes and images retain verified ownership from their managed labels
+or earlier recorded consumers while their exact identities still match. Volume
+history also binds the backing inode. Removing the final container does not
+erase that evidence. Unknown ownership remains blocked after the inactivity
+deadline. Current image declarations are resolved through Docker, including
+short IDs, and checked again immediately before removal. Completed cleanup
+refreshes discovery when it releases another resource's final reference.
 Discovery and state changes carry a persistent sequence. A slow earlier scan
 cannot restore removed inventory or overwrite newer use, protection or failed
 safety checks, including across a daemon restart.

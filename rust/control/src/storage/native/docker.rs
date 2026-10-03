@@ -14,7 +14,7 @@ use std::time::Duration;
 
 const CONTAINER_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"state":{{json .State.Status}},"finished":{{json .State.FinishedAt}},"image":{{json .Image}},"instance":{{json (index .Config.Labels "devcoordinator2.instance")}},"repository":{{json (index .Config.Labels "devcoordinator2.repository")}},"deployment":{{json (index .Config.Labels "devcoordinator2.deployment")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"name":{{json (index $m "Name")}},"source":{{json (index $m "Source")}}}{{end}}]}"#;
 const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"repository":{{json (index .Labels "devcoordinator2.repository")}},"deployment":{{json (index .Labels "devcoordinator2.deployment")}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
-const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}}}"#;
+const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}},"repository":{{if .Config}}{{json (index .Config.Labels "devcoordinator2.repository")}}{{else}}null{{end}},"deployment":{{if .Config}}{{json (index .Config.Labels "devcoordinator2.deployment")}}{{else}}null{{end}},"project":{{if .Config}}{{json (index .Config.Labels "com.docker.compose.project")}}{{else}}null{{end}}}"#;
 const NETWORK_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"driver":{{json .Driver}},"project":{{json (index .Labels "com.docker.compose.project")}},"containers":[{{$sep := ""}}{{range $i,$c := .Containers}}{{$sep}}{{json $i}}{{$sep = ","}}{{end}}]}"#;
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -376,7 +376,7 @@ impl HostBackend {
         let volumes = volumes.into_iter().collect::<Vec<_>>();
         let mount_entries = self.mount_entries()?;
         let prior = self.database.call(|c| {
-            let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind='volume' AND removed_at_ms IS NULL")?;
+            let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind IN ('volume','image') AND removed_at_ms IS NULL")?;
             Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
         }).map_err(crate::storage::db_error)?;
         let prior = prior
@@ -417,7 +417,7 @@ impl HostBackend {
                         .map(|repo| (repo.clone(), r.owner_deployment.clone()))
                 })
                 .collect::<BTreeSet<_>>();
-            if let Some(owner) = volume_label_owner(&v, context)
+            if let Some(owner) = docker_label_owner(&v, context)
                 && (owners.is_empty() || owners.iter().any(|(repo, _)| *repo != owner.0))
             {
                 owners.insert(owner);
@@ -559,7 +559,7 @@ impl HostBackend {
             }
             out.records.push(r);
         }
-        self.discover_images_networks(context, out, &containers, &container_records)?;
+        self.discover_images_networks(context, out, &containers, &container_records, &prior)?;
         if context.scan_repository_id.is_none() {
             self.discover_build_cache(context, out);
         }
@@ -593,7 +593,12 @@ impl HostBackend {
         out: &mut Discovery,
         containers: &[Value],
         known: &BTreeMap<String, Record>,
+        prior: &BTreeMap<String, Record>,
     ) -> Result<(), ProtocolError> {
+        let current_images = self.engine_referenced_images(&context.current_images);
+        if let Err(error) = &current_images {
+            out.coverage_gaps.push(error.message.clone());
+        }
         let ids = self
             .docker_output(self.discovery_arguments(vec![
                 "image".into(),
@@ -636,20 +641,29 @@ impl HostBackend {
                     }
                 }
             }
-            if array(&image, "tags")
-                .iter()
-                .chain(array(&image, "digests"))
-                .filter_map(Value::as_str)
-                .any(|tag| context.current_images.iter().any(|i| i == tag))
-            {
-                r.blockers.push("current_deployment".into());
+            match &current_images {
+                Ok(current) if current.contains(id) => r.blockers.push("current_deployment".into()),
+                Err(error) => r.blockers.push(error.message.clone()),
+                _ => {}
             }
-            let owners = containers
+            let mut owners = containers
                 .iter()
                 .filter(|c| s(c, "image") == id)
                 .filter_map(|c| known.get(s(c, "id")))
-                .filter_map(|r| r.artifact.repository_id.as_deref())
+                .filter_map(|r| r.artifact.repository_id.clone())
                 .collect::<BTreeSet<_>>();
+            if let Some((repo, _)) = docker_label_owner(&image, context) {
+                owners.insert(repo);
+            }
+            if owners.is_empty()
+                && let Some(old) = prior.get(&r.artifact.artifact_id)
+                && old.artifact.ownership == "managed"
+                && old.resource_key == r.resource_key
+                && let Some(repo) = &old.artifact.repository_id
+                && context.repositories.iter().any(|p| &p.id == repo)
+            {
+                owners.insert(repo.clone());
+            }
             if owners.len() == 1 {
                 assign(&mut r, owners.iter().next().unwrap(), None, context);
             } else {
@@ -684,6 +698,12 @@ impl HostBackend {
                 r.blockers.push("docker_system_network".into());
             }
             r.artifact.ownership = "docker_host_network".into();
+            if context
+                .current_projects
+                .contains_key(s(&network, "project"))
+            {
+                r.blockers.push("current_deployment".into());
+            }
             for id in array(&network, "containers")
                 .iter()
                 .filter_map(Value::as_str)
@@ -842,10 +862,18 @@ impl HostBackend {
         if s(value, "created") != created {
             return Err(blocked("identity_changed"));
         }
-        if context
-            .deployment_repositories
-            .contains_key(s(value, "deployment"))
-            || context.current_projects.contains_key(s(value, "project"))
+        if object_type == "image"
+            && self
+                .engine_referenced_images(&context.current_images)?
+                .contains(identity)
+        {
+            return Err(blocked("current_deployment"));
+        }
+        if object_type != "image"
+            && (context
+                .deployment_repositories
+                .contains_key(s(value, "deployment"))
+                || context.current_projects.contains_key(s(value, "project")))
         {
             return Err(blocked("current_deployment"));
         }
@@ -1001,7 +1029,7 @@ impl HostBackend {
     }
 }
 
-fn volume_label_owner(value: &Value, context: &Context) -> Option<(String, Option<String>)> {
+fn docker_label_owner(value: &Value, context: &Context) -> Option<(String, Option<String>)> {
     let project = s(value, "project");
     let deployment = (!s(value, "deployment").is_empty())
         .then(|| s(value, "deployment").to_owned())

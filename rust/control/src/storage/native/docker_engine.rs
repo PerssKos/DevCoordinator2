@@ -7,6 +7,45 @@ use serde_json::Value;
 use std::{io::Read, path::Path, time::Duration};
 
 impl HostBackend {
+    pub(super) fn engine_referenced_images(
+        &self,
+        references: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, ProtocolError> {
+        let mut ids = std::collections::BTreeSet::new();
+        if references.is_empty() {
+            return Ok(ids);
+        }
+        let client = self
+            .engine_client()
+            .map_err(|_| unavailable("current_image_observation_unavailable"))?;
+        for reference in references.iter().collect::<std::collections::BTreeSet<_>>() {
+            let mut url = reqwest::Url::parse("http://localhost/v1.40/")
+                .map_err(|_| unavailable("docker_endpoint_unverified"))?;
+            url.path_segments_mut()
+                .map_err(|_| unavailable("docker_endpoint_unverified"))?
+                .pop_if_empty()
+                .push("images")
+                .push(reference)
+                .push("json");
+            let response = client
+                .get(url)
+                .send()
+                .map_err(|_| unavailable("current_image_observation_unavailable"))?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                continue;
+            }
+            let value = read_json(response)
+                .map_err(|_| unavailable("current_image_observation_unavailable"))?;
+            let id = value
+                .get("Id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 256)
+                .ok_or_else(|| unavailable("current_image_observation_unavailable"))?;
+            ids.insert(id.into());
+        }
+        Ok(ids)
+    }
+
     fn engine_client(&self) -> Result<reqwest::blocking::Client, ProtocolError> {
         let socket = if let Some(socket) = self.fixture_engine_socket()? {
             socket

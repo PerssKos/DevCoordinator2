@@ -9,7 +9,15 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
     let socket = world.base.join("builder.sock");
     let config = world.base.join("builder.json");
     write_private_json(&config, &json!({}))?;
-    let unit = format!("{}-builder.service", world.unit_prefix);
+    let namespace = format!("{}-builder", world.unit_prefix);
+    let unit = format!(
+        "devcoordinator2-rustint-builder-{}.service",
+        world
+            .unit_prefix
+            .trim_start_matches("devcoordinator2-rustint-")
+            .trim_end_matches("-test")
+    );
+    world.cleanup_fixture_units.push(unit.clone());
     run_status(
         "systemd-run",
         &[
@@ -31,6 +39,10 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
             world.base.join("builder-exec").to_str().unwrap(),
             "--pidfile",
             world.base.join("builder.pid").to_str().unwrap(),
+            "--containerd-namespace",
+            &namespace,
+            "--containerd-plugins-namespace",
+            &format!("{namespace}-plugins"),
             "--bridge=none",
             "--iptables=false",
             "--ip-masq=false",
@@ -248,6 +260,162 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
             "--host", &host, "image", "inspect", "--format", "{{.Id}}", &tags[1],
         ],
     )?;
+    unused_image_ownership(world, &repository, &host, &tags[1])?;
+    Ok(())
+}
+
+fn unused_image_ownership(
+    world: &mut World,
+    repository: &str,
+    host: &str,
+    tag: &str,
+) -> Result<(), String> {
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    set_clock(world, now)?;
+    let consumer = Command::new("docker")
+        .args([
+            "--host",
+            host,
+            "create",
+            "--network=none",
+            "--label",
+            &format!("devcoordinator2.instance={}", world.unit_prefix),
+            "--label",
+            &format!("devcoordinator2.repository={repository}"),
+            "--entrypoint",
+            "/payload",
+            tag,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        consumer.status.success(),
+        "image consumer could not be created"
+    );
+    let consumer = String::from_utf8(consumer.stdout)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_owned();
+    scanned(world, repository, "image-owned-consumer")?;
+    run_status("docker", &["--host", host, "rm", &consumer])?;
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
+    let inventory = scanned(world, repository, "image-after-consumer")?;
+    let row = inventory["artifacts"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|r| r["kind"] == "image" && r["name"] == tag)
+        })
+        .ok_or("remembered image missing")?
+        .clone();
+    ensure!(
+        row["repository_id"] == repository && row["deletable"] == true,
+        "unused image lost its verified ownership after restart"
+    );
+    let identity = Command::new("docker")
+        .args([
+            "--host", host, "image", "inspect", "--format", "{{.Id}}", tag,
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        identity.status.success(),
+        "image identity could not be refreshed"
+    );
+    let identity = String::from_utf8(identity.stdout)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_owned();
+    let short = identity
+        .strip_prefix("sha256:")
+        .ok_or("image identity is not a digest")?
+        .get(..12)
+        .ok_or("image identity too short")?
+        .to_owned();
+    for (index, reference) in [tag.to_owned(), identity, short].into_iter().enumerate() {
+        let plan = mcp(
+            world,
+            "storage_cleanup_plan",
+            json!({"artifact_ids":[row["artifact_id"]]}),
+        )?;
+        ensure!(plan["ready"] == true, "unused image could not be planned");
+        // Persist a current stopped declaration after planning, without creating
+        // a container consumer. The cleanup must refresh declaration evidence.
+        world.write_config(&format!("schema=2\n[deployment.reserved]\nsource=[\"worktree\"]\ncomponents=[\"image\"]\n[deployment.reserved.component.image]\ntype=\"docker\"\nimage={reference:?}\n"))?;
+        let spec = devcoordinator2_control::repository_config::load_deployment_spec(
+            &world.repo,
+            "reserved",
+        )
+        .map_err(|e| e.to_string())?;
+        let database =
+            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let store = DeploymentStore::new(database.clone());
+        let target = devcoordinator2_control::deployment_state::RegisteredDeploymentTarget {
+            repository_id: repository.into(),
+            worktree_id: ids::worktree_id(&world.repo).map_err(|e| e.to_string())?,
+        };
+        let deployment =
+            DeploymentStore::deployment_id(&target.worktree_id, "reserved", "worktree");
+        store
+            .upsert(
+                &deployment,
+                &target,
+                &spec,
+                "worktree",
+                None,
+                "stopped",
+                world.harness.caller_uid,
+                "other",
+                None,
+            )
+            .map_err(|e| e.message)?;
+        database.close().map_err(|e| e.to_string())?;
+        let started = mcp(
+            world,
+            "storage_cleanup_start",
+            json!({"plan_id":plan["plan_id"],"idempotency_key":format!("reject-new-image-declaration-{index}")}),
+        )?;
+        let refused = wait_job(world, started["job_id"].as_str().unwrap())?;
+        ensure!(
+            refused["state"] == "failed"
+                && refused["receipts"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|r| r["code"] == "current_deployment")),
+            "a current stopped image declaration did not block a previously prepared plan"
+        );
+        run_status(
+            "docker",
+            &[
+                "--host", host, "image", "inspect", "--format", "{{.Id}}", tag,
+            ],
+        )?;
+        world.write_config("schema=2\n")?;
+        scanned(
+            world,
+            repository,
+            &format!("image-declaration-retired-{index}"),
+        )?;
+    }
+    set_clock(world, now + 14 * 86_400_000 - 1)?;
+    scanned(world, repository, "image-before-fourteen-days")?;
+    run_status(
+        "docker",
+        &[
+            "--host", host, "image", "inspect", "--format", "{{.Id}}", tag,
+        ],
+    )?;
+    set_clock(world, now + 14 * 86_400_000)?;
+    scanned(world, repository, "image-at-fourteen-days")?;
+    wait_automatic_receipt(world, row["artifact_id"].as_str().unwrap())?;
+    let inspect = Command::new("docker")
+        .args(["--host", host, "image", "inspect", tag])
+        .output()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        !inspect.status.success(),
+        "automatic image receipt did not match Docker state"
+    );
     Ok(())
 }
 
@@ -1300,6 +1468,12 @@ fn scanned(world: &World, repo: &str, key: &str) -> Result<Value, String> {
 }
 
 fn wait_automatic_removal(world: &World, id: &str, path: &Path) -> Result<(), String> {
+    wait_automatic_receipt(world, id)?;
+    ensure!(!path.exists(), "automatic receipt did not remove real data");
+    Ok(())
+}
+
+fn wait_automatic_receipt(world: &World, id: &str) -> Result<(), String> {
     let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(90))
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|e| e.to_string())?;
@@ -1310,13 +1484,23 @@ fn wait_automatic_removal(world: &World, id: &str, path: &Path) -> Result<(), St
             .as_array()
             .ok_or("cleanup history missing")?
         {
+            // These fixtures submit manual operations as caller_uid; only the
+            // service's maintenance caller schedules automatic cleanup.
+            if job["actor"] != "uid:0" {
+                continue;
+            }
             ensure!(
                 job["state"] != "failed" && job["state"] != "partial",
                 "automatic cleanup failed: {}",
                 bounded_json(job)
             );
             if job["state"] == "completed" {
-                ensure!(!path.exists(), "automatic receipt did not remove real data");
+                ensure!(
+                    job["receipts"].as_array().is_some_and(|rows| rows
+                        .iter()
+                        .any(|r| r["artifact_id"] == id && r["status"] == "removed")),
+                    "completed job omitted the artifact removal receipt"
+                );
                 return Ok(());
             }
         }

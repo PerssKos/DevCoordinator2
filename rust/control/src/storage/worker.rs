@@ -1098,6 +1098,15 @@ impl StorageService {
                 "finished"
             },
         );
+        if matches!(job.state, api::JobState::Completed)
+            && (job.kind == "legacy_registration"
+                || (job.kind == "cleanup" && job.receipts.iter().any(|r| r.status == "removed")))
+        {
+            // Completed removal can release another resource's final consumer.
+            // Re-observe those dependencies without retrying a cancelled or
+            // failed operation in a discovery loop.
+            self.request_discovery();
+        }
         Ok(())
     }
 

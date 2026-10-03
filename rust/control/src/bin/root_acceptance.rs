@@ -83,6 +83,7 @@ struct World {
     route_consumer: Option<Child>,
     cleanup_volumes: Vec<String>,
     cleanup_storage_mount_units: Vec<String>,
+    cleanup_fixture_units: Vec<String>,
     isolated_docker_network: Option<String>,
     measurements: std::collections::BTreeMap<String, u128>,
 }
@@ -187,6 +188,7 @@ impl World {
             route_consumer: None,
             cleanup_volumes: Vec::new(),
             cleanup_storage_mount_units: Vec::new(),
+            cleanup_fixture_units: Vec::new(),
             isolated_docker_network: None,
             measurements: std::collections::BTreeMap::new(),
         };
@@ -570,6 +572,11 @@ impl World {
                     }
                 }
                 Err(error) => failures.push(error),
+            }
+        }
+        for unit in std::mem::take(&mut self.cleanup_fixture_units) {
+            if let Err(error) = run_status_allow_absent("systemctl", &["stop", &unit]) {
+                failures.push(error);
             }
         }
         match docker_ids("instance", &self.unit_prefix) {
