@@ -49,5 +49,24 @@
       "few": "{count} sets",
       "two": "{count} sets"
     }
-  }
+  },
+  "legacy": "Starejši arhiv",
+  "currentSelection": "Trenutni izbor",
+  "search": "Išči",
+  "theme": "Tema",
+  "earlier": "Starejša zgodovina",
+  "basedOn": "Temelji na",
+  "surface": "Zaslon",
+  "selectionNote": "Opomba k izboru",
+  "continueSelected": "Nadaljuj z izbranimi",
+  "initialContext": "Začetni kontekst agenta",
+  "latestContext": "Najnovejši kontekst",
+  "history": "Zgodovina",
+  "description": "Opis",
+  "whyChanged": "Razlog za spremembo",
+  "journey": "Pot uporabnika",
+  "instructions": "Navodila",
+  "constraints": "Omejitve",
+  "backToHistory": "Nazaj v zgodovino",
+  "elements": "Elementi"
 }

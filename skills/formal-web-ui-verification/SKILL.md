@@ -207,6 +207,76 @@ Coordinator discovery is an optional adapter to a separately installed skill.
 The verifier has no source, checkout, build, CI, or version dependency on that
 skill; callers can always provide explicit `--url` targets instead.
 
+## Formal gate result and handoff pipeline
+
+Formal verification is the first review gate for a rendered web UI. Its bounded
+receipt must expose this machine-readable object (additional fields may be
+present, but these fields and values are required):
+
+```json
+{
+  "formal": {
+    "result": "passed",
+    "runId": "formal-web-ui-...",
+    "candidateId": "...",
+    "exitCode": 0,
+    "freshComplete": true,
+    "sourceSha256": "...",
+    "configSha256": "...",
+    "verifierSha256": "...",
+    "coverage": {
+      "status": "passed",
+      "readinessEligible": true,
+      "requiredCells": 12,
+      "checkedCells": 12
+    },
+    "evidence": {
+      "report": "report.json",
+      "journeyEvidence": "journey-evidence.json",
+      "reviewQueue": "review-queue.json",
+      "screenshots": "screenshots/",
+      "manifestSha256": "..."
+    }
+  }
+}
+```
+
+`formal.result` is exactly one of `passed`, `failed`, `blocked`, or
+`incomplete`:
+
+- `passed` requires a fresh complete all-cell run, exit `0`,
+  `readinessEligible: true`, every required cell satisfied, no blocking
+  finding, and complete retained report, journey evidence, queue, and
+  screenshot artifacts.
+- `failed` means rendered assertions or blocking findings failed. Preserve the
+  failed report and all diagnostic artifacts; later prose, a healthy server, or
+  a successful deployment command cannot change this result.
+- `blocked` means the verifier could not establish the required render path or
+  evidence, including missing authentication, browser/tooling, screenshots, or
+  Coordinator evidence.
+- `incomplete` means a development subset, cache hit, skipped or ambiguous cell,
+  missing required coverage, partial data-shape matrix, or other incomplete
+  evidence was used. A `development-passed` status is therefore incomplete,
+  never readiness `passed`.
+
+The handoff state machine is ordered and fail-closed:
+
+```text
+formal.result == passed
+    -> manual.result == passed
+        -> Product Design audit (when an approved visual target exists)
+            -> deployment/source-identity.result == passed
+                -> qualified release.deliver_evidence receipt
+```
+
+Do not open screenshot pairs or run `$product-design:audit` unless the exact
+candidate's formal receipt is `passed`. A failed, blocked, or incomplete formal
+run requires product diagnosis and repair followed by a fresh complete formal
+run before downstream review resumes. Any later gate failure blocks handoff and
+requires repair plus a fresh applicable review. Missing authentication,
+screenshots, audit tooling, Coordinator evidence, or source identity keeps the
+candidate preliminary or blocked.
+
 ## Workflow
 
 1. **Find a safe render path**
@@ -222,8 +292,16 @@ skill; callers can always provide explicit `--url` targets instead.
      in `references/journey_review_contract.md`; do not infer priority from DOM
      order or feature names. Every effective target/state must declare journeys,
      primary journey, regions, theme, and review inputs.
-   - Check at least one narrow/mobile viewport and one desktop viewport for web
-     UI changes.
+   - Make every user-reported route, state, theme, viewport, device/browser,
+     auth condition, and exact width/height an explicit required coverage cell.
+     Also require every supported phone, intermediate, desktop, and wide-browser
+     layout, every affected theme and interaction state, and every declared
+     responsive breakpoint at width−1, width, and width+1.
+   - Check every production data shape and conditional DOM structure that can
+     change layout. Route fixtures must render those structures, including
+     symmetry families or hidden navigation/explorer tracks that activate a
+     higher-specificity grid track; an empty or simplified fixture is not
+     coverage for that shape.
    - When the journey depends on touch, mobile user-agent behavior, device pixel
      ratio, or mobile browser layout semantics, use a Playwright descriptor such
      as `{"name":"iphone","device":"iPhone 13"}`. A narrow desktop viewport is
@@ -263,6 +341,12 @@ skill; callers can always provide explicit `--url` targets instead.
      are de-duplicated. The complete target × state × viewport expansion must
      fit `maxPageCount` (default `60`); exceeding it is a setup failure, never a
      silently reduced sample.
+   - Declare `fixtureDataShapes` and `geometryAssertions` as described in the
+     journey contract. Each target/state/theme/viewport/data-shape cell must
+     emit measured pass/fail evidence for hidden navigation tracks,
+     primary-content width, heading and canonical-identifier readability,
+     character-by-character wrapping, document horizontal overflow, clipping,
+     and initial-viewport placement.
    - Treat every viewport result as sampled-only evidence. The JSON and
      Markdown reports list the exact widths checked and explicitly state that
      widths between samples were not inspected.
@@ -346,15 +430,32 @@ skill; callers can always provide explicit `--url` targets instead.
      and add the missing Playwright, Storybook, fixture route, or preview path
      to the implementation plan.
 
-5. **Review changed visual evidence after automation**
-   - Finish the formal verifier and every other applicable automatic test first.
-   - Read `review-queue.json`, open only each queued cell's initial-viewport and
-     full-page screenshots, and record `pass`, `gap`, or `blocked`. Never reopen
-     carried unchanged screenshots; carried gaps remain blocking.
+5. **Review visual evidence only after formal success**
+   - Stop the review pipeline when `formal.result` is `failed`, `blocked`, or
+     `incomplete`. Preserve the formal report, journey evidence, review queue,
+     and screenshots as diagnostic evidence; do not open screenshots or create a
+     manual-review pass receipt.
+   - When `formal.result == passed`, read only `review-queue.json` and open the
+     initial-viewport and full-page screenshot pair for each queued cell.
+     Carry unchanged cells by their prior hash-bound screenshot identity and
+     decision without reopening them. The separate manual receipt must bind the
+     formal run and enumerate every target/state/theme/viewport cell with
+     screenshot identity, reviewer, decision, note, and timestamp.
+     `manual.result == passed` requires every cell to pass.
    - Finalize and validate `manual-review.json` with
      `devcoordinator2-tooling formal-ui review` as shown in the contract
-     reference. A
-     formal exit `0` with pending review is not visual completion.
+     reference. A formal exit `0` with pending review is not visual completion.
+   - After a passing manual receipt, run the Product Design audit when an
+     approved visual target exists. Retain its numbered journey steps, fresh
+     screenshots, source/implementation identities, UX and accessibility
+     findings, evidence limits, P0–P3 classifications, iteration history, and
+     exact `final result: passed`. Design QA alone is insufficient.
+   - Only after the applicable audit passes, verify deployment/source identity
+     against the same candidate and retain source digest, artifact-manifest
+     digest, image digest, deployment generation, live route, and live rendered
+     evidence. HTTP 200, container health, matching static assets, or a
+     successful deployment command does not establish this gate. Finish with a
+     qualified `release.deliver_evidence` receipt.
 
 ## Default Rule Set
 
@@ -596,6 +697,14 @@ exception remains an `allowed-overlap` warning.
 
 ## Completion Rules
 
+- Treat only `formal.result == passed` as formal verification success. Map an
+  exit `0` run with `readinessEligible: false` to `incomplete`, not `passed`.
+  Map blocking findings to `failed`, unavailable render/evidence prerequisites
+  to `blocked`, and partial or missing coverage to `incomplete`.
+- Do not run manual screenshot review or `$product-design:audit` for a formal
+  result other than `passed`. Preserve the failed or incomplete formal receipt
+  and artifacts as diagnostic evidence; never replace them with a later prose
+  summary or health result.
 - Do not report changed web UI as verified if the formal verifier found
   unresolved critical findings on the relevant desktop or mobile route.
 - Do not claim formal journey coverage for a bare URL or a target/state missing
@@ -626,6 +735,17 @@ exception remains an `allowed-overlap` warning.
   prior manifest/removed-cell disposition fails validation. Review only queued
   images after automatic tests; screenshot pixel drift never justifies opening
   an unchanged cell.
+- Do not claim handoff while the separate manual receipt is absent, does not
+  enumerate every formal target/state/theme/viewport cell, or is not bound to
+  the passed formal run. For mockup-backed UI, also require the retained
+  Product Design receipt with the exact `final result: passed`; Design QA alone
+  is insufficient.
+- Do not claim deployment or delivery completion without a source digest,
+  artifact-manifest digest, image digest, deployment generation, live route,
+  and live rendered evidence bound to the passed formal and downstream receipts.
+  HTTP 200, container health, matching static assets, and a successful deploy
+  command are supporting observations only. The final delivery proof is the
+  qualified `release.deliver_evidence` receipt.
 - Keep generated reports outside the product repo unless the user asks to save
   them there. The executor-supplied private governed-run evidence directory is
   the reviewed exception; it is retained and pruned with that exact run leaf.

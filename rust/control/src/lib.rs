@@ -48,6 +48,7 @@ pub mod sandbox_bridge;
 pub mod server;
 pub mod sketches;
 mod socket_endpoint;
+pub mod storage;
 pub mod systemd;
 pub mod telegram;
 pub mod test_admission;

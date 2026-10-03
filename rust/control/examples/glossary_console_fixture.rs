@@ -19,7 +19,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("an unused external fixture directory is required")?,
     );
     let tickets = std::env::args().nth(2).as_deref() == Some("tickets");
-    if !tickets || !root.join("glossary-fixture.marker").is_file() {
+    let sketches = std::env::args().nth(2).as_deref() == Some("sketches");
+    if !(tickets || sketches) || !root.join("glossary-fixture.marker").is_file() {
         std::fs::create_dir(&root)?;
     }
     std::fs::write(
@@ -41,6 +42,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         connection.execute("INSERT INTO grants VALUES('u2222222222222222','d1111111111111111','viewer','now','fixture')", [])?;
         Ok(())
     })?;
+    if sketches {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let image = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk/x8AAusB9Y9Z4rUAAAAASUVORK5CYII=")?;
+        let record = b"Historical fixture generation";
+        std::fs::write(root.join("legacy.png"), &image)?;
+        std::fs::write(root.join("legacy.txt"), record)?;
+        let directory = root.clone();
+        database.transaction(move |c| {
+            c.execute("INSERT OR IGNORE INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,idempotency_key,created_at,created_by) VALUES('k0000000000000001','r1111111111111111','Legacy fixture','fixture',?1,?2,?3,'legacy-fixture','2026-09-01T00:00:00Z','fixture')",rusqlite::params![directory.join("legacy.txt").to_string_lossy(),record.len() as i64,Sha256::digest(record).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
+            c.execute("INSERT OR IGNORE INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,created_at,created_by) VALUES('s0000000000000001','k0000000000000001','r1111111111111111','Historical fixture option',?1,?2,?3,'image/png',1,1,'keep',1,'2026-09-01T00:00:00Z','fixture')",rusqlite::params![directory.join("legacy.png").to_string_lossy(),image.len() as i64,Sha256::digest(&image).iter().map(|b|format!("{b:02x}")).collect::<String>()])?;
+            c.execute("INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) SELECT 's0000000000000001','r1111111111111111','','Historical fixture option' WHERE NOT EXISTS(SELECT 1 FROM sketches_fts WHERE sketch_id='s0000000000000001')",[])?;
+            Ok(())
+        })?;
+    }
     if health {
         database.transaction(|c| {
             c.execute("UPDATE repositories SET display_name='Kaizen' WHERE repository_id='r1111111111111111'",[])?;

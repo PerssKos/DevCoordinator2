@@ -751,8 +751,21 @@ impl CodexUsage {
         let mut progress = Vec::new();
         let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
         for source in &self.config.codex_usage_sources {
-            if let Some(snapshot) = source_progress(source) {
+            let source_snapshot = source_progress(source);
+            let source_indexing = source_snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.refreshing);
+            if let Some(snapshot) = source_snapshot {
                 progress.push(snapshot);
+            }
+            // A cold producer owns the canonical SQLite backfill. Reading its
+            // raw tables here can hold a WAL snapshot for minutes (or longer),
+            // which prevents the producer from committing the next derived
+            // page. Keep the fast response truthful and let the producer finish
+            // its indexed cache before scheduling a fallback scan.
+            if source_indexing {
+                increment(&mut failures, "indexing");
+                continue;
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 increment(&mut failures, "query_budget_exhausted");

@@ -45,5 +45,24 @@
       "one": "{count} набор",
       "other": "{count} набора"
     }
-  }
+  },
+  "legacy": "Стар архив",
+  "currentSelection": "Текущ избор",
+  "search": "Търсене",
+  "theme": "Тема",
+  "earlier": "По-ранна история",
+  "basedOn": "Въз основа на",
+  "surface": "Екран",
+  "selectionNote": "Бележка към избора",
+  "continueSelected": "Продължи с избраните",
+  "initialContext": "Първоначален контекст на агента",
+  "latestContext": "Последен контекст",
+  "history": "История",
+  "description": "Описание",
+  "whyChanged": "Причина за промяната",
+  "journey": "Път на потребителя",
+  "instructions": "Указания",
+  "constraints": "Ограничения",
+  "backToHistory": "Назад към историята",
+  "elements": "Елементи"
 }

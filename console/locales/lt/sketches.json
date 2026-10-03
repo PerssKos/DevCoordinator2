@@ -49,5 +49,24 @@
       "many": "{count} rinkinio",
       "other": "{count} rinkinių"
     }
-  }
+  },
+  "legacy": "Ankstesnis archyvas",
+  "currentSelection": "Dabartinis pasirinkimas",
+  "search": "Ieškoti",
+  "theme": "Tema",
+  "earlier": "Ankstesnė istorija",
+  "basedOn": "Remiantis",
+  "surface": "Ekranas",
+  "selectionNote": "Pasirinkimo pastaba",
+  "continueSelected": "Tęsti su pasirinktais",
+  "initialContext": "Pradinis agento kontekstas",
+  "latestContext": "Naujausias kontekstas",
+  "history": "Istorija",
+  "description": "Aprašymas",
+  "whyChanged": "Pakeitimo priežastis",
+  "journey": "Naudotojo kelias",
+  "instructions": "Nurodymai",
+  "constraints": "Apribojimai",
+  "backToHistory": "Grįžti į istoriją",
+  "elements": "Elementai"
 }

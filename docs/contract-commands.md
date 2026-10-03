@@ -424,6 +424,36 @@ Reference args on every command except `list`: `path` (required) plus
   repository configuration is the explicit transition to configuration
   authority.
 
+## storage.*
+
+Administrator-only storage operations share one persistent inventory and cleanup
+engine across CLI, MCP and Console. See [Storage](storage.md) for the operator
+journey. The typed registry is the schema authority:
+
+- `storage.inventory`, `storage.artifact.get`, `storage.history` return bounded
+  cached inventory and receipts. No filesystem walk runs in an ordinary read.
+- `storage.scan` and `storage.legacy.register` return a durable job immediately.
+- `storage.register`, `storage.protection.set`, `storage.policy.get|set`,
+  `storage.roots.list|set`, and `storage.lease.set|release` manage ownership,
+  protection, retention settings, declared storage roots and current use.
+- `storage.cleanup.plan` binds exact identities, revisions, dependencies and
+  effective policy. `storage.cleanup.start` executes that plan with an
+  idempotency key. `storage.job.status|cancel` observe or cancel the operation.
+
+Mutations require the current revision where specified. Plans expire after
+five minutes. Changed identities, active consumers, policy changes, protected
+resources and unavailable evidence block removal. A job result distinguishes
+completion, failure, partial completion and cancellation. `receipts` retain
+each affected artifact and result. `reclaimed_bytes` sums positive observed
+filesystem-space changes, bounded by the measured allocation; paired
+`space_change` readings expose concurrent filesystem activity. `unmeasured_items`
+reports removed items without a space measurement, including interrupted steps
+whose absence was reconciled after restart. It is not an estimate from volume size.
+
+Progress uses `storage.job.started|progress|finished|failed` events in the
+existing `other` category. CLI `storage --help` describes the command grammar;
+MCP tool names replace dots with underscores, such as `storage_cleanup_plan`.
+
 ## health.containers (Phase 3, implemented)
 
 Args: none. Result: `{containers: [{id, name, image, state, status, created,

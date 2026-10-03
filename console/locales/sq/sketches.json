@@ -45,5 +45,24 @@
       "one": "{count} grup",
       "other": "{count} grupe"
     }
-  }
+  },
+  "legacy": "Arkivi i vjetër",
+  "currentSelection": "Përzgjedhja aktuale",
+  "search": "Kërko",
+  "theme": "Tema",
+  "earlier": "Historiku i mëparshëm",
+  "basedOn": "Bazuar në",
+  "surface": "Ekrani",
+  "selectionNote": "Shënim për përzgjedhjen",
+  "continueSelected": "Vazhdo me të përzgjedhurat",
+  "initialContext": "Konteksti fillestar i agjentit",
+  "latestContext": "Konteksti më i fundit",
+  "history": "Historiku",
+  "description": "Përshkrimi",
+  "whyChanged": "Arsyeja e ndryshimit",
+  "journey": "Rrugëtimi i përdoruesit",
+  "instructions": "Udhëzime",
+  "constraints": "Kufizime",
+  "backToHistory": "Kthehu te historiku",
+  "elements": "Elementet"
 }

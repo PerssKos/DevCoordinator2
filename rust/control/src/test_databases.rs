@@ -748,7 +748,7 @@ impl DatabasePool {
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
                 command: Vec::new(),
             })
-            .map_err(|_| "cannot start owned shared database")?;
+            .map_err(shared_start_failure)?;
         let mut database = SharedDatabase {
             docker: self.docker.clone(),
             container: Some(container.clone()),
@@ -1188,9 +1188,27 @@ impl DatabasePool {
     }
 }
 
+fn shared_start_failure(error: crate::docker::DockerError) -> String {
+    // run_detached already withholds stderr/environment values and exposes
+    // only the safe failure kind, exit status and exact-target cleanup result.
+    // Keep those facts at the original shared-fixture boundary instead of
+    // replacing them with an untraceable generic setup failure.
+    format!("cannot start owned shared database: {error}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_start_preserves_safe_docker_failure_and_cleanup_facts() {
+        let failure = shared_start_failure(crate::docker::DockerError::Command(
+            "docker run failed (exit_code=125; cleanup=removed:1)".into(),
+        ));
+        assert_eq!(
+            failure,
+            "cannot start owned shared database: docker run failed (exit_code=125; cleanup=removed:1)"
+        );
+    }
     #[test]
     fn shared_phase_names_and_limits_are_checked_before_replacing_a_run() {
         let root = tempfile::tempdir().unwrap();

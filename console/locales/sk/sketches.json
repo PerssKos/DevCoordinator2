@@ -49,5 +49,24 @@
       "few": "{count} sets",
       "many": "{count} sets"
     }
-  }
+  },
+  "legacy": "Starší archív",
+  "currentSelection": "Aktuálny výber",
+  "search": "Hľadať",
+  "theme": "Motív",
+  "earlier": "Staršia história",
+  "basedOn": "Vychádza z",
+  "surface": "Obrazovka",
+  "selectionNote": "Poznámka k výberu",
+  "continueSelected": "Pokračovať s vybranými",
+  "initialContext": "Pôvodný kontext agenta",
+  "latestContext": "Najnovší kontext",
+  "history": "História",
+  "description": "Popis",
+  "whyChanged": "Dôvod zmeny",
+  "journey": "Cesta používateľa",
+  "instructions": "Pokyny",
+  "constraints": "Obmedzenia",
+  "backToHistory": "Späť do histórie",
+  "elements": "Prvky"
 }

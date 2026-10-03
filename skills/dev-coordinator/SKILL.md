@@ -27,16 +27,37 @@ devcoordinator2 health --help
   trees. Catalogue first; materialization writes only a new caller-owned local
   destination and rechecks every file/tree hash.
 - Use the typed MCP operations `design_sketch_publish`, `design_sketch_list`,
-  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`, and
-  `design_sketch_decision` to retain and review project sketches. A generating
-  skill should publish the complete image batch and generation record once;
+  `design_sketch_search`, `design_sketch_story`, `design_sketch_resolve`,
+  `design_sketch_get`, `design_sketch_image`, `design_sketch_record`,
+  `design_sketch_decision`, `design_sketch_activate`, and
+  `design_sketch_description` to retain and review project sketches. A
+  generating skill must publish each image with an agent-authored manifest for
+  one surface/window, state, theme, and viewport. A batch may contain many
+  options, but each option is a distinct immutable file; preserve rejected
+  options and record multiple selected continuation heads explicitly. Later
+  generations link to parents instead of replacing them. Resolve the current
+  surface before implementation and after every new generation or adjustment;
   never scan runtime folders or infer project ownership from a path.
+  `publish` requires manifest version 2 and each image's actual `display_order`.
+  A `resolved` result may contain multiple explicitly selected images. Read
+  their exact `get` records for full context; list/search/story rows are compact.
+  `story` provides bounded history pages, generation batch IDs and parent edges;
+  `get` returns the immutable initial context and a page of later revisions.
+  Use `context_before_revision` for older text. `activate` takes the current
+  surface revision from `resolve`; context, generation or review changes make
+  stale writes fail without replacing the saved selection. Legacy rows remain
+  readable through existing tools but can never become current.
 - Use `agent_message_poll`, `agent_message_claim`, and `agent_message_ack` for
   repository-scoped sketch decisions and annotation notifications. Leave the
   linked Plan task as the durable fallback when an agent cannot acknowledge a
   message.
 - Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
+- Use `storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease`
+  for tracked artifacts and exact-target cleanup. For legacy observed resources,
+  use `storage legacy-register`; do not recreate their deployment to delete them.
+  Read [the storage contract](../../docs/storage.md) for that journey and its
+  shared CLI, MCP and Console operations.
 - Use `config show|authorize|revoke|reload` for exact declared Compose
   environment-file grants in the existing private policy. Apply recorded
   standing owner authority for trusted local development configuration: when
@@ -96,6 +117,27 @@ authorized for it, invoke the command directly. Do not interrupt for another
 DevCoordinator confirmation or chat approval. Preserve server authorization,
 exact-target validation, permanent history, and any approval mechanism owned by
 the host or calling tool.
+
+Storage cleanup starts with a fresh scan and its completed job, followed by
+the inventory's concrete safety reasons. “Safe to delete” requires verified
+ownership and no current use; age or a stopped container alone is insufficient.
+Current deployments, including stopped deployments, remain protected. For a
+verified legacy group, bind the existing disposal authorization through
+`storage legacy-register`, then inspect the complete cleanup plan, including
+dependent consumers and any permanent data. Existing authorization does not
+need another chat confirmation. Unknown ownership, changed identities, or
+missing observations remain blocked; never bypass a refusal with direct
+Docker, filesystem or mount changes.
+
+Keep active-use leases for tracked artifacts that ongoing work needs. Release
+them when the work ends. Automatic policy defaults are three inactive days for
+build outputs and caches and fourteen for other disposable resources; unknown
+activity starts an observation period. Retained test evidence uses its existing
+retention service and protection records. After starting cleanup, follow its
+operation ID through `event wait` and `storage job status`, retain the per-item
+receipt, and verify the original surface. A partial or cancelled job does not
+prove that all selected data was removed. Reclaimed-space measurements and
+unmeasured items are separate from the inventory's estimated data size.
 
 Apply recorded standing owner authority for trusted local development and
 Coordinator dependency repairs. Where applicable, diagnose and fix a Coordinator

@@ -47,5 +47,24 @@
       "many": "{count} conjunts",
       "other": "{count} conjunts"
     }
-  }
+  },
+  "legacy": "Arxiu anterior",
+  "currentSelection": "Selecció actual",
+  "search": "Cerca",
+  "theme": "Tema",
+  "earlier": "Historial anterior",
+  "basedOn": "Basat en",
+  "surface": "Pantalla",
+  "selectionNote": "Nota de selecció",
+  "continueSelected": "Continua amb la selecció",
+  "initialContext": "Context inicial de l’agent",
+  "latestContext": "Context més recent",
+  "history": "Historial",
+  "description": "Descripció",
+  "whyChanged": "Motiu del canvi",
+  "journey": "Recorregut de l’usuari",
+  "instructions": "Instruccions",
+  "constraints": "Restriccions",
+  "backToHistory": "Torna a l’historial",
+  "elements": "Elements"
 }

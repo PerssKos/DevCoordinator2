@@ -434,6 +434,36 @@ access changes.
   trust boundary above; this section governs the unprivileged path, not
   root.
 
+## Tracked development storage cleanup
+
+- The owner approved automatic cleanup across registered development projects
+  and configured shared storage roots: three verified inactive days for
+  rebuildable output and caches, fourteen for other disposable artifacts.
+  Current deployment declarations protect their data even when stopped.
+  Unknown history begins an observation period; age alone is not proof of
+  safe deletion (DC2-STORAGE-CLEANUP-SCOPE-20261002).
+- Trusted local callers and authenticated Console administrators use the same
+  exact-target cleanup authority. A reviewed legacy resource can acquire
+  cleanup ownership without acquiring authority to recreate its deployment.
+  Current consumers, source changes, credentials, authority databases, active
+  work and protected recovery/evidence remain outside deletion eligibility.
+- The owner declared the exact legacy resource group identified in
+  DC2-STORAGE-CLEANUP-SCOPE-20261002 disposable, including its stopped consumers,
+  retired volumes, exact bind/automount entries and backing data. A duplicate
+  data backup is not required. Mount configuration and resource metadata are
+  retained privately for diagnosis. This authorization does not include the
+  replacement deployment or its current data; concrete instance identities
+  remain in the private Coordinator records.
+- A verified native maintenance helper may retire only persisted, identity-bound
+  cleanup mount jobs that require an atomic change to the host mount table.
+  It does not accept arbitrary commands or widen the ordinary daemon's writable
+  system paths. Existing argv, nofollow, single-owner and verified-binary
+  requirements remain applicable.
+- Safe-to-delete labels require fresh ownership and usage evidence. Explicitly
+  protected or unverified items cannot be selected, and irreversible archived
+  data is distinguished from rebuildable output
+  (DC2-STORAGE-SAFE-DELETE-OPTION1-20261002).
+
 ## Root daemon hardening obligations
 
 Because the daemon is root and writes inside caller-writable repository

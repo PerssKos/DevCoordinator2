@@ -383,15 +383,72 @@ pub fn prune_logs(
     worktree: &Path,
     request: LogPruneRequest,
 ) -> Result<LogPruneResult, LogQueryError> {
+    prune_logs_guarded(worktree, request, &std::collections::BTreeSet::new(), None)
+}
+
+/// The ordinary retention policy still chooses victims. Storage may protect
+/// complete runs or select one exact run, without replacing the no-follow owner.
+pub fn prune_logs_guarded(
+    worktree: &Path,
+    request: LogPruneRequest,
+    protected_runs: &std::collections::BTreeSet<String>,
+    only_run: Option<&str>,
+) -> Result<LogPruneResult, LogQueryError> {
+    prune_logs_with_protection(worktree, request, || Ok(protected_runs.clone()), only_run)
+}
+
+pub fn prune_logs_with_protection(
+    worktree: &Path,
+    request: LogPruneRequest,
+    protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
+    only_run: Option<&str>,
+) -> Result<LogPruneResult, LogQueryError> {
+    prune_logs_internal(worktree, request, protected_runs, only_run, false).map(|r| r.summary)
+}
+
+pub struct RetentionPruneReceipt {
+    pub summary: LogPruneResult,
+    pub removed_runs: Vec<String>,
+}
+
+pub fn prune_logs_receipt(
+    worktree: &Path,
+    request: LogPruneRequest,
+    protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
+) -> Result<RetentionPruneReceipt, LogQueryError> {
+    prune_logs_internal(worktree, request, protected_runs, None, false)
+}
+
+/// An explicit administrator removal still preserves active and protected runs.
+pub fn remove_retained_run(
+    worktree: &Path,
+    request: LogPruneRequest,
+    protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
+    run_id: &str,
+) -> Result<LogPruneResult, LogQueryError> {
+    validate_run_id(run_id)?;
+    prune_logs_internal(worktree, request, protected_runs, Some(run_id), true).map(|r| r.summary)
+}
+
+fn prune_logs_internal(
+    worktree: &Path,
+    request: LogPruneRequest,
+    protected_runs: impl FnOnce() -> Result<std::collections::BTreeSet<String>, LogQueryError>,
+    only_run: Option<&str>,
+    manual: bool,
+) -> Result<RetentionPruneReceipt, LogQueryError> {
     validate_prune_request(&request)?;
     let inventory = match scan_store(worktree, request.active_run_id.as_deref(), None) {
         Ok(inventory) => inventory,
         Err(LogQueryError::LogNotFound) => {
-            return Ok(LogPruneResult {
-                removed_leaf_folders: 0,
-                retained_active: 0,
-                next_expiry_at: None,
-                recovered_garbage: 0,
+            return Ok(RetentionPruneReceipt {
+                summary: LogPruneResult {
+                    removed_leaf_folders: 0,
+                    retained_active: 0,
+                    next_expiry_at: None,
+                    recovered_garbage: 0,
+                },
+                removed_runs: Vec::new(),
             });
         }
         Err(error) => return Err(error),
@@ -407,6 +464,7 @@ pub fn prune_logs(
         Err(_) => return Err(LogQueryError::Unavailable),
     }
     let now_ms = epoch_ms();
+    let protected_runs = protected_runs()?;
     let policy = RetentionPolicy {
         max_age_seconds: request.max_age_seconds,
         history_depth: usize::try_from(request.case_depth)
@@ -488,14 +546,27 @@ pub fn prune_logs(
             });
         }
     }
-    let decision =
+    let mut decision =
         select_expired(&entries, now_ms, policy).map_err(|_| LogQueryError::ArgsInvalid)?;
+    if manual {
+        decision.victims = entries
+            .iter()
+            .filter(|e| !e.active && only_run == Some(e.run_id.as_str()))
+            .map(|e| e.directory.clone())
+            .collect();
+    }
     let garbage = ensure_dir(&inventory.logs_dir, ".garbage")?;
     let recovered_garbage = recover_garbage(&garbage)?;
     let mut removed = 0_u64;
+    let mut removed_leaves = std::collections::BTreeSet::new();
     let mut retained_active = u64::try_from(decision.retained_active).unwrap_or(u64::MAX);
     for victim in &decision.victims {
         let location = locations.get(victim).ok_or(LogQueryError::StoreMalformed)?;
+        if protected_runs.contains(&location.run_id)
+            || only_run.is_some_and(|id| id != location.run_id)
+        {
+            continue;
+        }
         let Some(_run_guard) = lock_and_revalidate_victim(
             &inventory.runs_dir,
             location,
@@ -512,13 +583,136 @@ pub fn prune_logs(
             location.leaf_identity,
         )?;
         removed = removed.saturating_add(1);
+        removed_leaves.insert(victim.clone());
     }
-    Ok(LogPruneResult {
-        removed_leaf_folders: removed,
-        retained_active,
-        next_expiry_at: decision.next_age_expiry_ms.map(iso_from_epoch_ms),
-        recovered_garbage,
+    let removed_runs = entries
+        .iter()
+        .map(|e| e.run_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .filter(|run| {
+            entries
+                .iter()
+                .filter(|e| &e.run_id == run)
+                .all(|e| removed_leaves.contains(&e.directory))
+        })
+        .collect();
+    Ok(RetentionPruneReceipt {
+        summary: LogPruneResult {
+            removed_leaf_folders: removed,
+            retained_active,
+            next_expiry_at: decision.next_age_expiry_ms.map(iso_from_epoch_ms),
+            recovered_garbage,
+        },
+        removed_runs,
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct RetentionRunInfo {
+    pub run_id: String,
+    pub test: String,
+    pub finished_at_ms: Option<u64>,
+    pub active: bool,
+    pub eligible: bool,
+    pub payload_paths: Vec<PathBuf>,
+}
+
+pub struct RetentionLock {
+    _file: File,
+}
+
+/// Used by protection writes so they cannot acknowledge a pin during removal.
+pub fn lock_retention(worktree: &Path) -> Result<RetentionLock, LogQueryError> {
+    let root = open_directory_path(worktree)?;
+    let dev = open_dir(&root, ".devcoordinator")?;
+    let test = open_dir(&dev, "test")?;
+    let logs = open_dir(&test, "logs")?;
+    let file = open_or_create_file(&logs, "maintenance.lock")?;
+    unix_fs::flock(&file, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| LogQueryError::MaintenanceBusy)?;
+    Ok(RetentionLock { _file: file })
+}
+
+/// Content-free, read-only inventory using the same leaf model as pruning.
+pub fn retention_runs(
+    worktree: &Path,
+    request: &LogPruneRequest,
+) -> Result<Vec<RetentionRunInfo>, LogQueryError> {
+    validate_prune_request(request)?;
+    let inventory = match scan_store(worktree, request.active_run_id.as_deref(), None) {
+        Ok(v) => v,
+        Err(LogQueryError::LogNotFound) => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let mut entries = Vec::new();
+    let mut runs = Vec::new();
+    for run in &inventory.runs {
+        let mut paths = Vec::new();
+        if !run.executor_streams.is_empty() {
+            let components = vec![run.metadata.run_id.clone(), "executor".into()];
+            let directory = relative_leaf_path(&run.metadata.run_id, &components);
+            paths.push(directory.clone());
+            entries.push(RetentionEntry {
+                run_id: run.metadata.run_id.clone(),
+                test: retention_test_key(&run.metadata.test, run.metadata.complete),
+                check: None,
+                phase: LogPhase::Executor,
+                case: None,
+                directory,
+                finished_at_ms: run
+                    .metadata
+                    .finished_at_epoch_ms
+                    .unwrap_or(run.metadata.started_at_epoch_ms),
+                active: run.active,
+            });
+        }
+        for leaf in &run.leaves {
+            let directory = relative_leaf_path(&leaf.run_id, &leaf.relative_components);
+            paths.push(directory.clone());
+            entries.push(RetentionEntry {
+                run_id: leaf.run_id.clone(),
+                test: retention_test_key(&leaf.test, leaf.metadata.complete),
+                check: leaf.selector.check.clone(),
+                phase: leaf.selector.phase,
+                case: leaf.selector.case_id.clone(),
+                directory,
+                finished_at_ms: leaf
+                    .metadata
+                    .finished_at_epoch_ms
+                    .or(run.metadata.finished_at_epoch_ms)
+                    .unwrap_or(leaf.metadata.started_at_epoch_ms),
+                active: leaf.active || run.active,
+            });
+        }
+        if !paths.is_empty() {
+            runs.push(RetentionRunInfo {
+                run_id: run.metadata.run_id.clone(),
+                test: run.metadata.test.clone(),
+                finished_at_ms: run.metadata.finished_at_epoch_ms,
+                active: run.active || run.leaves.iter().any(|l| l.active),
+                eligible: false,
+                payload_paths: paths,
+            });
+        }
+    }
+    let decision = select_expired(
+        &entries,
+        epoch_ms(),
+        RetentionPolicy {
+            max_age_seconds: request.max_age_seconds,
+            history_depth: request.case_depth as usize,
+        },
+    )
+    .map_err(|_| LogQueryError::ArgsInvalid)?;
+    for run in &mut runs {
+        run.eligible = !run.active
+            && run
+                .payload_paths
+                .iter()
+                .all(|p| decision.victims.contains(p));
+    }
+    Ok(runs)
 }
 
 fn validate_query_request(request: &LogQueryRequest) -> Result<(), LogQueryError> {

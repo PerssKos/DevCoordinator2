@@ -301,18 +301,7 @@ fn fetch(
         .set_nonblocking(false)
         .map_err(|_| "api_unavailable")?;
     // Bind the configured same-owner source to the actual peer, including a replaced socket.
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let result = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut credentials as *mut libc::ucred).cast(),
-            &mut size,
-        )
-    };
-    if result != 0 || credentials.uid != source.uid {
+    if peer_uid(&stream)? != source.uid {
         return Err("api_unavailable".into());
     }
     set_deadline(&stream, deadline)?;
@@ -359,6 +348,42 @@ fn fetch(
     // Dropping the connection cancels any pending source work on failures as well.
     Ok((summary, bytes.saturating_mul(4)))
 }
+
+#[cfg(target_os = "linux")]
+fn peer_uid(stream: &UnixStream) -> Result<u32, String> {
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut size,
+        )
+    };
+    if result != 0 {
+        return Err("api_unavailable".into());
+    }
+    Ok(credentials.uid)
+}
+
+#[cfg(target_vendor = "apple")]
+fn peer_uid(stream: &UnixStream) -> Result<u32, String> {
+    let mut uid = 0;
+    let mut gid = 0;
+    let result = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
+    if result != 0 {
+        return Err("api_unavailable".into());
+    }
+    u32::try_from(uid).map_err(|_| "api_unavailable".to_owned())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_vendor = "apple"))))]
+fn peer_uid(_stream: &UnixStream) -> Result<u32, String> {
+    Err("api_unavailable".into())
+}
+
 fn set_deadline(stream: &UnixStream, deadline: Instant) -> Result<(), String> {
     let remaining = deadline
         .checked_duration_since(Instant::now())

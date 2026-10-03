@@ -45,5 +45,24 @@
       "one": "{count} toplu",
       "other": "{count} toplu"
     }
-  }
+  },
+  "legacy": "Əvvəlki arxiv",
+  "currentSelection": "Cari seçim",
+  "search": "Axtar",
+  "theme": "Mövzu",
+  "earlier": "Əvvəlki tarixçə",
+  "basedOn": "Əsasında",
+  "surface": "Ekran",
+  "selectionNote": "Seçim qeydi",
+  "continueSelected": "Seçilənlərlə davam et",
+  "initialContext": "Agentin ilkin konteksti",
+  "latestContext": "Ən son kontekst",
+  "history": "Tarixçə",
+  "description": "Təsvir",
+  "whyChanged": "Dəyişiklik səbəbi",
+  "journey": "İstifadəçi yolu",
+  "instructions": "Təlimatlar",
+  "constraints": "Məhdudiyyətlər",
+  "backToHistory": "Tarixçəyə qayıt",
+  "elements": "Elementlər"
 }

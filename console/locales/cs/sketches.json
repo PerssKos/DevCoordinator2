@@ -49,5 +49,24 @@
       "many": "{count} sady",
       "other": "{count} sad"
     }
-  }
+  },
+  "legacy": "Starší archiv",
+  "currentSelection": "Aktuální výběr",
+  "search": "Hledat",
+  "theme": "Motiv",
+  "earlier": "Starší historie",
+  "basedOn": "Vychází z",
+  "surface": "Obrazovka",
+  "selectionNote": "Poznámka k výběru",
+  "continueSelected": "Pokračovat s vybranými",
+  "initialContext": "Původní kontext agenta",
+  "latestContext": "Nejnovější kontext",
+  "history": "Historie",
+  "description": "Popis",
+  "whyChanged": "Důvod změny",
+  "journey": "Cesta uživatele",
+  "instructions": "Pokyny",
+  "constraints": "Omezení",
+  "backToHistory": "Zpět do historie",
+  "elements": "Prvky"
 }

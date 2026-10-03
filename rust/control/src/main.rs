@@ -29,6 +29,41 @@ async fn main() -> ExitCode {
     if let Some(path) = repository_config_validation_requested() {
         return validate_repository_config(&path);
     }
+    if std::env::args().nth(1).as_deref() == Some("storage-maintenance") {
+        #[derive(clap::Parser)]
+        struct Maintenance {
+            #[arg(long)]
+            job_id: String,
+            #[arg(long)]
+            artifact_id: String,
+        }
+        let Ok(arguments) = Maintenance::try_parse_from(std::env::args_os().skip(1)) else {
+            return local_error(
+                OutputFormat::Json,
+                ErrorCode::ParamsInvalid,
+                "invalid maintenance arguments",
+                "",
+                2,
+            );
+        };
+        return match Config::load() {
+            Ok(config) => match devcoordinator2_control::storage::run_mount_maintenance(
+                &config,
+                &arguments.job_id,
+                &arguments.artifact_id,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => local_error(OutputFormat::Json, error.code, &error.message, "", 2),
+            },
+            Err(_) => local_error(
+                OutputFormat::Json,
+                ErrorCode::ConfigurationInvalid,
+                "maintenance configuration is unavailable",
+                "",
+                2,
+            ),
+        };
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -365,6 +400,12 @@ async fn run_daemon(config: &Config) -> ExitCode {
         )
     });
     let mut expiry_shutdown = shutdown_rx.clone();
+    let storage = plane.storage().clone();
+    let storage_shutdown = shutdown_rx.clone();
+    services.spawn(async move {
+        storage.serve(storage_shutdown).await;
+        ("storage maintenance", Ok(()))
+    });
     let metrics_shutdown = shutdown_rx.clone();
     services.spawn(async move {
         logs.serve_maintenance(shutdown_rx).await;

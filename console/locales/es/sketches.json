@@ -47,5 +47,24 @@
       "many": "{count} conjuntos",
       "other": "{count} conjuntos"
     }
-  }
+  },
+  "legacy": "Archivo anterior",
+  "currentSelection": "Selección actual",
+  "search": "Buscar",
+  "theme": "Tema",
+  "earlier": "Historial anterior",
+  "basedOn": "Basado en",
+  "surface": "Pantalla",
+  "selectionNote": "Nota de selección",
+  "continueSelected": "Continuar con la selección",
+  "initialContext": "Contexto inicial del agente",
+  "latestContext": "Contexto más reciente",
+  "history": "Historial",
+  "description": "Descripción",
+  "whyChanged": "Motivo del cambio",
+  "journey": "Recorrido del usuario",
+  "instructions": "Instrucciones",
+  "constraints": "Restricciones",
+  "backToHistory": "Volver al historial",
+  "elements": "Elementos"
 }

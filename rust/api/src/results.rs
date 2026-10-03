@@ -15,6 +15,8 @@ pub struct SketchImageSummary {
     pub sketch_id: String,
     pub repository_id: String,
     pub sketch_set: String,
+    pub batch_id: String,
+    pub display_order: Option<u16>,
     pub source_skill: String,
     pub title: String,
     pub image_id: String,
@@ -26,6 +28,22 @@ pub struct SketchImageSummary {
     pub created_at: String,
     pub decision: crate::params::SketchDecision,
     pub decision_revision: u32,
+    pub surface_id: Option<String>,
+    pub surface_title: Option<String>,
+    pub element_ids: Vec<String>,
+    pub state: Option<String>,
+    pub theme: Option<String>,
+    pub viewport: Option<String>,
+    pub description: Option<String>,
+    pub journey: Option<String>,
+    pub decisions: Option<String>,
+    pub instructions: Option<String>,
+    pub constraints: Option<String>,
+    pub transition_note: Option<String>,
+    pub manifest_version: Option<u8>,
+    pub legacy: bool,
+    pub current: bool,
+    pub description_revision: u32,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -67,6 +85,98 @@ pub struct SketchDetail {
     pub generation_record_sha256: String,
     pub history: Vec<SketchDecisionEvent>,
     pub annotations: Vec<SketchAnnotation>,
+    pub lineage: Vec<SketchLineageEvent>,
+    pub description_history: Vec<SketchDescriptionRevision>,
+    pub initial_context: Option<SketchDescriptionRevision>,
+    pub context_history_has_more: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchLineageEvent {
+    pub parent_sketch_id: String,
+    pub child_sketch_id: String,
+    pub relation: crate::params::SketchLineageRelation,
+    pub rationale: String,
+    pub actor: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDescriptionRevision {
+    pub revision: u32,
+    pub description: String,
+    pub journey: String,
+    pub decisions: String,
+    pub instructions: String,
+    pub constraints: String,
+    pub rationale: String,
+    pub actor: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchResolveStatus {
+    Resolved,
+    Ambiguous,
+    Unavailable,
+    LegacyOnly,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchResolveResult {
+    pub repository_id: String,
+    pub surface_id: String,
+    pub status: SketchResolveStatus,
+    pub revision: u32,
+    pub rationale: String,
+    pub current: Vec<SketchImageSummary>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchStoryResult {
+    pub repository_id: String,
+    pub surface_id: String,
+    pub surface_title: Option<String>,
+    pub current: Vec<SketchImageSummary>,
+    pub nodes: Vec<SketchImageSummary>,
+    pub lineage: Vec<SketchLineageEvent>,
+    pub activations: Vec<SketchActivationEvent>,
+    pub has_more: bool,
+    pub next_offset: Option<u32>,
+    pub revision: u32,
+    pub next_activation_offset: Option<u32>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchActivationEvent {
+    pub revision: u32,
+    pub action: crate::params::SketchActivationAction,
+    pub sketch_ids: Vec<String>,
+    pub rationale: String,
+    pub actor: String,
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchActivationResult {
+    pub surface_id: String,
+    pub revision: u32,
+    pub current: Vec<SketchImageSummary>,
+    pub event: SketchActivationEvent,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchDescriptionResult {
+    pub sketch: SketchImageSummary,
+    pub revision: SketchDescriptionRevision,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

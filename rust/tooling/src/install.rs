@@ -373,6 +373,24 @@ pub fn build_release_binaries<R: CommandRunner>(
     tools: &BuildTools,
     runner: &R,
 ) -> Result<Vec<BinaryReceipt>, String> {
+    build_release_binaries_at(
+        source_root,
+        source_commit,
+        identity,
+        tools,
+        runner,
+        &source_root.join("target"),
+    )
+}
+
+pub fn build_release_binaries_at<R: CommandRunner>(
+    source_root: &Path,
+    source_commit: &str,
+    identity: &BuildIdentity,
+    tools: &BuildTools,
+    runner: &R,
+    cargo_target_dir: &Path,
+) -> Result<Vec<BinaryReceipt>, String> {
     validate_commit(source_commit)?;
     validate_tool(&tools.cargo, "Cargo")?;
     validate_tool(&tools.setpriv, "setpriv")?;
@@ -392,7 +410,7 @@ pub fn build_release_binaries<R: CommandRunner>(
             format!("HOME={}", identity.home.display()).into(),
             "PATH=/usr/bin:/bin".into(),
             format!("DEVCOORDINATOR2_SOURCE_COMMIT={source_commit}").into(),
-            format!("CARGO_TARGET_DIR={}", source_root.join("target").display()).into(),
+            format!("CARGO_TARGET_DIR={}", cargo_target_dir.display()).into(),
             tools.cargo.as_os_str().to_owned(),
             "build".into(),
             "--locked".into(),
@@ -411,7 +429,7 @@ pub fn build_release_binaries<R: CommandRunner>(
             useful_failure(&output)
         ));
     }
-    verify_release_binaries(source_root, source_commit, runner)
+    verify_release_binaries_at(cargo_target_dir, source_commit, runner)
 }
 
 pub fn verify_release_binaries<R: CommandRunner + ?Sized>(
@@ -419,9 +437,17 @@ pub fn verify_release_binaries<R: CommandRunner + ?Sized>(
     source_commit: &str,
     runner: &R,
 ) -> Result<Vec<BinaryReceipt>, String> {
+    verify_release_binaries_at(&source_root.join("target"), source_commit, runner)
+}
+
+pub fn verify_release_binaries_at<R: CommandRunner + ?Sized>(
+    cargo_target_dir: &Path,
+    source_commit: &str,
+    runner: &R,
+) -> Result<Vec<BinaryReceipt>, String> {
     let mut receipts = Vec::new();
     for name in BINARY_NAMES {
-        let path = source_root.join("target/release").join(name);
+        let path = cargo_target_dir.join("release").join(name);
         let metadata = validate_regular(&path, true).map_err(|error| {
             format!("Rust release binary {name} is unavailable or unsafe: {error}")
         })?;
@@ -445,6 +471,52 @@ pub fn verify_release_binaries<R: CommandRunner + ?Sized>(
         });
     }
     Ok(receipts)
+}
+
+pub fn verify_manifest_binaries<R: CommandRunner + ?Sized>(
+    manifest: &InstallManifest,
+    runner: &R,
+) -> Result<Vec<BinaryReceipt>, String> {
+    if manifest.binaries.len() != BINARY_NAMES.len()
+        || BINARY_NAMES
+            .iter()
+            .any(|name| !manifest.binaries.iter().any(|binary| binary.name == *name))
+    {
+        return Err("installation manifest requires all release binaries".to_owned());
+    }
+    let mut verified = Vec::new();
+    for expected in &manifest.binaries {
+        let path = Path::new(&expected.path);
+        let metadata = validate_regular(path, true).map_err(|error| {
+            format!(
+                "Rust release binary {} is unavailable or unsafe: {error}",
+                expected.name
+            )
+        })?;
+        let output = runner.run(&CommandRequest {
+            program: path.to_owned(),
+            args: vec!["--source-commit".into()],
+            environment: BTreeMap::new(),
+            clear_environment: true,
+        })?;
+        if !output.success
+            || output.stdout_truncated
+            || output.stdout.trim() != manifest.source_commit
+        {
+            return Err(format!(
+                "Rust release binary {} does not embed source commit {}",
+                expected.name, manifest.source_commit
+            ));
+        }
+        verified.push(BinaryReceipt {
+            name: expected.name.clone(),
+            path: path_text(path)?,
+            sha256: hash_file(path)?,
+            bytes: metadata.len(),
+            source_commit: manifest.source_commit.clone(),
+        });
+    }
+    Ok(verified)
 }
 
 pub fn manifest(
@@ -525,11 +597,7 @@ pub fn read_and_verify_manifest_owned<R: CommandRunner + ?Sized>(
     {
         return Err("installation manifest identity is unsupported".to_owned());
     }
-    let verified = verify_release_binaries(
-        Path::new(&manifest.source_root),
-        &manifest.source_commit,
-        runner,
-    )?;
+    let verified = verify_manifest_binaries(&manifest, runner)?;
     if verified != manifest.binaries {
         return Err("installed release binaries no longer match their manifest".to_owned());
     }
@@ -540,15 +608,22 @@ pub fn installation_plan(
     manifest: &InstallManifest,
     manifest_path: &Path,
 ) -> Result<InstallationPlan, String> {
-    let source_root = Path::new(&manifest.source_root);
+    let binary_path = |name: &str| {
+        manifest
+            .binaries
+            .iter()
+            .find(|binary| binary.name == name)
+            .map(|binary| binary.path.clone())
+            .ok_or_else(|| format!("installation manifest has no {name} binary"))
+    };
     let links = BTreeMap::from([
         (
             "/usr/local/bin/devcoordinator2".to_owned(),
-            path_text(&source_root.join("target/release/devcoordinator2"))?,
+            binary_path("devcoordinator2")?,
         ),
         (
             "/usr/local/bin/devcoordinator2-tooling".to_owned(),
-            path_text(&source_root.join("target/release/devcoordinator2-tooling"))?,
+            binary_path("devcoordinator2-tooling")?,
         ),
     ]);
     Ok(InstallationPlan {
@@ -656,8 +731,18 @@ pub fn validate_registered_repository_configs(
 }
 
 pub fn render_daemon_unit(source_root: &Path) -> Result<String, String> {
+    render_daemon_unit_for_binary(
+        source_root,
+        &source_root.join("target/release/devcoordinator2"),
+    )
+}
+
+pub fn render_daemon_unit_for_binary(
+    source_root: &Path,
+    binary_path: &Path,
+) -> Result<String, String> {
     let template = read_template(&source_root.join("deploy/devcoordinator2.service"))?;
-    let binary = path_text(&source_root.join("target/release/devcoordinator2"))?;
+    let binary = path_text(binary_path)?;
     let rendered = template.replace(
         "/home/DevCoordinator2/target/release/devcoordinator2",
         &binary,
@@ -1303,9 +1388,12 @@ pub(crate) fn prepare_state_directory(path: &Path, owner: (u32, u32)) -> Result<
             "public" | "deployments" | "secrets" => {
                 open(&entry.path(), true)?;
             }
-            "cutover" | "recovery" | "install-transactions" | "sketches" => {
-                private.push((open(&entry.path(), true)?, 0o700));
-            }
+            "cutover"
+            | "recovery"
+            | "install-transactions"
+            | "sketches"
+            | "storage-mount-jobs"
+            | "storage-recovery" => private.push((open(&entry.path(), true)?, 0o700)),
             name if name == "authority.sqlite3"
                 || name.starts_with("authority.sqlite3-")
                 || name.starts_with("authority.sqlite3.") =>
@@ -2250,6 +2338,47 @@ mod tests {
     }
 
     #[test]
+    fn versioned_manifest_paths_bind_units_and_managed_links() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("source");
+        let artifact = source.join("target/coordinator-releases/build-1/release");
+        std::fs::create_dir_all(source.join("deploy")).unwrap();
+        std::fs::create_dir_all(&artifact).unwrap();
+        std::fs::write(
+            source.join("deploy/devcoordinator2.service"),
+            "[Service]\nExecStart=/home/DevCoordinator2/target/release/devcoordinator2 daemon\n",
+        )
+        .unwrap();
+        let commit = "d".repeat(40);
+        for name in BINARY_NAMES {
+            let path = artifact.join(name);
+            std::fs::write(&path, name).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let runner =
+            FakeRunner::with_outputs(BINARY_NAMES.iter().map(|_| success(&commit)).collect());
+        let binaries = verify_release_binaries_at(
+            &source.join("target/coordinator-releases/build-1"),
+            &commit,
+            &runner,
+        )
+        .unwrap();
+        let manifest = manifest(&source, &commit, "2026-10-03T00:00:00Z", binaries).unwrap();
+        let manifest_path = temporary.path().join("install-manifest.json");
+        let plan = installation_plan(&manifest, &manifest_path).unwrap();
+        assert_eq!(
+            plan.binary_links["/usr/local/bin/devcoordinator2"],
+            artifact.join("devcoordinator2").display().to_string()
+        );
+        let daemon =
+            render_daemon_unit_for_binary(&source, &artifact.join("devcoordinator2")).unwrap();
+        assert!(daemon.contains(&format!(
+            "ExecStart={}/devcoordinator2 daemon",
+            artifact.display()
+        )));
+    }
+
+    #[test]
     fn manifest_detects_binary_tampering_and_links_refuse_regular_targets() {
         let temporary = tempfile::tempdir().unwrap();
         let destination = temporary.path().join("tool");
@@ -2668,6 +2797,8 @@ mod tests {
             "recovery",
             "install-transactions",
             "sketches",
+            "storage-mount-jobs",
+            "storage-recovery",
         ] {
             std::fs::create_dir(root.join(name)).unwrap();
             std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(0o755))
@@ -2711,12 +2842,19 @@ mod tests {
                 "recovery",
                 "install-transactions",
                 "sketches",
+                "storage-mount-jobs",
+                "storage-recovery",
             ] {
                 assert_eq!(
                     std::fs::metadata(root.join(name)).unwrap().mode() & 0o777,
                     if matches!(
                         name,
-                        "cutover" | "recovery" | "install-transactions" | "sketches"
+                        "cutover"
+                            | "recovery"
+                            | "install-transactions"
+                            | "sketches"
+                            | "storage-mount-jobs"
+                            | "storage-recovery"
                     ) {
                         0o700
                     } else {

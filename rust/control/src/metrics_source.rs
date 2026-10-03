@@ -327,13 +327,17 @@ fn read_integer(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-struct ProcessOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    truncated: bool,
+pub(crate) struct ProcessOutput {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) truncated: bool,
 }
 
-fn run_bounded(program: &Path, arguments: &[OsString], timeout: Duration) -> Option<ProcessOutput> {
+pub(crate) fn run_bounded(
+    program: &Path,
+    arguments: &[OsString],
+    timeout: Duration,
+) -> Option<ProcessOutput> {
     let mut child = Command::new(program)
         .args(arguments)
         .env_clear()

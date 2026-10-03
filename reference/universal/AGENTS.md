@@ -106,12 +106,37 @@ earlier model messages or reload unchanged instructions.
   provides, present them in actual display order, and pause implementation
   until the user selects one unless the user explicitly authorizes autonomous
   selection. Retain the options and selection in Coordinator sketch/evidence
-  and decision records. For every confirmed mockup-backed implementation,
-  also run `$product-design:audit` after implementation against the selected
-  target. P0-P2 findings or missing comparison evidence block handoff until
-  the implementation is fixed and the audit passes; retain the report and
-  iteration evidence. Record confirmed repeatable mistakes as durable
-  corrections.
+  and decision records. For every shipped web UI implementation, follow the
+  fail-closed UI handoff pipeline in order: formal browser verification,
+  manual screenshot receipt, `$product-design:audit` when a confirmed visual
+  target exists, live deployment/source-identity verification, then a qualified
+  delivery receipt. A formal receipt is machine-readable and
+  has `formal.result` equal to exactly one of `passed`, `failed`, `blocked`, or
+  `incomplete`; only a fresh complete all-cell run with readiness-eligible
+  evidence may be `passed`. Manual review and Product Design audit are invalid
+  unless `formal.result == passed`, and deployment evidence is invalid unless
+  every upstream receipt passed. Preserve failed formal artifacts as diagnostic
+  evidence, repair the product, and rerun the complete formal candidate before
+  resuming downstream review. Missing authentication, screenshots, audit
+  tooling, Coordinator evidence, or source identity keeps the result blocked or
+  preliminary. HTTP success, health, matching assets, or a deployment command
+  never proves UI completion. P0-P2 findings or missing comparison evidence
+  block handoff until the implementation is fixed and the applicable gates
+  pass; retain the report and iteration evidence. Record confirmed repeatable
+  mistakes as durable corrections.
+  For every generated mockup, retain one immutable image file for exactly one
+  surface/window, state, theme, and viewport. The file may show multiple named
+  controls belonging to that one window, but it must not combine windows,
+  themes, states, or contact-sheet alternatives. Require an agent-authored
+  searchable manifest describing visible content, the user journey, decisions,
+  generation instructions, constraints, and parent mockup nodes. Later image
+  generation creates new files and explicit lineage; it never overwrites or
+  silently reuses a previous source. Resolve the current continuation set from
+  Coordinator sketch history immediately before implementation or audit and
+  again after any new generation or user-directed adjustment. Preserve every
+  option, including rejected options, and allow multiple selected options to
+  continue together. Legacy sketches remain historical and cannot become
+  current.
   Finish only when the intended outcome and verification are complete, the
   user explicitly stops it, or a genuine blocker prevents authorized progress.
 - Write progress updates and completion reports for a capable non-specialist.

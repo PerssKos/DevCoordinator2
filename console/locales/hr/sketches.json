@@ -47,5 +47,24 @@
       "few": "{count} skupa",
       "other": "{count} skupova"
     }
-  }
+  },
+  "legacy": "Starija arhiva",
+  "currentSelection": "Trenutačni odabir",
+  "search": "Pretraži",
+  "theme": "Tema",
+  "earlier": "Ranija povijest",
+  "basedOn": "Temelji se na",
+  "surface": "Zaslon",
+  "selectionNote": "Napomena uz odabir",
+  "continueSelected": "Nastavi s odabranima",
+  "initialContext": "Početni kontekst agenta",
+  "latestContext": "Najnoviji kontekst",
+  "history": "Povijest",
+  "description": "Opis",
+  "whyChanged": "Razlog promjene",
+  "journey": "Korisnički put",
+  "instructions": "Upute",
+  "constraints": "Ograničenja",
+  "backToHistory": "Povratak na povijest",
+  "elements": "Elementi"
 }

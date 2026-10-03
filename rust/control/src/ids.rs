@@ -87,6 +87,12 @@ pub fn sketch_batch_id() -> Result<String, IdError> {
 pub fn sketch_annotation_id() -> Result<String, IdError> {
     random_id('a')
 }
+pub fn sketch_lineage_id() -> Result<String, IdError> {
+    random_id('l')
+}
+pub fn sketch_activation_id() -> Result<String, IdError> {
+    random_id('x')
+}
 pub fn agent_message_id() -> Result<String, IdError> {
     random_id('q')
 }

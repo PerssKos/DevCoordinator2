@@ -4051,10 +4051,14 @@ const UI_GATE_TERMS: &[&str] = &[
     "highest model or effort capability the current runtime actually provides",
     "present the three generated options to the user in the order the results are actually displayed",
     "pause all implementation while the admission gate is pending",
-    "the user selects one displayed option",
     "the user explicitly authorizes autonomous selection",
     "existing sketch/evidence and decision records",
     "if the required skill, image gen capability, or coordinator evidence path is unavailable",
+];
+
+const UI_GATE_SELECTION_TERMS: &[&str] = &[
+    "the user selects one displayed option",
+    "the user selects at least one displayed option",
 ];
 
 pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
@@ -4124,6 +4128,16 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
         UI_GATE_TERMS,
     );
     let named_skill_scan = policy_named_skill_scan(text);
+    let ui_gate = fold_policy(policy_section(text, "UI design admission gate"));
+    if !UI_GATE_SELECTION_TERMS
+        .iter()
+        .any(|term| ui_gate.contains(term))
+    {
+        violations.push(
+            "UI design admission gate missing required concepts: a user selects a displayed option"
+                .to_owned(),
+        );
+    }
     for name in FORBIDDEN_POLICY_NAMES {
         if contains_word_case_insensitive(&named_skill_scan, name) {
             violations.push(format!(
@@ -5011,6 +5025,27 @@ mod tests {
                 "UI design admission gate",
             );
         }
+        let old_selection = gate.replace(
+            "the user selects at least one displayed option",
+            "the user selects one displayed option",
+        );
+        assert!(
+            find_app_wide_policy_violations(&replace_policy_section(
+                &policy,
+                "UI design admission gate",
+                &old_selection
+            ))
+            .is_empty(),
+            "equivalent selection wording should remain valid"
+        );
+        let missing_selection = gate.replace(
+            "the user selects at least one displayed option",
+            "selection evidence is required",
+        );
+        assert_policy_violation(
+            &replace_policy_section(&policy, "UI design admission gate", &missing_selection),
+            "UI design admission gate",
+        );
         assert_policy_violation(
             &format!("{policy}\nUse ImageGen for every build."),
             "runtime/project-specific term: ImageGen",

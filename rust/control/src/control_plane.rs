@@ -51,6 +51,23 @@ const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
 /// checkpoint. Other registered operations fail visibly until their owning
 /// service is ported; they never report synthetic success.
 pub const FOUNDATION_OPERATIONS: &[&str] = &[
+    "storage.inventory",
+    "storage.artifact.get",
+    "storage.scan",
+    "storage.register",
+    "storage.legacy.register",
+    "storage.protection.set",
+    "storage.policy.get",
+    "storage.policy.set",
+    "storage.roots.list",
+    "storage.roots.set",
+    "storage.cleanup.plan",
+    "storage.cleanup.start",
+    "storage.job.status",
+    "storage.job.cancel",
+    "storage.history",
+    "storage.lease.set",
+    "storage.lease.release",
     "ping",
     "ticket.request",
     "ticket.settings",
@@ -132,10 +149,15 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "event.wait",
     "design.sketch.publish",
     "design.sketch.list",
+    "design.sketch.search",
+    "design.sketch.story",
+    "design.sketch.resolve",
     "design.sketch.get",
     "design.sketch.image",
     "design.sketch.record",
     "design.sketch.decision",
+    "design.sketch.activate",
+    "design.sketch.description",
     "design.sketch.annotation.create",
     "agent.message.poll",
     "agent.message.claim",
@@ -199,6 +221,7 @@ pub struct ControlPlane {
     artifacts: TestArtifactService,
     test_evidence: TestEvidenceService,
     sketches: SketchService,
+    storage: crate::storage::StorageService,
     tickets: Option<crate::ticket_service::TicketService>,
     deployments: Deployments,
     servers: ServerService,
@@ -214,6 +237,10 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
+    pub fn storage(&self) -> &crate::storage::StorageService {
+        &self.storage
+    }
+
     pub fn new(config: Config, database: Database) -> Result<Self, ProtocolError> {
         let publisher = Arc::new(RouteFilePublisher::new(
             database.clone(),
@@ -266,6 +293,13 @@ impl ControlPlane {
         let incidents =
             crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
         let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
+        let storage = crate::storage::StorageService::new(
+            config.clone(),
+            database.clone(),
+            Arc::clone(&clock),
+            capacity.clone(),
+            events.clone(),
+        );
         let health = HealthService::with_clock(
             config.clone(),
             database.clone(),
@@ -372,6 +406,7 @@ impl ControlPlane {
             artifacts,
             test_evidence,
             sketches,
+            storage,
             tickets,
             deployments,
             servers,
@@ -462,6 +497,41 @@ impl ControlPlane {
     ) -> Result<Value, ProtocolError> {
         let now = self.timestamp()?;
         let actor = caller.actor();
+        if operation.starts_with("storage.") {
+            return match operation {
+                "storage.inventory" => encode(self.storage.inventory(decode(params)?)?),
+                "storage.artifact.get" => {
+                    let p: devcoordinator2_api::storage::Reference = decode(params)?;
+                    encode(self.storage.artifact(&p.artifact_id)?)
+                }
+                "storage.scan" => encode(self.storage.scan(decode(params)?, caller)?),
+                "storage.register" => encode(self.storage.register(decode(params)?, caller)?),
+                "storage.legacy.register" => {
+                    encode(self.storage.register_legacy(decode(params)?, caller)?)
+                }
+                "storage.protection.set" => encode(self.storage.protect(decode(params)?, caller)?),
+                "storage.policy.get" => encode(self.storage.policy(decode(params)?)?),
+                "storage.policy.set" => encode(self.storage.set_policy(decode(params)?, caller)?),
+                "storage.roots.list" => encode(self.storage.roots()?),
+                "storage.roots.set" => encode(self.storage.set_root(decode(params)?, caller)?),
+                "storage.cleanup.plan" => encode(self.storage.plan(decode(params)?, caller)?),
+                "storage.cleanup.start" => encode(self.storage.start(decode(params)?, caller)?),
+                "storage.job.status" => {
+                    let p: devcoordinator2_api::storage::JobReference = decode(params)?;
+                    encode(self.storage.job(&p.job_id)?)
+                }
+                "storage.job.cancel" => encode(self.storage.cancel(decode(params)?, caller)?),
+                "storage.history" => encode(self.storage.history(decode(params)?)?),
+                "storage.lease.set" => encode(self.storage.lease(decode(params)?, caller)?),
+                "storage.lease.release" => {
+                    encode(self.storage.release_lease(decode(params)?, caller)?)
+                }
+                _ => Err(ProtocolError::new(
+                    ErrorCode::OperationUnknown,
+                    "unknown storage operation",
+                )),
+            };
+        }
         if operation.starts_with("ticket.") {
             let principal = self.access.principal(caller)?;
             let administrator = principal.local || principal.administrator;
@@ -935,6 +1005,9 @@ impl ControlPlane {
                 encode(result)
             }
             "design.sketch.list" => encode(self.sketches.list(decode(params)?)?),
+            "design.sketch.search" => encode(self.sketches.search(decode(params)?)?),
+            "design.sketch.story" => encode(self.sketches.story(decode(params)?)?),
+            "design.sketch.resolve" => encode(self.sketches.resolve(decode(params)?)?),
             "design.sketch.get" => encode(self.sketches.get(decode(params)?, &caller.actor())?),
             "design.sketch.image" => encode(self.sketches.image(decode(params)?)?),
             "design.sketch.record" => encode(self.sketches.record(decode(params)?)?),
@@ -946,6 +1019,40 @@ impl ControlPlane {
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
                         review: None,
                         kind: "sketch.decision.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch".to_owned(),
+                        subject_id: result.sketch.sketch_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.activate" => {
+                let params: params::SketchActivate = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.activate(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.activation.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_surface".to_owned(),
+                        subject_id: result.surface_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.description" => {
+                let params: params::SketchDescriptionChange = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.description(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.description.changed".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
                         subject_kind: "sketch".to_owned(),

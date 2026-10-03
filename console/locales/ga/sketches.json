@@ -51,5 +51,24 @@
       "many": "{count} sets",
       "two": "{count} sets"
     }
-  }
+  },
+  "legacy": "Sean-chartlann",
+  "currentSelection": "Rogha reatha",
+  "search": "Cuardaigh",
+  "theme": "Téama",
+  "earlier": "Stair níos luaithe",
+  "basedOn": "Bunaithe ar",
+  "surface": "Scáileán",
+  "selectionNote": "Nóta faoin rogha",
+  "continueSelected": "Lean ar aghaidh leis na roghanna",
+  "initialContext": "Comhthéacs tosaigh an ghníomhaire",
+  "latestContext": "An comhthéacs is déanaí",
+  "history": "Stair",
+  "description": "Cur síos",
+  "whyChanged": "Cúis an athraithe",
+  "journey": "Aistear an úsáideora",
+  "instructions": "Treoracha",
+  "constraints": "Srianta",
+  "backToHistory": "Ar ais chuig an stair",
+  "elements": "Eilimintí"
 }

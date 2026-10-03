@@ -45,5 +45,24 @@
       "one": "{count} set",
       "other": "{count} sets"
     }
-  }
+  },
+  "legacy": "Oud archief",
+  "currentSelection": "Huidige selectie",
+  "search": "Zoeken",
+  "theme": "Thema",
+  "earlier": "Eerdere geschiedenis",
+  "basedOn": "Gebaseerd op",
+  "surface": "Scherm",
+  "selectionNote": "Notitie bij selectie",
+  "continueSelected": "Doorgaan met selectie",
+  "initialContext": "Oorspronkelijke agentcontext",
+  "latestContext": "Laatste context",
+  "history": "Geschiedenis",
+  "description": "Beschrijving",
+  "whyChanged": "Reden voor wijziging",
+  "journey": "Gebruikersreis",
+  "instructions": "Instructies",
+  "constraints": "Beperkingen",
+  "backToHistory": "Terug naar geschiedenis",
+  "elements": "Elementen"
 }

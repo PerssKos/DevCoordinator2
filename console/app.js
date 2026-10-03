@@ -28,6 +28,7 @@ const state = {
   planScrollLeft: 0,
   planScrollTop: 0,
   planRequestedTaskId: null,
+  planExplicitVisibleTaskIds: new Set(),
   evidenceRunId: null,
   evidenceRun: null,
   evidenceData: null,
@@ -69,6 +70,7 @@ const state = {
   collapsedDeploymentRepositories: new Set(),
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
+  planVisibilitySeededRepositoryId: null,
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -2916,6 +2918,18 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 }
 
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (query.has('surface') || (!sketchId && !setName)) {
+    return window.DevCoordinatorSketches.mount(main, {
+      repositoryId, api, esc, signal: viewAbort.signal, imageUrl: sketchImageUrl,
+      openAnnotations: async (nodes, selectedId) => {
+        await viewSketchSetEvidence(repositoryId, { key: nodes[0]?.sketch_set, sketches: nodes }, selectedId);
+        const link = document.createElement('a'); link.className = 'btn btn-small sketch-back';
+        link.href = window.DevCoordinatorSketches.route(repositoryId, query.get('surface'), selectedId);
+        window.DevCoordinatorI18n.text(link, 'sketches.backToHistory'); main.prepend(link);
+      },
+    });
+  }
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
     const result = await listAllSketches(repositoryId, setName);
@@ -3056,14 +3070,23 @@ function usageRefreshContext(waiting) {
   };
 }
 
+const usageRefreshTimers = new Map();
 function continueUsageRefresh(coverages, refresh) {
-  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) return;
   const identity = usageViewIdentity();
+  const scheduled = usageRefreshTimers.get(identity);
+  if (!coverages.some((coverage) => coverage?.snapshot?.refreshing)) {
+    if (scheduled) window.clearTimeout(scheduled);
+    usageRefreshTimers.delete(identity);
+    return;
+  }
+  if (scheduled) return;
   const controller = viewAbort;
-  queueMicrotask(() => {
+  const timer = window.setTimeout(() => {
+    usageRefreshTimers.delete(identity);
     if (controller !== viewAbort || controller?.signal.aborted || identity !== usageViewIdentity()) return;
     refresh();
-  });
+  }, 5000);
+  usageRefreshTimers.set(identity, timer);
 }
 
 function coverageKind(value) {
@@ -3874,7 +3897,37 @@ const viewPlanPicker = guard(async (kind) => {
 
 // Layout is pure: leaf tasks advance a global lines-of-code cursor, parents
 // span their descendants, releases group in sequence, backlog trails.
-function computeGantt(releases, tasks, collapsed) {
+function seedPlanCollapsedDoneParents(releases, tasks, collapsed) {
+  const known = new Set(releases.map((release) => release.release_id));
+  const byId = new Map(tasks.map((task) => [task.task_id, task]));
+  const groupOf = (task) => (task.release_id && known.has(task.release_id) ? task.release_id : null);
+  const inTree = (task) => {
+    const parent = byId.get(task.parent_task_id);
+    return !!parent && groupOf(parent) === groupOf(task);
+  };
+  const children = new Map();
+  for (const task of tasks) {
+    if (!inTree(task)) continue;
+    if (!children.has(task.parent_task_id)) children.set(task.parent_task_id, []);
+    children.get(task.parent_task_id).push(task);
+  }
+  const depth = new Map();
+  const visit = (task, level) => {
+    const previous = depth.get(task.task_id);
+    if (previous != null && previous <= level) return;
+    depth.set(task.task_id, level);
+    for (const child of children.get(task.task_id) || []) visit(child, level + 1);
+  };
+  for (const task of tasks.filter((item) => !inTree(item))) visit(task, 0);
+  for (const task of tasks) {
+    // Root-level completed rows are hidden separately. Keep completed parents
+    // below the root visible as a compact context row with their descendants
+    // collapsed, while allowing the user to expand them explicitly.
+    if (task.status === 'done' && depth.get(task.task_id) > 0 && children.has(task.task_id)) collapsed.add(task.task_id);
+  }
+}
+
+function computeGantt(releases, tasks, collapsed, explicitVisibleTaskIds = new Set()) {
   const known = new Set(releases.map((r) => r.release_id));
   const byId = new Map(tasks.map((t) => [t.task_id, t]));
   const groupOf = (t) => (t.release_id && known.has(t.release_id) ? t.release_id : null);
@@ -3890,7 +3943,10 @@ function computeGantt(releases, tasks, collapsed) {
   const rows = []; const groups = []; let cursor = 0; let unsizedCount = 0;
   const walk = (t, depth, hidden) => {
     const children = kids.get(t.task_id) || [];
-    const row = { task: t, depth, isParent: children.length > 0, hidden, start: cursor, width: 0, subtreeLoc: 0, doneLoc: 0, unsizedCount: 0, isUnsized: false, collapsed: collapsed.has(t.task_id) };
+    const rootDone = depth === 0 && t.status === 'done';
+    const nestedDoneLeaf = depth > 0 && t.status === 'done' && children.length === 0;
+    const explicitlyVisible = explicitVisibleTaskIds.has(t.task_id);
+    const row = { task: t, depth, isParent: children.length > 0, hidden: hidden || (!explicitlyVisible && (rootDone || nestedDoneLeaf)), start: cursor, width: 0, subtreeLoc: 0, doneLoc: 0, unsizedCount: 0, isUnsized: false, collapsed: collapsed.has(t.task_id) };
     rows.push(row);
     if (!children.length) {
       if (t.estimated_loc == null) {
@@ -3973,8 +4029,14 @@ function planSelectionTray(selectedRow, releaseById, admin) {
 const viewPlan = guard(async (repoId) => {
   const requestedTaskId = state.planRequestedTaskId;
   state.planRequestedTaskId = null;
-  if (state.planRepositoryId !== repoId) {
+  const repositoryChanged = state.planRepositoryId !== repoId;
+  if (repositoryChanged) {
     state.planRepositoryId = repoId;
+    // Collapse defaults belong to one plan. Reset them when switching
+    // repositories so stale task ids cannot affect a different tree.
+    state.collapsed = new Set();
+    state.planExplicitVisibleTaskIds = new Set();
+    state.planVisibilitySeededRepositoryId = null;
     state.planSelectedTaskId = requestedTaskId;
     state.planScrollLeft = 0;
     state.planScrollTop = 0;
@@ -3992,7 +4054,24 @@ const viewPlan = guard(async (repoId) => {
     repository_id: repoId, display_name: model.display_name,
   }];
   const admin = !!state.who?.administrator;
-  const { groups, total, unsizedCount } = computeGantt(model.releases, model.tasks, state.collapsed);
+  if (state.planVisibilitySeededRepositoryId !== repoId) {
+    seedPlanCollapsedDoneParents(model.releases, model.tasks, state.collapsed);
+    state.planVisibilitySeededRepositoryId = repoId;
+  }
+  if (requestedTaskId) {
+    state.planExplicitVisibleTaskIds = new Set();
+    const byId = new Map(model.tasks.map((task) => [task.task_id, task]));
+    let ancestor = byId.get(requestedTaskId);
+    while (ancestor) {
+      state.planExplicitVisibleTaskIds.add(ancestor.task_id);
+      if (!ancestor.parent_task_id) break;
+      state.collapsed.delete(ancestor.parent_task_id);
+      ancestor = byId.get(ancestor.parent_task_id);
+    }
+  } else {
+    state.planExplicitVisibleTaskIds = new Set();
+  }
+  const { groups, total, unsizedCount } = computeGantt(model.releases, model.tasks, state.collapsed, state.planExplicitVisibleTaskIds);
   const rows = groups.flatMap((g) => g.rows);
   const releaseById = new Map(model.releases.map((r) => [r.release_id, r]));
   const unsizedShare = unsizedCount ? (total ? 0.18 : 1) : 0;
@@ -4000,12 +4079,13 @@ const viewPlan = guard(async (repoId) => {
   const pctOf = (v) => `${(total ? (v / total) * sizedShare * 100 : 0).toFixed(3)}%`;
   const unsizedLeft = `${(sizedShare * 100 + (unsizedShare ? 1 : 0)).toFixed(3)}%`;
   const unsizedWidth = `${Math.max(0, unsizedShare * 100 - (unsizedShare ? 2 : 0)).toFixed(3)}%`;
-  let selectedRow = rows.find((row) => row.task.task_id === state.planSelectedTaskId);
+  let selectedRow = requestedTaskId ? rows.find((row) => row.task.task_id === requestedTaskId) : null;
+  selectedRow ||= rows.find((row) => row.task.task_id === state.planSelectedTaskId && !row.hidden);
   if (!selectedRow) {
-    selectedRow = rows.find((row) => row.isParent && row.task.status !== 'done')
-      || rows.find((row) => row.task.status === 'in_progress')
-      || rows.find((row) => row.task.status !== 'done')
-      || rows[0]
+    selectedRow = rows.find((row) => !row.hidden && row.isParent && row.task.status !== 'done')
+      || rows.find((row) => !row.hidden && row.task.status === 'in_progress')
+      || rows.find((row) => !row.hidden && row.task.status !== 'done')
+      || rows.find((row) => !row.hidden)
       || null;
     state.planSelectedTaskId = selectedRow?.task.task_id || null;
   }
@@ -4107,7 +4187,7 @@ const viewPlan = guard(async (repoId) => {
     <div class="plan-minimap-row" aria-label="Timeline overview" data-i18n-attrs='{"aria-label":"plan.timeline_overview_4dc156"}'>
       <div class="plan-minimap-label"><span data-i18n="plan.timeline_overview_4dc156">Timeline overview</span></div>
       <div class="plan-minimap" data-plan-minimap role="scrollbar" tabindex="0" aria-label="Timeline horizontal position" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-attrs='{"aria-label":"plan.timeline_horizontal_position_81edc0"}'>
-        <div class="plan-minimap-bars">${rows.filter((row) => !row.isParent).map((row) => `<i data-minimap-task="${esc(row.task.task_id)}" class="${row.isUnsized ? 'unsized ' : ''}${esc(row.task.status)}${row.task.task_id === state.planSelectedTaskId ? ' selected' : ''}" style="left:${row.isUnsized ? unsizedLeft : pctOf(row.start)};width:${row.isUnsized ? unsizedWidth : pctOf(row.width)}"></i>`).join('')}</div>
+        <div class="plan-minimap-bars">${rows.filter((row) => !row.isParent && !row.hidden).map((row) => `<i data-minimap-task="${esc(row.task.task_id)}" class="${row.isUnsized ? 'unsized ' : ''}${esc(row.task.status)}${row.task.task_id === state.planSelectedTaskId ? ' selected' : ''}" style="left:${row.isUnsized ? unsizedLeft : pctOf(row.start)};width:${row.isUnsized ? unsizedWidth : pctOf(row.width)}"></i>`).join('')}</div>
         <div class="plan-minimap-thumb" data-plan-minimap-thumb></div>
       </div>
     </div>
@@ -4129,7 +4209,7 @@ const viewPlan = guard(async (repoId) => {
   bind(main);
   bindProjectPicker(main);
   bindMoveButtons(main, model);
-  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin });
+  bindPlanWorkspace(main, model, { groups, rows, total, unsizedCount, sizedShare, releaseById, admin, explicitVisibleTaskIds: state.planExplicitVisibleTaskIds });
   $('[data-plan-feedback]', main)?.addEventListener('click', () => openFeedbackDialog(repoId));
   if (admin) bindGanttDrag(main, model);
 });
@@ -4290,14 +4370,16 @@ function syncPlanCollapsedRows(root, layout) {
   for (const group of layout.groups) {
     const groupRows = new Map(group.rows.map((row) => [row.task.task_id, row]));
     for (const row of group.rows) {
-      let parent = groupRows.get(row.task.parent_task_id); let hidden = false;
+      let parent = groupRows.get(row.task.parent_task_id); let hidden = !layout.explicitVisibleTaskIds.has(row.task.task_id) && (row.depth === 0 || !row.isParent && row.depth > 0) && row.task.status === 'done';
       while (parent) {
         if (state.collapsed.has(parent.task.task_id)) { hidden = true; break; }
         parent = groupRows.get(parent.task.parent_task_id);
       }
       row.hidden = hidden;
       root.querySelector(`[data-task-row="${CSS.escape(row.task.task_id)}"]`)?.classList.toggle('ghidden', hidden);
+      root.querySelector(`[data-minimap-task="${CSS.escape(row.task.task_id)}"]`)?.toggleAttribute('hidden', hidden);
       if (!row.isParent) continue;
+      row.collapsed = state.collapsed.has(row.task.task_id);
       const button = root.querySelector(`[data-collapse="${CSS.escape(row.task.task_id)}"]`);
       if (!button) continue;
       const collapsed = state.collapsed.has(row.task.task_id);
@@ -4337,6 +4419,40 @@ function bindPlanWorkspace(root, model, layout) {
     const value = maxScroll ? Math.round((left / maxScroll) * 100) : 0;
     minimap.setAttribute('aria-valuenow', String(value));
   };
+  let lastScrollTop = viewport.scrollTop;
+  let alignFrame = 0;
+  const alignTimelineToVisibleTask = () => {
+    alignFrame = 0;
+    const viewportBox = viewport.getBoundingClientRect();
+    // Keep the first visible task bar just inside the timeline area below the
+    // sticky controls. Hidden/collapsed rows are omitted from this search.
+    const firstVisible = [...root.querySelectorAll('.gtask:not(.ghidden)')].find((element) => {
+      const box = element.getBoundingClientRect();
+      return box.bottom > viewportBox.top + 82 && box.top < viewportBox.bottom;
+    });
+    if (!firstVisible) return;
+    const row = layout.rows.find((item) => item.task.task_id === firstVisible.dataset.taskRow);
+    if (!row) return;
+    const contentWidth = Math.max(1, currentChartWidth());
+    const visibleWidth = visibleChartWidth();
+    const maxScroll = Math.max(0, contentWidth - visibleWidth);
+    const sizedShare = layout.sizedShare ?? 1;
+    const hasUnsizedBar = row.isUnsized || (row.isParent && row.width === 0 && row.unsizedCount > 0);
+    const chartOffset = hasUnsizedBar
+      ? sizedShare * contentWidth
+      : (total ? (row.start / total) * sizedShare * contentWidth : 0);
+    const nextScroll = Math.max(0, Math.min(maxScroll, chartOffset));
+    if (Math.abs(viewport.scrollLeft - nextScroll) < 1) return;
+    viewport.scrollLeft = nextScroll;
+    state.planScrollLeft = viewport.scrollLeft;
+    updateMinimap();
+  };
+  const scheduleTimelineAlignment = () => {
+    if (viewport.scrollTop === lastScrollTop) return;
+    lastScrollTop = viewport.scrollTop;
+    if (alignFrame) return;
+    alignFrame = requestAnimationFrame(alignTimelineToVisibleTask);
+  };
   const applyScale = (preserveCenter = true) => {
     workspace.style.setProperty('--glabel', `${navigatorWidth()}px`);
     const oldWidth = currentChartWidth();
@@ -4354,11 +4470,13 @@ function bindPlanWorkspace(root, model, layout) {
   applyScale(false);
   viewport.scrollLeft = state.planFit ? 0 : state.planScrollLeft;
   viewport.scrollTop = state.planScrollTop;
+  if (!state.planScrollLeft || state.planScrollTop) requestAnimationFrame(alignTimelineToVisibleTask);
   updateMinimap();
   viewport.addEventListener('scroll', () => {
     state.planScrollLeft = viewport.scrollLeft;
     state.planScrollTop = viewport.scrollTop;
     updateMinimap();
+    scheduleTimelineAlignment();
   }, { passive: true });
   new ResizeObserver(() => applyScale(false)).observe(viewport);
 
@@ -4777,11 +4895,12 @@ async function render() {
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
-  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
+  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set') && (!sketchQuery.has('surface') || sketchQuery.has('annotate'));
   const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
   main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
+  main.classList.toggle('sketch-history-page', view === 'sketches' && !sketchQuery.has('annotate') && (sketchQuery.has('surface') || !sketchQuery.has('sketch')));
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {

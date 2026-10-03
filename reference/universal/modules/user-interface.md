@@ -52,6 +52,18 @@
   its step findings for UX and accessibility context, while still completing
   the rendered interaction pass below for real behavior.
 
+### Mockup scope and history in the user journey
+
+- Treat one retained mockup file as one surface/window in one state, theme,
+  and viewport. It may depict multiple controls from that window, which must
+  be read from the manifest rather than invented from repeated images.
+- Keep all options in a generation batch visible, including rejected options.
+  When more than one option is selected for continuation, show the selected
+  set explicitly and preserve each member's identity and rationale.
+- Show the agent-authored initial description separately from later context
+  revisions and comments. A later instruction may change the current direction
+  without erasing the initial journey, constraints, or decisions.
+
 ### Preserve rows and use vertical space efficiently
 
 - Collapse action labels before wrapping, clipping, or overlap; restore them

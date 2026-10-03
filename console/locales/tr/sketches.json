@@ -45,5 +45,24 @@
       "one": "{count} küme",
       "other": "{count} küme"
     }
-  }
+  },
+  "legacy": "Eski arşiv",
+  "currentSelection": "Geçerli seçim",
+  "search": "Ara",
+  "theme": "Tema",
+  "earlier": "Önceki geçmiş",
+  "basedOn": "Dayanak",
+  "surface": "Ekran",
+  "selectionNote": "Seçim notu",
+  "continueSelected": "Seçilenlerle devam et",
+  "initialContext": "Aracının başlangıç bağlamı",
+  "latestContext": "En son bağlam",
+  "history": "Geçmiş",
+  "description": "Açıklama",
+  "whyChanged": "Değişiklik nedeni",
+  "journey": "Kullanıcı yolculuğu",
+  "instructions": "Talimatlar",
+  "constraints": "Kısıtlamalar",
+  "backToHistory": "Geçmişe dön",
+  "elements": "Öğeler"
 }

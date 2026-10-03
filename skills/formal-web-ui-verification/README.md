@@ -47,6 +47,38 @@ content-addressed development cache. Ordinary failures do not stop later safe
 cells. Subsets and cache hits are always marked ineligible for readiness; final
 delivery still requires a fresh complete run.
 
+## Fail-closed handoff pipeline
+
+Formal verification is the first gate. Its receipt has `formal.result` equal to
+exactly one of `passed`, `failed`, `blocked`, or `incomplete`:
+
+- `passed` means a fresh complete all-cell run, exit `0`, readiness-eligible
+  coverage, all required cells and assertions satisfied, no blocking findings,
+  and complete retained artifacts;
+- `failed` means rendered assertions or blocking findings failed;
+- `blocked` means the render path or required authentication, screenshots,
+  browser/tooling, or Coordinator evidence was unavailable; and
+- `incomplete` means a subset, cache hit, skipped cell, missing coverage, data
+  shape, or partial evidence was used. `development-passed` is incomplete,
+  never readiness `passed`.
+
+The only valid handoff order is:
+
+```text
+formal.result == passed
+    -> manual.result == passed
+        -> Product Design audit (when an approved visual target exists)
+            -> deployment/source-identity.result == passed
+                -> qualified release.deliver_evidence receipt
+```
+
+Do not open screenshot pairs or run `$product-design:audit` after a formal
+failure. Preserve the report, journey evidence, review queue, screenshots, and
+diagnostic findings; repair the product and rerun the complete formal plan on a
+fresh candidate. Any later gate failure blocks handoff and requires repair plus
+a fresh applicable review. HTTP 200, container health, matching static assets,
+or a successful deployment command never proves UI completion.
+
 Run the self-test before relying on it:
 
 ```bash
@@ -111,6 +143,15 @@ binding reads `X-UI-Source-Revision` (or a configured meta name/header) from
 the deployment and fails coverage when it is missing or differs from the
 expected source value.
 
+Required coverage must include every exact user-reported route/state/theme/
+viewport/device/browser/auth condition, supported phone/intermediate/desktop/
+wide layout, affected interaction state and theme, and every layout-changing
+production data shape. Fixtures must render conditional structures such as
+symmetry families and hidden navigation tracks. Each applicable cell records
+geometry assertions for hidden tracks, primary-content width, heading and
+canonical-identifier readability, character-by-character wrapping, clipping,
+document horizontal overflow, and initial-viewport placement.
+
 The default invocation creates a unique external artifact directory (normally
 under the system temporary root), writes complete `report.json` and `report.md`
 files, `journey-evidence.json`, `review-queue.json`, bounded `progress.jsonl`, and screenshot pairs, then prints one bounded JSON
@@ -152,10 +193,23 @@ Exit codes:
 - `3`: a required target could not be checked, redirected to another route,
   failed its source binding, or the minimum checked-page count was not met.
 
-After all automatic checks complete, open only the queue's screenshot pairs and
-finalize decisions with `devcoordinator2-tooling formal-ui review`. A verifier exit `0`
-with pending changed review is not visual completion; unchanged prior gaps stay
-blocking without reopening the same images.
+These exit codes do not replace `formal.result`: an exit `0` run with
+`readinessEligible: false` is `incomplete`; setup or unavailable evidence is
+`blocked`; blocking findings are `failed`; only a fresh complete readiness-
+eligible run is `passed`.
+
+Only when `formal.result == passed`, open the queue's screenshot pairs and
+finalize a separate manual receipt with `devcoordinator2-tooling formal-ui
+review`. That receipt must enumerate every formal target/state/theme/viewport
+cell, bind screenshot identities to the formal run, and include reviewer,
+decision, note, and timestamp. A pending, missing, gap, or blocked decision is
+not visual completion. For mockup-backed UI, the Product Design receipt must
+then include numbered journey steps, fresh screenshots, source/implementation
+identity, UX/accessibility findings, evidence limits, P0–P3 classification,
+iteration history, and exact `final result: passed`; Design QA alone is
+insufficient. Deployment verification must bind the passed receipts to source,
+artifact-manifest and image digests, deployment generation, live route, and
+live rendered evidence before a qualified delivery receipt is accepted.
 
 Explicit target failures are fail-closed. Coordinator-discovered failures can
 be tolerated only with the explicit `--allow-discovered-target-failures` flag,

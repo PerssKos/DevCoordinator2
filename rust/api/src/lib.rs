@@ -21,11 +21,12 @@ pub mod results;
 pub mod review;
 pub mod review_policy;
 pub mod runtime_recovery;
+pub mod storage;
 pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 29;
+pub const DATABASE_SCHEMA_VERSION: u32 = 31;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -133,6 +134,11 @@ pub enum ErrorCode {
     DecisionNotFound,
     GlossaryNotFound,
     GlossaryConflict,
+    StorageNotFound,
+    StorageConflict,
+    StorageBlocked,
+    StorageUnavailable,
+    StorageActionFailed,
     InternalError,
     DaemonUnavailable,
 }
@@ -613,6 +619,159 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         [],
         EmptyParams,
         PingData
+    ),
+    operation!(
+        "storage.inventory",
+        "List measured artifacts and evidence-backed deletion safety.",
+        READ_SERVER_ADMIN,
+        Protocol["storage inventory"],
+        ["storage_inventory"],
+        storage::List,
+        storage::Inventory
+    ),
+    operation!(
+        "storage.artifact.get",
+        "Inspect one tracked artifact and its protection reasons.",
+        READ_SERVER_ADMIN,
+        Protocol["storage show"],
+        ["storage_artifact_get"],
+        storage::Reference,
+        storage::Artifact
+    ),
+    operation!(
+        "storage.scan",
+        "Queue storage discovery and return a durable job.",
+        IDEMPOTENT_APPEND_SERVER_ADMIN,
+        Protocol["storage scan"],
+        ["storage_scan"],
+        storage::Scan,
+        storage::Job
+    ),
+    operation!(
+        "storage.register",
+        "Record a disposal decision for an exact discovered artifact.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage register"],
+        ["storage_register"],
+        storage::Register,
+        storage::Artifact
+    ),
+    operation!(
+        "storage.legacy.register",
+        "Queue cleanup-only ownership verification of a legacy group.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage legacy-register"],
+        ["storage_legacy_register"],
+        storage::LegacyRegister,
+        storage::Job
+    ),
+    operation!(
+        "storage.protection.set",
+        "Protect an artifact or remove its explicit protection.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage protect"],
+        ["storage_protection_set"],
+        storage::Protection,
+        storage::Artifact
+    ),
+    operation!(
+        "storage.policy.get",
+        "Read the effective automatic cleanup policy.",
+        READ_SERVER_ADMIN,
+        Protocol["storage policy show"],
+        ["storage_policy_get"],
+        storage::Scope,
+        storage::Policy
+    ),
+    operation!(
+        "storage.policy.set",
+        "Change a revision of an automatic cleanup policy.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage policy set"],
+        ["storage_policy_set"],
+        storage::PolicySet,
+        storage::Policy
+    ),
+    operation!(
+        "storage.roots.list",
+        "List shared discovery roots without private paths.",
+        READ_SERVER_ADMIN,
+        Protocol["storage roots list"],
+        ["storage_roots_list"],
+        EmptyParams,
+        storage::Roots
+    ),
+    operation!(
+        "storage.roots.set",
+        "Configure an exact shared discovery root.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage roots set"],
+        ["storage_roots_set"],
+        storage::RootSet,
+        storage::Root
+    ),
+    operation!(
+        "storage.cleanup.plan",
+        "Resolve removal dependencies and blockers without deleting data.",
+        APPEND_SERVER_ADMIN,
+        Protocol["storage cleanup plan"],
+        ["storage_cleanup_plan"],
+        storage::PlanRequest,
+        storage::CleanupPlan
+    ),
+    operation!(
+        "storage.cleanup.start",
+        "Start an identity-bound cleanup plan.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        Protocol["storage cleanup start"],
+        ["storage_cleanup_start"],
+        storage::Start,
+        storage::Job
+    ),
+    operation!(
+        "storage.job.status",
+        "Read cleanup progress and exact artifact receipts.",
+        READ_SERVER_ADMIN,
+        Protocol["storage job status"],
+        ["storage_job_status"],
+        storage::JobReference,
+        storage::Job
+    ),
+    operation!(
+        "storage.job.cancel",
+        "Cancel pending steps without undoing completed deletions.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage job cancel"],
+        ["storage_job_cancel"],
+        storage::JobReference,
+        storage::Job
+    ),
+    operation!(
+        "storage.history",
+        "Read bounded permanent cleanup history.",
+        READ_SERVER_ADMIN,
+        Protocol["storage history"],
+        ["storage_history"],
+        storage::HistoryRequest,
+        storage::History
+    ),
+    operation!(
+        "storage.lease.set",
+        "Register or renew an active-use lease.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage lease set"],
+        ["storage_lease_set"],
+        storage::LeaseSet,
+        storage::Lease
+    ),
+    operation!(
+        "storage.lease.release",
+        "Release an active-use lease without bypassing usage checks.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["storage lease release"],
+        ["storage_lease_release"],
+        storage::LeaseRelease,
+        storage::Lease
     ),
     operation!("ticket.request", "Public feature requests: list/get/comment/create/edit/remove/close, stage multiple attachments on any message, and read file chunks. Target defaults to configured upstream; local selects this server. Upload chunks are base64, at most 32 KiB decoded. Retain request_key on retry. The remove action is destructive.", EXTERNAL_SELF, excluded "Use Console or MCP ticket_request.", ["ticket_request"], tickets::Request, tickets::Reply),
     operation!("ticket.settings", "Read the feature request upstream, default vr.ae, and prior ticket destinations.", READ_SELF, excluded "Use Console or MCP ticket_settings.", ["ticket_settings"], EmptyParams, tickets::Settings),
@@ -1672,6 +1831,33 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::SketchListResult
     ),
     operation!(
+        "design.sketch.search",
+        "Search retained sketch descriptions, decisions, and lineage context.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_search"],
+        params::SketchSearch,
+        results::SketchListResult
+    ),
+    operation!(
+        "design.sketch.story",
+        "Read one surface's mockup history graph and current heads.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_story"],
+        params::SketchStory,
+        results::SketchStoryResult
+    ),
+    operation!(
+        "design.sketch.resolve",
+        "Resolve the explicit current mockup head for one surface.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_resolve"],
+        params::SketchResolve,
+        results::SketchResolveResult
+    ),
+    operation!(
         "design.sketch.get",
         "Open one retained project sketch with decision history and annotations.",
         READ_REPOSITORY_ADMIN,
@@ -1706,6 +1892,24 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["design_sketch_decision"],
         params::SketchDecisionChange,
         results::SketchDecisionResult
+    ),
+    operation!(
+        "design.sketch.activate",
+        "Record the explicit current continuation set for one surface.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_activate"],
+        params::SketchActivate,
+        results::SketchActivationResult
+    ),
+    operation!(
+        "design.sketch.description",
+        "Append a revised mockup description and context revision.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_description"],
+        params::SketchDescriptionChange,
+        results::SketchDescriptionResult
     ),
     operation!(
         "design.sketch.annotation.create",
@@ -2064,9 +2268,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 131);
-        assert_eq!(tools.len(), 102);
-        assert_eq!(cli_routes.len(), 101);
+        assert_eq!(OPERATIONS.len(), 153);
+        assert_eq!(tools.len(), 124);
+        assert_eq!(cli_routes.len(), 118);
     }
 
     #[test]

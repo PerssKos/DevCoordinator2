@@ -45,5 +45,24 @@
       "one": "{count} сет",
       "other": "{count} сети"
     }
-  }
+  },
+  "legacy": "Постара архива",
+  "currentSelection": "Тековен избор",
+  "search": "Пребарај",
+  "theme": "Тема",
+  "earlier": "Претходна историја",
+  "basedOn": "Врз основа на",
+  "surface": "Екран",
+  "selectionNote": "Белешка за изборот",
+  "continueSelected": "Продолжи со избраните",
+  "initialContext": "Почетен контекст на агентот",
+  "latestContext": "Најнов контекст",
+  "history": "Историја",
+  "description": "Опис",
+  "whyChanged": "Причина за промената",
+  "journey": "Патека на корисникот",
+  "instructions": "Упатства",
+  "constraints": "Ограничувања",
+  "backToHistory": "Назад кон историјата",
+  "elements": "Елементи"
 }

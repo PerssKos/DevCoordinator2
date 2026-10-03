@@ -49,5 +49,24 @@
       "many": "{count} наборів",
       "other": "{count} набору"
     }
-  }
+  },
+  "legacy": "Старий архів",
+  "currentSelection": "Поточний вибір",
+  "search": "Пошук",
+  "theme": "Тема",
+  "earlier": "Попередня історія",
+  "basedOn": "На основі",
+  "surface": "Екран",
+  "selectionNote": "Примітка до вибору",
+  "continueSelected": "Продовжити з вибраними",
+  "initialContext": "Початковий контекст агента",
+  "latestContext": "Останній контекст",
+  "history": "Історія",
+  "description": "Опис",
+  "whyChanged": "Причина зміни",
+  "journey": "Шлях користувача",
+  "instructions": "Вказівки",
+  "constraints": "Обмеження",
+  "backToHistory": "До історії",
+  "elements": "Елементи"
 }

@@ -167,8 +167,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const glossaryAspect = page.locator(`#workspace-aspects a[aria-current][href="#/glossary/${repositoryId}"]`);
   await glossaryAspect.waitFor({ state: 'visible' });
   await page.evaluate(() => new Promise(requestAnimationFrame));
-  const selectedAspect = await glossaryAspect.boundingBox();
-  const aspectStrip = await page.locator('#workspace-aspects').boundingBox();
+  const {selectedAspect,aspectStrip}=await glossaryAspect.evaluate(element=>({selectedAspect:element.getBoundingClientRect().toJSON(),aspectStrip:element.parentElement.getBoundingClientRect().toJSON()}));
   const aspectVisible = !!(selectedAspect && aspectStrip && selectedAspect.width > 0 && selectedAspect.height > 0
     && selectedAspect.x >= aspectStrip.x - 1 && selectedAspect.x + selectedAspect.width <= aspectStrip.x + aspectStrip.width + 1);
   if (!aspectVisible) await page.screenshot({ path: path.join(output, `workspace-aspect-failure-${theme}-${viewport.width}.png`), fullPage: true });

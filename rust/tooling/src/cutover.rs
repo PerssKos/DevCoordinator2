@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::install::{
     self, CommandRequest, CommandRunner, InstallManifest, read_and_verify_manifest_owned,
-    render_daemon_unit, render_edge_unit, render_tests_slice_unit,
+    render_daemon_unit_for_binary, render_edge_unit, render_tests_slice_unit,
 };
 
 const DRAIN_FILE: &str = "test-drain.json";
@@ -547,7 +547,13 @@ impl HostCutover {
             expected_owner.0,
         )?;
         let source_root = Path::new(&manifest.source_root);
-        let daemon_unit_text = render_daemon_unit(source_root)?;
+        let daemon_binary = manifest
+            .binaries
+            .iter()
+            .find(|binary| binary.name == "devcoordinator2")
+            .map(|binary| PathBuf::from(&binary.path))
+            .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
+        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?;
         let edge_unit_text = render_edge_unit(source_root, config.canary)?;
         let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
@@ -615,6 +621,16 @@ impl HostCutover {
             .map(|binary| PathBuf::from(&binary.path))
             .ok_or_else(|| format!("candidate manifest has no {name} binary"))
     }
+
+    fn verify_candidate_binaries(&self) -> Result<(), String> {
+        let verified = install::verify_manifest_binaries(&self.manifest, self.runner.as_ref())?;
+        if verified != self.manifest.binaries {
+            return Err(
+                "candidate release binaries changed after the cutover plan was verified".to_owned(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl CutoverAdapter for HostCutover {
@@ -626,7 +642,8 @@ impl CutoverAdapter for HostCutover {
     }
 
     fn wait_for_quiescence(&mut self, _drain: &Self::Drain) -> Result<(), String> {
-        wait_for_zero_activity(&self.config.runtime_dir)
+        wait_for_zero_activity(&self.config.runtime_dir)?;
+        self.verify_candidate_binaries()
     }
 
     fn wait_for_connections(&mut self) -> Result<(), String> {
@@ -755,6 +772,11 @@ impl CutoverAdapter for HostCutover {
             &self.manifest,
             self.expected_owner,
         )?;
+        // The candidate paths are mutable checkout artifacts. Revalidate after
+        // quiescence and immediately before exposing any managed link so a
+        // build that ran while activation drained cannot silently install a
+        // different source or binary hash.
+        self.verify_candidate_binaries()?;
         replace_captured_target(
             &self.config.cli_link,
             &self.installed_binary("devcoordinator2")?,
@@ -2776,6 +2798,38 @@ mod tests {
                 .exists()
         );
         assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+    }
+
+    #[test]
+    fn concrete_host_adapter_rejects_candidate_binary_drift_after_admission_drains() {
+        let world = host_world();
+        let runner = Arc::new(HostFake {
+            commit: world.commit.clone(),
+            ..HostFake::default()
+        });
+        let mut host =
+            HostCutover::new_owned(world.config.clone(), runner, world.expected_owner).unwrap();
+        let manifest: crate::install::InstallManifest =
+            serde_json::from_slice(&std::fs::read(&world.config.candidate_manifest).unwrap())
+                .unwrap();
+        let drifted = PathBuf::from(&manifest.binaries[0].path);
+        std::fs::write(&drifted, b"candidate-built-after-plan").unwrap();
+
+        let error = activate(&mut host).unwrap_err();
+
+        assert!(error.contains("candidate release binaries changed"));
+        assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+        assert!(
+            !world
+                .config
+                .runtime_dir
+                .join("daemon.pre-cutover.sock")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
+            world.old_daemon
+        );
     }
 
     #[test]

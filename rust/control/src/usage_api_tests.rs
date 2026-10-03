@@ -64,6 +64,14 @@ fn peer(
                 request["params"]["toAt"].as_u64().unwrap(),
             );
             mutate(&mut result);
+            if result
+                .get("__wait_for_disconnect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let _ = socket.read();
+                continue;
+            }
             let _ = socket.send(Message::Text(
                 json!({"id":2,"result":result}).to_string().into(),
             ));
@@ -239,13 +247,8 @@ fn slow_api_is_cancelled_within_the_shared_read_budget() {
         executable: "/unused".into(),
         api_socket: Some(socket.clone()),
     };
-    let (release, released) = std::sync::mpsc::channel();
-    let (server, calls) = peer(&socket, &home, 1, move |_| {
-        // Hold the response until the real client deadline cancels its read.
-        // Disconnection on panic and this failure ceiling bound fixture cleanup.
-        released
-            .recv_timeout(Duration::from_secs(3))
-            .expect("client completion must release the pending response");
+    let (server, calls) = peer(&socket, &home, 1, |result| {
+        result["__wait_for_disconnect"] = Value::Bool(true);
     });
     let began = Instant::now();
     let result = CollectorApi::default().summary(
@@ -256,9 +259,7 @@ fn slow_api_is_cancelled_within_the_shared_read_budget() {
         Instant::now() + Duration::from_millis(100),
     );
     let elapsed = began.elapsed();
-    let release_result = release.send(());
     let server_result = server.join();
-    release_result.unwrap();
     server_result.unwrap();
     assert!(result.is_err());
     assert!(elapsed < Duration::from_millis(650));
@@ -291,4 +292,77 @@ fn source_backfill_progress_is_reported_without_scanning_raw_usage() {
         Some("token_observations")
     );
     assert!(snapshot.refreshing);
+}
+
+#[test]
+fn unfinished_source_cache_skips_raw_fallback_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("collector");
+    let (_, now) = super::super::tests::source_database(&home, 8);
+    let connection = rusqlite::Connection::open(home.join("usage/usage.sqlite3")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE _usage_report_backfill(source TEXT PRIMARY KEY,cursor INTEGER NOT NULL,high_water INTEGER NOT NULL);
+             INSERT INTO _usage_report_backfill VALUES
+               ('operations', 2, 2),
+               ('token_observations', 0, 100),
+               ('coverage_events', 2, 2),
+               ('activity_spans', 1, 1);",
+        )
+        .unwrap();
+    let config = super::super::tests::config(dir.path(), home.clone());
+    let uid = config.codex_usage_sources[0].uid;
+    let authority = Database::open(dir.path().join("authority.sqlite3")).unwrap();
+    let key = "b".repeat(64);
+    authority
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/project-alpha','Alpha','t',1,'t')",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
+                rusqlite::params![uid, key],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let usage = CodexUsage::with_probe(
+        config,
+        authority,
+        Arc::new(FixedClock(
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
+        )),
+        Arc::new(HostRepositoryProbe),
+    );
+    let first = usage
+        .repository(
+            &RepositoryRecord {
+                repository_id: "project-alpha".into(),
+                display_name: "Alpha".into(),
+                root_path: "/project-alpha".into(),
+            },
+            UsageRange::Hours24,
+        )
+        .unwrap();
+    assert_eq!(first.totals.total_tokens, None);
+    assert!(first.coverage.snapshot.as_ref().unwrap().refreshing);
+    std::thread::sleep(Duration::from_millis(50));
+    let report = usage
+        .repository(
+            &RepositoryRecord {
+                repository_id: "project-alpha".into(),
+                display_name: "Alpha".into(),
+                root_path: "/project-alpha".into(),
+            },
+            UsageRange::Hours24,
+        )
+        .unwrap();
+    assert_eq!(report.totals.total_tokens, None);
+    assert!(
+        report.coverage.unavailable_reasons.contains_key("indexing"),
+        "unexpected unavailable reasons: {:?}",
+        report.coverage.unavailable_reasons
+    );
+    assert!(report.coverage.snapshot.as_ref().unwrap().refreshing);
 }
