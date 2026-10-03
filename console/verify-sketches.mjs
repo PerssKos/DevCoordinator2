@@ -194,5 +194,5 @@ export async function verifySketches({ page, browser, call, request, check, base
     },page);
   }
   await fs.writeFile(path.join(out,'fixture-identities.json'),JSON.stringify({repository_id,surface_id,initial:first,refined:next,source_root:root},null,2));
-  if(process.env.SKETCH_FORMAL==='1') await verifySketchHistoryLayout({base,repository_id,surface_id,sketch_id:next[0],root,out,check});
+  if(process.env.SKETCH_FORMAL==='1') await verifySketchHistoryLayout({base,repository_id,surface_id,sketch_id:next[0],root,out,check,browser});
 }
