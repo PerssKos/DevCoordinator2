@@ -688,6 +688,26 @@ fn valid_env_name(name: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+#[cfg(feature = "root-acceptance")]
+fn append_fixture_network(
+    argv: &mut Vec<OsString>,
+    context: &ManagedLabelContext,
+) -> Result<(), DockerError> {
+    let Some(network) = std::env::var_os("DEVCOORDINATOR2_ROOT_DOCKER_NETWORK") else {
+        return Ok(());
+    };
+    if !context.instance.starts_with("devcoordinator2-rustint-")
+        || network != OsString::from(format!("{}-network", context.instance))
+    {
+        return Err(DockerError::InvalidRequest(
+            "isolated fixture network identity mismatch".into(),
+        ));
+    }
+    argv.push("--network".into());
+    argv.push(network);
+    Ok(())
+}
+
 fn append_labels(argv: &mut Vec<OsString>, labels: BTreeMap<String, String>) {
     for (key, value) in labels {
         argv.push("--label".into());
@@ -960,6 +980,8 @@ pub trait DockerControl: Send + Sync {
             "never".into(),
         ];
         append_labels(&mut argv, labels);
+        #[cfg(feature = "root-acceptance")]
+        append_fixture_network(&mut argv, &request.label_context)?;
         for name in &request.env_names {
             argv.push("--env".into());
             argv.push(name.into());
@@ -1083,6 +1105,8 @@ pub trait DockerControl: Send + Sync {
             format!("--restart={}", request.restart).into(),
         ];
         append_labels(&mut argv, labels);
+        #[cfg(feature = "root-acceptance")]
+        append_fixture_network(&mut argv, &request.label_context)?;
         if let Some(env_file) = &request.env_file {
             argv.push("--env-file".into());
             argv.push(env_file.as_os_str().to_owned());

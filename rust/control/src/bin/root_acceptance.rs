@@ -83,6 +83,7 @@ struct World {
     route_consumer: Option<Child>,
     cleanup_volumes: Vec<String>,
     cleanup_storage_mount_units: Vec<String>,
+    isolated_docker_network: Option<String>,
     measurements: std::collections::BTreeMap<String, u128>,
 }
 
@@ -186,6 +187,7 @@ impl World {
             route_consumer: None,
             cleanup_volumes: Vec::new(),
             cleanup_storage_mount_units: Vec::new(),
+            isolated_docker_network: None,
             measurements: std::collections::BTreeMap::new(),
         };
         world.start_daemon(None, None, None)?;
@@ -238,6 +240,9 @@ impl World {
         }
         if let Some(domain) = base_domain {
             command.env("DEVCOORDINATOR2_BASE_DOMAIN", domain);
+        }
+        if let Some(network) = &self.isolated_docker_network {
+            command.env("DEVCOORDINATOR2_ROOT_DOCKER_NETWORK", network);
         }
         if self.sandboxed {
             command = self.sandbox_command(&command)?;
@@ -580,6 +585,30 @@ impl World {
         }
         if let Err(error) = self.cleanup_compose() {
             failures.push(error);
+        }
+        if let Some(network) = self.isolated_docker_network.take() {
+            let owned = Command::new("docker")
+                .args([
+                    "network",
+                    "inspect",
+                    "--format",
+                    "{{index .Labels \"devcoordinator2.instance\"}}",
+                    &network,
+                ])
+                .output();
+            match owned {
+                Ok(output)
+                    if output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).trim() == self.unit_prefix =>
+                {
+                    if let Err(error) = run_status("docker", &["network", "rm", &network]) {
+                        failures.push(error);
+                    }
+                }
+                _ => {
+                    failures.push("isolated fixture network ownership could not be verified".into())
+                }
+            }
         }
         for unit in std::mem::take(&mut self.cleanup_storage_mount_units) {
             if let Err(error) = run_status_allow_absent("systemctl", &["stop", &unit]) {
@@ -3748,6 +3777,27 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
 }
 
 fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<(), String> {
+    // Keep this acceptance independent of the shared default Docker bridge.
+    // The feature-gated daemon uses only this marker-bound fixture network.
+    let network = format!("{}-network", world.unit_prefix);
+    let label = format!("devcoordinator2.instance={}", world.unit_prefix);
+    let mut args = vec![
+        "network".to_owned(),
+        "create".into(),
+        "--label".into(),
+        label,
+    ];
+    if let Some(subnet) = world.harness.compose_subnet {
+        args.extend(["--subnet".into(), format!("{subnet}/24")]);
+    }
+    args.push(network.clone());
+    run_status(
+        "docker",
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?;
+    world.isolated_docker_network = Some(network);
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
     setup_web(world, "v1", true)?;
     let applied = world.call(
         "deployment.apply",

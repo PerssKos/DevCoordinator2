@@ -79,9 +79,11 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
   await check('Changing width preserves the same detail and keyboard focus',async()=>{
     const button=page.locator('[data-hi-disposition]');await button.focus();
     await page.setViewportSize({width:1440,height:1024});
+    await page.locator('.hi-detail-host #hi-selected-detail').waitFor({state:'attached',timeout:1500});
     assert.equal(await page.locator('[data-hi-disposition]').evaluate(e=>e===document.activeElement),true);
     assert.equal(await page.locator('.hi-detail-host #hi-selected-detail').count(),1);
     await page.setViewportSize({width:390,height:844});
+    await page.locator('[data-hi-row] #hi-selected-detail').waitFor({state:'attached',timeout:1500});
     assert.equal(await page.locator('[data-hi-row] #hi-selected-detail').count(),1);
   },page);
   await check('Search filters the inbox without replacing the focused control',async()=>{
