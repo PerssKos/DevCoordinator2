@@ -205,7 +205,7 @@ impl SketchService {
         let batch = batch_id.to_owned();
         self.database.call(move |c| {
             let b=c.query_row("SELECT sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=?1 AND batch_id=?2",rusqlite::params![repo,batch],|r|Ok((r.get(0)?,r.get(1)?,r.get::<_,i64>(2)? as u64,r.get(3)?,r.get(4)?)))?;
-            let sketches=query_summaries(c,&format!("sketches.repository_id=? AND sketches.batch_id=? ORDER BY sketches.display_order,sketches.rowid"),vec![repo.clone().into(),batch.clone().into()])?;
+            let sketches=query_summaries(c,"sketches.repository_id=? AND sketches.batch_id=? ORDER BY sketches.display_order,sketches.rowid",vec![repo.clone().into(),batch.clone().into()])?;
             Ok(results::SketchBatch {batch_id:batch,repository_id:repo,sketch_set:b.0,source_skill:b.1,generation_record_size:b.2,generation_record_sha256:b.3,created_at:b.4,sketches})
         }).map_err(db_error)
     }
