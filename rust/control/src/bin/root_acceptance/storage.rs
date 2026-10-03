@@ -4,8 +4,7 @@ use devcoordinator2_control::deployment_state::{
     DeploymentStore, ObservedContainerInput, ObservedDeploymentInput,
 };
 
-pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
-    world.write_config("schema = 2\n")?;
+fn start_fixture_engine(world: &mut World) -> Result<String, String> {
     let socket = world.base.join("builder.sock");
     let config = world.base.join("builder.json");
     write_private_json(&config, &json!({}))?;
@@ -17,7 +16,9 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
             .trim_start_matches("devcoordinator2-rustint-")
             .trim_end_matches("-test")
     );
-    world.cleanup_fixture_units.push(unit.clone());
+    if !world.cleanup_fixture_units.contains(&unit) {
+        world.cleanup_fixture_units.push(unit.clone());
+    }
     run_status(
         "systemd-run",
         &[
@@ -53,12 +54,17 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         &world.state.join("storage-fixture-engine.json"),
         &json!(socket),
     )?;
+    Ok(format!("unix://{}", socket.display()))
+}
+
+pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
+    world.write_config("schema = 2\n")?;
+    let host = start_fixture_engine(world)?;
     let registration = world.call("repository.register", json!({"path":world.repo}))?;
     let repository = data(&registration)?["repository_id"]
         .as_str()
         .ok_or("fixture repository missing")?
         .to_owned();
-    let host = format!("unix://{}", socket.display());
     let label = format!("devcoordinator2.instance={}", world.unit_prefix);
     let network = format!("{}-network", world.unit_prefix);
     run_status(
@@ -261,6 +267,109 @@ pub(super) fn engine_cache_cleanup(world: &mut World) -> Result<(), String> {
         ],
     )?;
     unused_image_ownership(world, &repository, &host, &tags[1])?;
+    unavailable_engine_observations(world, &host)?;
+    Ok(())
+}
+
+fn unavailable_engine_observations(world: &mut World, host: &str) -> Result<(), String> {
+    let name = format!("{}-observation", world.unit_prefix);
+    run_status(
+        "docker",
+        &[
+            "--host",
+            host,
+            "network",
+            "create",
+            "--label",
+            &format!("devcoordinator2.instance={}", world.unit_prefix),
+            &name,
+        ],
+    )?;
+    let scan = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"before-engine-outage"}),
+    )?;
+    wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?;
+    let before = mcp(
+        world,
+        "storage_inventory",
+        json!({"kind":"network","query":name,"limit":10}),
+    )?;
+    let row = before["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.first())
+        .ok_or("outage fixture network missing")?
+        .clone();
+    ensure!(
+        row["deletable"] == true,
+        "unused fixture network was not initially eligible"
+    );
+    let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(90))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|e| e.to_string())?;
+    let mut cursor = 0;
+    loop {
+        let jobs = mcp(world, "storage_history", json!({"limit":50}))?;
+        if !jobs["jobs"].as_array().is_some_and(|rows| {
+            rows.iter().any(|job| {
+                matches!(
+                    job["state"].as_str(),
+                    Some("queued" | "running" | "cancelling")
+                )
+            })
+        }) {
+            break;
+        }
+        let event=world.call("event.wait",json!({"cursor":cursor,"filters":[{"filter_id":"storage-idle","categories":["other"],"kinds":["storage.job.finished","storage.job.failed"],"deadline_at":deadline}]}))?;
+        cursor = data(&event)?["cursor"]
+            .as_u64()
+            .ok_or("idle cursor missing")?;
+        ensure!(
+            data(&event)?["heartbeat_due"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "fixture storage jobs did not settle before outage"
+        );
+    }
+    run_status(
+        "systemctl",
+        &[
+            "stop",
+            world
+                .cleanup_fixture_units
+                .first()
+                .ok_or("fixture engine unit missing")?,
+        ],
+    )?;
+    let scan = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"during-engine-outage"}),
+    )?;
+    wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?;
+    let blocked = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":row["artifact_id"]}),
+    )?;
+    ensure!(
+        blocked["deletable"] == false && blocked["verified_at_ms"].is_null(),
+        "a failed observation left a previously safe network eligible"
+    );
+    start_fixture_engine(world)?;
+    let scan = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"after-engine-outage"}),
+    )?;
+    wait_job(world, data(&scan)?["job_id"].as_str().unwrap())?;
+    let recovered = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":row["artifact_id"]}),
+    )?;
+    ensure!(
+        recovered["deletable"] == true && !recovered["verified_at_ms"].is_null(),
+        "a successful observation did not restore the checked network"
+    );
     Ok(())
 }
 
@@ -1331,6 +1440,38 @@ fn unused_volume_ownership(world: &mut World, repo: &str) -> Result<(), String> 
     if unknown["deletable"] != false {
         failures.push("unknown volume ownership authorized deletion");
     }
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[owned[0]["artifact_id"]],"include_persistent_data":true}),
+    )?;
+    ensure!(
+        plan["ready"] == true,
+        "known unused volume was not plannable"
+    );
+    fs::write(
+        mountpoints[0].join("new-data-after-plan"),
+        b"new fixture data",
+    )
+    .map_err(|e| e.to_string())?;
+    let start = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"reject-changed-volume-data"}),
+    )?;
+    let refused = wait_job(world, start["job_id"].as_str().unwrap())?;
+    ensure!(
+        refused["state"] == "failed"
+            && refused["receipts"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|r| r["code"] == "activity_changed")),
+        "volume data changed after planning without blocking removal"
+    );
+    ensure!(
+        mountpoints[0].join("new-data-after-plan").is_file(),
+        "freshly written volume data was removed"
+    );
+    global(world, "volume-after-activity-change")?;
     set_clock(world, now + 14 * 86_400_000 - 1)?;
     global(world, "volume-before-fourteen-days")?;
     for name in &volumes {
@@ -1556,6 +1697,7 @@ pub(super) fn automatic_policy_boundaries(world: &mut World) -> Result<(), Strin
         due["eligible_at_ms"].as_u64() == Some(start + 3 * 86_400_000),
         "cache default is not three days"
     );
+    observation_age_and_plan_expiry(world, &due, start)?;
     data(&world.call("storage.protection.set",json!({"artifact_id":pinned["artifact_id"],"expected_revision":pinned["revision"],"protected":true}))?)?;
     data(&world.call("storage.register",json!({"artifact_id":data_row["artifact_id"],"expected_revision":data_row["revision"],"repository_id":repo,"effect":"permanent_data","reason":"Disposable isolated policy fixture"}))?)?;
     set_clock(world, start + 3 * 86_400_000 - 1)?;
@@ -1639,6 +1781,78 @@ pub(super) fn automatic_policy_boundaries(world: &mut World) -> Result<(), Strin
         overridden["artifact_id"].as_str().unwrap(),
         &world.repo.join("cache/override"),
     )?;
+    Ok(())
+}
+
+fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Result<(), String> {
+    // Model the persisted timestamp of the measured 9–21 minute host scans.
+    // A sequence advance keeps an older in-flight scan from replacing this
+    // controlled observation; the normal API still derives all safety facts.
+    let age = |verified: Option<u64>| -> Result<(), String> {
+        let database =
+            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let id = row["artifact_id"]
+            .as_str()
+            .ok_or("freshness artifact missing")?
+            .to_owned();
+        database.transaction(move|c| {
+            c.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",[])?;
+            let sequence:i64=c.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|r|r.get(0))?;
+            c.execute("UPDATE storage_artifacts SET record_json=json_set(record_json,'$.artifact.verified_at_ms',?1,'$.update_sequence',?2) WHERE artifact_id=?3",rusqlite::params![verified.map(|v|v as i64),sequence,id])?;
+            Ok(())
+        }).map_err(|e|e.to_string())?;
+        database.close().map_err(|e| e.to_string())
+    };
+    age(Some(now - 20 * 60_000))?;
+    let recent = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":row["artifact_id"]}),
+    )?;
+    ensure!(
+        recent["deletable"] == true && recent["verified_at_ms"] == now - 20 * 60_000,
+        "an hourly scan expired before its result could be used"
+    );
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[row["artifact_id"]]}),
+    )?;
+    ensure!(
+        plan["ready"] == true && plan["expires_at_ms"].as_u64() == Some(now + 5 * 60_000),
+        "inventory freshness changed the five-minute cleanup plan limit"
+    );
+    age(Some(now - 2 * 3_600_000 - 1))?;
+    ensure!(
+        mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":row["artifact_id"]})
+        )?["deletable"]
+            == false,
+        "missed discovery cycles stayed eligible indefinitely"
+    );
+    age(None)?;
+    ensure!(
+        mcp(
+            world,
+            "storage_artifact_get",
+            json!({"artifact_id":row["artifact_id"]})
+        )?["deletable"]
+            == false,
+        "an unavailable observation became eligible"
+    );
+    age(Some(now))?;
+    set_clock(world, now + 5 * 60_000 + 1)?;
+    let expired = world.call(
+        "storage.cleanup.start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"reject-expired-hourly-plan"}),
+    )?;
+    ensure!(
+        error_code(&expired) == Some("storage_conflict")
+            && expired["error"]["message"] == "plan_expired",
+        "an old plan remained executable after the inventory lifetime change"
+    );
     Ok(())
 }
 

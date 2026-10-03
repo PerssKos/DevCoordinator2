@@ -749,6 +749,7 @@ impl HostBackend {
                 return;
             }
         };
+        let mut complete = true;
         let filesystem = self.engine_data_root().ok().and_then(|path| {
             fs::filesystem(&path, context.now_ms, "Docker storage")
                 .ok()
@@ -764,6 +765,7 @@ impl HostBackend {
             }
             let created = s(&value, "CreatedAt");
             if id.is_empty() || created.is_empty() {
+                complete = false;
                 out.coverage_gaps
                     .push("build_cache_identity_unverified".into());
                 continue;
@@ -808,6 +810,9 @@ impl HostBackend {
             );
             record.artifact.last_used_at_ms = date_ms(s(&value, "LastUsedAt"));
             out.records.push(record);
+        }
+        if complete {
+            out.complete_kinds.push(api::Kind::BuildCache);
         }
     }
 
@@ -915,6 +920,18 @@ impl HostBackend {
         if object_type == "volume" {
             let mountpoint = std::path::Path::new(s(value, "mountpoint"));
             let identity = fs::identity(mountpoint)?;
+            if !context.discovering && r.resource_key == format!("fs:{}:{}", identity.0, identity.1)
+            {
+                let measured = fs::measure(mountpoint)?;
+                if r.last_activity_signature
+                    != format!(
+                        "{}:{}:{}",
+                        measured.newest_modified_ns, measured.bytes, measured.entries
+                    )
+                {
+                    return Err(blocked("activity_changed"));
+                }
+            }
             if r.resource_key != format!("fs:{}:{}", identity.0, identity.1) {
                 // Retiring a bind mount exposes Docker's original empty _data
                 // directory. Accept only that recorded transition, while the

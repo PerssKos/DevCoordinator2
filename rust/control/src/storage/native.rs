@@ -137,7 +137,6 @@ impl Backend for HostBackend {
                 Ok(()) => result.complete_kinds.extend([
                     api::Kind::Container,
                     api::Kind::Image,
-                    api::Kind::BuildCache,
                     api::Kind::Network,
                     api::Kind::Volume,
                     api::Kind::Mount,

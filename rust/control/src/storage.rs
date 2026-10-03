@@ -24,6 +24,9 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 pub const SAFETY_FRESH_MS: u64 = 300_000;
+// Inventory refreshes hourly and may require a substantial filesystem walk.
+// Its observation time stays truthful; removal still performs fresh checks.
+const OBSERVATION_FRESH_MS: u64 = 2 * 3_600_000;
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
 
@@ -1078,7 +1081,7 @@ impl StorageService {
             reasons.insert(0, "active_lease".into());
         }
         if a.verified_at_ms
-            .is_none_or(|at| now.saturating_sub(at) > SAFETY_FRESH_MS)
+            .is_none_or(|at| now.saturating_sub(at) > OBSERVATION_FRESH_MS)
         {
             reasons.push("checks_expired".into());
         }

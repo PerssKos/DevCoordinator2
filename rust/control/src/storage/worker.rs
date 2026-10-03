@@ -452,7 +452,20 @@ impl StorageService {
                     .map_err(db_error)?;
                 let mut context = self.context()?;
                 context.scan_repository_id = request.repository_id;
-                let result = self.backend.discover(&context)?;
+                let result = match self.backend.discover(&context) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.merge_discovery(
+                            Discovery {
+                                repository_id: context.scan_repository_id.clone(),
+                                coverage_gaps: vec!["discovery_failed".into()],
+                                ..Discovery::default()
+                            },
+                            sequence,
+                        )?;
+                        return Err(error);
+                    }
+                };
                 #[cfg(feature = "root-acceptance")]
                 if self
                     .config
@@ -789,7 +802,23 @@ impl StorageService {
                 .is_none_or(|old| old.update_sequence < sequence)
         });
         let mut verified_missing = BTreeSet::new();
+        let mut unavailable = BTreeSet::new();
         for (id, old) in &existing {
+            if old.artifact.removed_at_ms.is_none()
+                && old.update_sequence < sequence
+                && (old.artifact.kind != api::Kind::BuildCache || discovery.repository_id.is_none())
+                && discovery
+                    .repository_id
+                    .as_ref()
+                    .is_none_or(|repo| old.artifact.repository_id.as_ref() == Some(repo))
+                && !discovery
+                    .records
+                    .iter()
+                    .any(|r| r.artifact.artifact_id == *id)
+                && !discovery.complete_kinds.contains(&old.artifact.kind)
+            {
+                unavailable.insert(id.clone());
+            }
             if old.artifact.removed_at_ms.is_none()
                 && old.update_sequence < sequence
                 && discovery.complete_kinds.contains(&old.artifact.kind)
@@ -906,6 +935,11 @@ impl StorageService {
             for (id,mut old) in existing {if !seen.contains(&id)&&verified_missing.contains(&id){
                 if super::locks::ensure_editable(c, &old.resource_key, None).is_err() { continue; }
                 old.artifact.removed_at_ms=Some(now);old.artifact.revision+=1;old.update_sequence=sequence;c.execute("UPDATE storage_artifacts SET removed_at_ms=?1,revision=?2,record_json=?3,updated_at_ms=?1 WHERE artifact_id=?4 AND revision=?5 AND COALESCE(json_extract(record_json,'$.update_sequence'),0) < ?6",rusqlite::params![now as i64,old.artifact.revision as i64,json(&old).map_err(DatabaseError::Domain)?,id,(old.artifact.revision-1) as i64,sequence as i64])?;
+            }else if unavailable.contains(&id){
+                if super::locks::ensure_editable(c,&old.resource_key,None).is_err(){continue;}
+                old.artifact.verified_at_ms=None;old.artifact.revision+=1;old.update_sequence=sequence;
+                if !old.blockers.iter().any(|r|r=="observation_unavailable"){old.blockers.push("observation_unavailable".into());}
+                c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4 AND revision=?5 AND COALESCE(json_extract(record_json,'$.update_sequence'),0) < ?6",rusqlite::params![old.artifact.revision as i64,json(&old).map_err(DatabaseError::Domain)?,now as i64,id,(old.artifact.revision-1) as i64,sequence as i64])?;
             }}
             c.execute("UPDATE storage_scan_state SET last_scan_at_ms=?1,filesystem_json=?2,coverage_json=?3 WHERE singleton=1 AND revision=?4",rusqlite::params![now as i64,public_filesystems,coverage,sequence as i64])?;Ok(())
         }).map_err(db_error)

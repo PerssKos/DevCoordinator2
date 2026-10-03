@@ -79,6 +79,11 @@ show` or `storage policy set --file <request.json>` for global settings; include
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
+Inventory keeps the actual observation timestamp and expires after two missed
+hourly discovery intervals. This accommodates long host scans without extending
+the five-minute lifetime of a prepared cleanup plan. Failed provider observations
+immediately block affected records. Removal still verifies current dependencies,
+identity and activity; new volume data written after planning prevents removal.
 Unused volumes and images retain verified ownership from their managed labels
 or earlier recorded consumers while their exact identities still match. Volume
 history also binds the backing inode. Removing the final container does not
