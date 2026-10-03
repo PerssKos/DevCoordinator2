@@ -15,7 +15,7 @@ use crate::{
     platform::Clock,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError, storage as api};
-use model::{Record, RootRecord, StoredPlan, atom};
+use model::{Locator, Record, RootRecord, StoredPlan, atom};
 use rusqlite::OptionalExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -24,6 +24,9 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 pub const SAFETY_FRESH_MS: u64 = 300_000;
+// Inventory refreshes hourly and may require a substantial filesystem walk.
+// Its observation time stays truthful; removal still performs fresh checks.
+const OBSERVATION_FRESH_MS: u64 = 2 * 3_600_000;
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
 
@@ -502,10 +505,30 @@ impl StorageService {
                 &mut ordered,
             )?;
         }
+        // A selected directory removes its known nested directories too. Bind
+        // them into the reviewed plan, including their protection and effects.
+        let directories = ordered
+            .iter()
+            .filter_map(|id| records.get(id))
+            .filter(|r| matches!(r.locator, Locator::Directory { .. }))
+            .map(|r| r.resource_key.clone())
+            .collect::<BTreeSet<_>>();
+        for r in records.values().filter(|r| {
+            r.artifact.removed_at_ms.is_none()
+                && matches!(r.locator, Locator::Directory { .. })
+                && r.ancestor_keys.iter().any(|key| directories.contains(key))
+        }) {
+            visit(
+                &r.artifact.artifact_id,
+                &records,
+                &mut BTreeSet::new(),
+                &mut visited,
+                &mut ordered,
+            )?;
+        }
+        order_contained_directories(&mut ordered, &records)?;
         let mut items = Vec::new();
         let mut policies = BTreeMap::new();
-        let mut physical = BTreeSet::new();
-        let mut total = 0;
         policies.insert(String::new(), self.policy(api::Scope::default())?.revision);
         let mut bound = Vec::new();
         for id in ordered {
@@ -526,9 +549,6 @@ impl StorageService {
             }
             let policy = projection.policy(row.repository_id.as_deref());
             policies.insert(policy.repository_id.unwrap_or_default(), policy.revision);
-            if physical.insert(r.resource_key.clone()) && blockers.is_empty() {
-                total += row.allocated_bytes.unwrap_or(0);
-            }
             items.push(api::PlanItem {
                 artifact_id: id,
                 revision: row.revision,
@@ -540,6 +560,23 @@ impl StorageService {
             });
             bound.push(r.clone());
         }
+        let eligible = bound
+            .iter()
+            .zip(&items)
+            .filter(|(_, item)| item.blockers.is_empty())
+            .map(|(r, _)| r.resource_key.clone())
+            .collect::<BTreeSet<_>>();
+        let mut physical = BTreeSet::new();
+        let total = bound
+            .iter()
+            .zip(&items)
+            .filter(|(r, item)| {
+                item.blockers.is_empty()
+                    && !r.ancestor_keys.iter().any(|key| eligible.contains(key))
+                    && physical.insert(r.resource_key.clone())
+            })
+            .map(|(_, item)| item.allocated_bytes.unwrap_or(0))
+            .sum();
         let now = self.now_ms();
         let public = api::CleanupPlan {
             plan_id: new_id("sp")?,
@@ -888,12 +925,13 @@ impl StorageService {
         let ancestors = r.ancestor_keys.clone();
         let job = job.map(str::to_owned);
         let id = r.artifact.artifact_id.clone();
-        let value = json(&r)?;
         let now = self.now_ms();
         let actor = actor.to_owned();
         let kind = kind.to_owned();
         self.database.transaction(move|c| {
             locks::ensure_tree_editable(c,&resource,&ancestors,job.as_deref())?;
+            r.update_sequence = next_sequence(c)?;
+            let value = json(&r).map_err(DatabaseError::Domain)?;
             let changed=c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4 AND revision=?5",rusqlite::params![(expected+1) as i64,value,now as i64,id,expected as i64])?;
             if changed!=1 {return Err(DatabaseError::Domain(conflict("artifact_changed")));}
             change(c,Some(&id),&kind,&actor,now,"{}")?;Ok(())
@@ -1043,7 +1081,7 @@ impl StorageService {
             reasons.insert(0, "active_lease".into());
         }
         if a.verified_at_ms
-            .is_none_or(|at| now.saturating_sub(at) > SAFETY_FRESH_MS)
+            .is_none_or(|at| now.saturating_sub(at) > OBSERVATION_FRESH_MS)
         {
             reasons.push("checks_expired".into());
         }
@@ -1126,8 +1164,36 @@ fn remember_lease_use(
         if record.artifact.last_used_at_ms.is_none_or(|at| at < use_at) {
             record.artifact.last_used_at_ms = Some(use_at);
             record.artifact.revision += 1;
+            record.update_sequence = next_sequence(c)?;
             c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4",rusqlite::params![record.artifact.revision as i64,json(&record).map_err(DatabaseError::Domain)?,now as i64,id])?;
         }
+    }
+    Ok(())
+}
+
+fn order_contained_directories(
+    ordered: &mut Vec<String>,
+    records: &BTreeMap<String, Record>,
+) -> Result<(), ProtocolError> {
+    let mut pending = std::mem::take(ordered);
+    while !pending.is_empty() {
+        let next = pending
+            .iter()
+            .position(|id| {
+                let record = &records[id];
+                pending.iter().all(|other| {
+                    if other == id {
+                        return true;
+                    }
+                    let parent = &records[other];
+                    !(record.artifact.dependencies.contains(other)
+                        || (matches!(record.locator, Locator::Directory { .. })
+                            && matches!(parent.locator, Locator::Directory { .. })
+                            && record.ancestor_keys.contains(&parent.resource_key)))
+                })
+            })
+            .ok_or_else(|| blocked("dependency_cycle"))?;
+        ordered.push(pending.remove(next));
     }
     Ok(())
 }
@@ -1163,6 +1229,19 @@ fn visit(
         return Err(blocked("cleanup_group_too_large"));
     }
     Ok(())
+}
+
+fn next_sequence(c: &rusqlite::Transaction<'_>) -> Result<u64, DatabaseError> {
+    c.execute(
+        "UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",
+        [],
+    )?;
+    let sequence = c.query_row(
+        "SELECT revision FROM storage_scan_state WHERE singleton=1",
+        [],
+        |r| r.get::<_, i64>(0),
+    )?;
+    Ok(super_sql_u64(sequence)?)
 }
 
 fn change(

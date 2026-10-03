@@ -13,8 +13,18 @@ const MAX_ENTRIES: usize = 1_000_000;
 const MAX_DEPTH: usize = 128;
 
 pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
+    open_directory_if_present(path)?.ok_or_else(|| blocked("directory_identity_unavailable"))
+}
+
+fn open_directory_if_present(path: &Path) -> Result<Option<File>, ProtocolError> {
     if !path.is_absolute() {
         return Err(blocked("path_not_absolute"));
+    }
+    if path
+        .components()
+        .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(blocked("path_traversal"));
     }
     let mut fd = File::from(
         unix::open(
@@ -28,24 +38,26 @@ pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
         match part {
             Component::RootDir => {}
             Component::Normal(name) => {
-                fd = File::from(
-                    unix::openat(
-                        &fd,
-                        name,
-                        OFlags::RDONLY
-                            | OFlags::DIRECTORY
-                            | OFlags::NOFOLLOW
-                            | OFlags::CLOEXEC
-                            | OFlags::NONBLOCK,
-                        Mode::empty(),
-                    )
-                    .map_err(|_| blocked("directory_identity_unavailable"))?,
-                )
+                let opened = unix::openat(
+                    &fd,
+                    name,
+                    OFlags::RDONLY
+                        | OFlags::DIRECTORY
+                        | OFlags::NOFOLLOW
+                        | OFlags::CLOEXEC
+                        | OFlags::NONBLOCK,
+                    Mode::empty(),
+                );
+                fd = match opened {
+                    Ok(fd) => File::from(fd),
+                    Err(rustix::io::Errno::NOENT) => return Ok(None),
+                    Err(_) => return Err(blocked("directory_identity_unavailable")),
+                };
             }
             _ => return Err(blocked("path_traversal")),
         }
     }
-    Ok(fd)
+    Ok(Some(fd))
 }
 
 pub fn identity(path: &Path) -> Result<(u64, u64), ProtocolError> {
@@ -55,8 +67,8 @@ pub fn identity(path: &Path) -> Result<(u64, u64), ProtocolError> {
     Ok((m.dev(), m.ino()))
 }
 
-/// Only a successful lookup in a no-follow parent can prove absence. Permission
-/// errors, an unavailable mount, and substituted symlinks never mean removed.
+/// A missing entry or ancestor in a no-follow walk proves absence. Permission
+/// errors and substituted symlinks never mean removed.
 pub fn absent(path: &Path) -> Result<bool, ProtocolError> {
     let parent = path
         .parent()
@@ -64,7 +76,9 @@ pub fn absent(path: &Path) -> Result<bool, ProtocolError> {
     let name = path
         .file_name()
         .ok_or_else(|| blocked("invalid_storage_path"))?;
-    let fd = open_directory(parent)?;
+    let Some(fd) = open_directory_if_present(parent)? else {
+        return Ok(true);
+    };
     match unix::statat(&fd, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(_) => Ok(false),
         Err(rustix::io::Errno::NOENT) => Ok(true),
@@ -102,6 +116,7 @@ pub fn measure(path: &Path) -> Result<Measurement, ProtocolError> {
         newest_modified_ns: 0,
         entries: 0,
         nested_git: false,
+        protected_metadata: false,
         multiply_linked: false,
     };
     walk_measure(&fd, 0, &mut value, &mut HashSet::new())?;
@@ -134,6 +149,7 @@ fn walk_measure(
         if name == ".git" {
             out.nested_git = true;
         }
+        out.protected_metadata |= super::protected_metadata_name(&name);
         let st = unix::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)
             .map_err(|_| blocked("directory_changed"))?;
         if st.st_dev != out.device {
@@ -198,6 +214,7 @@ pub fn remove_tree(
     path: &Path,
     expected: (u64, u64),
     allow_git: bool,
+    preserve_metadata: bool,
 ) -> Result<(), ProtocolError> {
     if path.parent().is_none() || path == Path::new("/") {
         return Err(blocked("protected_root"));
@@ -225,7 +242,7 @@ pub fn remove_tree(
     if (st.dev(), st.ino()) != expected {
         return Err(blocked("identity_changed"));
     }
-    remove_children(&child, expected.0, allow_git, 0)?;
+    remove_children(&child, expected.0, allow_git, preserve_metadata, 0)?;
     let current = unix::statat(&parent, name, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|_| blocked("directory_changed"))?;
     if (current.st_dev, current.st_ino) != expected {
@@ -242,6 +259,7 @@ fn remove_children(
     dir: &File,
     device: u64,
     allow_git: bool,
+    preserve_metadata: bool,
     depth: usize,
 ) -> Result<(), ProtocolError> {
     if depth > MAX_DEPTH {
@@ -250,6 +268,9 @@ fn remove_children(
     let entries = names(dir)?;
     if !allow_git && entries.iter().any(|n| n == ".git") {
         return Err(blocked("nested_repository"));
+    }
+    if preserve_metadata && entries.iter().any(|n| super::protected_metadata_name(n)) {
+        return Err(blocked("protected_source_or_credentials"));
     }
     for name in entries {
         let st = unix::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)
@@ -276,7 +297,7 @@ fn remove_children(
             if (m.dev(), m.ino()) != (st.st_dev, st.st_ino) {
                 return Err(blocked("identity_changed"));
             }
-            remove_children(&child, device, allow_git, depth + 1)?;
+            remove_children(&child, device, allow_git, preserve_metadata, depth + 1)?;
             AtFlags::REMOVEDIR
         } else {
             AtFlags::empty()

@@ -74,13 +74,14 @@ impl StorageService {
     fn commit_item(
         &self,
         job_id: &str,
-        record: super::model::Record,
+        mut record: super::model::Record,
         receipt: api::ItemReceipt,
         added: u64,
     ) -> Result<api::Job, ProtocolError> {
         let job_id = job_id.to_owned();
         let now = self.now_ms();
         self.database.transaction(move|c|{
+            record.update_sequence = super::next_sequence(c)?;
             let value=c.query_row("SELECT job_json FROM storage_jobs WHERE job_id=?1",[&job_id],|r|r.get::<_,String>(0))?;
             let mut job:api::Job=parse(&value).map_err(DatabaseError::Domain)?;
             let step=job.receipts.len() as u32;
@@ -445,10 +446,48 @@ impl StorageService {
         match job.kind.as_str() {
             "scan" => {
                 let request: api::Scan = parse(&raw)?;
+                let sequence = self
+                    .database
+                    .transaction(super::next_sequence)
+                    .map_err(db_error)?;
                 let mut context = self.context()?;
                 context.scan_repository_id = request.repository_id;
-                let result = self.backend.discover(&context)?;
-                self.merge_discovery(result)?;
+                let result = match self.backend.discover(&context) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.merge_discovery(
+                            Discovery {
+                                repository_id: context.scan_repository_id.clone(),
+                                coverage_gaps: vec!["discovery_failed".into()],
+                                ..Discovery::default()
+                            },
+                            sequence,
+                        )?;
+                        return Err(error);
+                    }
+                };
+                #[cfg(feature = "root-acceptance")]
+                if self
+                    .config
+                    .unit_prefix
+                    .starts_with("devcoordinator2-rustint-")
+                {
+                    let barrier = self.config.state_dir.join("storage-pause-scan");
+                    if std::fs::read_to_string(&barrier).ok().as_deref()
+                        == Some(request.idempotency_key.as_str())
+                    {
+                        std::fs::write(barrier.with_extension("ready"), id)
+                            .map_err(|_| blocked("fixture_scan_barrier_unavailable"))?;
+                        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+                        while barrier.exists() {
+                            if std::time::Instant::now() >= deadline {
+                                return Err(blocked("fixture_scan_barrier_timeout"));
+                            }
+                            std::thread::sleep(Duration::from_millis(25));
+                        }
+                    }
+                }
+                self.merge_discovery(result, sequence)?;
                 self.finish(id, api::JobState::Completed, None)?;
                 self.queue_due_cleanup()?;
             }
@@ -479,7 +518,9 @@ impl StorageService {
                 let actor = job.actor.clone();
                 let now = self.now_ms();
                 self.database.transaction(move |c| {
-                    for r in owned {
+                    let sequence = super::next_sequence(c)?;
+                    for mut r in owned {
+                        r.update_sequence = sequence;
                         let id = &r.artifact.artifact_id;
                         let changed = c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4 AND revision=?5",rusqlite::params![r.artifact.revision as i64,json(&r).map_err(DatabaseError::Domain)?,now as i64,id,(r.artifact.revision-1) as i64])?;
                         if changed != 1 { return Err(DatabaseError::Domain(conflict("artifact_changed"))); }
@@ -568,7 +609,11 @@ impl StorageService {
                     return Err(conflict("artifact_changed"));
                 }
                 let context = self.context()?;
-                if completed_resources.contains(&record.resource_key)
+                if (completed_resources.contains(&record.resource_key)
+                    || record
+                        .ancestor_keys
+                        .iter()
+                        .any(|key| completed_resources.contains(key)))
                     && self.backend.absent(&record, &context)?
                 {
                     shared_removed = true;
@@ -617,6 +662,7 @@ impl StorageService {
                     .private_aliases
                     .iter()
                     .filter_map(|p| p.parent())
+                    .chain(record.private_aliases.iter().map(|p| p.as_path()))
                     .find_map(|parent| {
                         super::fs::filesystem(parent, self.now_ms(), "Storage")
                             .ok()
@@ -739,13 +785,42 @@ impl StorageService {
         )
     }
 
-    fn merge_discovery(&self, mut discovery: Discovery) -> Result<(), ProtocolError> {
+    fn merge_discovery(
+        &self,
+        mut discovery: Discovery,
+        sequence: u64,
+    ) -> Result<(), ProtocolError> {
         let now = self.now_ms();
         let existing = self.records()?;
         let context = self.context()?;
+        // A slow scan may finish after a newer scan, protection change or
+        // cleanup. Its observations cannot replace those later facts, even
+        // when an unchanged scan did not advance the public artifact revision.
+        discovery.records.retain(|r| {
+            existing
+                .get(&r.artifact.artifact_id)
+                .is_none_or(|old| old.update_sequence < sequence)
+        });
         let mut verified_missing = BTreeSet::new();
+        let mut unavailable = BTreeSet::new();
         for (id, old) in &existing {
             if old.artifact.removed_at_ms.is_none()
+                && old.update_sequence < sequence
+                && (old.artifact.kind != api::Kind::BuildCache || discovery.repository_id.is_none())
+                && discovery
+                    .repository_id
+                    .as_ref()
+                    .is_none_or(|repo| old.artifact.repository_id.as_ref() == Some(repo))
+                && !discovery
+                    .records
+                    .iter()
+                    .any(|r| r.artifact.artifact_id == *id)
+                && !discovery.complete_kinds.contains(&old.artifact.kind)
+            {
+                unavailable.insert(id.clone());
+            }
+            if old.artifact.removed_at_ms.is_none()
+                && old.update_sequence < sequence
                 && discovery.complete_kinds.contains(&old.artifact.kind)
                 && !discovery
                     .records
@@ -762,6 +837,7 @@ impl StorageService {
         }
         let mut seen = BTreeSet::new();
         for r in &mut discovery.records {
+            r.update_sequence = sequence;
             if r.blockers.iter().any(|reason| {
                 matches!(
                     reason.as_str(),
@@ -854,13 +930,18 @@ impl StorageService {
         self.database.transaction(move|c|{
             for (r,value,expected) in values {
                 if super::locks::ensure_editable(c, &r.resource_key, None).is_err() { continue; }
-                c.execute("INSERT INTO storage_artifacts VALUES(?1,?2,?3,?4,NULL,?5,?6) ON CONFLICT(artifact_id) DO UPDATE SET repository_id=excluded.repository_id,kind=excluded.kind,revision=excluded.revision,removed_at_ms=NULL,record_json=excluded.record_json,updated_at_ms=excluded.updated_at_ms WHERE storage_artifacts.revision=?7",rusqlite::params![r.artifact.artifact_id,r.artifact.repository_id,atom(r.artifact.kind),r.artifact.revision as i64,value,now as i64,expected.map(|v|v as i64)])?;
+                c.execute("INSERT INTO storage_artifacts VALUES(?1,?2,?3,?4,NULL,?5,?6) ON CONFLICT(artifact_id) DO UPDATE SET repository_id=excluded.repository_id,kind=excluded.kind,revision=excluded.revision,removed_at_ms=NULL,record_json=excluded.record_json,updated_at_ms=excluded.updated_at_ms WHERE storage_artifacts.revision=?7 AND COALESCE(json_extract(storage_artifacts.record_json,'$.update_sequence'),0) < ?8",rusqlite::params![r.artifact.artifact_id,r.artifact.repository_id,atom(r.artifact.kind),r.artifact.revision as i64,value,now as i64,expected.map(|v|v as i64),sequence as i64])?;
             }
             for (id,mut old) in existing {if !seen.contains(&id)&&verified_missing.contains(&id){
                 if super::locks::ensure_editable(c, &old.resource_key, None).is_err() { continue; }
-                old.artifact.removed_at_ms=Some(now);old.artifact.revision+=1;c.execute("UPDATE storage_artifacts SET removed_at_ms=?1,revision=?2,record_json=?3 WHERE artifact_id=?4 AND revision=?5",rusqlite::params![now as i64,old.artifact.revision as i64,json(&old).map_err(DatabaseError::Domain)?,id,(old.artifact.revision-1) as i64])?;
+                old.artifact.removed_at_ms=Some(now);old.artifact.revision+=1;old.update_sequence=sequence;c.execute("UPDATE storage_artifacts SET removed_at_ms=?1,revision=?2,record_json=?3,updated_at_ms=?1 WHERE artifact_id=?4 AND revision=?5 AND COALESCE(json_extract(record_json,'$.update_sequence'),0) < ?6",rusqlite::params![now as i64,old.artifact.revision as i64,json(&old).map_err(DatabaseError::Domain)?,id,(old.artifact.revision-1) as i64,sequence as i64])?;
+            }else if unavailable.contains(&id){
+                if super::locks::ensure_editable(c,&old.resource_key,None).is_err(){continue;}
+                old.artifact.verified_at_ms=None;old.artifact.revision+=1;old.update_sequence=sequence;
+                if !old.blockers.iter().any(|r|r=="observation_unavailable"){old.blockers.push("observation_unavailable".into());}
+                c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4 AND revision=?5 AND COALESCE(json_extract(record_json,'$.update_sequence'),0) < ?6",rusqlite::params![old.artifact.revision as i64,json(&old).map_err(DatabaseError::Domain)?,now as i64,id,(old.artifact.revision-1) as i64,sequence as i64])?;
             }}
-            c.execute("UPDATE storage_scan_state SET revision=revision+1,last_scan_at_ms=?1,filesystem_json=?2,coverage_json=?3 WHERE singleton=1",rusqlite::params![now as i64,public_filesystems,coverage])?;Ok(())
+            c.execute("UPDATE storage_scan_state SET last_scan_at_ms=?1,filesystem_json=?2,coverage_json=?3 WHERE singleton=1 AND revision=?4",rusqlite::params![now as i64,public_filesystems,coverage,sequence as i64])?;Ok(())
         }).map_err(db_error)
     }
 
@@ -1051,6 +1132,15 @@ impl StorageService {
                 "finished"
             },
         );
+        if matches!(job.state, api::JobState::Completed)
+            && (job.kind == "legacy_registration"
+                || (job.kind == "cleanup" && job.receipts.iter().any(|r| r.status == "removed")))
+        {
+            // Completed removal can release another resource's final consumer.
+            // Re-observe those dependencies without retrying a cancelled or
+            // failed operation in a discovery loop.
+            self.request_discovery();
+        }
         Ok(())
     }
 

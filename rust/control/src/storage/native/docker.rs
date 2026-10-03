@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const CONTAINER_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"state":{{json .State.Status}},"finished":{{json .State.FinishedAt}},"image":{{json .Image}},"instance":{{json (index .Config.Labels "devcoordinator2.instance")}},"repository":{{json (index .Config.Labels "devcoordinator2.repository")}},"deployment":{{json (index .Config.Labels "devcoordinator2.deployment")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"name":{{json (index $m "Name")}},"source":{{json (index $m "Source")}}}{{end}}]}"#;
-const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
-const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}}}"#;
+const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"repository":{{json (index .Labels "devcoordinator2.repository")}},"deployment":{{json (index .Labels "devcoordinator2.deployment")}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
+const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}},"repository":{{if .Config}}{{json (index .Config.Labels "devcoordinator2.repository")}}{{else}}null{{end}},"deployment":{{if .Config}}{{json (index .Config.Labels "devcoordinator2.deployment")}}{{else}}null{{end}},"project":{{if .Config}}{{json (index .Config.Labels "com.docker.compose.project")}}{{else}}null{{end}}}"#;
 const NETWORK_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"driver":{{json .Driver}},"project":{{json (index .Labels "com.docker.compose.project")}},"containers":[{{$sep := ""}}{{range $i,$c := .Containers}}{{$sep}}{{json $i}}{{$sep = ","}}{{end}}]}"#;
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -41,6 +41,33 @@ impl HostBackend {
             return Some(&self.config.unit_prefix);
         }
         None
+    }
+
+    pub(super) fn fixture_engine_socket(&self) -> Result<Option<PathBuf>, ProtocolError> {
+        if self.fixture_namespace().is_none() {
+            return Ok(None);
+        }
+        let file = self.config.state_dir.join("storage-fixture-engine.json");
+        if !file.exists() {
+            return Ok(None);
+        }
+        let path: PathBuf =
+            serde_json::from_slice(&super::mounts::private_read(&file, 4096, true)?)
+                .map_err(|_| blocked("fixture_engine_identity_invalid"))?;
+        let root = self
+            .config
+            .state_dir
+            .parent()
+            .ok_or_else(|| blocked("fixture_engine_identity_invalid"))?;
+        if !path.starts_with(root)
+            || !path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(blocked("fixture_engine_identity_invalid"));
+        }
+        Ok(Some(path))
     }
 
     fn discovery_arguments(&self, mut args: Vec<String>) -> Vec<String> {
@@ -166,7 +193,13 @@ impl HostBackend {
         Ok(())
     }
 
-    fn docker_output(&self, args: Vec<String>) -> Result<String, ProtocolError> {
+    pub(super) fn docker_output(&self, mut args: Vec<String>) -> Result<String, ProtocolError> {
+        if let Some(socket) = self.fixture_engine_socket()? {
+            args.splice(
+                0..0,
+                ["--host".into(), format!("unix://{}", socket.display())],
+            );
+        }
         let request = DockerInvocation::new(
             args.into_iter().map(Into::into).collect(),
             Duration::from_secs(120),
@@ -342,6 +375,16 @@ impl HostBackend {
         }
         let volumes = volumes.into_iter().collect::<Vec<_>>();
         let mount_entries = self.mount_entries()?;
+        let prior = self.database.call(|c| {
+            let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind IN ('volume','image') AND removed_at_ms IS NULL")?;
+            Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(crate::storage::db_error)?;
+        let prior = prior
+            .into_iter()
+            .map(|value| {
+                crate::storage::parse::<Record>(&value).map(|r| (r.artifact.artifact_id.clone(), r))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         for v in self.inspect_rows("volume", &volumes, VOLUME_FORMAT)? {
             let name = s(&v, "name");
             let path = PathBuf::from(s(&v, "mountpoint"));
@@ -364,7 +407,7 @@ impl HostBackend {
                         .any(|m| s(m, "type") == "volume" && s(m, "name") == name)
                 })
                 .collect::<Vec<_>>();
-            let owners = consumers
+            let mut owners = consumers
                 .iter()
                 .filter_map(|c| container_records.get(s(c, "id")))
                 .filter_map(|r| {
@@ -374,6 +417,24 @@ impl HostBackend {
                         .map(|repo| (repo.clone(), r.owner_deployment.clone()))
                 })
                 .collect::<BTreeSet<_>>();
+            if let Some(owner) = docker_label_owner(&v, context)
+                && (owners.is_empty() || owners.iter().any(|(repo, _)| *repo != owner.0))
+            {
+                owners.insert(owner);
+            }
+            if owners.is_empty()
+                && let Some(old) = prior.get(&r.artifact.artifact_id)
+                && old.artifact.ownership == "managed"
+                && let Some(repo) = &old.artifact.repository_id
+                && context.repositories.iter().any(|p| &p.id == repo)
+                && fs::identity(&path)
+                    .is_ok_and(|(device, inode)| old.resource_key == format!("fs:{device}:{inode}"))
+            {
+                // Removing a consumer does not invalidate ownership of the
+                // same volume creation and backing inode. A replacement
+                // never inherits this evidence.
+                owners.insert((repo.clone(), old.owner_deployment.clone()));
+            }
             if owners.len() == 1 {
                 let (repo, dep) = owners.iter().next().unwrap();
                 assign(&mut r, repo, dep.as_deref(), context);
@@ -414,6 +475,13 @@ impl HostBackend {
             {
                 r.blockers.push("disposal_not_authorized".into());
                 r.artifact.ownership = "observed_cleanup_candidate".into();
+            }
+            if context
+                .deployment_repositories
+                .contains_key(s(&v, "deployment"))
+                || context.current_projects.contains_key(s(&v, "project"))
+            {
+                r.blockers.push("current_deployment".into());
             }
             if s(&v, "driver") != "local"
                 || v.get("options").and_then(Value::as_u64).unwrap_or(0) != 0
@@ -491,7 +559,7 @@ impl HostBackend {
             }
             out.records.push(r);
         }
-        self.discover_images_networks(context, out, &containers, &container_records)?;
+        self.discover_images_networks(context, out, &containers, &container_records, &prior)?;
         if context.scan_repository_id.is_none() {
             self.discover_build_cache(context, out);
         }
@@ -525,7 +593,12 @@ impl HostBackend {
         out: &mut Discovery,
         containers: &[Value],
         known: &BTreeMap<String, Record>,
+        prior: &BTreeMap<String, Record>,
     ) -> Result<(), ProtocolError> {
+        let current_images = self.engine_referenced_images(&context.current_images);
+        if let Err(error) = &current_images {
+            out.coverage_gaps.push(error.message.clone());
+        }
         let ids = self
             .docker_output(self.discovery_arguments(vec![
                 "image".into(),
@@ -568,20 +641,29 @@ impl HostBackend {
                     }
                 }
             }
-            if array(&image, "tags")
-                .iter()
-                .chain(array(&image, "digests"))
-                .filter_map(Value::as_str)
-                .any(|tag| context.current_images.iter().any(|i| i == tag))
-            {
-                r.blockers.push("current_deployment".into());
+            match &current_images {
+                Ok(current) if current.contains(id) => r.blockers.push("current_deployment".into()),
+                Err(error) => r.blockers.push(error.message.clone()),
+                _ => {}
             }
-            let owners = containers
+            let mut owners = containers
                 .iter()
                 .filter(|c| s(c, "image") == id)
                 .filter_map(|c| known.get(s(c, "id")))
-                .filter_map(|r| r.artifact.repository_id.as_deref())
+                .filter_map(|r| r.artifact.repository_id.clone())
                 .collect::<BTreeSet<_>>();
+            if let Some((repo, _)) = docker_label_owner(&image, context) {
+                owners.insert(repo);
+            }
+            if owners.is_empty()
+                && let Some(old) = prior.get(&r.artifact.artifact_id)
+                && old.artifact.ownership == "managed"
+                && old.resource_key == r.resource_key
+                && let Some(repo) = &old.artifact.repository_id
+                && context.repositories.iter().any(|p| &p.id == repo)
+            {
+                owners.insert(repo.clone());
+            }
             if owners.len() == 1 {
                 assign(&mut r, owners.iter().next().unwrap(), None, context);
             } else {
@@ -616,6 +698,12 @@ impl HostBackend {
                 r.blockers.push("docker_system_network".into());
             }
             r.artifact.ownership = "docker_host_network".into();
+            if context
+                .current_projects
+                .contains_key(s(&network, "project"))
+            {
+                r.blockers.push("current_deployment".into());
+            }
             for id in array(&network, "containers")
                 .iter()
                 .filter_map(Value::as_str)
@@ -639,53 +727,92 @@ impl HostBackend {
     }
 
     fn discover_build_cache(&self, context: &Context, out: &mut Discovery) {
-        if self.fixture_namespace().is_some() {
-            // The host's default builder is not owned by an isolated fixture.
-            out.coverage_gaps
-                .push("fixture_builder_not_configured".into());
-            return;
-        }
-        let result=self.docker_output(vec!["buildx".into(),"du".into(),"--builder".into(),"default".into(),"--format".into(),r#"{"id":{{json .ID}},"in_use":{{json .InUse}},"shared":{{json .Shared}},"size":{{json .Size}},"last_used":{{json .LastUsedAt}}}"#.into()]);
-        let Ok(text) = result else {
-            out.coverage_gaps
-                .push("build_cache_observation_unavailable".into());
-            return;
-        };
-        for line in text.lines() {
-            let Ok(v) = serde_json::from_str::<Value>(line) else {
+        let isolated_fixture = self.fixture_engine_socket().ok().flatten().is_some();
+        let fixture_ids = if self.fixture_namespace().is_some() && !isolated_fixture {
+            let path = self.config.state_dir.join("storage-fixture-cache-ids.json");
+            let ids = super::mounts::private_read(&path, 16384, true)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<BTreeSet<String>>(&bytes).ok());
+            let Some(ids) = ids.filter(|ids| !ids.is_empty() && ids.len() <= 32) else {
                 out.coverage_gaps
-                    .push("build_cache_metadata_invalid".into());
-                continue;
+                    .push("fixture_builder_not_configured".into());
+                return;
             };
-            let id = s(&v, "id");
-            if id.is_empty() {
+            Some(ids)
+        } else {
+            None
+        };
+        let rows = match self.engine_cache_rows() {
+            Ok(rows) => rows,
+            Err(error) => {
+                out.coverage_gaps.push(error.message);
+                return;
+            }
+        };
+        let mut complete = true;
+        let filesystem = self.engine_data_root().ok().and_then(|path| {
+            fs::filesystem(&path, context.now_ms, "Docker storage")
+                .ok()
+                .map(|measurement| (path, measurement))
+        });
+        if let Some((_, measurement)) = &filesystem {
+            out.filesystems.push(measurement.clone());
+        }
+        for value in rows {
+            let id = s(&value, "ID");
+            if fixture_ids.as_ref().is_some_and(|ids| !ids.contains(id)) {
                 continue;
             }
-            let Ok(mut r) = candidate(
+            let created = s(&value, "CreatedAt");
+            if id.is_empty() || created.is_empty() {
+                complete = false;
+                out.coverage_gaps
+                    .push("build_cache_identity_unverified".into());
+                continue;
+            }
+            let Ok(mut record) = candidate(
                 api::Kind::BuildCache,
                 api::Effect::Rebuildable,
-                format!("Build cache {}", id),
+                "Local builder cache".into(),
                 Locator::Docker {
                     object_type: "build_cache".into(),
                     identity: id.into(),
-                    created: String::new(),
+                    created: created.into(),
                 },
                 context,
             ) else {
                 continue;
             };
-            r.artifact.ownership = "local_builder_cache".into();
-            r.artifact.allocated_bytes = v.get("size").and_then(Value::as_u64);
-            if v.get("in_use").and_then(Value::as_bool).unwrap_or(true) {
-                r.blockers.push("active_consumer".into());
+            record.artifact.group_id = Some("docker-default-builder".into());
+            record.artifact.group_name = Some("Docker build cache".into());
+            record.artifact.ownership = "local_builder_cache".into();
+            if let Some((path, measurement)) = &filesystem {
+                record.private_aliases.push(path.clone());
+                record.artifact.filesystem_id = Some(measurement.filesystem_id.clone());
             }
-            if v.get("shared").and_then(Value::as_bool).unwrap_or(true) {
-                r.blockers.push("shared_image_layers".into());
-                r.artifact.allocated_bytes = None;
+            if fixture_ids.is_some() || isolated_fixture {
+                record.artifact.repository_id = context.repositories.first().map(|r| r.id.clone());
+                record.artifact.repository_name =
+                    context.repositories.first().map(|r| r.name.clone());
             }
-            r.last_activity_signature = s(&v, "last_used").into();
-            r.artifact.last_used_at_ms = date_ms(s(&v, "last_used"));
-            out.records.push(r);
+            record.artifact.allocated_bytes = value.get("Size").and_then(Value::as_u64);
+            if value.get("InUse").and_then(Value::as_bool).unwrap_or(true) {
+                record.blockers.push("active_consumer".into());
+            }
+            if value.get("Shared").and_then(Value::as_bool).unwrap_or(true) {
+                record.blockers.push("shared_image_layers".into());
+                record.artifact.allocated_bytes = None;
+            }
+            record.last_activity_signature = format!(
+                "{}:{}",
+                s(&value, "LastUsedAt"),
+                value.get("UsageCount").and_then(Value::as_u64).unwrap_or(0)
+            );
+            record.artifact.last_used_at_ms = date_ms(s(&value, "LastUsedAt"));
+            out.records.push(record);
+        }
+        if complete {
+            out.complete_kinds.push(api::Kind::BuildCache);
         }
     }
 
@@ -723,6 +850,9 @@ impl HostBackend {
             if !current.blockers.is_empty() {
                 return Err(blocked(&current.blockers[0]));
             }
+            if current.last_activity_signature != r.last_activity_signature {
+                return Err(blocked("activity_changed"));
+            }
             return Ok(());
         }
         let format = match object_type.as_str() {
@@ -736,6 +866,21 @@ impl HostBackend {
         let value = values.first().ok_or_else(|| blocked("identity_missing"))?;
         if s(value, "created") != created {
             return Err(blocked("identity_changed"));
+        }
+        if object_type == "image"
+            && self
+                .engine_referenced_images(&context.current_images)?
+                .contains(identity)
+        {
+            return Err(blocked("current_deployment"));
+        }
+        if object_type != "image"
+            && (context
+                .deployment_repositories
+                .contains_key(s(value, "deployment"))
+                || context.current_projects.contains_key(s(value, "project")))
+        {
+            return Err(blocked("current_deployment"));
         }
         let containers = self.container_rows()?;
         if object_type == "container" {
@@ -775,6 +920,18 @@ impl HostBackend {
         if object_type == "volume" {
             let mountpoint = std::path::Path::new(s(value, "mountpoint"));
             let identity = fs::identity(mountpoint)?;
+            if !context.discovering && r.resource_key == format!("fs:{}:{}", identity.0, identity.1)
+            {
+                let measured = fs::measure(mountpoint)?;
+                if r.last_activity_signature
+                    != format!(
+                        "{}:{}:{}",
+                        measured.newest_modified_ns, measured.bytes, measured.entries
+                    )
+                {
+                    return Err(blocked("activity_changed"));
+                }
+            }
             if r.resource_key != format!("fs:{}:{}", identity.0, identity.1) {
                 // Retiring a bind mount exposes Docker's original empty _data
                 // directory. Accept only that recorded transition, while the
@@ -880,24 +1037,48 @@ impl HostBackend {
         {
             return Err(blocked("native_identity_invalid"));
         }
-        let args = if object_type == "build_cache" {
-            vec![
-                "buildx".into(),
-                "prune".into(),
-                "--builder".into(),
-                "default".into(),
-                "--filter".into(),
-                format!("id={identity}"),
-                "--filter".into(),
-                "inuse=false".into(),
-                "--force".into(),
-            ]
-        } else {
-            vec![object_type.clone(), "rm".into(), identity.clone()]
-        };
+        if object_type == "build_cache" {
+            return self.engine_cache_remove(identity);
+        }
+        let args = vec![object_type.clone(), "rm".into(), identity.clone()];
         self.docker_output(args)?;
         Ok(())
     }
+}
+
+fn docker_label_owner(value: &Value, context: &Context) -> Option<(String, Option<String>)> {
+    let project = s(value, "project");
+    let deployment = (!s(value, "deployment").is_empty())
+        .then(|| s(value, "deployment").to_owned())
+        .or_else(|| context.current_projects.get(project).cloned())
+        .or_else(|| {
+            context
+                .observed
+                .iter()
+                .find(|(_, (_, name))| !project.is_empty() && name == project)
+                .map(|(id, _)| id.clone())
+        });
+    let repository = deployment
+        .as_ref()
+        .and_then(|id| {
+            context
+                .deployment_repositories
+                .get(id)
+                .or_else(|| context.observed.get(id).map(|(repo, _)| repo))
+        })
+        .cloned()
+        .or_else(|| {
+            context
+                .repositories
+                .iter()
+                .find(|r| r.id == s(value, "repository"))
+                .map(|r| r.id.clone())
+        })?;
+    context
+        .repositories
+        .iter()
+        .any(|r| r.id == repository)
+        .then_some((repository, deployment))
 }
 
 fn assign(r: &mut Record, repo: &str, deployment: Option<&str>, context: &Context) {

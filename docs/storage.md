@@ -34,6 +34,11 @@ original job on retries. Follow its events and retain its terminal receipt;
 `storage job cancel <job-id>` prevents subsequent steps but does not undo
 already completed removals.
 
+Selecting a directory also lists known nested directories affected by that
+removal. Their protection and ownership checks still apply. Aliases and nested
+data contribute to the planned space only once; each tracked identity retains
+its own result even when one containing-directory removal handles them together.
+
 ## Legacy Docker ownership
 
 Observed deployments remain read-only through ordinary deployment controls.
@@ -60,6 +65,13 @@ does not broaden the ordinary daemon's filesystem sandbox.
 
 ## Policies, roots and recovery
 
+The local Docker builder uses the Engine's structured cache inventory and
+exact-ID removal API, including on hosts whose Buildx version lacks JSON
+formatting. Active and shared records remain blocked. Raw build descriptions
+are private because they can contain command arguments. Remote builder
+endpoints require a provider and are reported as unavailable. Root acceptance
+uses a separate Docker daemon and a private network namespace for these checks.
+
 Global defaults are three inactive days for build outputs, dependencies and
 caches, and fourteen for other unused disposable resources. Use `storage policy
 show` or `storage policy set --file <request.json>` for global settings; include
@@ -67,6 +79,21 @@ show` or `storage policy set --file <request.json>` for global settings; include
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
+Inventory keeps the actual observation timestamp and expires after two missed
+hourly discovery intervals. This accommodates long host scans without extending
+the five-minute lifetime of a prepared cleanup plan. Failed provider observations
+immediately block affected records. Removal still verifies current dependencies,
+identity and activity; new volume data written after planning prevents removal.
+Unused volumes and images retain verified ownership from their managed labels
+or earlier recorded consumers while their exact identities still match. Volume
+history also binds the backing inode. Removing the final container does not
+erase that evidence. Unknown ownership remains blocked after the inactivity
+deadline. Current image declarations are resolved through Docker, including
+short IDs, and checked again immediately before removal. Completed cleanup
+refreshes discovery when it releases another resource's final reference.
+Discovery and state changes carry a persistent sequence. A slow earlier scan
+cannot restore removed inventory or overwrite newer use, protection or failed
+safety checks, including across a daemon restart.
 
 `storage roots set --file <request.json>` declares a directory containing
 generated outputs, dependency caches, backups or unrecognized data. Roots bind
@@ -74,6 +101,11 @@ the actual directory identity; links and replacements require fresh review.
 Unrecognized directories are visible but blocked until `storage register`
 records verified ownership and disposal intent. Canonical sources, credentials,
 chat history and the authoritative Coordinator database remain protected.
+Generated directories containing recognized credential or chat metadata are
+blocked even when the directory was explicitly declared as rebuildable. The
+check examines names rather than secret contents; public examples such as
+`.env.example` remain eligible. Verified backup copies retain their own
+recovery-generation policy.
 
 Worktrees need an explicit disposal declaration, no current owner/runtime use,
 a clean Git state, no unique commits and a verified remote baseline. Backup
