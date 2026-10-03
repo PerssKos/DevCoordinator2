@@ -19,6 +19,7 @@
     "glossary",
     "artifacts",
     "performance"
+    ,"storage"
   ],
   "locales": [
     {
@@ -86,6 +87,9 @@
         ],
         "performance": [
           "en/performance.json"
+        ],
+        "storage": [
+          "en/storage.json"
         ]
       }
     },
