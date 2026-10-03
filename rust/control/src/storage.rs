@@ -888,12 +888,13 @@ impl StorageService {
         let ancestors = r.ancestor_keys.clone();
         let job = job.map(str::to_owned);
         let id = r.artifact.artifact_id.clone();
-        let value = json(&r)?;
         let now = self.now_ms();
         let actor = actor.to_owned();
         let kind = kind.to_owned();
         self.database.transaction(move|c| {
             locks::ensure_tree_editable(c,&resource,&ancestors,job.as_deref())?;
+            r.update_sequence = next_sequence(c)?;
+            let value = json(&r).map_err(DatabaseError::Domain)?;
             let changed=c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4 AND revision=?5",rusqlite::params![(expected+1) as i64,value,now as i64,id,expected as i64])?;
             if changed!=1 {return Err(DatabaseError::Domain(conflict("artifact_changed")));}
             change(c,Some(&id),&kind,&actor,now,"{}")?;Ok(())
@@ -1126,6 +1127,7 @@ fn remember_lease_use(
         if record.artifact.last_used_at_ms.is_none_or(|at| at < use_at) {
             record.artifact.last_used_at_ms = Some(use_at);
             record.artifact.revision += 1;
+            record.update_sequence = next_sequence(c)?;
             c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4",rusqlite::params![record.artifact.revision as i64,json(&record).map_err(DatabaseError::Domain)?,now as i64,id])?;
         }
     }
@@ -1163,6 +1165,19 @@ fn visit(
         return Err(blocked("cleanup_group_too_large"));
     }
     Ok(())
+}
+
+fn next_sequence(c: &rusqlite::Transaction<'_>) -> Result<u64, DatabaseError> {
+    c.execute(
+        "UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1",
+        [],
+    )?;
+    let sequence = c.query_row(
+        "SELECT revision FROM storage_scan_state WHERE singleton=1",
+        [],
+        |r| r.get::<_, i64>(0),
+    )?;
+    Ok(super_sql_u64(sequence)?)
 }
 
 fn change(

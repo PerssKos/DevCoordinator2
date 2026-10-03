@@ -118,7 +118,8 @@ pub(crate) fn record_expired(
                 if worktree!=&root||!removed.contains(run_id){continue;}
                 known.insert(run_id.clone(),id.clone());
                 record.artifact.removed_at_ms=Some(now);record.artifact.deletable=false;record.artifact.automatic_eligible=false;record.artifact.revision+=1;
-                c.execute("UPDATE storage_artifacts SET removed_at_ms=?1,revision=?2,record_json=?3 WHERE artifact_id=?4",rusqlite::params![now as i64,record.artifact.revision as i64,super::json(&record).map_err(DatabaseError::Domain)?,id])?;
+                record.update_sequence=super::next_sequence(c)?;
+                c.execute("UPDATE storage_artifacts SET removed_at_ms=?1,revision=?2,record_json=?3,updated_at_ms=?1 WHERE artifact_id=?4",rusqlite::params![now as i64,record.artifact.revision as i64,super::json(&record).map_err(DatabaseError::Domain)?,id])?;
             }
             let mut receipts=Vec::new();
             for run_id in removed {

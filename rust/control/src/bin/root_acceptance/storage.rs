@@ -1742,5 +1742,131 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
         recovered["unmeasured_items"] == 1 && recovered["reclaimed_bytes"] == 0,
         "restart invented a reclaimed-space measurement"
     );
+    stale_discovery_order(world, &repo)?;
+    Ok(())
+}
+
+fn stale_discovery_order(world: &World, repo: &str) -> Result<(), String> {
+    for name in ["ordering-delete", "ordering-keep", "ordering-invalid"] {
+        world.write_owned(&format!("cache/{name}/data"), vec![77_u8; 4096])?;
+    }
+    scanned(world, repo, "ordering-baseline")?;
+    let barrier = world.state.join("storage-pause-scan");
+    fs::write(&barrier, b"ordering-old-global").map_err(|e| e.to_string())?;
+    let old = world.call(
+        "storage.scan",
+        json!({"idempotency_key":"ordering-old-global"}),
+    )?;
+    let old_id = data(&old)?["job_id"]
+        .as_str()
+        .ok_or("old scan id missing")?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !barrier.with_extension("ready").exists() {
+        ensure!(
+            Instant::now() < deadline,
+            "old scan did not reach its observation barrier"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    set_clock(
+        world,
+        (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64 + 5000,
+    )?;
+    let fresh = scanned(world, repo, "ordering-new-project")?;
+    let rows = fresh["artifacts"]
+        .as_array()
+        .ok_or("new scan rows missing")?;
+    let row = |name: &str| {
+        rows.iter()
+            .find(|r| r["name"] == name)
+            .cloned()
+            .ok_or_else(|| format!("{name} missing"))
+    };
+    let removed = row("ordering-delete")?;
+    let kept = row("ordering-keep")?;
+    let invalid = row("ordering-invalid")?;
+    mcp(
+        world,
+        "storage_protection_set",
+        json!({"artifact_id":kept["artifact_id"],"expected_revision":kept["revision"],"protected":true}),
+    )?;
+    let plan = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[removed["artifact_id"],invalid["artifact_id"]]}),
+    )?;
+    ensure!(plan["ready"] == true, "ordering cleanup was not ready");
+    fs::rename(
+        world.repo.join("cache/ordering-invalid"),
+        world.repo.join("ordering-saved"),
+    )
+    .map_err(|e| e.to_string())?;
+    std::os::unix::fs::symlink(
+        world.repo.join("ordering-saved"),
+        world.repo.join("cache/ordering-invalid"),
+    )
+    .map_err(|e| e.to_string())?;
+    let cleanup = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":plan["plan_id"],"idempotency_key":"ordering-cleanup"}),
+    )?;
+    let receipt = wait_job(
+        world,
+        cleanup["job_id"]
+            .as_str()
+            .ok_or("ordering cleanup id missing")?,
+    )?;
+    ensure!(
+        receipt["state"] == "partial",
+        "ordering cleanup did not preserve its partial result: {}",
+        bounded_json(&receipt)
+    );
+    fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+    ensure!(
+        wait_job(world, old_id)?["state"] == "completed",
+        "older scan did not finish"
+    );
+    let mut failures = Vec::new();
+    let removed_after = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":removed["artifact_id"]}),
+    )?;
+    if removed_after["removed_at_ms"].is_null() || world.repo.join("cache/ordering-delete").exists()
+    {
+        failures.push("older discovery resurrected removed data");
+    }
+    let kept_after = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":kept["artifact_id"]}),
+    )?;
+    if kept_after["verified_at_ms"] != kept["verified_at_ms"] || kept_after["protected"] != true {
+        failures.push("older discovery replaced newer verification or protection");
+    }
+    let invalid_after = mcp(
+        world,
+        "storage_artifact_get",
+        json!({"artifact_id":invalid["artifact_id"]}),
+    )?;
+    if invalid_after["deletable"] != false || !world.repo.join("ordering-saved/data").is_file() {
+        failures.push("older discovery cleared a failed identity check");
+    }
+    // A genuinely later observation must still admit a replacement as a new
+    // resource; the ordering guard must not permanently hide a reused path.
+    world.write_owned("cache/ordering-delete/replacement", vec![88_u8; 4096])?;
+    let replacement = scanned(world, repo, "ordering-legitimate-replacement")?;
+    if !replacement["artifacts"].as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|r| r["name"] == "ordering-delete" && r["removed_at_ms"].is_null())
+    }) {
+        failures.push("new discovery could not observe a legitimate replacement");
+    }
+    ensure!(
+        failures.is_empty(),
+        "scan ordering failures: {}",
+        failures.join("; ")
+    );
     Ok(())
 }

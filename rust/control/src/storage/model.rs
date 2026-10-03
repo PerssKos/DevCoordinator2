@@ -35,6 +35,9 @@ pub enum Locator {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
+    /// Persistent observation/mutation order, independent of wall-clock changes.
+    #[serde(default)]
+    pub update_sequence: u64,
     pub artifact: api::Artifact,
     pub locator: Locator,
     pub resource_key: String,

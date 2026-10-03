@@ -410,6 +410,7 @@ pub(super) fn candidate(
     let fingerprint = hash(encoded.as_bytes());
     let id = stable_id("sa", encoded.as_bytes());
     Ok(Record {
+        update_sequence: 0,
         artifact: api::Artifact {
             artifact_id: id.clone(),
             revision: 1,
