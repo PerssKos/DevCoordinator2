@@ -44,5 +44,24 @@
       "one": "{count} 組",
       "other": "{count} 組"
     }
-  }
+  },
+  "legacy": "舊版封存",
+  "currentSelection": "目前選擇",
+  "search": "搜尋",
+  "theme": "主題",
+  "earlier": "更早的歷史",
+  "basedOn": "基於",
+  "surface": "介面",
+  "selectionNote": "選擇備註",
+  "continueSelected": "使用所選項繼續",
+  "initialContext": "代理的初始脈絡",
+  "latestContext": "最新脈絡",
+  "history": "歷史紀錄",
+  "description": "描述",
+  "whyChanged": "變更原因",
+  "journey": "使用者流程",
+  "instructions": "指示",
+  "constraints": "限制",
+  "backToHistory": "返回歷史紀錄",
+  "elements": "元素"
 }

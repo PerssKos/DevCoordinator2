@@ -49,5 +49,24 @@
       "many": "{count} zestawów",
       "other": "{count} zestawu"
     }
-  }
+  },
+  "legacy": "Starsze archiwum",
+  "currentSelection": "Bieżący wybór",
+  "search": "Szukaj",
+  "theme": "Motyw",
+  "earlier": "Wcześniejsza historia",
+  "basedOn": "Na podstawie",
+  "surface": "Ekran",
+  "selectionNote": "Notatka do wyboru",
+  "continueSelected": "Kontynuuj z wybranymi",
+  "initialContext": "Początkowy kontekst agenta",
+  "latestContext": "Najnowszy kontekst",
+  "history": "Historia",
+  "description": "Opis",
+  "whyChanged": "Powód zmiany",
+  "journey": "Ścieżka użytkownika",
+  "instructions": "Instrukcje",
+  "constraints": "Ograniczenia",
+  "backToHistory": "Wróć do historii",
+  "elements": "Elementy"
 }

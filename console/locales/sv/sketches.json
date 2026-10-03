@@ -45,5 +45,24 @@
       "one": "{count} uppsättning",
       "other": "{count} uppsättningar"
     }
-  }
+  },
+  "legacy": "Äldre arkiv",
+  "currentSelection": "Aktuellt urval",
+  "search": "Sök",
+  "theme": "Tema",
+  "earlier": "Tidigare historik",
+  "basedOn": "Baserat på",
+  "surface": "Vy",
+  "selectionNote": "Anteckning om urvalet",
+  "continueSelected": "Fortsätt med urvalet",
+  "initialContext": "Agentens ursprungliga sammanhang",
+  "latestContext": "Senaste sammanhang",
+  "history": "Historik",
+  "description": "Beskrivning",
+  "whyChanged": "Ändringsorsak",
+  "journey": "Användarflöde",
+  "instructions": "Instruktioner",
+  "constraints": "Begränsningar",
+  "backToHistory": "Tillbaka till historiken",
+  "elements": "Element"
 }

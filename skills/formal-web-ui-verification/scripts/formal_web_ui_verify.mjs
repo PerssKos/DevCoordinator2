@@ -3377,6 +3377,8 @@ function pageVerifier() {
       ancestor && ancestor !== document.body && ancestor !== document.documentElement;
       ancestor = composedParent(ancestor)) {
       ancestors.push(ancestor);
+      // Positioned popup controls belong to that popup, not its narrow anchor.
+      if (["absolute", "fixed"].includes(cs(ancestor).position)) break;
     }
     if (ancestors.some(activeHorizontalScroller)) continue;
     const controlRect = nowRect(el);

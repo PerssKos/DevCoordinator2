@@ -539,7 +539,7 @@ async function startFakeDaemon(dir) {
         }
         socket.end(JSON.stringify({ protocol: 2, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
+      if (scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
@@ -769,7 +769,13 @@ async function startFakeDaemon(dir) {
     releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
-      return new Promise((resolve) => receivedWaiters.add({ after, resolve }));
+      return new Promise((resolve,reject) => {
+        const deadline=AbortSignal.timeout(30000);
+        const waiter={after,resolve:value=>{deadline.removeEventListener('abort',onTimeout);resolve(value);}};
+        const onTimeout=()=>{receivedWaiters.delete(waiter);reject(new Error('Fixture request deadline reached'));};
+        deadline.addEventListener('abort',onTimeout,{once:true});
+        receivedWaiters.add(waiter);
+      });
     },
     waitForCall: (predicateOrCommand) => {
       const predicate = typeof predicateOrCommand === 'string'
@@ -1001,14 +1007,23 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
+        const delayedOperation=view==='#/tests'?'test.list':view.startsWith('#/tests/')?'test.evidence.get':null;
+        // Hold the Tests collection response after shell/repository admission.
+        // Holding an arbitrary earlier request measured a different loading state.
+        if (scenario.delayMs) daemon.setScenario(delayedOperation ? {...scenario,delayOperations:[delayedOperation]} : scenario);
         const callsBeforeNavigation = daemon.calls.length;
         const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
         await page.goto(`http://${HOST}:${port}/${scopedView}`);
         if (scenario.delayMs) {
-          const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
-          if (firstPending.operation === 'user.whoami') {
-            daemon.releaseDelayed();
-            await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
+          if (delayedOperation) {
+            let cursor=callsBeforeNavigation;
+            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== delayedOperation) {}
+          } else {
+            const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
+            if (firstPending.operation === 'user.whoami') {
+              daemon.releaseDelayed();
+              await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
+            }
           }
           await waitForRenderFrame(page);
           const loading = await page.evaluate(() => ({
@@ -2284,11 +2299,23 @@ async function main() {
     !daemon.calls.some((call) => call.operation === 'plan.overview')
     && await page.locator('.plan-workspace[data-identity-proof="same-workspace"]').count() === 1);
 
-  await page.hover(`[data-hover-task="${P_G1}"]`);
+  const hoverTask = page.locator(`[data-hover-task="${P_G1}"]`);
+  // Earlier steps leave this bar behind the sticky task navigator. Use the
+  // visible Fit control so hover does not race automatic scroll/realignment.
+  await page.locator('[data-plan-zoom="fit"]').click();
+  await waitForRenderFrame(page);
+  await hoverTask.hover();
   await page.waitForSelector('#plan-tooltip:not([hidden])');
   check('interaction: hovering a task bar reveals its anchored detail badge',
     /E-mail field checks its spelling/.test(await page.innerText('#plan-tooltip'))
     && /100/.test(await page.innerText('#plan-tooltip')));
+  await waitForRenderFrame(page);
+  check('interaction: the task detail badge stays visible after timeline alignment',
+    await hoverTask.evaluate((bar) => bar.matches(':hover'))
+    && await page.locator('#plan-tooltip:not([hidden])').isVisible());
+  await page.locator('[data-plan-selection-toggle]').hover();
+  check('interaction: leaving the task bar dismisses its detail badge',
+    await page.locator('#plan-tooltip').isHidden());
 
   await page.click(`[data-task-row="${P_C2}"] .plan-task-select`);
   await page.waitForSelector(`[data-task-row="${P_C2}"].selected`);

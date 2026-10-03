@@ -45,5 +45,24 @@
       "one": "{count} sett",
       "other": "{count} sett"
     }
-  }
+  },
+  "legacy": "Eldra safn",
+  "currentSelection": "Núverandi val",
+  "search": "Leita",
+  "theme": "Þema",
+  "earlier": "Eldri ferill",
+  "basedOn": "Byggt á",
+  "surface": "Skjámynd",
+  "selectionNote": "Athugasemd við val",
+  "continueSelected": "Halda áfram með valið",
+  "initialContext": "Upphaflegt samhengi fulltrúa",
+  "latestContext": "Nýjasta samhengi",
+  "history": "Ferill",
+  "description": "Lýsing",
+  "whyChanged": "Ástæða breytingar",
+  "journey": "Ferð notanda",
+  "instructions": "Leiðbeiningar",
+  "constraints": "Takmarkanir",
+  "backToHistory": "Til baka í feril",
+  "elements": "Einingar"
 }

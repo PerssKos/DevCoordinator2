@@ -47,5 +47,24 @@
       "few": "{count} скупа",
       "other": "{count} скупова"
     }
-  }
+  },
+  "legacy": "Старија архива",
+  "currentSelection": "Тренутни избор",
+  "search": "Претражи",
+  "theme": "Тема",
+  "earlier": "Ранија историја",
+  "basedOn": "Засновано на",
+  "surface": "Екран",
+  "selectionNote": "Напомена уз избор",
+  "continueSelected": "Настави са изабраним",
+  "initialContext": "Почетни контекст агента",
+  "latestContext": "Најновији контекст",
+  "history": "Историја",
+  "description": "Опис",
+  "whyChanged": "Разлог промене",
+  "journey": "Кориснички пут",
+  "instructions": "Упутства",
+  "constraints": "Ограничења",
+  "backToHistory": "Назад на историју",
+  "elements": "Елементи"
 }

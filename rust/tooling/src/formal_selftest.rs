@@ -403,10 +403,10 @@ fn wait_child(
     mut child: std::process::Child,
     timeout: Duration,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
-    fn drain<T: Read + Send + 'static>(
-        pipe: Option<T>,
-    ) -> thread::JoinHandle<Result<Vec<u8>, String>> {
-        thread::spawn(move || {
+    // Drain both pipes while the child runs. Waiting for exit first deadlocks
+    // once a test reporter fills either pipe (including small Linux pipes).
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || -> Result<Vec<u8>, String> {
             let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
                 pipe.read_to_end(&mut bytes)
@@ -414,29 +414,41 @@ fn wait_child(
             }
             Ok(bytes)
         })
-    }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
+            break Ok(status);
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = stdout.join();
-            let _ = stderr.join();
-            return Err(format!(
+            break Err(format!(
                 "formal UI verifier exceeded {} seconds",
                 timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let stdout = stdout.join().map_err(|_| "stdout reader failed")??;
-    let stderr = stderr.join().map_err(|_| "stderr reader failed")??;
-    Ok((status, stdout, stderr))
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "stdout reader panicked")??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "stderr reader panicked")??;
+    Ok((status?, stdout, stderr))
 }
 
 fn default_target_contract() -> Map<String, Value> {
@@ -1057,6 +1069,12 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    run_node_probe(
+        root,
+        "process.stdout.write('o'.repeat(131072)); process.stderr.write('e'.repeat(131072));",
+        timeout,
+    )?;
+    scenarios += 1;
     run_node_probe(
         root,
         &format!(

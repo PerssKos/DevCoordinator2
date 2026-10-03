@@ -18,6 +18,18 @@ let browser;
 before(async () => { browser = await chromium.launch({ headless: true }); });
 after(async () => { await browser?.close(); });
 
+for (const positioned of [false,true]) for (const escaped of [false,true]) {
+  test(`controls respect the popup's own containing box: positioned ${positioned}, escaped ${escaped}`,async()=>{
+    const page=await browser.newPage({viewport:{width:390,height:844}});
+    try {
+      await page.setContent(`<style>body{margin:0;background:#fff;color:#111}main{padding:12px}#anchor{position:relative;width:30px;height:40px}#popup{position:${positioned?'absolute':'static'};width:280px;padding:10px}input{width:${escaped?400:200}px;box-sizing:border-box}</style><main><div id="anchor"><div id="popup"><input aria-label="Search" value="Review"></div></div></main>`);
+      const report=await measure(page);
+      const failures=report.findings.filter(item=>item.rule==='control-outside-container');
+      assert.equal(failures.length>0,!positioned||escaped);
+    } finally {await page.close();}
+  });
+}
+
 function editorFixture(extraStyle = "") {
   return `<!doctype html><meta charset="utf-8"><style>
     body { margin: 0; color: #111; background: white; }

@@ -25,7 +25,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 29;
+pub const DATABASE_SCHEMA_VERSION: u32 = 30;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -1672,6 +1672,33 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::SketchListResult
     ),
     operation!(
+        "design.sketch.search",
+        "Search retained sketch descriptions, decisions, and lineage context.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_search"],
+        params::SketchSearch,
+        results::SketchListResult
+    ),
+    operation!(
+        "design.sketch.story",
+        "Read one surface's mockup history graph and current heads.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_story"],
+        params::SketchStory,
+        results::SketchStoryResult
+    ),
+    operation!(
+        "design.sketch.resolve",
+        "Resolve the explicit current mockup head for one surface.",
+        READ_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_resolve"],
+        params::SketchResolve,
+        results::SketchResolveResult
+    ),
+    operation!(
         "design.sketch.get",
         "Open one retained project sketch with decision history and annotations.",
         READ_REPOSITORY_ADMIN,
@@ -1706,6 +1733,24 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["design_sketch_decision"],
         params::SketchDecisionChange,
         results::SketchDecisionResult
+    ),
+    operation!(
+        "design.sketch.activate",
+        "Record the explicit current continuation set for one surface.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_activate"],
+        params::SketchActivate,
+        results::SketchActivationResult
+    ),
+    operation!(
+        "design.sketch.description",
+        "Append a revised mockup description and context revision.",
+        REVERSIBLE_REPOSITORY_ADMIN,
+        excluded "Use the typed API or MCP adapter.",
+        ["design_sketch_description"],
+        params::SketchDescriptionChange,
+        results::SketchDescriptionResult
     ),
     operation!(
         "design.sketch.annotation.create",
@@ -2064,8 +2109,8 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 131);
-        assert_eq!(tools.len(), 102);
+        assert_eq!(OPERATIONS.len(), 136);
+        assert_eq!(tools.len(), 107);
         assert_eq!(cli_routes.len(), 101);
     }
 

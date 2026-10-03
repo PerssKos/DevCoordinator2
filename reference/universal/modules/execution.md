@@ -15,6 +15,22 @@
   unavailable, preserve the pending gate and report the blocker; do not bypass
   it with a code-first implementation.
 
+### Mockup history and current-source resolution
+
+- Publish each generated image with an agent-authored manifest for one
+  surface/window, state, theme, and viewport. Multiple controls inside that
+  window are listed in the manifest; multiple windows or visual alternatives
+  require separate files.
+- Keep every batch option visible, including rejected options. A continuation
+  may select multiple options, and the selected set must be recorded explicitly
+  rather than inferred from the newest timestamp or a stale Keep flag.
+- Before implementation or visual audit, call the Coordinator's
+  `design.sketch.resolve` operation and carry the returned surface, node IDs,
+  description revision, and graph revision into the work. After another image
+  generation call or user adjustment, resolve again before continuing.
+- If resolution is ambiguous, unavailable, or legacy-only, stop dependent UI
+  work and preserve the evidence until an explicit current selection exists.
+
 ### UI handoff audit
 
 - For UI backed by a confirmed mockup or approved visual target, verify that

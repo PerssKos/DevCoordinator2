@@ -148,10 +148,10 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   await page.locator('.plan-context').waitFor();
   verify('returning from host tools remembers the repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
   await page.goto(`${baseUrl}#/glossary/${repositoryId}`);
-  await page.locator('#workspace-aspects a[aria-current]').waitFor();
+  const glossaryAspect=page.locator(`#workspace-aspects a[aria-current][href="#/glossary/${repositoryId}"]`);
+  await glossaryAspect.waitFor();
   await page.evaluate(() => new Promise(requestAnimationFrame));
-  const selectedAspect = await page.locator('#workspace-aspects a[aria-current]').boundingBox();
-  const aspectStrip = await page.locator('#workspace-aspects').boundingBox();
+  const {selectedAspect,aspectStrip}=await glossaryAspect.evaluate(element=>({selectedAspect:element.getBoundingClientRect().toJSON(),aspectStrip:element.parentElement.getBoundingClientRect().toJSON()}));
   verify('direct links reveal the entire selected aspect on narrow screens', selectedAspect.x >= aspectStrip.x - 1 && selectedAspect.x + selectedAspect.width <= aspectStrip.x + aspectStrip.width + 1);
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.locator('.plan-context').waitFor();

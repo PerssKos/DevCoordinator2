@@ -45,5 +45,24 @@
       "one": "{count} set",
       "other": "{count} sets"
     }
-  }
+  },
+  "legacy": "Archiv vegl",
+  "currentSelection": "Selecziun actuala",
+  "search": "Tschertgar",
+  "theme": "Tema",
+  "earlier": "Istorgia anteriura",
+  "basedOn": "Basà sin",
+  "surface": "Visur",
+  "selectionNote": "Remartga davart la selecziun",
+  "continueSelected": "Cuntinuar cun la selecziun",
+  "initialContext": "Context inizial da l’agent",
+  "latestContext": "Ultim context",
+  "history": "Istorgia",
+  "description": "Descripziun",
+  "whyChanged": "Motiv da la midada",
+  "journey": "Percurs da l’utilisader",
+  "instructions": "Instrucziuns",
+  "constraints": "Restricziuns",
+  "backToHistory": "Enavos a l’istorgia",
+  "elements": "Elements"
 }

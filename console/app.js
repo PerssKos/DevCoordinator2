@@ -2918,6 +2918,18 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 }
 
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (query.has('surface') || (!sketchId && !setName)) {
+    return window.DevCoordinatorSketches.mount(main, {
+      repositoryId, api, esc, signal: viewAbort.signal, imageUrl: sketchImageUrl,
+      openAnnotations: async (nodes, selectedId) => {
+        await viewSketchSetEvidence(repositoryId, { key: nodes[0]?.sketch_set, sketches: nodes }, selectedId);
+        const link = document.createElement('a'); link.className = 'btn btn-small sketch-back';
+        link.href = window.DevCoordinatorSketches.route(repositoryId, query.get('surface'), selectedId);
+        window.DevCoordinatorI18n.text(link, 'sketches.backToHistory'); main.prepend(link);
+      },
+    });
+  }
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
     const result = await listAllSketches(repositoryId, setName);
@@ -4876,11 +4888,12 @@ async function render() {
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
-  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
+  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set') && (!sketchQuery.has('surface') || sketchQuery.has('annotate'));
   const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
   main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
+  main.classList.toggle('sketch-history-page', view === 'sketches' && !sketchQuery.has('annotate') && (sketchQuery.has('surface') || !sketchQuery.has('sketch')));
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {

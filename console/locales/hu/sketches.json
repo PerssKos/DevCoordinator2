@@ -45,5 +45,24 @@
       "one": "{count} készlet",
       "other": "{count} készlet"
     }
-  }
+  },
+  "legacy": "Korábbi archívum",
+  "currentSelection": "Jelenlegi kijelölés",
+  "search": "Keresés",
+  "theme": "Téma",
+  "earlier": "Korábbi előzmények",
+  "basedOn": "Ez alapján",
+  "surface": "Képernyő",
+  "selectionNote": "Megjegyzés a kijelöléshez",
+  "continueSelected": "Folytatás a kijelöltekkel",
+  "initialContext": "Az ügynök kezdeti kontextusa",
+  "latestContext": "Legfrissebb kontextus",
+  "history": "Előzmények",
+  "description": "Leírás",
+  "whyChanged": "A változtatás oka",
+  "journey": "Felhasználói út",
+  "instructions": "Utasítások",
+  "constraints": "Korlátok",
+  "backToHistory": "Vissza az előzményekhez",
+  "elements": "Elemek"
 }

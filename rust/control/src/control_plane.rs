@@ -132,10 +132,15 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "event.wait",
     "design.sketch.publish",
     "design.sketch.list",
+    "design.sketch.search",
+    "design.sketch.story",
+    "design.sketch.resolve",
     "design.sketch.get",
     "design.sketch.image",
     "design.sketch.record",
     "design.sketch.decision",
+    "design.sketch.activate",
+    "design.sketch.description",
     "design.sketch.annotation.create",
     "agent.message.poll",
     "agent.message.claim",
@@ -922,6 +927,9 @@ impl ControlPlane {
                 encode(result)
             }
             "design.sketch.list" => encode(self.sketches.list(decode(params)?)?),
+            "design.sketch.search" => encode(self.sketches.search(decode(params)?)?),
+            "design.sketch.story" => encode(self.sketches.story(decode(params)?)?),
+            "design.sketch.resolve" => encode(self.sketches.resolve(decode(params)?)?),
             "design.sketch.get" => encode(self.sketches.get(decode(params)?, &caller.actor())?),
             "design.sketch.image" => encode(self.sketches.image(decode(params)?)?),
             "design.sketch.record" => encode(self.sketches.record(decode(params)?)?),
@@ -933,6 +941,40 @@ impl ControlPlane {
                     results::OwnedEvent::Other(results::OtherOwnedEvent {
                         review: None,
                         kind: "sketch.decision.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch".to_owned(),
+                        subject_id: result.sketch.sketch_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.activate" => {
+                let params: params::SketchActivate = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.activate(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.activation.changed".to_owned(),
+                        repository_id: Some(repository_id),
+                        deployment_id: None,
+                        subject_kind: "sketch_surface".to_owned(),
+                        subject_id: result.surface_id.clone(),
+                    }),
+                    None,
+                );
+                encode(result)
+            }
+            "design.sketch.description" => {
+                let params: params::SketchDescriptionChange = decode(params)?;
+                let repository_id = params.repository_id.clone();
+                let result = self.sketches.description(params, caller)?;
+                self.publish_owned(
+                    results::OwnedEvent::Other(results::OtherOwnedEvent {
+                        review: None,
+                        kind: "sketch.description.changed".to_owned(),
                         repository_id: Some(repository_id),
                         deployment_id: None,
                         subject_kind: "sketch".to_owned(),

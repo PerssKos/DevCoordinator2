@@ -44,5 +44,24 @@
       "one": "{count}개 세트",
       "other": "{count}개 세트"
     }
-  }
+  },
+  "legacy": "이전 보관함",
+  "currentSelection": "현재 선택",
+  "search": "검색",
+  "theme": "테마",
+  "earlier": "이전 이력",
+  "basedOn": "기반이 된 항목",
+  "surface": "화면",
+  "selectionNote": "선택 메모",
+  "continueSelected": "선택한 항목으로 계속",
+  "initialContext": "에이전트의 초기 맥락",
+  "latestContext": "최신 맥락",
+  "history": "이력",
+  "description": "설명",
+  "whyChanged": "변경 이유",
+  "journey": "사용자 흐름",
+  "instructions": "지침",
+  "constraints": "제약 조건",
+  "backToHistory": "이력으로 돌아가기",
+  "elements": "요소"
 }

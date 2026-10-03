@@ -47,5 +47,24 @@
       "many": "{count} groupes",
       "other": "{count} groupes"
     }
-  }
+  },
+  "legacy": "Archives anciennes",
+  "currentSelection": "Sélection actuelle",
+  "search": "Rechercher",
+  "theme": "Thème",
+  "earlier": "Historique antérieur",
+  "basedOn": "Basé sur",
+  "surface": "Écran",
+  "selectionNote": "Note sur la sélection",
+  "continueSelected": "Continuer avec la sélection",
+  "initialContext": "Contexte initial de l’agent",
+  "latestContext": "Dernier contexte",
+  "history": "Historique",
+  "description": "Description",
+  "whyChanged": "Motif du changement",
+  "journey": "Parcours utilisateur",
+  "instructions": "Instructions",
+  "constraints": "Contraintes",
+  "backToHistory": "Retour à l’historique",
+  "elements": "Éléments"
 }
