@@ -47,5 +47,24 @@
       "other": "{count} kogumit",
       "many": "{count} kogumit"
     }
-  }
+  },
+  "legacy": "Vanem arhiiv",
+  "currentSelection": "Praegune valik",
+  "search": "Otsi",
+  "theme": "Teema",
+  "earlier": "Varasem ajalugu",
+  "basedOn": "Aluseks",
+  "surface": "Vaade",
+  "selectionNote": "Valiku märkus",
+  "continueSelected": "Jätka valitutega",
+  "initialContext": "Agendi algne kontekst",
+  "latestContext": "Uusim kontekst",
+  "history": "Ajalugu",
+  "description": "Kirjeldus",
+  "whyChanged": "Muudatuse põhjus",
+  "journey": "Kasutaja teekond",
+  "instructions": "Juhised",
+  "constraints": "Piirangud",
+  "backToHistory": "Tagasi ajalukku",
+  "elements": "Elemendid"
 }

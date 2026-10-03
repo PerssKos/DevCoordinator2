@@ -45,5 +45,24 @@
       "one": "{count} sarja",
       "other": "{count} sarjaa"
     }
-  }
+  },
+  "legacy": "Vanha arkisto",
+  "currentSelection": "Nykyinen valinta",
+  "search": "Hae",
+  "theme": "Teema",
+  "earlier": "Aiempi historia",
+  "basedOn": "Perustuu kohteeseen",
+  "surface": "Näkymä",
+  "selectionNote": "Valinnan huomautus",
+  "continueSelected": "Jatka valituilla",
+  "initialContext": "Agentin alkuperäinen konteksti",
+  "latestContext": "Uusin konteksti",
+  "history": "Historia",
+  "description": "Kuvaus",
+  "whyChanged": "Muutoksen syy",
+  "journey": "Käyttäjäpolku",
+  "instructions": "Ohjeet",
+  "constraints": "Rajoitukset",
+  "backToHistory": "Takaisin historiaan",
+  "elements": "Elementit"
 }

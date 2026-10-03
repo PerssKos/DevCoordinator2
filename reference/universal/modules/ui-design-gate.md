@@ -44,9 +44,23 @@ visible-content description, user journey, decisions, instructions,
 constraints, and parent nodes. Publish that manifest with the image; a missing
 initial description is invalid. Preserve every option, including rejected
 ones, and allow a continuation set to contain multiple selected options.
+Inspect each generated file before publication. The one-window declaration
+does not automatically inspect image pixels: regenerate a collage or ambiguous
+multi-window result. Controls inside one window and thumbnails displayed by
+an image-review product belong to that window; do not invent destinations from
+illustrative content inside them. Bind option numbers to explicit displayed
+positions and stable batch/image IDs, including after retries and refinements.
+Preserve the initial agent context. Later context edits append attributed
+revisions, distinguish depicted content from requested changes, and retain the
+user's comments and selection rationale.
 Later generations append new files and explicit lineage rather than replacing
 an earlier file. The Coordinator's current-head resolution is the only source
 for implementation; timestamps and an old Keep decision are not sufficient.
+An explicitly selected set with multiple members is resolved, not ambiguous.
+Read the exact returned image records for their latest full context and
+comments; open earlier graph pages only when needed. New generation alone
+never selects its results. Restoring an earlier option requires an explicit
+selection event, and historical legacy records are never promoted.
 
 Pause all implementation while the admission gate is pending. Do not edit product
 code, scaffold, start a preview, run implementation work, or publish a build.

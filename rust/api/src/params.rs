@@ -1221,6 +1221,9 @@ pub struct SketchImageInput {
     pub title: String,
     #[schemars(length(min = 1, max = 4096))]
     pub path: String,
+    /// Position in the order actually displayed to the user, not generation order.
+    #[schemars(range(min = 1, max = 64))]
+    pub display_order: u16,
     pub manifest: SketchManifest,
 }
 
@@ -1258,6 +1261,12 @@ pub struct SketchList {
     #[schemars(length(max = 160))]
     pub surface_id: Option<String>,
     #[serde(default)]
+    pub batch_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
+    #[serde(default)]
     pub current_only: bool,
     #[serde(default = "default_include_legacy")]
     pub include_legacy: bool,
@@ -1278,6 +1287,10 @@ pub struct SketchSearch {
     pub query: String,
     #[serde(default)]
     pub surface_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub theme: Option<String>,
     #[serde(default)]
     pub current_only: bool,
     #[serde(default)]
@@ -1302,6 +1315,10 @@ pub struct SketchStory {
     pub limit: u16,
     #[serde(default)]
     pub include_legacy: bool,
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub activation_offset: u32,
 }
 
 fn default_story_limit() -> u16 {
@@ -1332,7 +1349,7 @@ pub struct SketchActivate {
     pub repository_id: String,
     #[schemars(length(min = 1, max = 160))]
     pub surface_id: String,
-    #[schemars(length(min = 1, max = 64))]
+    #[schemars(length(max = 64))]
     pub sketch_ids: Vec<String>,
     pub expected_revision: u32,
     pub action: SketchActivationAction,
@@ -1377,6 +1394,9 @@ pub struct SketchReference {
     pub repository_id: String,
     #[schemars(regex(pattern = r"^s[0-9a-f]{16}$"))]
     pub sketch_id: String,
+    /// Retrieve earlier context revisions only when needed.
+    #[serde(default)]
+    pub context_before_revision: Option<u32>,
     #[serde(default)]
     #[schemars(range(max = 33554432))]
     pub offset: u32,
@@ -1422,7 +1442,7 @@ pub struct SketchAnnotationCreate {
     pub sketch_id: String,
     #[schemars(length(min = 3, max = 2000))]
     pub body: String,
-    #[schemars(length(min = 1, max = 64))]
+    #[schemars(length(max = 64))]
     pub marks: Vec<Mark>,
 }
 

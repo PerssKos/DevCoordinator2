@@ -38,6 +38,15 @@ devcoordinator2 health --help
   generations link to parents instead of replacing them. Resolve the current
   surface before implementation and after every new generation or adjustment;
   never scan runtime folders or infer project ownership from a path.
+  `publish` requires manifest version 2 and each image's actual `display_order`.
+  A `resolved` result may contain multiple explicitly selected images. Read
+  their exact `get` records for full context; list/search/story rows are compact.
+  `story` provides bounded history pages, generation batch IDs and parent edges;
+  `get` returns the immutable initial context and a page of later revisions.
+  Use `context_before_revision` for older text. `activate` takes the current
+  surface revision from `resolve`; context, generation or review changes make
+  stale writes fail without replacing the saved selection. Legacy rows remain
+  readable through existing tools but can never become current.
 - Use `agent_message_poll`, `agent_message_claim`, and `agent_message_ack` for
   repository-scoped sketch decisions and annotation notifications. Leave the
   linked Plan task as the durable fallback when an agent cannot acknowledge a

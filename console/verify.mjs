@@ -539,7 +539,7 @@ async function startFakeDaemon(dir) {
         }
         socket.end(JSON.stringify({ protocol: 2, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (scenario.delayMs) await new Promise((resolve) => delayedReplies.add(resolve));
+      if (scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
       if (cmd === 'user.whoami' && process.env.CONSOLE_VERIFY_RESET_PLAN_ON_SESSION === '1') {
@@ -769,7 +769,13 @@ async function startFakeDaemon(dir) {
     releaseDelayed: () => { mutable.cacheReleased = true; for (const release of delayedReplies) release(); delayedReplies.clear(); },
     waitForReceivedAfter: (after) => {
       if (calls.length > after) return Promise.resolve(calls[after]);
-      return new Promise((resolve) => receivedWaiters.add({ after, resolve }));
+      return new Promise((resolve,reject) => {
+        const deadline=AbortSignal.timeout(30000);
+        const waiter={after,resolve:value=>{deadline.removeEventListener('abort',onTimeout);resolve(value);}};
+        const onTimeout=()=>{receivedWaiters.delete(waiter);reject(new Error('Fixture request deadline reached'));};
+        deadline.addEventListener('abort',onTimeout,{once:true});
+        receivedWaiters.add(waiter);
+      });
     },
     waitForCall: (predicateOrCommand) => {
       const predicate = typeof predicateOrCommand === 'string'
@@ -1001,14 +1007,23 @@ async function main() {
       page.on('dialog', (d) => d.accept());
       for (const view of VIEWS) {
         const label = `${scenarioName}-${view.replace(/[#/]+/g, '_').replace(/^_/, '')}-${vpName}`;
+        const delayedOperation=view==='#/tests'?'test.list':view.startsWith('#/tests/')?'test.evidence.get':null;
+        // Hold the Tests collection response after shell/repository admission.
+        // Holding an arbitrary earlier request measured a different loading state.
+        if (scenario.delayMs) daemon.setScenario(delayedOperation ? {...scenario,delayOperations:[delayedOperation]} : scenario);
         const callsBeforeNavigation = daemon.calls.length;
         const scopedView = ['#/deployments', '#/tests'].includes(view) ? `${view}?repository=${REPO}` : ['#/plan', '#/progress', '#/usage', '#/decisions'].includes(view) ? `${view}/${REPO}` : view;
         await page.goto(`http://${HOST}:${port}/${scopedView}`);
         if (scenario.delayMs) {
-          const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
-          if (firstPending.operation === 'user.whoami') {
-            daemon.releaseDelayed();
-            await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
+          if (delayedOperation) {
+            let cursor=callsBeforeNavigation;
+            while ((await daemon.waitForReceivedAfter(cursor++)).operation !== delayedOperation) {}
+          } else {
+            const firstPending = await daemon.waitForReceivedAfter(callsBeforeNavigation);
+            if (firstPending.operation === 'user.whoami') {
+              daemon.releaseDelayed();
+              await daemon.waitForReceivedAfter(callsBeforeNavigation + 1);
+            }
           }
           await waitForRenderFrame(page);
           const loading = await page.evaluate(() => ({

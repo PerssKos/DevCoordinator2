@@ -21,7 +21,7 @@ const MAX_CHUNK: u32 = 180 * 1024;
 const MAX_RECORD: u64 = 32 * 1024 * 1024;
 const MANIFEST_VERSION: u8 = 2;
 
-const SUMMARY_COLUMNS: &str = "sketches.sketch_id,sketches.repository_id,sketch_batches.sketch_set,sketch_batches.source_skill,sketches.title,sketches.sha256,sketches.byte_size,sketches.width,sketches.height,sketches.created_at,sketches.decision,sketches.decision_revision,sketches.surface_id,sketches.surface_title,sketches.element_ids_json,sketches.state_name,sketches.theme,sketches.viewport,sketches.description,sketches.journey,sketches.decisions,sketches.instructions,sketches.constraints,sketches.transition_note,sketches.manifest_version,sketches.legacy,sketches.description_revision";
+const SUMMARY_COLUMNS: &str = "sketches.sketch_id,sketches.repository_id,sketch_batches.sketch_set,sketch_batches.source_skill,sketches.title,sketches.sha256,sketches.byte_size,sketches.width,sketches.height,sketches.created_at,sketches.decision,sketches.decision_revision,sketches.surface_id,sketches.surface_title,sketches.element_ids_json,sketches.state_name,sketches.theme,sketches.viewport,sketches.description,sketches.journey,sketches.decisions,sketches.instructions,sketches.constraints,sketches.transition_note,sketches.manifest_version,sketches.legacy,sketches.description_revision,sketches.batch_id,sketches.display_order";
 
 struct PreparedSketch {
     id: String,
@@ -31,6 +31,7 @@ struct PreparedSketch {
     width: u32,
     height: u32,
     manifest: params::SketchManifest,
+    display_order: u16,
 }
 
 #[derive(Clone)]
@@ -74,48 +75,57 @@ impl SketchService {
                 "sketch publishing is available to local agents",
             ));
         }
-        if p.images.is_empty() || p.images.len() > 64 {
-            return Err(invalid("images must contain 1..64 entries"));
+        validate_id(&p.repository_id, 'r')?;
+        text_field("set", &p.sketch_set, 1, 160)?;
+        text_field("source skill", &p.source_skill, 1, 80)?;
+        text_field("idempotency key", &p.idempotency_key, 1, 256)?;
+        if p.images.is_empty() || p.images.len() > 64 || p.manifest_version != MANIFEST_VERSION {
+            return Err(invalid(
+                "publish requires manifest_version 2 and 1..64 images",
+            ));
         }
-        if p.manifest_version != MANIFEST_VERSION {
-            return Err(invalid("manifest_version must be 2 for new sketches"));
+        let request_sha = sha(&serde_json::to_vec(&p).map_err(|_| invalid("invalid manifest"))?);
+        let repo = p.repository_id.clone();
+        let key = p.idempotency_key.clone();
+        let existing = self.database.call(move |c| Ok(c.query_row("SELECT batch_id,request_sha256 FROM sketch_batches WHERE repository_id=?1 AND idempotency_key=?2", rusqlite::params![repo,key], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?))).optional()?)).map_err(db_error)?;
+        if let Some((id, digest)) = existing {
+            if digest.as_deref() != Some(&request_sha) {
+                return Err(conflict(
+                    "idempotency key belongs to a different publication",
+                ));
+            }
+            return self.batch(&p.repository_id, &id);
         }
-        let existing = {
-            let key = p.idempotency_key.clone();
-            let repo = p.repository_id.clone();
-            self.database
-                .call(move |c| {
-                    c.query_row(
-                        "SELECT batch_id FROM sketch_batches WHERE repository_id=?1 AND idempotency_key=?2",
-                        rusqlite::params![repo, key],
-                        |r| r.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(DatabaseError::from)
-                })
-                .map_err(db_error)?
-        };
-        if let Some(existing) = existing {
-            return self.batch(&p.repository_id, &existing);
-        }
-        let surface_id = p
-            .images
-            .first()
-            .map(|image| image.manifest.surface_id.clone())
-            .ok_or_else(|| invalid("images must contain one manifest"))?;
-        let mut prepared = Vec::with_capacity(p.images.len());
-        let mut digests = HashSet::new();
+        let mut positions = HashSet::new();
+        let mut hashes = HashSet::new();
+        let mut prepared = Vec::new();
+        let mut total = 0;
+        let surface = p.images[0].manifest.surface_id.clone();
         for input in &p.images {
+            text_field("title", &input.title, 1, 120)?;
             validate_manifest(&input.manifest)?;
-            if input.manifest.surface_id != surface_id {
-                return Err(invalid("one publish batch must target one surface"));
+            if input.manifest.surface_id != surface {
+                return Err(invalid("one generation batch must target one surface"));
+            }
+            if input.display_order == 0
+                || usize::from(input.display_order) > p.images.len()
+                || !positions.insert(input.display_order)
+            {
+                return Err(invalid(
+                    "display_order must identify the actual displayed positions 1..image count without duplicates",
+                ));
             }
             let bytes = read_file(&input.path, MAX_BYTES)?;
-            let (width, height) =
-                png_dimensions(&bytes).ok_or_else(|| invalid("sketch images must be PNG files"))?;
+            total += bytes.len();
+            if total > 64 * 1024 * 1024 {
+                return Err(invalid("image batch exceeds 64 MiB"));
+            }
+            let (width, height) = png_dimensions(&bytes)
+                .filter(|(w, h)| *w > 0 && *h > 0)
+                .ok_or_else(|| invalid("mockup images must be nonempty PNG files"))?;
             let digest = sha(&bytes);
-            if !digests.insert(digest.clone()) {
-                return Err(invalid("a publish batch cannot repeat one image file"));
+            if !hashes.insert(digest.clone()) {
+                return Err(invalid("each option requires its own image file"));
             }
             prepared.push(PreparedSketch {
                 id: ids::sketch_id().map_err(id_error)?,
@@ -124,159 +134,67 @@ impl SketchService {
                 digest,
                 width,
                 height,
+                display_order: input.display_order,
                 manifest: input.manifest.clone(),
             });
         }
-        let root = self.state_dir.join("sketches").join(&p.repository_id);
-        fs::create_dir_all(&root).map_err(io_error)?;
         let batch_id = ids::sketch_batch_id().map_err(id_error)?;
         let now = self.now()?;
         let record = read_file(&p.generation_record_path, MAX_RECORD)?;
         let record_sha = sha(&record);
-        self.validate_publish_references(&p.repository_id, &prepared)?;
-        let batch_dir = root.join(&batch_id);
-        fs::create_dir_all(&batch_dir).map_err(io_error)?;
-        let record_path = batch_dir.join("generation-record.bin");
-        fs::write(&record_path, &record).map_err(io_error)?;
-        for sketch in &prepared {
-            let image_path = batch_dir.join(format!("{}.png", sketch.id));
-            fs::write(&image_path, &sketch.bytes).map_err(io_error)?;
-        }
-        let repo = p.repository_id.clone();
-        let set = p.sketch_set.clone();
-        let skill = p.source_skill.clone();
-        let idem = p.idempotency_key.clone();
-        let gen_path = record_path.to_string_lossy().into_owned();
-        let record_size = record.len() as i64;
-        let batch_for_insert = batch_id.clone();
-        let batch_for_rows = batch_id.clone();
-        let now_for_insert = now.clone();
-        let actor_for_insert = caller.actor();
-        let repo_for_insert = repo.clone();
-        let batch_dir_for_tx = batch_dir.clone();
-        let transaction = self.database.transaction(move |tx| {
-            tx.execute("INSERT INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,manifest_version,idempotency_key,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                    rusqlite::params![batch_for_insert,repo_for_insert,set,skill,gen_path,record_size,record_sha,MANIFEST_VERSION,idem,now_for_insert,actor_for_insert])?;
-            for sketch in prepared {
-                let image_path = batch_dir_for_tx.join(format!("{}.png", sketch.id));
-                let element_ids = serde_json::to_string(&sketch.manifest.element_ids).map_err(|error| DatabaseError::Startup(error.to_string()))?;
-                tx.execute("INSERT INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,surface_id,surface_title,element_ids_json,state_name,theme,viewport,description,journey,decisions,instructions,constraints,transition_note,manifest_version,legacy,description_revision,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,'image/png',?8,?9,'undecided',0,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,2,0,0,?22,?23)",
-                    rusqlite::params![sketch.id,batch_for_rows,repo,sketch.title,image_path.to_string_lossy().to_string(),sketch.bytes.len() as i64,sketch.digest,sketch.width,sketch.height,sketch.manifest.surface_id,sketch.manifest.surface_title,element_ids,sketch.manifest.state,sketch.manifest.theme,sketch.manifest.viewport,sketch.manifest.description,sketch.manifest.journey,sketch.manifest.decisions,sketch.manifest.instructions,sketch.manifest.constraints,sketch.manifest.transition_note,now,actor_for_insert])?;
-                tx.execute("INSERT INTO sketch_description_history(sketch_id,revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at) VALUES(?1,0,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![sketch.id,sketch.manifest.description,sketch.manifest.journey,sketch.manifest.decisions,sketch.manifest.instructions,sketch.manifest.constraints,"Initial agent-authored mockup context",actor_for_insert,now])?;
-                for parent in sketch.manifest.parent_relations {
-                    let relation = lineage_relation_text(&parent.relation);
-                    let lineage_id = ids::sketch_lineage_id().map_err(|error| DatabaseError::Startup(error.to_string()))?;
-                    tx.execute("INSERT INTO sketch_lineage(lineage_id,repository_id,parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)", rusqlite::params![lineage_id,repo, parent.parent_sketch_id,sketch.id,relation,sketch.manifest.transition_note,actor_for_insert,now])?;
-                }
+        let record_size = record.len();
+        let dir = self
+            .state_dir
+            .join("sketches")
+            .join(&p.repository_id)
+            .join(&batch_id);
+        fs::create_dir_all(&dir).map_err(io_error)?;
+        let files = (|| -> Result<(), ProtocolError> {
+            write_new(&dir.join("generation-record.bin"), &record)?;
+            for item in &prepared {
+                write_new(&dir.join(format!("{}.png", item.id)), &item.bytes)?;
             }
             Ok(())
+        })();
+        if let Err(error) = files {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        let repo = p.repository_id.clone();
+        let batch = batch_id.clone();
+        let actor = caller.actor();
+        let path = dir.clone();
+        let result = self.database.transaction(move |tx| {
+            // Validate inside the same transaction as insertion. Parents must already
+            // exist: immutable edges into fresh child IDs cannot introduce a cycle.
+            for item in &prepared {
+                let duplicate: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND sha256=?2)",rusqlite::params![repo,item.digest],|r|r.get(0))?;
+                if duplicate { return Err(invalid("image digest is already retained; generate a distinct image").into()); }
+                for parent in &item.manifest.parent_relations {
+                    let owner: Option<(Option<String>,bool)> = tx.query_row("SELECT surface_id,legacy FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![repo,parent.parent_sketch_id],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                    if !owner.is_some_and(|(scope,legacy)| !legacy && scope.as_deref()==Some(surface.as_str())) { return Err(invalid("lineage parent must be an existing nonlegacy image on the same repository and surface").into()); }
+                }
+            }
+            tx.execute("INSERT INTO sketch_surfaces(repository_id,surface_id,title,revision) VALUES(?1,?2,?3,0) ON CONFLICT DO NOTHING",rusqlite::params![repo,surface,prepared[0].manifest.surface_title])?;
+            tx.execute("INSERT INTO sketch_batches(batch_id,repository_id,sketch_set,source_skill,generation_record_path,generation_record_size,generation_record_sha256,manifest_version,request_sha256,idempotency_key,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,2,?8,?9,?10,?11)",rusqlite::params![batch,repo,p.sketch_set,p.source_skill,path.join("generation-record.bin").to_string_lossy(),record_size as i64,record_sha,request_sha,p.idempotency_key,now,actor])?;
+            for item in prepared {
+                let m=&item.manifest;
+                let elements=json_text(&m.element_ids)?;
+                tx.execute("INSERT INTO sketches(sketch_id,batch_id,repository_id,title,file_path,byte_size,sha256,mime,width,height,decision,decision_revision,surface_id,surface_title,display_order,element_ids_json,state_name,theme,viewport,description,journey,decisions,instructions,constraints,transition_note,manifest_version,legacy,description_revision,created_at,created_by) VALUES(?1,?2,?3,?4,?5,?6,?7,'image/png',?8,?9,'undecided',0,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,2,0,0,?23,?24)",rusqlite::params![item.id,batch,repo,item.title,path.join(format!("{}.png",item.id)).to_string_lossy(),item.bytes.len() as i64,item.digest,item.width,item.height,m.surface_id,m.surface_title,item.display_order,elements,m.state,m.theme,m.viewport,m.description,m.journey,m.decisions,m.instructions,m.constraints,m.transition_note,now,actor])?;
+                tx.execute("INSERT INTO sketch_description_history(sketch_id,revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at) VALUES(?1,0,?2,?3,?4,?5,?6,'Initial agent-authored context',?7,?8)",rusqlite::params![item.id,m.description,m.journey,m.decisions,m.instructions,m.constraints,actor,now])?;
+                for parent in &m.parent_relations {
+                    tx.execute("INSERT INTO sketch_lineage(lineage_id,repository_id,parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",rusqlite::params![ids::sketch_lineage_id().map_err(id_error)?,repo,parent.parent_sketch_id,item.id,lineage_relation_text(&parent.relation),m.transition_note,actor,now])?;
+                }
+                reindex_sketch(tx,&item.id)?;
+            }
+            bump_surface(tx,&repo,&surface)?;
+            Ok(())
         });
-        if let Err(error) = transaction {
-            let _ = fs::remove_dir_all(&batch_dir);
+        if let Err(error) = result {
+            let _ = fs::remove_dir_all(&dir);
             return Err(db_error(error));
         }
-        self.refresh_search_index()?;
         self.batch(&p.repository_id, &batch_id)
-    }
-    fn validate_publish_references(
-        &self,
-        repository_id: &str,
-        prepared: &[PreparedSketch],
-    ) -> Result<(), ProtocolError> {
-        let repo = repository_id.to_owned();
-        let digests = prepared
-            .iter()
-            .map(|sketch| sketch.digest.clone())
-            .collect::<Vec<_>>();
-        let parents = prepared
-            .iter()
-            .flat_map(|sketch| {
-                sketch
-                    .manifest
-                    .parent_relations
-                    .iter()
-                    .map(|parent| {
-                        (
-                            parent.parent_sketch_id.clone(),
-                            sketch.manifest.surface_id.clone(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        self.database
-            .call(move |connection| {
-                for digest in &digests {
-                    let duplicate: Option<(Option<String>, bool)> = connection
-                        .query_row(
-                            "SELECT surface_id,legacy FROM sketches WHERE repository_id=?1 AND sha256=?2 LIMIT 1",
-                            rusqlite::params![repo, digest],
-                            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
-                        )
-                        .optional()?;
-                    if duplicate.is_some() {
-                        return Err(DatabaseError::Domain(invalid(
-                            "image digest is already retained; publish a new image file",
-                        )));
-                    }
-                }
-                for (parent, surface) in &parents {
-                    let parent_surface: Option<(Option<String>, bool)> = connection
-                        .query_row(
-                            "SELECT surface_id,legacy FROM sketches WHERE repository_id=?1 AND sketch_id=?2",
-                            rusqlite::params![repo, parent],
-                            |row| Ok((row.get(0)?, row.get::<_, i64>(1)? != 0)),
-                        )
-                        .optional()?;
-                    let Some((parent_surface, legacy)) = parent_surface else {
-                        return Err(DatabaseError::Domain(invalid(
-                            "lineage parent sketch was not found in this repository",
-                        )));
-                    };
-                    if legacy || parent_surface.as_deref() != Some(surface.as_str()) {
-                        return Err(DatabaseError::Domain(invalid(
-                            "lineage parents must be manifest-complete sketches on the same surface",
-                        )));
-                    }
-                }
-                Ok(())
-            })
-            .map_err(db_error)
-    }
-    fn refresh_search_index(&self) -> Result<(), ProtocolError> {
-        self.database
-            .call(|connection| {
-                connection.execute("DELETE FROM sketches_fts", [])?;
-                let mut statement = connection.prepare(
-                    "SELECT sketch_id,repository_id,COALESCE(surface_id,''),title,
-                            COALESCE(surface_title,''),element_ids_json,
-                            COALESCE(state_name,''),COALESCE(theme,''),COALESCE(viewport,''),
-                            description,journey,decisions,instructions,constraints,transition_note
-                     FROM sketches",
-                )?;
-                let rows = statement
-                    .query_map([], |row| {
-                        let text = (3..15)
-                            .map(|index| row.get::<_, String>(index))
-                            .collect::<Result<Vec<_>, _>>()?
-                            .join(" ");
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            text,
-                        ))
-                    })?
-                    .collect::<Result<Vec<_>, _>>()?;
-                for (sketch_id, repository_id, surface_id, text) in rows {
-                    connection.execute(
-                        "INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) VALUES(?1,?2,?3,?4)",
-                        rusqlite::params![sketch_id, repository_id, surface_id, text],
-                    )?;
-                }
-                Ok(())
-            })
-            .map_err(db_error)
     }
     fn batch(
         &self,
@@ -284,163 +202,132 @@ impl SketchService {
         batch_id: &str,
     ) -> Result<results::SketchBatch, ProtocolError> {
         let repo = repository_id.to_owned();
-        let bid = batch_id.to_owned();
+        let batch = batch_id.to_owned();
         self.database.call(move |c| {
-            let b=c.query_row("SELECT batch_id,repository_id,sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=?1 AND batch_id=?2",rusqlite::params![repo,bid],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,i64>(4)? as u64,r.get::<_,String>(5)?,r.get::<_,String>(6)?)))?;
-            let mut st=c.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.batch_id=?1 ORDER BY sketches.rowid"))?;
-            let sketches=st.query_map([&bid],summary_row).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            Ok(results::SketchBatch{batch_id:b.0,repository_id:b.1,sketch_set:b.2,source_skill:b.3,generation_record_size:b.4,generation_record_sha256:b.5,created_at:b.6,sketches})
+            let b=c.query_row("SELECT sketch_set,source_skill,generation_record_size,generation_record_sha256,created_at FROM sketch_batches WHERE repository_id=?1 AND batch_id=?2",rusqlite::params![repo,batch],|r|Ok((r.get(0)?,r.get(1)?,r.get::<_,i64>(2)? as u64,r.get(3)?,r.get(4)?)))?;
+            let sketches=query_summaries(c,&format!("sketches.repository_id=? AND sketches.batch_id=? ORDER BY sketches.display_order,sketches.rowid"),vec![repo.clone().into(),batch.clone().into()])?;
+            Ok(results::SketchBatch {batch_id:batch,repository_id:repo,sketch_set:b.0,source_skill:b.1,generation_record_size:b.2,generation_record_sha256:b.3,created_at:b.4,sketches})
         }).map_err(db_error)
     }
     pub fn list(&self, p: params::SketchList) -> Result<results::SketchListResult, ProtocolError> {
-        let repo = p.repository_id.clone();
-        let skill = p.source_skill.clone();
-        let dec = p.decision.clone();
-        let set = p.sketch_set.clone();
-        let surface = p.surface_id.clone();
-        let current_only = p.current_only;
-        let include_legacy = p.include_legacy;
-        let offset = p.offset;
-        let limit = p.limit.clamp(1, 100);
-        self.database.call(move|c|{
-            let mut sql=format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1");
-            let mut vals:Vec<rusqlite::types::Value>=vec![repo.clone().into()];
-            if let Some(v)=skill { sql.push_str(" AND source_skill=?"); vals.push(v.into()); }
-            if let Some(v)=set { sql.push_str(" AND sketch_set=?"); vals.push(v.into()); }
-            if let Some(v)=dec { sql.push_str(" AND decision=?"); vals.push(serde_json::to_string(&v).unwrap().trim_matches('"').to_owned().into()); }
-            if let Some(v)=surface { sql.push_str(" AND sketches.surface_id=?"); vals.push(v.into()); }
-            if !include_legacy { sql.push_str(" AND sketches.legacy=0"); }
-            if current_only {
-                sql.push_str(" AND EXISTS (SELECT 1 FROM sketch_surface_activations a, json_each(a.sketch_ids_json) j WHERE a.repository_id=sketches.repository_id AND a.surface_id=sketches.surface_id AND j.value=sketches.sketch_id AND a.revision=(SELECT MAX(a2.revision) FROM sketch_surface_activations a2 WHERE a2.repository_id=a.repository_id AND a2.surface_id=a.surface_id))");
-            }
-            // Fetch one extra row so callers can continue without losing the
-            // newest records when a repository has more than one page.
-            sql.push_str(&format!(" ORDER BY sketches.created_at DESC, sketches.rowid DESC LIMIT {} OFFSET {}", u32::from(limit) + 1, offset));
-            let mut st=c.prepare(&sql)?; let rows=st.query_map(rusqlite::params_from_iter(vals),summary_row)?.collect::<Result<Vec<_>,_>>()?;
-            let has_more = rows.len() > usize::from(limit);
-            let current_ids = repo.clone();
-            let mut sketches = rows.into_iter().take(usize::from(limit)).collect::<Vec<_>>();
-            for sketch in &mut sketches {
-                sketch.current = if let Some(surface) = sketch.surface_id.as_deref() {
-                    is_current_sketch(c, Some(surface), &sketch.sketch_id, &current_ids)?
-                } else {
-                    false
-                };
-            }
-            Ok(results::SketchListResult{repository_id:repo,has_more,sketches})
-        }).map_err(db_error)
+        self.query(
+            p.repository_id,
+            None,
+            p.source_skill,
+            p.decision,
+            p.sketch_set,
+            p.surface_id,
+            p.batch_id,
+            p.state,
+            p.theme,
+            p.current_only,
+            p.include_legacy,
+            p.offset,
+            p.limit,
+        )
     }
     pub fn search(
         &self,
         p: params::SketchSearch,
     ) -> Result<results::SketchListResult, ProtocolError> {
-        let repo = p.repository_id.clone();
-        let query = literal_fts_query(&p.query);
-        let surface = p.surface_id.clone();
-        let current_only = p.current_only;
-        let include_legacy = p.include_legacy;
-        let offset = p.offset;
-        let limit = p.limit.clamp(1, 100);
+        text_field("query", &p.query, 1, 256)?;
+        self.query(
+            p.repository_id,
+            Some(p.query),
+            None,
+            None,
+            None,
+            p.surface_id,
+            None,
+            p.state,
+            p.theme,
+            p.current_only,
+            p.include_legacy,
+            p.offset,
+            p.limit,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn query(
+        &self,
+        repo: String,
+        query: Option<String>,
+        skill: Option<String>,
+        decision: Option<SketchDecision>,
+        set: Option<String>,
+        surface: Option<String>,
+        batch: Option<String>,
+        state: Option<String>,
+        theme: Option<String>,
+        current: bool,
+        legacy: bool,
+        offset: u32,
+        limit: u16,
+    ) -> Result<results::SketchListResult, ProtocolError> {
+        if !(1..=100).contains(&limit) || offset > 4_000_000 {
+            return Err(invalid("invalid page bounds"));
+        }
         self.database.call(move |c| {
-            let mut sql = format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) JOIN sketches_fts f ON f.sketch_id=sketches.sketch_id WHERE f.repository_id=?1 AND sketches_fts MATCH ?2");
-            let mut vals: Vec<rusqlite::types::Value> = vec![repo.clone().into(), query.into()];
-            if let Some(surface) = surface { sql.push_str(" AND sketches.surface_id=?"); vals.push(surface.into()); }
-            if !include_legacy { sql.push_str(" AND sketches.legacy=0"); }
-            if current_only { sql.push_str(" AND EXISTS (SELECT 1 FROM sketch_surface_activations a, json_each(a.sketch_ids_json) j WHERE a.repository_id=sketches.repository_id AND a.surface_id=sketches.surface_id AND j.value=sketches.sketch_id AND a.revision=(SELECT MAX(a2.revision) FROM sketch_surface_activations a2 WHERE a2.repository_id=a.repository_id AND a2.surface_id=a.surface_id))"); }
-            sql.push_str(&format!(" ORDER BY sketches.created_at DESC, sketches.rowid DESC LIMIT {} OFFSET {}", u32::from(limit) + 1, offset));
-            let mut statement = c.prepare(&sql)?;
-            let rows = statement.query_map(rusqlite::params_from_iter(vals), summary_row)?.collect::<Result<Vec<_>, _>>()?;
-            let has_more = rows.len() > usize::from(limit);
-            let mut sketches = rows.into_iter().take(usize::from(limit)).collect::<Vec<_>>();
-            for sketch in &mut sketches {
-                sketch.current = if let Some(surface) = sketch.surface_id.as_deref() {
-                    is_current_sketch(c, Some(surface), &sketch.sketch_id, &repo)?
-                } else {
-                    false
-                };
+            let mut where_sql="sketches.repository_id=?".to_owned();let mut values=vec![repo.clone().into()];
+            for (column,value) in [("sketch_batches.source_skill",skill),("sketches.decision",decision.map(|d|decision_text(&d).to_owned())),("sketch_batches.sketch_set",set),("sketches.surface_id",surface),("sketches.batch_id",batch),("sketches.state_name",state),("sketches.theme",theme)] {
+                if let Some(value)=value {where_sql.push_str(&format!(" AND {column}=?"));values.push(value.into());}
             }
-            Ok(results::SketchListResult { repository_id: repo, has_more, sketches })
+            if !legacy {where_sql.push_str(" AND sketches.legacy=0");}
+            if current {where_sql.push_str(&format!(" AND {CURRENT_SQL}"));}
+            if let Some(query)=query {where_sql.push_str(" AND sketches.sketch_id IN (SELECT sketch_id FROM sketches_fts WHERE repository_id=? AND sketches_fts MATCH ?)");values.push(repo.clone().into());values.push(literal_fts_query(&query).into());}
+            where_sql.push_str(&format!(" ORDER BY sketch_batches.rowid DESC,sketches.display_order ASC,sketches.rowid LIMIT {} OFFSET {offset}",u32::from(limit)+1));
+            let rows=query_summaries(c,&where_sql,values)?;
+            let (sketches,has_more)=bounded_summaries(rows,usize::from(limit));
+            Ok(results::SketchListResult{repository_id:repo,sketches,has_more})
         }).map_err(db_error)
     }
     pub fn story(
         &self,
         p: params::SketchStory,
     ) -> Result<results::SketchStoryResult, ProtocolError> {
-        let repo = p.repository_id.clone();
-        let surface = p.surface_id.clone();
-        let limit = p.limit.clamp(1, 200);
-        let include_legacy = p.include_legacy;
         self.database.call(move |c| {
-            let mut sql = format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketches.surface_id=?2");
-            if !include_legacy { sql.push_str(" AND sketches.legacy=0"); }
-            sql.push_str(&format!(" ORDER BY sketches.created_at ASC, sketches.rowid ASC LIMIT {}", u32::from(limit) + 1));
-            let mut statement = c.prepare(&sql)?;
-            let rows = statement.query_map(rusqlite::params![repo, surface], summary_row)?.collect::<Result<Vec<_>, _>>()?;
-            let has_more = rows.len() > usize::from(limit);
-            let mut nodes = rows.into_iter().take(usize::from(limit)).collect::<Vec<_>>();
-            let current_ids = current_ids(c, &repo, &surface)?;
-            for node in &mut nodes { node.current = current_ids.iter().any(|id| id == &node.sketch_id); }
-            let current = nodes.iter().filter(|node| node.current).cloned().collect::<Vec<_>>();
-            let surface_title = nodes.iter().find_map(|node| node.surface_title.clone());
-            let mut edge_stmt = c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND (parent_sketch_id IN (SELECT sketch_id FROM sketches WHERE repository_id=?1 AND surface_id=?2) OR child_sketch_id IN (SELECT sketch_id FROM sketches WHERE repository_id=?1 AND surface_id=?2)) ORDER BY created_at")?;
-            let lineage = edge_stmt.query_map(rusqlite::params![repo, surface], |r| Ok(results::SketchLineageEvent { parent_sketch_id:r.get(0)?, child_sketch_id:r.get(1)?, relation:parse_lineage_relation(&r.get::<_,String>(2)?), rationale:r.get(3)?, actor:r.get(4)?, created_at:r.get(5)? })).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            let mut activation_stmt = c.prepare("SELECT revision,action,sketch_ids_json,rationale,actor,created_at FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2 ORDER BY revision")?;
-            let activations = activation_stmt.query_map(rusqlite::params![repo, surface], |r| {
-                let ids = serde_json::from_str::<Vec<String>>(&r.get::<_,String>(2)?).unwrap_or_default();
-                Ok(results::SketchActivationEvent { revision:r.get(0)?, action:parse_activation_action(&r.get::<_,String>(1)?), sketch_ids:ids, rationale:r.get(3)?, actor:r.get(4)?, created_at:r.get(5)? })
-            }).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            Ok(results::SketchStoryResult { repository_id:repo, surface_id:surface, surface_title, current, nodes, lineage, activations, has_more })
+            let current=resolve_current(c,&p.repository_id,&p.surface_id)?;
+            let rows=query_summaries(c,&format!("sketches.repository_id=? AND sketches.surface_id=? ORDER BY sketch_batches.rowid DESC,sketches.display_order ASC,sketches.rowid LIMIT {} OFFSET {}",p.limit.clamp(1,100)+1,p.offset),vec![p.repository_id.clone().into(),p.surface_id.clone().into()])?;
+            let (nodes,has_more)=bounded_summaries(rows,usize::from(p.limit.clamp(1,100)));
+            let mut lineage=Vec::new();
+            for node in &nodes {let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND child_sketch_id=?2 ORDER BY rowid")?;lineage.extend(q.query_map(rusqlite::params![p.repository_id,node.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?);}
+            let mut q=c.prepare("SELECT revision,action,sketch_ids_json,rationale,actor,created_at FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2 ORDER BY revision DESC LIMIT 21 OFFSET ?3")?;
+            let mut activations=q.query_map(rusqlite::params![p.repository_id,p.surface_id,p.activation_offset],activation_row)?.collect::<Result<Vec<_>,_>>()?;
+            let next_activation_offset=(activations.len()>20).then_some(p.activation_offset+20);activations.truncate(20);
+            let title=c.query_row("SELECT title FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2",rusqlite::params![p.repository_id,p.surface_id],|r|r.get(0)).optional()?;
+            let next_offset=has_more.then_some(p.offset+nodes.len() as u32);
+            bound_story(results::SketchStoryResult{repository_id:p.repository_id,surface_id:p.surface_id,surface_title:title,current:current.current,nodes,lineage,activations,has_more,next_offset,revision:current.revision,next_activation_offset},p.offset,p.activation_offset)
         }).map_err(db_error)
     }
     pub fn resolve(
         &self,
         p: params::SketchResolve,
     ) -> Result<results::SketchResolveResult, ProtocolError> {
-        let repo = p.repository_id.clone();
-        let surface = p.surface_id.clone();
-        self.database.call(move |c| {
-            let ids = current_ids(c, &repo, &surface)?;
-            let revision: u32 = c.query_row("SELECT COALESCE(MAX(revision),0) FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2", rusqlite::params![repo, surface], |r| r.get(0))?;
-            let mut nodes = Vec::new();
-            for id in &ids {
-                let summary = c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketches.sketch_id=?2"), rusqlite::params![repo, id], summary_row)?;
-                if !summary.legacy { nodes.push(summary); }
-            }
-            let (status, rationale) = if !nodes.is_empty() && nodes.len() == ids.len() {
-                if nodes.len() == 1 { (results::SketchResolveStatus::Resolved, "Explicit current selection is authoritative.".to_owned()) }
-                else { (results::SketchResolveStatus::Resolved, "Multiple current heads were explicitly selected for continuation.".to_owned()) }
-            } else {
-                let total: i64 = c.query_row("SELECT COUNT(*) FROM sketches WHERE repository_id=?1 AND surface_id=?2", rusqlite::params![repo, surface], |r| r.get(0))?;
-                if total > 0 { (results::SketchResolveStatus::LegacyOnly, "Only historical legacy sketches exist for this surface.".to_owned()) }
-                else { (results::SketchResolveStatus::Unavailable, "No current selection exists for this surface.".to_owned()) }
-            };
-            Ok(results::SketchResolveResult { repository_id:repo, surface_id:surface, status, revision, rationale, current:nodes })
-        }).map_err(db_error)
+        self.database
+            .call(move |c| resolve_current(c, &p.repository_id, &p.surface_id))
+            .map_err(db_error)
     }
     pub fn get(
         &self,
         p: params::SketchReference,
         actor: &str,
     ) -> Result<results::SketchDetail, ProtocolError> {
-        let repo = p.repository_id.clone();
-        let id = p.sketch_id.clone();
         let actor = actor.to_owned();
-        self.database.call(move|c|{
-            let row=c.query_row(&format!("SELECT {SUMMARY_COLUMNS},sketches.batch_id FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketches.sketch_id=?2"),rusqlite::params![repo,id],|r| Ok((summary_row(r)?,r.get::<_,String>(27)?)))?;
-            let (summary,batch_id)=row;
-            let (size,digest):(u64,String)=c.query_row("SELECT generation_record_size,generation_record_sha256 FROM sketch_batches WHERE batch_id=?1",[batch_id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
-            let mut st=c.prepare("SELECT revision,decision,rationale,actor,created_at FROM sketch_decision_history WHERE sketch_id=?1 ORDER BY revision")?;
-            let history=st.query_map([&summary.sketch_id],|r|Ok(results::SketchDecisionEvent{revision:r.get(0)?,decision:serde_json::from_str(&format!("\"{}\"",r.get::<_,String>(1)?)).unwrap_or(SketchDecision::Undecided),rationale:r.get(2)?,actor:r.get(3)?,created_at:r.get(4)?})).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            let mut ann=c.prepare("SELECT annotation_id,sketch_id,body,marks_json,state,created_by,created_at,updated_at FROM sketch_annotations WHERE sketch_id=?1 AND state!='deleted' ORDER BY created_at")?;
-            let annotations=ann.query_map([&summary.sketch_id],|r| annotation_row(r,&actor)).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            let mut lineage_stmt=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND (parent_sketch_id=?2 OR child_sketch_id=?2) ORDER BY created_at")?;
-            let lineage=lineage_stmt.query_map(rusqlite::params![summary.repository_id,summary.sketch_id],|r| Ok(results::SketchLineageEvent{parent_sketch_id:r.get(0)?,child_sketch_id:r.get(1)?,relation:parse_lineage_relation(&r.get::<_,String>(2)?),rationale:r.get(3)?,actor:r.get(4)?,created_at:r.get(5)?})).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            let mut descriptions=c.prepare("SELECT revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at FROM sketch_description_history WHERE sketch_id=?1 ORDER BY revision")?;
-            let description_history=descriptions.query_map([&summary.sketch_id],|r| Ok(results::SketchDescriptionRevision{revision:r.get(0)?,description:r.get(1)?,journey:r.get(2)?,decisions:r.get(3)?,instructions:r.get(4)?,constraints:r.get(5)?,rationale:r.get(6)?,actor:r.get(7)?,created_at:r.get(8)?})).map_err(DatabaseError::from)?.collect::<Result<Vec<_>,_>>()?;
-            let current = is_current_sketch(c, summary.surface_id.as_deref(), &summary.sketch_id, &summary.repository_id)?;
-            let mut sketch = summary;
-            sketch.current = current;
-            Ok(results::SketchDetail{sketch,generation_record_size:size,generation_record_sha256:digest,history,annotations,lineage,description_history})
+        self.database.call(move |c| {
+            let mut sketch=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketch_id=?2"),rusqlite::params![p.repository_id,p.sketch_id],summary_row)?;
+            sketch.current=is_current_sketch(c,sketch.surface_id.as_deref(),&p.sketch_id,&p.repository_id)?;
+            let (size,digest)=c.query_row("SELECT generation_record_size,generation_record_sha256 FROM sketch_batches WHERE batch_id=?1",[&sketch.batch_id],|r|Ok((r.get::<_,i64>(0)? as u64,r.get(1)?)))?;
+            let mut q=c.prepare("SELECT revision,decision,rationale,actor,created_at FROM sketch_decision_history WHERE sketch_id=?1 ORDER BY revision DESC LIMIT 20")?;
+            let history=q.query_map([&p.sketch_id],|r|Ok(results::SketchDecisionEvent{revision:r.get(0)?,decision:parse_decision(&r.get::<_,String>(1)?),rationale:r.get(2)?,actor:r.get(3)?,created_at:r.get(4)?}))?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT annotation_id,sketch_id,body,marks_json,state,created_by,created_at,updated_at FROM sketch_annotations WHERE repository_id=?1 AND sketch_id=?2 AND state!='deleted' ORDER BY created_at,rowid")?;
+            let annotations=q.query_map(rusqlite::params![p.repository_id,p.sketch_id],|r|annotation_row(r,&actor))?.collect::<Result<Vec<_>,_>>()?;
+            let mut q=c.prepare("SELECT parent_sketch_id,child_sketch_id,relation,rationale,actor,created_at FROM sketch_lineage WHERE repository_id=?1 AND child_sketch_id=?2 ORDER BY rowid")?;
+            let lineage=q.query_map(rusqlite::params![p.repository_id,p.sketch_id],lineage_row)?.collect::<Result<Vec<_>,_>>()?;
+            let initial_context=c.query_row(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=?1 AND revision=0"),[&p.sketch_id],context_row).optional()?;
+            let mut q=c.prepare(&format!("SELECT {CONTEXT_COLUMNS} FROM sketch_description_history WHERE sketch_id=?1 AND (?2 IS NULL OR revision<?2) ORDER BY revision DESC LIMIT 4"))?;
+            let mut description_history=q.query_map(rusqlite::params![p.sketch_id,p.context_before_revision],context_row)?.collect::<Result<Vec<_>,_>>()?;
+            let context_history_has_more=description_history.len()>3;description_history.truncate(3);
+            Ok(results::SketchDetail{sketch,generation_record_size:size,generation_record_sha256:digest,history,annotations,lineage,description_history,initial_context,context_history_has_more})
         }).map_err(db_error)
     }
     pub fn image(&self, p: params::SketchImage) -> Result<results::SketchChunk, ProtocolError> {
@@ -457,57 +344,53 @@ impl SketchService {
         p: params::SketchActivate,
         caller: &Caller,
     ) -> Result<results::SketchActivationResult, ProtocolError> {
-        if p.sketch_ids.is_empty() || p.sketch_ids.len() > 64 {
-            return Err(invalid("sketch_ids must contain 1..64 entries"));
+        text_field("rationale", &p.rationale, 1, 2000)?;
+        if p.sketch_ids.len() > 64
+            || p.sketch_ids.iter().collect::<HashSet<_>>().len() != p.sketch_ids.len()
+        {
+            return Err(invalid(
+                "continuation IDs must be unique and contain at most 64 options",
+            ));
         }
-        if p.sketch_ids.iter().collect::<HashSet<_>>().len() != p.sketch_ids.len() {
-            return Err(invalid("sketch_ids must be unique"));
-        }
-        let now = self.now()?;
         let actor = caller.actor();
-        let activation_id = ids::sketch_activation_id().map_err(id_error)?;
-        let repo = p.repository_id.clone();
-        let surface = p.surface_id.clone();
-        let ids = p.sketch_ids.clone();
-        let action = activation_action_text(&p.action).to_owned();
-        let rationale = p.rationale.clone();
-        let expected = p.expected_revision;
-        let now_for_tx = now.clone();
-        let actor_for_tx = actor.clone();
-        let revision = self.database.transaction(move |tx| {
-            let current: u32 = tx.query_row("SELECT COALESCE(MAX(revision),0) FROM sketch_surface_activations WHERE repository_id=?1 AND surface_id=?2", rusqlite::params![repo, surface], |r| r.get(0))?;
-            if current != expected {
-                return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict, "surface selection changed; refresh and retry")));
+        let now = self.now()?;
+        let request = p.clone();
+        let actor_tx = actor.clone();
+        let time_tx = now.clone();
+        let revision=self.database.transaction(move |tx|{
+            let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2)",rusqlite::params![request.repository_id,request.surface_id],|r|r.get(0))?;
+            if !exists {return Err(invalid("surface has no manifest-complete mockups").into());}
+            let current=surface_revision(tx,&request.repository_id,&request.surface_id)?;
+            if current!=request.expected_revision {return Err(conflict("mockup history changed; refresh before saving this selection").into());}
+            for id in &request.sketch_ids {
+                validate_id(id,'s')?;
+                let valid:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND surface_id=?2 AND sketch_id=?3 AND legacy=0)",rusqlite::params![request.repository_id,request.surface_id,id],|r|r.get(0))?;
+                if !valid{return Err(invalid("only nonlegacy options from this surface and repository can become current").into());}
             }
-            for sketch_id in &ids {
-                let row: Option<(Option<String>, bool)> = tx.query_row("SELECT surface_id,legacy FROM sketches WHERE repository_id=?1 AND sketch_id=?2", rusqlite::params![repo, sketch_id], |r| Ok((r.get(0)?,r.get::<_,i64>(1)? != 0))).optional()?;
-                let Some((sketch_surface, legacy)) = row else { return Err(DatabaseError::Domain(invalid("selected sketch was not found"))); };
-                if legacy || sketch_surface.as_deref() != Some(surface.as_str()) { return Err(DatabaseError::Domain(invalid("only manifest-complete sketches on this surface can become current"))); }
+            let next=bump_surface(tx,&request.repository_id,&request.surface_id)?;
+            tx.execute("INSERT INTO sketch_surface_activations(activation_id,repository_id,surface_id,revision,action,sketch_ids_json,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![ids::sketch_activation_id().map_err(id_error)?,request.repository_id,request.surface_id,next,activation_action_text(&request.action),json_text(&request.sketch_ids)?,request.rationale,actor_tx,time_tx])?;
+            for id in &request.sketch_ids {
+                let (revision,decision):(u32,String)=tx.query_row("SELECT decision_revision,decision FROM sketches WHERE sketch_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                if decision!="keep" {
+                    tx.execute("UPDATE sketches SET decision='keep',decision_revision=?2 WHERE sketch_id=?1",rusqlite::params![id,revision+1])?;
+                    tx.execute("INSERT INTO sketch_decision_history VALUES(?1,?2,'keep',?3,?4,?5)",rusqlite::params![id,revision+1,request.rationale,actor_tx,time_tx])?;
+                }
+                reindex_sketch(tx,id)?;
             }
-            let ids_json = serde_json::to_string(&ids).map_err(|error| DatabaseError::Startup(error.to_string()))?;
-            let next = current + 1;
-            tx.execute("INSERT INTO sketch_surface_activations(activation_id,repository_id,surface_id,revision,action,sketch_ids_json,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)", rusqlite::params![activation_id,repo,surface,next,action,ids_json,rationale,actor_for_tx,now_for_tx])?;
             Ok(next)
         }).map_err(db_error)?;
         self.add_message(
             &p.repository_id,
             "sketch.activation",
             &p.surface_id,
-            "The current sketch continuation set changed",
+            "The current mockup selection changed",
         )?;
-        let current = self.database.call({
-            let repo = p.repository_id.clone();
-            let ids = p.sketch_ids.clone();
-            move |c| {
-                let mut result = Vec::new();
-                for id in ids {
-                    let mut summary = c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND sketches.sketch_id=?2"), rusqlite::params![repo, id], summary_row)?;
-                    summary.current = true;
-                    result.push(summary);
-                }
-                Ok(result)
-            }
-        }).map_err(db_error)?;
+        let current = self
+            .resolve(params::SketchResolve {
+                repository_id: p.repository_id,
+                surface_id: p.surface_id.clone(),
+            })?
+            .current;
         Ok(results::SketchActivationResult {
             surface_id: p.surface_id,
             revision,
@@ -527,42 +410,48 @@ impl SketchService {
         p: params::SketchDescriptionChange,
         caller: &Caller,
     ) -> Result<results::SketchDescriptionResult, ProtocolError> {
-        if p.description.trim().len() < 20 {
-            return Err(invalid("description must contain at least 20 characters"));
+        for (name, value, min, max) in [
+            ("description", p.description.as_str(), 20, 8000),
+            ("journey", &p.journey, 1, 4000),
+            ("decisions", &p.decisions, 1, 4000),
+            ("instructions", &p.instructions, 1, 4000),
+            ("constraints", &p.constraints, 1, 4000),
+            ("rationale", &p.rationale, 1, 2000),
+        ] {
+            text_field(name, value, min, max)?;
         }
-        let now = self.now()?;
         let actor = caller.actor();
-        let repo = p.repository_id.clone();
-        let sketch_id = p.sketch_id.clone();
-        let description = p.description.clone();
-        let journey = p.journey.clone();
-        let decisions = p.decisions.clone();
-        let instructions = p.instructions.clone();
-        let constraints = p.constraints.clone();
-        let rationale = p.rationale.clone();
-        let expected = p.expected_revision;
-        self.database.transaction(move |tx| {
-            let (current, legacy): (u32, bool) = tx.query_row("SELECT description_revision,legacy FROM sketches WHERE repository_id=?1 AND sketch_id=?2", rusqlite::params![repo, sketch_id], |r| Ok((r.get(0)?, r.get::<_,i64>(1)? != 0)))?;
-            if legacy { return Err(DatabaseError::Domain(invalid("legacy sketches remain historical and cannot be edited"))); }
-            if current != expected { return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict, "description changed; refresh and retry"))); }
-            let next = current + 1;
-            tx.execute("UPDATE sketches SET description=?1,journey=?2,decisions=?3,instructions=?4,constraints=?5,description_revision=?6 WHERE repository_id=?7 AND sketch_id=?8", rusqlite::params![description,journey,decisions,instructions,constraints,next,repo,sketch_id])?;
-            tx.execute("INSERT INTO sketch_description_history(sketch_id,revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)", rusqlite::params![sketch_id,next,description,journey,decisions,instructions,constraints,rationale,actor,now])?;
-            Ok(())
+        let now = self.now()?;
+        let q = p.clone();
+        self.database.transaction(move|tx|{
+            let (revision,legacy,surface):(u32,bool,Option<String>)=tx.query_row("SELECT description_revision,legacy,surface_id FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![q.repository_id,q.sketch_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+            if legacy{return Err(invalid("legacy context remains historical").into());}
+            if revision!=q.expected_revision{return Err(conflict("description changed; refresh before saving").into());}
+            tx.execute("INSERT INTO sketch_description_history VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",rusqlite::params![q.sketch_id,revision+1,q.description,q.journey,q.decisions,q.instructions,q.constraints,q.rationale,actor,now])?;
+            tx.execute("UPDATE sketches SET description=?3,journey=?4,decisions=?5,instructions=?6,constraints=?7,description_revision=?8 WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![q.repository_id,q.sketch_id,q.description,q.journey,q.decisions,q.instructions,q.constraints,revision+1])?;
+            bump_surface(tx,&q.repository_id,surface.as_deref().unwrap_or_default())?;reindex_sketch(tx,&q.sketch_id)?;Ok(())
         }).map_err(db_error)?;
-        self.refresh_search_index()?;
+        self.add_message(
+            &p.repository_id,
+            "sketch.description",
+            &p.sketch_id,
+            "The mockup context was revised",
+        )?;
         let detail = self.get(
             params::SketchReference {
-                repository_id: p.repository_id.clone(),
-                sketch_id: p.sketch_id.clone(),
+                repository_id: p.repository_id,
+                sketch_id: p.sketch_id,
                 offset: 0,
                 max_bytes: 184320,
+                context_before_revision: None,
             },
             &caller.actor(),
         )?;
-        let revision = detail.description_history.last().cloned().ok_or_else(|| {
-            ProtocolError::new(ErrorCode::InternalError, "description history missing")
-        })?;
+        let revision = detail
+            .description_history
+            .first()
+            .cloned()
+            .ok_or_else(|| invalid("context revision is unavailable"))?;
         Ok(results::SketchDescriptionResult {
             sketch: detail.sketch,
             revision,
@@ -639,6 +528,7 @@ impl SketchService {
         p: params::SketchDecisionChange,
         caller: &Caller,
     ) -> Result<results::SketchDecisionResult, ProtocolError> {
+        text_field("rationale", &p.rationale, 1, 2000)?;
         let now = self.now()?;
         let actor = caller.actor();
         let repo = p.repository_id.clone();
@@ -658,6 +548,16 @@ impl SketchService {
             if current.0!=expected{return Err(DatabaseError::Domain(ProtocolError::new(ErrorCode::ConfigurationConflict,"sketch decision changed; refresh and retry")))}
             let next=current.0+1; tx.execute("UPDATE sketches SET decision=?1,decision_revision=?2 WHERE sketch_id=?3",rusqlite::params![decision,next,id])?;
             tx.execute("INSERT INTO sketch_decision_history(sketch_id,revision,decision,rationale,actor,created_at) VALUES(?1,?2,?3,?4,?5,?6)",rusqlite::params![id,next,decision,rationale,actor,now])?;
+            let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE sketch_id=?1",[&id],|r|r.get(0))?;
+            if let Some(surface)=surface {
+                let next_surface=bump_surface(tx,&repo,&surface)?;
+                let mut heads=current_ids(tx,&repo,&surface)?;
+                if decision!="keep" && heads.contains(&id) {
+                    heads.retain(|head|head!=&id);
+                    tx.execute("INSERT INTO sketch_surface_activations VALUES(?1,?2,?3,?4,'supersede',?5,?6,?7,?8)",rusqlite::params![ids::sketch_activation_id().map_err(id_error)?,repo,surface,next_surface,json_text(&heads)?,rationale,actor,now])?;
+                }
+            }
+            reindex_sketch(tx,&id)?;
             insert_fallback_task(tx,&fallback_task,&repo,"Review a changed sketch decision","The changed sketch decision must be reflected in the next agent review.",&actor,&now)?;
             Ok(())
         }).map_err(db_error)?;
@@ -672,11 +572,12 @@ impl SketchService {
                 repository_id: p.repository_id.clone(),
                 sketch_id: p.sketch_id.clone(),
                 offset: 0,
+                context_before_revision: None,
                 max_bytes: 184320,
             },
             &caller.actor(),
         )?;
-        let event = detail.history.last().cloned().unwrap();
+        let event = detail.history.first().cloned().unwrap();
         Ok(results::SketchDecisionResult {
             sketch: detail.sketch,
             event,
@@ -697,7 +598,7 @@ impl SketchService {
         let sketch = p.sketch_id.clone();
         let id_for_lookup = id.clone();
         let fallback_task = ids::task_id().map_err(id_error)?;
-        self.database.transaction(move|tx|{tx.execute("INSERT INTO sketch_annotations(annotation_id,sketch_id,repository_id,body,marks_json,state,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'open',?6,?7,?7)",rusqlite::params![id,sketch,repo,body,marks,actor,now])?;insert_fallback_task(tx,&fallback_task,&repo_for_task,"Review a sketch annotation","The marked sketch feedback must be handled by the next agent review.",&actor,&now)?;Ok(())}).map_err(db_error)?;
+        self.database.transaction(move|tx|{let surface:Option<String>=tx.query_row("SELECT surface_id FROM sketches WHERE repository_id=?1 AND sketch_id=?2",rusqlite::params![repo,sketch],|r|r.get(0))?;if let Some(surface)=surface{bump_surface(tx,&repo,&surface)?;}tx.execute("INSERT INTO sketch_annotations(annotation_id,sketch_id,repository_id,body,marks_json,state,created_by,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,'open',?6,?7,?7)",rusqlite::params![id,sketch,repo,body,marks,actor,now])?;reindex_sketch(tx,&sketch)?;insert_fallback_task(tx,&fallback_task,&repo_for_task,"Review a sketch annotation","The marked sketch feedback must be handled by the next agent review.",&actor,&now)?;Ok(())}).map_err(db_error)?;
         self.add_message(
             &p.repository_id,
             "sketch.annotation",
@@ -709,6 +610,7 @@ impl SketchService {
                 repository_id: p.repository_id,
                 sketch_id: p.sketch_id,
                 offset: 0,
+                context_before_revision: None,
                 max_bytes: 184320,
             },
             &caller.actor(),
@@ -794,6 +696,263 @@ impl SketchService {
         self.database.call(move|c|{let row=c.query_row("SELECT message_id,repository_id,kind,subject_id,summary,created_at,claimed_by,acknowledged_at IS NOT NULL FROM agent_messages WHERE repository_id=?1 AND message_id=?2",rusqlite::params![repo,id],message_row)?;Ok(results::AgentMessageMutation{message:row})}).map_err(db_error)
     }
 }
+
+const CONTEXT_COLUMNS: &str =
+    "revision,description,journey,decisions,instructions,constraints,rationale,actor,created_at";
+const CURRENT_SQL: &str = "EXISTS(SELECT 1 FROM sketch_surface_activations a,json_each(a.sketch_ids_json) j WHERE a.repository_id=sketches.repository_id AND a.surface_id=sketches.surface_id AND j.value=sketches.sketch_id AND a.revision=(SELECT MAX(revision) FROM sketch_surface_activations WHERE repository_id=a.repository_id AND surface_id=a.surface_id))";
+fn text_field(name: &str, value: &str, min: usize, max: usize) -> Result<(), ProtocolError> {
+    if value.trim().len() < min
+        || value.len() > max
+        || value
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(invalid(format!(
+            "{name} must contain {min}..{max} bytes of plain text"
+        )));
+    }
+    Ok(())
+}
+fn validate_id(value: &str, prefix: char) -> Result<(), ProtocolError> {
+    if value.len() != 17
+        || !value.starts_with(prefix)
+        || !value.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+    {
+        return Err(invalid("invalid record identity"));
+    }
+    Ok(())
+}
+fn conflict(message: &str) -> ProtocolError {
+    ProtocolError::new(ErrorCode::ConfigurationConflict, message)
+}
+fn json_text(value: &impl serde::Serialize) -> Result<String, DatabaseError> {
+    serde_json::to_string(value)
+        .map_err(|_| DatabaseError::Domain(invalid("cannot encode mockup context")))
+}
+fn surface_revision(
+    c: &rusqlite::Connection,
+    repo: &str,
+    surface: &str,
+) -> Result<u32, DatabaseError> {
+    Ok(c.query_row(
+        "SELECT revision FROM sketch_surfaces WHERE repository_id=?1 AND surface_id=?2",
+        rusqlite::params![repo, surface],
+        |r| r.get(0),
+    )
+    .optional()?
+    .unwrap_or(0))
+}
+fn bump_surface(c: &rusqlite::Connection, repo: &str, surface: &str) -> Result<u32, DatabaseError> {
+    c.execute(
+        "UPDATE sketch_surfaces SET revision=revision+1 WHERE repository_id=?1 AND surface_id=?2",
+        rusqlite::params![repo, surface],
+    )?;
+    surface_revision(c, repo, surface)
+}
+fn decision_text(value: &SketchDecision) -> &'static str {
+    match value {
+        SketchDecision::Keep => "keep",
+        SketchDecision::Reject => "reject",
+        SketchDecision::Undecided => "undecided",
+    }
+}
+fn parse_decision(value: &str) -> SketchDecision {
+    match value {
+        "keep" => SketchDecision::Keep,
+        "reject" => SketchDecision::Reject,
+        _ => SketchDecision::Undecided,
+    }
+}
+fn context_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchDescriptionRevision> {
+    Ok(results::SketchDescriptionRevision {
+        revision: r.get(0)?,
+        description: r.get(1)?,
+        journey: r.get(2)?,
+        decisions: r.get(3)?,
+        instructions: r.get(4)?,
+        constraints: r.get(5)?,
+        rationale: r.get(6)?,
+        actor: r.get(7)?,
+        created_at: r.get(8)?,
+    })
+}
+fn lineage_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchLineageEvent> {
+    Ok(results::SketchLineageEvent {
+        parent_sketch_id: r.get(0)?,
+        child_sketch_id: r.get(1)?,
+        relation: parse_lineage_relation(&r.get::<_, String>(2)?),
+        rationale: r.get(3)?,
+        actor: r.get(4)?,
+        created_at: r.get(5)?,
+    })
+}
+fn activation_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchActivationEvent> {
+    let json: String = r.get(2)?;
+    let ids = serde_json::from_str(&json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+    })?;
+    Ok(results::SketchActivationEvent {
+        revision: r.get(0)?,
+        action: parse_activation_action(&r.get::<_, String>(1)?),
+        sketch_ids: ids,
+        rationale: r.get(3)?,
+        actor: r.get(4)?,
+        created_at: r.get(5)?,
+    })
+}
+fn compact_summary(mut row: results::SketchImageSummary) -> results::SketchImageSummary {
+    row.description = row.description.map(|s| s.chars().take(240).collect());
+    row.journey = None;
+    row.decisions = None;
+    row.instructions = None;
+    row.constraints = None;
+    row.element_ids.clear();
+    row.transition_note = None;
+    row
+}
+fn query_summaries(
+    c: &rusqlite::Connection,
+    condition: &str,
+    values: Vec<rusqlite::types::Value>,
+) -> Result<Vec<results::SketchImageSummary>, DatabaseError> {
+    let mut q=c.prepare(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE {condition}"))?;
+    let rows = q
+        .query_map(rusqlite::params_from_iter(values), summary_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|row| {
+            let mut row = compact_summary(row);
+            row.current = is_current_sketch(
+                c,
+                row.surface_id.as_deref(),
+                &row.sketch_id,
+                &row.repository_id,
+            )?;
+            Ok(row)
+        })
+        .collect()
+}
+fn bounded_summaries(
+    rows: Vec<results::SketchImageSummary>,
+    limit: usize,
+) -> (Vec<results::SketchImageSummary>, bool) {
+    let mut result = Vec::new();
+    let count = rows.len();
+    let mut bytes = 0;
+    for row in rows {
+        let size = serde_json::to_vec(&row)
+            .map(|v| v.len())
+            .unwrap_or(usize::MAX);
+        if result.len() >= limit || bytes + size > 96 * 1024 {
+            break;
+        }
+        bytes += size;
+        result.push(row);
+    }
+    let more = result.len() < count;
+    (result, more)
+}
+fn bound_story(
+    mut story: results::SketchStoryResult,
+    offset: u32,
+    event_offset: u32,
+) -> Result<results::SketchStoryResult, DatabaseError> {
+    while serde_json::to_vec(&story)
+        .map_err(|_| invalid("cannot encode story"))?
+        .len()
+        > 240 * 1024
+    {
+        if !story.activations.is_empty() {
+            story.activations.pop();
+            story.next_activation_offset = Some(event_offset + story.activations.len() as u32);
+        } else if story.nodes.len() > 1 {
+            let dropped = story.nodes.pop().unwrap();
+            story
+                .lineage
+                .retain(|edge| edge.child_sketch_id != dropped.sketch_id);
+            story.has_more = true;
+            story.next_offset = Some(offset + story.nodes.len() as u32);
+        } else {
+            return Err(invalid("story context exceeds the response budget").into());
+        }
+    }
+    Ok(story)
+}
+fn resolve_current(
+    c: &rusqlite::Connection,
+    repo: &str,
+    surface: &str,
+) -> Result<results::SketchResolveResult, DatabaseError> {
+    let ids = current_ids(c, repo, surface)?;
+    let revision = surface_revision(c, repo, surface)?;
+    let mut nodes = Vec::new();
+    for id in &ids {
+        let row=c.query_row(&format!("SELECT {SUMMARY_COLUMNS} FROM sketches JOIN sketch_batches USING(batch_id) WHERE sketches.repository_id=?1 AND surface_id=?2 AND sketch_id=?3 AND legacy=0"),rusqlite::params![repo,surface,id],summary_row).optional()?;
+        if let Some(mut row) = row {
+            row.current = true;
+            nodes.push(compact_summary(row));
+        }
+    }
+    let (status, rationale) = if !nodes.is_empty() && nodes.len() == ids.len() {
+        (
+            results::SketchResolveStatus::Resolved,
+            "Use the explicitly selected continuation set.",
+        )
+    } else if !ids.is_empty() {
+        (
+            results::SketchResolveStatus::Ambiguous,
+            "The saved selection has an unavailable member; resolve it before implementation.",
+        )
+    } else if let Some(batch) = surface.strip_prefix("legacy:") {
+        let legacy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM sketches WHERE repository_id=?1 AND batch_id=?2 AND legacy=1)",rusqlite::params![repo,batch],|r|r.get(0))?;
+        if legacy {
+            (
+                results::SketchResolveStatus::LegacyOnly,
+                "Historical sketches cannot become current.",
+            )
+        } else {
+            (
+                results::SketchResolveStatus::Unavailable,
+                "No current selection exists.",
+            )
+        }
+    } else {
+        (
+            results::SketchResolveStatus::Unavailable,
+            "No current selection exists; generation and Keep flags do not select a source.",
+        )
+    };
+    Ok(results::SketchResolveResult {
+        repository_id: repo.into(),
+        surface_id: surface.into(),
+        status,
+        revision,
+        rationale: rationale.into(),
+        current: nodes,
+    })
+}
+pub(crate) fn reindex_sketch(c: &rusqlite::Connection, id: &str) -> Result<(), DatabaseError> {
+    let (repo,surface,base):(String,String,String)=c.query_row("SELECT repository_id,COALESCE(surface_id,''),title||' '||COALESCE(surface_title,'')||' '||COALESCE(surface_id,'')||' '||element_ids_json||' '||COALESCE(state_name,'')||' '||COALESCE(theme,'')||' '||COALESCE(viewport,'')||' '||transition_note FROM sketches WHERE sketch_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+    let context:String=c.query_row("SELECT COALESCE(group_concat(description||' '||journey||' '||decisions||' '||instructions||' '||constraints||' '||rationale,' '),'') FROM sketch_description_history WHERE sketch_id=?1",[id],|r|r.get(0))?;
+    let decisions:String=c.query_row("SELECT COALESCE(group_concat(rationale,' '),'') FROM sketch_decision_history WHERE sketch_id=?1",[id],|r|r.get(0))?;
+    let comments:String=c.query_row("SELECT COALESCE(group_concat(body,' '),'') FROM sketch_annotations WHERE sketch_id=?1 AND state!='deleted'",[id],|r|r.get(0))?;
+    let activations:String=c.query_row("SELECT COALESCE(group_concat(rationale,' '),'') FROM sketch_surface_activations a WHERE repository_id=?1 AND EXISTS(SELECT 1 FROM json_each(a.sketch_ids_json) WHERE value=?2)",rusqlite::params![repo,id],|r|r.get(0))?;
+    c.execute("DELETE FROM sketches_fts WHERE sketch_id=?1", [id])?;
+    c.execute("INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) VALUES(?1,?2,?3,?4)",rusqlite::params![id,repo,surface,format!("{base} {context} {decisions} {comments} {activations}")])?;
+    Ok(())
+}
+fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ProtocolError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(io_error)?;
+    file.write_all(bytes).map_err(io_error)
+}
 fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchImageSummary> {
     let element_ids =
         serde_json::from_str::<Vec<String>>(&r.get::<_, String>(14)?).unwrap_or_default();
@@ -801,6 +960,8 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<results::SketchImageSu
         sketch_id: r.get(0)?,
         repository_id: r.get(1)?,
         sketch_set: r.get(2)?,
+        batch_id: r.get(27)?,
+        display_order: r.get(28)?,
         source_skill: r.get(3)?,
         title: r.get(4)?,
         image_id: r.get(0)?,
@@ -844,9 +1005,11 @@ fn current_ids(
             |row| row.get(0),
         )
         .optional()?;
-    Ok(value
-        .and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok())
-        .unwrap_or_default())
+    match value {
+        Some(value) => serde_json::from_str(&value)
+            .map_err(|_| DatabaseError::Domain(invalid("invalid saved continuation set"))),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn is_current_sketch(
@@ -863,72 +1026,67 @@ fn is_current_sketch(
         .any(|id| id == sketch_id))
 }
 
-fn validate_manifest(manifest: &params::SketchManifest) -> Result<(), ProtocolError> {
-    if manifest.window_count != 1 {
-        return Err(invalid("a mockup file must declare exactly one window"));
+fn validate_manifest(m: &params::SketchManifest) -> Result<(), ProtocolError> {
+    if m.window_count != 1 {
+        return Err(invalid(
+            "each mockup file must show exactly one window, state, theme and viewport",
+        ));
     }
     for (name, value, min, max) in [
-        ("surface_id", manifest.surface_id.as_str(), 1, 160),
-        ("surface_title", manifest.surface_title.as_str(), 1, 200),
-        ("state", manifest.state.as_str(), 1, 120),
-        ("theme", manifest.theme.as_str(), 1, 40),
-        ("viewport", manifest.viewport.as_str(), 1, 80),
-        ("description", manifest.description.as_str(), 20, 8000),
-        ("journey", manifest.journey.as_str(), 1, 4000),
-        ("decisions", manifest.decisions.as_str(), 1, 4000),
-        ("instructions", manifest.instructions.as_str(), 1, 4000),
-        ("constraints", manifest.constraints.as_str(), 1, 4000),
+        ("surface", m.surface_id.as_str(), 1, 160),
+        ("surface title", &m.surface_title, 1, 200),
+        ("state", &m.state, 1, 120),
+        ("theme", &m.theme, 1, 40),
+        ("viewport", &m.viewport, 1, 80),
+        ("description", &m.description, 20, 8000),
+        ("journey", &m.journey, 1, 4000),
+        ("decisions", &m.decisions, 1, 4000),
+        ("instructions", &m.instructions, 1, 4000),
+        ("constraints", &m.constraints, 1, 4000),
     ] {
-        let trimmed = value.trim();
-        if trimmed.len() < min || trimmed.len() > max || value.contains(['\r', '\n']) {
-            return Err(invalid(format!(
-                "{name} must be a plain text value of {min}..{max} characters"
-            )));
+        text_field(name, value, min, max)?;
+    }
+    if m.surface_id.starts_with("legacy:")
+        || !m
+            .surface_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
+    {
+        return Err(invalid(
+            "surface identity must be a stable nonlegacy identifier",
+        ));
+    }
+    if m.element_ids.len() > 64
+        || m.element_ids.iter().collect::<HashSet<_>>().len() != m.element_ids.len()
+    {
+        return Err(invalid(
+            "element identities must be unique and contain at most 64 entries",
+        ));
+    }
+    for id in &m.element_ids {
+        text_field("element identity", id, 1, 160)?;
+    }
+    if m.parent_relations.len() > 16 {
+        return Err(invalid("at most 16 parents are supported"));
+    }
+    let mut parents = HashSet::new();
+    for parent in &m.parent_relations {
+        validate_id(&parent.parent_sketch_id, 's')?;
+        if !parents.insert((
+            parent.parent_sketch_id.clone(),
+            lineage_relation_text(&parent.relation),
+        )) {
+            return Err(invalid("duplicate lineage edge"));
         }
     }
-    if manifest.element_ids.len() > 64
-        || manifest.element_ids.iter().any(|id| {
-            let trimmed = id.trim();
-            trimmed.is_empty() || trimmed.len() > 160 || id.contains(['\r', '\n'])
-        })
-    {
-        return Err(invalid(
-            "element_ids must contain at most 64 plain identifiers",
-        ));
-    }
-    let mut element_ids = HashSet::new();
-    if manifest
-        .element_ids
-        .iter()
-        .any(|element| !element_ids.insert(element.trim().to_owned()))
-    {
-        return Err(invalid("element_ids must be unique within one mockup"));
-    }
-    if manifest.parent_relations.len() > 64 {
-        return Err(invalid("parent_relations must contain at most 64 entries"));
-    }
-    if manifest.parent_relations.is_empty() && !manifest.transition_note.trim().is_empty() {
-        return Err(invalid(
-            "transition_note requires at least one parent relation",
-        ));
-    }
-    if !manifest.parent_relations.is_empty() && manifest.transition_note.trim().is_empty() {
-        return Err(invalid(
-            "parent relations require an agent-authored transition_note",
-        ));
-    }
-    if manifest.parent_relations.iter().any(|parent| {
-        parent.parent_sketch_id.len() != 17
-            || !parent.parent_sketch_id.starts_with('s')
-            || !parent.parent_sketch_id[1..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-    }) {
-        return Err(invalid("parent sketch identities are invalid"));
-    }
+    text_field(
+        "transition rationale",
+        &m.transition_note,
+        if m.parent_relations.is_empty() { 0 } else { 1 },
+        2000,
+    )?;
     Ok(())
 }
-
 fn lineage_relation_text(relation: &params::SketchLineageRelation) -> &'static str {
     match relation {
         params::SketchLineageRelation::DerivedFrom => "derived_from",
@@ -1141,6 +1299,7 @@ mod tests {
                     generation_record_path: record.to_string_lossy().into_owned(),
                     images: vec![params::SketchImageInput {
                         title: "First".into(),
+                        display_order: 1,
                         path: image.to_string_lossy().into_owned(),
                         manifest: manifest("Agent-authored first controller surface description with the initial layout and review context."),
                     }],
@@ -1169,6 +1328,7 @@ mod tests {
                     generation_record_path: record.to_string_lossy().into_owned(),
                     images: vec![params::SketchImageInput {
                         title: "Second".into(),
+                        display_order: 1,
                         path: image_second.to_string_lossy().into_owned(),
                         manifest: second_manifest,
                     }],
@@ -1187,7 +1347,7 @@ mod tests {
                         sketch.sketch_id.clone(),
                         second_batch.sketches[0].sketch_id.clone(),
                     ],
-                    expected_revision: 0,
+                    expected_revision: 2,
                     action: params::SketchActivationAction::Select,
                     rationale: "Keep both directions for the next comparison.".into(),
                 },
@@ -1209,6 +1369,8 @@ mod tests {
             .story(params::SketchStory {
                 repository_id: batch.repository_id.clone(),
                 surface_id: "controller-device".into(),
+                offset: 0,
+                activation_offset: 0,
                 limit: 100,
                 include_legacy: true,
             })
@@ -1237,6 +1399,8 @@ mod tests {
                 repository_id: batch.repository_id.clone(),
                 query: "Owner context".into(),
                 surface_id: None,
+                state: None,
+                theme: None,
                 current_only: false,
                 include_legacy: true,
                 offset: 0,
@@ -1251,6 +1415,9 @@ mod tests {
                 decision: None,
                 sketch_set: None,
                 surface_id: None,
+                state: None,
+                theme: None,
+                batch_id: None,
                 current_only: false,
                 include_legacy: true,
                 offset: 0,
@@ -1267,6 +1434,9 @@ mod tests {
                 decision: None,
                 sketch_set: None,
                 surface_id: None,
+                state: None,
+                theme: None,
+                batch_id: None,
                 current_only: false,
                 include_legacy: true,
                 offset: 1,
@@ -1281,6 +1451,7 @@ mod tests {
                 repository_id: batch.repository_id.clone(),
                 sketch_id: sketch.sketch_id.clone(),
                 offset: 0,
+
                 max_bytes: 184320,
             })
             .unwrap();
@@ -1290,7 +1461,7 @@ mod tests {
                 params::SketchDecisionChange {
                     repository_id: batch.repository_id.clone(),
                     sketch_id: sketch.sketch_id.clone(),
-                    expected_revision: 0,
+                    expected_revision: 1,
                     decision: SketchDecision::Keep,
                     rationale: "fixture review".into(),
                 },

@@ -44,5 +44,24 @@
       "one": "{count} 组",
       "other": "{count} 组"
     }
-  }
+  },
+  "legacy": "旧版归档",
+  "currentSelection": "当前选择",
+  "search": "搜索",
+  "theme": "主题",
+  "earlier": "更早的历史",
+  "basedOn": "基于",
+  "surface": "界面",
+  "selectionNote": "选择备注",
+  "continueSelected": "使用所选项继续",
+  "initialContext": "代理的初始上下文",
+  "latestContext": "最新上下文",
+  "history": "历史记录",
+  "description": "描述",
+  "whyChanged": "更改原因",
+  "journey": "用户流程",
+  "instructions": "指令",
+  "constraints": "约束",
+  "backToHistory": "返回历史记录",
+  "elements": "元素"
 }

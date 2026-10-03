@@ -7,6 +7,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { pageVerifier } from "../../../skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs";
+import { measureDeclaredLayout, formalReceipt, requiredGeometryKinds } from "../formal-handoff.mjs";
 
 const require = createRequire(import.meta.url);
 const moduleRoot = process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES;
@@ -17,6 +18,69 @@ let browser;
 
 before(async () => { browser = await chromium.launch({ headless: true }); });
 after(async () => { await browser?.close(); });
+
+test('declared geometry measures real shapes, catches layout failures, and permits intentional scrolling', async () => {
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  try {
+    await page.setContent('<style>body{margin:0;font:16px sans-serif}main{width:390px}h1{font-size:24px}#track{display:none}</style><nav id="track"></nav><main><h1>Review mockups</h1><span id="identifier">Controller review</span></main>');
+    const assertions = requiredGeometryKinds.map(kind => ({id:kind,kind,selector:kind==='hidden-navigation-track'?'#track':kind==='readable-canonical-identifier'?'#identifier':kind.includes('heading')||kind==='no-character-wrapping'?'h1':'main',minWidth:300}));
+    const shapes=[{id:'populated',revision:'v1',conditionalDom:['main','#identifier'],layoutEffect:'Named review window'}];
+    const measure=()=>page.evaluate(measureDeclaredLayout,{assertions,shapes});
+    assert.ok((await measure()).assertions.every(item=>item.result==='passed'));
+    for (const [css,kind] of [
+      ['main{width:100px}','primary-content-width'],
+      ['h1{width:12px;overflow-wrap:anywhere}','no-character-wrapping'],
+      ['h1{font-size:8px}','readable-heading'],
+      ['#identifier{display:none}','readable-canonical-identifier'],
+      ['main{width:700px}','document-horizontal-overflow'],
+      ['main{margin-top:1000px}','initial-viewport-placement'],
+      ['body{width:100px;overflow:hidden}','clipping'],
+      ['#track{display:block;visibility:hidden;width:120px;height:100px}','hidden-navigation-track'],
+    ]) {
+      const style=await page.addStyleTag({content:css});
+      assert.equal((await measure()).assertions.find(item=>item.kind===kind).result,'failed',kind);
+      await style.evaluate(element=>element.remove());
+    }
+    await page.addStyleTag({content:'main{height:100px;overflow:auto}h1{margin-bottom:200px}'});
+    assert.equal((await measure()).assertions.find(item=>item.kind==='clipping').result,'passed','intentional scroll container is not clipping');
+    await page.locator('#identifier').evaluate(element=>element.remove());
+    assert.equal((await measure()).dataShapes[0].result,'incomplete');
+    assert.equal((await measure()).assertions.find(item=>item.kind==='readable-canonical-identifier').result,'incomplete');
+  } finally { await page.close(); }
+});
+
+test('formal receipts reject partial, cached, missing, or failed evidence', async () => {
+  const evidence=fs.mkdtempSync(path.join(os.tmpdir(),'formal-receipt-'));
+  const screenshot=path.join(evidence,'screenshot.png');
+  const page=await browser.newPage();
+  try {
+    await page.setContent('<h1>Receipt fixture</h1>'); await page.screenshot({path:screenshot});
+    const {createHash}=await import('node:crypto');
+    const descriptor={path:screenshot,sha256:createHash('sha256').update(fs.readFileSync(screenshot)).digest('hex')};
+    const manifest=path.join(evidence,'manifest.json');fs.writeFileSync(manifest,'{}');
+    const manifestDescriptor={path:manifest,sha256:createHash('sha256').update('{}').digest('hex')};
+    const report={runId:'fixture',plan:{plannedPageCount:1},coverage:{readinessEligible:true,failed:false},review:{queuePath:manifest,queueSha256:manifestDescriptor.sha256},evidence:{journey:manifestDescriptor},pages:[{outcome:'checked',screenshots:{viewport:descriptor,fullPage:descriptor},metrics:{declaredLayout:{assertions:requiredGeometryKinds.map(kind=>({kind,result:'passed'})),dataShapes:[{id:'fixture',result:'passed'}]}}}]};
+    assert.equal(formalReceipt(report,0,[]).result,'passed');
+    for(const change of [value=>value.pages[0].cache={hit:true},value=>value.coverage.readinessEligible=false,value=>value.pages[0].metrics.declaredLayout.dataShapes=[],value=>value.pages[0].metrics.declaredLayout.assertions.pop()]){
+      const value=structuredClone(report);change(value);assert.equal(formalReceipt(value,0,[]).result,'incomplete');
+    }
+    assert.equal(formalReceipt(report,1,[{rule:'failure'}]).result,'failed');
+    const missing=structuredClone(report);missing.review.queuePath+='missing';assert.equal(formalReceipt(missing,0,[]).result,'blocked');
+    fs.writeFileSync(screenshot,'tampered');assert.equal(formalReceipt(report,0,[]).result,'blocked');
+  } finally {await page.close();fs.rmSync(evidence,{recursive:true,force:true});}
+});
+
+for (const positioned of [false,true]) for (const escaped of [false,true]) {
+  test(`controls respect the popup's own containing box: positioned ${positioned}, escaped ${escaped}`,async()=>{
+    const page=await browser.newPage({viewport:{width:390,height:844}});
+    try {
+      await page.setContent(`<style>body{margin:0;background:#fff;color:#111}main{padding:12px}#anchor{position:relative;width:30px;height:40px}#popup{position:${positioned?'absolute':'static'};width:280px;padding:10px}input{width:${escaped?400:200}px;box-sizing:border-box}</style><main><div id="anchor"><div id="popup"><input aria-label="Search" value="Review"></div></div></main>`);
+      const report=await measure(page);
+      const failures=report.findings.filter(item=>item.rule==='control-outside-container');
+      assert.equal(failures.length>0,!positioned||escaped);
+    } finally {await page.close();}
+  });
+}
 
 function editorFixture(extraStyle = "") {
   return `<!doctype html><meta charset="utf-8"><style>

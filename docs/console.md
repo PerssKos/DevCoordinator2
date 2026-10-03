@@ -320,7 +320,7 @@ theme, viewport, depicted elements, and agent-authored initial description.
 Legacy records remain visible as historical rows but cannot become current.
 
 Opening a surface keeps the current mockup prominent and collapses the current
-version summary by default. The review drawer shows the searchable initial
+version summary by default. The review workspace shows the searchable initial
 description, later context revisions and comments, lineage history, and every
 option from the generation batch. Rejected options remain visible and marked
 Rejected. The owner may check several options and save them together through
@@ -328,8 +328,20 @@ Rejected. The owner may check several options and save them together through
 `design.sketch.resolve` and persists after reload. Search uses
 `design.sketch.search` across descriptions, journey context, decisions,
 instructions, constraints, and transition notes. Agents use
-`design.sketch.story` to inspect the full branch history before implementation
-or after a new generation.
+`design.sketch.resolve` immediately before implementation or audit and after a
+new generation or adjustment, then `design.sketch.get` for each selected node's
+full context. `design.sketch.story` provides paged branch and selection history;
+it never chooses the newest timestamp. The context editor appends a revision
+with a reason, preserving the original description and image bytes. Comments
+and older context stay searchable. The existing annotation canvas opens from
+the workspace and returns to the same story.
+
+`CONSOLE_VERIFY_SKETCHES_ONLY=1 node console/verify-glossary.mjs` exercises
+publication, multi-option selection, search, context edits, rejection,
+restoration, authorization, stale-write rejection, and restart persistence
+through the real control plane and SQLite. Add `SKETCH_FORMAL=1` for the full
+declared theme and viewport matrix, retained geometry measurements, and formal
+receipts. Browser fixtures are isolated from the installed Coordinator.
 
 ## Interaction inventory
 

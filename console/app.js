@@ -60,9 +60,6 @@ const state = {
   sketchDrawerSet: null,
   sketchDrawerSketchId: null,
   sketchDrawerDetail: null,
-  sketchDrawerStory: null,
-  sketchContinuationIds: new Set(),
-  sketchSearchQuery: '',
   sketchDrawerLoading: false,
   sketchSetGroup: null,
   sketchSetDetails: new Map(),
@@ -2624,15 +2621,15 @@ function sketchEvidence(detail) {
 function sketchSetGroups(sketches) {
   const groups = new Map();
   for (const sketch of sketches || []) {
-    const key = sketch.surface_id || `legacy:${sketch.sketch_set || 'unlabeled'}`;
-    if (!groups.has(key)) groups.set(key, { key, surfaceId: sketch.surface_id || null, title: sketch.surface_title || sketch.sketch_set || 'Unlabeled sketch set', legacy: !sketch.surface_id, sketches: [] });
+    const key = sketch.sketch_set || 'Unlabeled sketch set';
+    if (!groups.has(key)) groups.set(key, { key, sketches: [] });
     groups.get(key).sketches.push(sketch);
   }
   return [...groups.values()];
 }
 
 function sketchGroupSummary(group) {
-  const selected = group.sketches.filter((sketch) => sketch.current || sketch.decision === 'keep');
+  const selected = group.sketches.filter((sketch) => sketch.decision === 'keep');
   const rejected = group.sketches.filter((sketch) => sketch.decision === 'reject');
   return { selected, rejected, pending: group.sketches.length - selected.length - rejected.length };
 }
@@ -2650,14 +2647,14 @@ function sketchGallerySketch(sketchId) {
 }
 
 function renderSketchCard(repositoryId, group, sketch) {
-  const selected = sketch.current || sketch.decision === 'keep';
-  const toggleLabel = selected ? 'Selected' : sketch.decision === 'reject' ? 'Rejected — select again' : 'Select';
+  const selected = sketch.decision === 'keep';
+  const toggleLabel = selected ? 'Selected' : sketch.decision === 'reject' ? 'Select again' : 'Select';
   return `<article class="sketch-card${selected ? ' is-selected' : ''}">
     <div class="sketch-card-image-wrap">
       <a class="sketch-card-image" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><img loading="lazy" decoding="async" alt="${esc(sketch.title)}" data-sketch-thumb="${esc(sketch.sketch_id)}"><span class="muted">${esc(sketch.width)} × ${esc(sketch.height)}</span></a>
       <button type="button" class="sketch-card-select${selected ? ' active' : ''}" data-sketch-toggle="${esc(sketch.sketch_id)}" aria-pressed="${selected}"><i aria-hidden="true">${selected ? '✓' : ''}</i><span>${toggleLabel}</span></button>
     </div>
-    <div class="sketch-card-body"><h3>${esc(sketch.title)}</h3><p class="muted">${esc(sketch.source_skill)}${sketch.legacy ? ' · Legacy history' : sketch.current ? ' · Current head' : ''}</p><p>${badge(sketch.decision, sketch.decision === 'keep' || sketch.current ? 'ok' : sketch.decision === 'reject' ? 'bad' : '')}</p><div class="actions"><button class="btn btn-small" type="button" data-sketch-review-set="${esc(group.key)}" data-sketch-review-sketch="${esc(sketch.sketch_id)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><span data-i18n="sketches.open_sketch_3ccc5c">Open sketch</span></a></div></div>
+    <div class="sketch-card-body"><h3>${esc(sketch.title)}</h3><p class="muted">${esc(sketch.source_skill)}</p><p>${badge(sketch.decision, sketch.decision === 'keep' ? 'ok' : sketch.decision === 'reject' ? 'bad' : '')}</p><div class="actions"><button class="btn btn-small" type="button" data-sketch-review-set="${esc(group.key)}" data-sketch-review-sketch="${esc(sketch.sketch_id)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, sketch.sketch_id))}"><span data-i18n="sketches.open_sketch_3ccc5c">Open sketch</span></a></div></div>
   </article>`;
 }
 
@@ -2667,29 +2664,14 @@ function renderSketchDrawer(repositoryId, group) {
   const summary = sketchGroupSummary(group);
   const detail = state.sketchDrawerDetail?.sketch?.sketch_id === current?.sketch_id ? state.sketchDrawerDetail : null;
   const annotations = detail?.annotations || [];
-  const story = state.sketchDrawerStory;
-  const latestContext = detail?.description_history?.[detail.description_history.length - 1] || null;
-  const currentHeads = new Set((story?.current || []).map((item) => item.sketch_id));
-  const continuationIds = state.sketchContinuationIds || currentHeads;
-  const continuationCount = continuationIds.size;
-  const scopeText = current?.surface_id ? `${current.surface_title || current.surface_id} · ${current.state || 'State unavailable'} · ${current.theme || 'Theme unavailable'} · ${current.viewport || `${current.width} × ${current.height}`}` : 'Legacy history without a manifest scope';
-  const optionCards = group.sketches.map((sketch) => {
-    const active = continuationIds.has(sketch.sketch_id);
-    const status = sketch.legacy ? window.DevCoordinatorI18n.markup("sketches.legacy_history") : active ? window.DevCoordinatorI18n.markup("sketches.selected_for_continuation") : sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.kept") : window.DevCoordinatorI18n.markup("sketches.available");
-    return `<label class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${active ? ' selected' : ''}${sketch.decision === 'reject' ? ' rejected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}"><span><input type="checkbox" data-sketch-continuation="${esc(sketch.sketch_id)}"${active ? ' checked' : ''}${sketch.legacy ? ' disabled' : ''}><img loading="lazy" decoding="async" alt="${esc(sketch.title)}" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${status}</small></label>`;
-  }).join('');
-  const storyNodes = (story?.nodes || group.sketches).map((node) => `<li class="sketch-history-row${node.current ? ' current' : ''}"><span>${esc(node.title)}</span><small>${node.current ? 'Current head' : node.decision === 'reject' ? 'Rejected' : node.legacy ? 'Legacy' : node.decision}</small></li>`).join('');
   const comments = annotations.length ? annotations.map((annotation) => `<article class="sketch-drawer-comment"><header><strong>${(annotation.author ? esc(annotation.author) : window.DevCoordinatorI18n.markup("sketches.reviewer_d29f46"))}</strong><small>${window.DevCoordinatorI18n.computedMarkup(() => ago(annotation.created_at))}</small></header><p>${esc(annotation.body)}</p></article>`).join('') : "<p class=\"muted\"><span data-i18n=\"sketches.no_comments_on_this_option_yet_801c78\">No comments on this option yet.</span></p>";
   const commentTargets = summary.selected.length || current?.decision === 'keep' ? summary.selected.length || 1 : 1;
   const commentLabel = commentTargets > 1 ? `Comment on ${commentTargets} selected options` : 'Comment on this option';
   return `<div class="sketch-set-drawer-backdrop" data-sketch-drawer-backdrop data-ui-contextual-overlay="Sketch set comparison drawer" role="dialog" aria-modal="true" aria-labelledby="sketch-drawer-title" tabindex="-1">
     <section class="sketch-set-drawer" data-ui-allow-overlap="Sketch set comparison drawer is intentionally positioned above the gallery surface">
-      <header class="sketch-set-drawer-head"><div><p class="eyebrow"><span data-i18n="sketches.sketch_set_review_1e4713">Sketch set review</span></p><h2 id="sketch-drawer-title">${esc(group.title)}</h2><p class="muted">${window.DevCoordinatorI18n.markup("sketches.value2_selected_value3_options_b64a24", {value2: summary.selected.length, value3: group.sketches.length})}</p></div><button type="button" class="btn btn-small" data-sketch-drawer-close aria-label="Close set review" data-i18n-attrs='{"aria-label":"sketches.close_set_review_2680d1"}'><span data-i18n="sketches.close_7d9eb7">Close</span></button></header>
-      <details class="sketch-current-summary"><summary><span><strong>${window.DevCoordinatorI18n.markup("sketches.current_version")}</strong><small>${esc(scopeText)}</small></span><span>${currentHeads.size ? `${currentHeads.size} ${window.DevCoordinatorI18n.t("sketches.current_head")}${currentHeads.size === 1 ? '' : 's'}` : window.DevCoordinatorI18n.markup("sketches.no_current_head")}</span></summary><div><p>${esc(current?.description || 'No manifest description is available.')}</p><dl><dt>${window.DevCoordinatorI18n.markup("sketches.surface_window")}</dt><dd>${esc(current?.surface_title || current?.surface_id || 'Legacy')}</dd><dt>${window.DevCoordinatorI18n.markup("sketches.elements")}</dt><dd>${esc((current?.element_ids || []).join(', ') || 'Not recorded')}</dd><dt>${window.DevCoordinatorI18n.markup("sketches.state_theme")}</dt><dd>${esc(`${current?.state || '—'} / ${current?.theme || '—'}`)}</dd><dt>${window.DevCoordinatorI18n.markup("sketches.viewport")}</dt><dd>${esc(current?.viewport || '—')}</dd></dl></div></details>
+      <header class="sketch-set-drawer-head"><div><p class="eyebrow"><span data-i18n="sketches.sketch_set_review_1e4713">Sketch set review</span></p><h2 id="sketch-drawer-title">${esc(group.key)}</h2><p class="muted">${window.DevCoordinatorI18n.markup("sketches.value2_selected_value3_options_b64a24", {value2: summary.selected.length, value3: group.sketches.length})}</p></div><button type="button" class="btn btn-small" data-sketch-drawer-close aria-label="Close set review" data-i18n-attrs='{"aria-label":"sketches.close_set_review_2680d1"}'><span data-i18n="sketches.close_7d9eb7">Close</span></button></header>
       <div class="sketch-drawer-mode" role="group" aria-label="Selection mode" data-i18n-attrs='{"aria-label":"sketches.selection_mode_1935ae"}'><span><span data-i18n="sketches.selection_mode_1935ae">Selection mode</span></span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}"><span data-i18n="sketches.single_choice_45a76a">Single choice</span></button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}"><span data-i18n="sketches.choose_multiple_b76dc5">Choose multiple</span></button></div>
-      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img loading="eager" decoding="async" alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${optionCards}</div><div class="sketch-continuation-bar"><strong>${continuationCount} selected for continuation</strong><button type="button" class="btn btn-primary btn-small" data-sketch-activate${(!group.surfaceId || !continuationCount) ? ' disabled' : ''}>Continue with selected</button></div></div>
-      <section class="sketch-context-section"><h3>${window.DevCoordinatorI18n.markup("sketches.initial_description_from_agent")}</h3><p>${esc(detail?.description_history?.[0]?.description || current?.description || 'No agent-authored description is available.')}</p><details><summary>${window.DevCoordinatorI18n.markup("sketches.latest_context_and_comments")}${latestContext ? ` (${detail.description_history.length - 1})` : ''}</summary><p>${esc(latestContext?.description || 'No later context revision has been recorded.')}</p><p class="muted">${esc(latestContext?.rationale || 'Comments remain attached to the exact mockup option.')}</p>${detail && !current?.legacy ? `<form class="sketch-context-form" data-sketch-description-form><label class="f">Latest context<textarea name="description" rows="3" minlength="20" maxlength="8000" required>${esc(current.description || '')}</textarea></label><label class="f">${window.DevCoordinatorI18n.markup("sketches.why_this_changed")}<input name="rationale" maxlength="2000" required placeholder="Describe the owner instruction or comment that changed the direction."></label><button class="btn btn-small" type="submit">${window.DevCoordinatorI18n.markup("sketches.save_context_update")}</button></form>` : ''}</details></section>
-      <section class="sketch-history-section"><h3>History</h3><ol>${storyNodes || '<li class="muted">No history is available.</li>'}</ol></section>
+      <div class="sketch-drawer-media"><div class="sketch-drawer-image"><img loading="eager" decoding="async" alt="${esc(current?.title || 'Selected sketch')}" data-sketch-drawer-image="${esc(current?.sketch_id || '')}"><span class="muted">${esc(current?.width || '—')} × ${esc(current?.height || '—')}</span></div><div class="sketch-drawer-variants" aria-label="Sketch set options" data-i18n-attrs='{"aria-label":"sketches.sketch_set_options_62656f"}'>${group.sketches.map((sketch) => `<button type="button" class="sketch-drawer-variant${sketch.sketch_id === current?.sketch_id ? ' active' : ''}${sketch.decision === 'keep' ? ' selected' : ''}" data-sketch-drawer-sketch="${esc(sketch.sketch_id)}" aria-pressed="${sketch.sketch_id === current?.sketch_id}"><span><img loading="lazy" decoding="async" alt="" data-sketch-drawer-thumb="${esc(sketch.sketch_id)}"></span><strong>${esc(sketch.title)}</strong><small>${(sketch.decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.selected_57fd7a") : (sketch.decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.rejected_aea4a0") : window.DevCoordinatorI18n.markup("sketches.undecided_00cc36")))}</small></button>`).join('')}</div></div>
       <section class="sketch-drawer-decision"><div><h3><span data-i18n="sketches.current_option_f4a3f8">Current option</span></h3><p class="muted">${current?.title ? esc(current?.title) : window.DevCoordinatorI18n.markup("sketches.option_unavailable_d03e4e")}</p></div><div class="actions">${['keep','reject','undecided'].map((decision) => `<button type="button" class="btn btn-small${current?.decision === decision ? ' active' : ''}" data-sketch-drawer-decision="${decision}" data-sketch-drawer-sketch="${esc(current?.sketch_id || '')}">${(decision === 'keep' ? window.DevCoordinatorI18n.markup("sketches.select_2a7802") : (decision === 'reject' ? window.DevCoordinatorI18n.markup("sketches.reject_ab604a") : window.DevCoordinatorI18n.markup("sketches.leave_undecided_65c5c0")))}</button>`).join('')}</div></section>
       <section class="sketch-drawer-comments"><div class="sketch-drawer-section-title"><h3><span data-i18n="sketches.comments_355f79">Comments</span></h3><span>${annotations.length}</span></div><div class="sketch-drawer-comment-list">${comments}</div><form data-sketch-comment-form><label class="f" for="sketch-comment-body">${window.DevCoordinatorI18n.markup("sketches.selectedOptionContext", { count: commentTargets })}<textarea id="sketch-comment-body" name="body" rows="3" maxlength="2000" placeholder="Explain why you chose this option or set of options." data-i18n-attrs='{"placeholder":"sketches.explain_why_you_chose_this_option_or_set_of_opti_15e84b"}'></textarea></label><button class="btn btn-primary" type="submit" data-sketch-add-comment>${commentLabel}</button></form></section>
       <footer class="sketch-set-drawer-foot"><a class="btn btn-small" href="${esc(sketchRoute(repositoryId, null, current?.sketch_id))}"><span data-i18n="sketches.open_full_review_canvas_26fc95">Open full review canvas</span></a><span class="muted"><span data-i18n="sketches.selections_save_as_keep_reject_or_undecided_e5bbd4">Selections save as Keep, Reject, or Undecided.</span></span></footer>
@@ -2706,11 +2688,11 @@ function renderSketchGalleryPage(repositoryId, sketches, activeSet = null, activ
   const selectedCount = sketches.filter((sketch) => sketch.decision === 'keep').length;
   const activeGroup = groups.find((group) => group.key === state.sketchDrawerSet);
   document.body.classList.toggle('sketch-drawer-open', Boolean(activeGroup));
-  main.innerHTML = `<section class="sketch-gallery-page" data-ui-region="sketches-primary"><header class="sketch-gallery-heading"><div><h1><span data-i18n="sketches.sketches_a56d78">Sketches</span></h1><p class="muted"><span data-i18n="sketches.review_generated_options_by_set_then_select_one__020509">Review generated options by set, then select one or several to carry forward.</span></p></div><div class="sketch-selection-mode" role="group" aria-label="Selection mode" data-i18n-attrs='{"aria-label":"sketches.selection_mode_1935ae"}'><span><span data-i18n="sketches.selection_mode_1935ae">Selection mode</span></span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}"><span data-i18n="sketches.single_choice_45a76a">Single choice</span></button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}"><span data-i18n="sketches.choose_multiple_b76dc5">Choose multiple</span></button></div></header><div class="sketch-toolbar"><label class="sketch-search"><span class="sr-only">Search sketch history</span><input type="search" value="${esc(state.sketchSearchQuery)}" placeholder="Search descriptions, decisions, or instructions" data-sketch-search></label><strong>${window.DevCoordinatorI18n.markup("sketches.value5_sketches_value6_selected_87bdd8", {value5: sketches.length, value6: selectedCount})}</strong><span class="muted">${esc(groups.length)} ${groups.length === 1 ? window.DevCoordinatorI18n.markup("sketches.set_6ee0eb") : window.DevCoordinatorI18n.markup("sketches.sets_82c6db")}</span><button class="btn btn-small" type="button" disabled title="Sketches are published by a registered skill" data-i18n-attrs='{"title":"sketches.sketches_are_published_by_a_registered_skill_a2ac72"}'><span data-i18n="sketches.publish_from_a_skill_f33a0e">Publish from a skill</span></button></div>${groups.length ? `<div class="sketch-set-list">${groups.map((group, index) => { const summary = sketchGroupSummary(group); return `<details class="sketch-set-lane"${index < 2 ? ' open' : ''}><summary><span class="sketch-set-summary"><strong>${esc(group.title)}</strong><small>${group.legacy ? 'Legacy history · ' : ''}${group.sketches.length} options · ${summary.selected.length ? `${summary.selected.length} selected` : window.DevCoordinatorI18n.markup("sketches.no_selection_211f6b")}</small></span><span class="sketch-set-summary-status">${summary.selected.length ? badge(`${summary.selected.length} selected`, 'ok') : badge('No selection')}</span></summary><div class="sketch-set-lane-actions"><span class="muted">${window.DevCoordinatorI18n.markup("sketches.value6_rejected_value7_undecided_bbc778", {value6: summary.rejected.length, value7: summary.pending})}</span><button type="button" class="btn btn-small" data-sketch-review-set="${esc(group.key)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button></div><div class="sketch-set-grid">${group.sketches.map((sketch) => renderSketchCard(repositoryId, group, sketch)).join('')}</div></details>`; }).join('')}</div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_sketches_have_been_published_for_this_project_8bde12"))}${renderSketchDrawer(repositoryId, activeGroup)}</section>`;
+  main.innerHTML = `<section class="sketch-gallery-page" data-ui-region="sketches-primary"><header class="sketch-gallery-heading"><div><h1><span data-i18n="sketches.sketches_a56d78">Sketches</span></h1><p class="muted"><span data-i18n="sketches.review_generated_options_by_set_then_select_one__020509">Review generated options by set, then select one or several to carry forward.</span></p></div><div class="sketch-selection-mode" role="group" aria-label="Selection mode" data-i18n-attrs='{"aria-label":"sketches.selection_mode_1935ae"}'><span><span data-i18n="sketches.selection_mode_1935ae">Selection mode</span></span><button type="button" class="seg${state.sketchSelectionMode === 'single' ? ' active' : ''}" data-sketch-mode="single" aria-pressed="${state.sketchSelectionMode === 'single'}"><span data-i18n="sketches.single_choice_45a76a">Single choice</span></button><button type="button" class="seg${state.sketchSelectionMode === 'multiple' ? ' active' : ''}" data-sketch-mode="multiple" aria-pressed="${state.sketchSelectionMode === 'multiple'}"><span data-i18n="sketches.choose_multiple_b76dc5">Choose multiple</span></button></div></header><div class="sketch-toolbar"><strong>${window.DevCoordinatorI18n.markup("sketches.value5_sketches_value6_selected_87bdd8", {value5: sketches.length, value6: selectedCount})}</strong><span class="muted">${esc(groups.length)} ${groups.length === 1 ? window.DevCoordinatorI18n.markup("sketches.set_6ee0eb") : window.DevCoordinatorI18n.markup("sketches.sets_82c6db")}</span><button class="btn btn-small" type="button" disabled title="Sketches are published by a registered skill" data-i18n-attrs='{"title":"sketches.sketches_are_published_by_a_registered_skill_a2ac72"}'><span data-i18n="sketches.publish_from_a_skill_f33a0e">Publish from a skill</span></button></div>${groups.length ? `<div class="sketch-set-list">${groups.map((group, index) => { const summary = sketchGroupSummary(group); return `<details class="sketch-set-lane"${index < 2 ? ' open' : ''}><summary><span class="sketch-set-summary"><strong>${esc(group.key)}</strong><small>${group.sketches.length} options · ${summary.selected.length ? `${summary.selected.length} selected` : window.DevCoordinatorI18n.markup("sketches.no_selection_211f6b")}</small></span><span class="sketch-set-summary-status">${summary.selected.length ? badge(`${summary.selected.length} selected`, 'ok') : badge('No selection')}</span></summary><div class="sketch-set-lane-actions"><span class="muted">${window.DevCoordinatorI18n.markup("sketches.value6_rejected_value7_undecided_bbc778", {value6: summary.rejected.length, value7: summary.pending})}</span><button type="button" class="btn btn-small" data-sketch-review-set="${esc(group.key)}"><span data-i18n="sketches.review_set_ca242c">Review set</span></button></div><div class="sketch-set-grid">${group.sketches.map((sketch) => renderSketchCard(repositoryId, group, sketch)).join('')}</div></details>`; }).join('')}</div>` : stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_sketches_have_been_published_for_this_project_8bde12"))}${renderSketchDrawer(repositoryId, activeGroup)}</section>`;
   bindSketchGallery(repositoryId);
   if (activeGroup) requestAnimationFrame(() => $('[role="dialog"]', main)?.focus({ preventScroll: true }));
   loadSketchGalleryImages(repositoryId);
-  if (activeGroup && (state.sketchDrawerDetail?.sketch?.sketch_id !== state.sketchDrawerSketchId || (activeGroup.surfaceId && !state.sketchDrawerStory))) loadSketchDrawerDetail(repositoryId, activeGroup, state.sketchDrawerSketchId);
+  if (activeGroup && state.sketchDrawerDetail?.sketch?.sketch_id !== state.sketchDrawerSketchId) loadSketchDrawerDetail(repositoryId, activeGroup, state.sketchDrawerSketchId);
 }
 
 async function loadSketchGalleryImages(repositoryId) {
@@ -2747,11 +2729,8 @@ async function loadSketchDrawerDetail(repositoryId, group, sketchId) {
   state.sketchDrawerLoading = true;
   try {
     const detail = await api('design.sketch.get', { repository_id: repositoryId, sketch_id: sketchId });
-    const story = group.surfaceId ? await api('design.sketch.story', { repository_id: repositoryId, surface_id: group.surfaceId, include_legacy: true, limit: 200 }) : null;
     if (state.sketchDrawerSet === group.key && state.sketchDrawerSketchId === sketchId) {
       state.sketchDrawerDetail = detail;
-      state.sketchDrawerStory = story;
-      state.sketchContinuationIds = new Set((story?.current || []).map((item) => item.sketch_id));
       state.sketchDrawerLoading = false;
       renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], group.key, sketchId);
     }
@@ -2762,22 +2741,6 @@ async function loadSketchDrawerDetail(repositoryId, group, sketchId) {
 }
 
 function bindSketchGallery(repositoryId) {
-  const search = $('[data-sketch-search]', main);
-  if (search) {
-    let timer = null;
-    search.addEventListener('input', () => {
-      state.sketchSearchQuery = search.value.trim();
-      clearTimeout(timer);
-      timer = window.setTimeout(async () => {
-        try {
-          const result = state.sketchSearchQuery
-            ? await api('design.sketch.search', { repository_id: repositoryId, query: state.sketchSearchQuery, include_legacy: true, limit: 100 })
-            : await listAllSketches(repositoryId);
-          renderSketchGalleryPage(repositoryId, result.sketches || [], state.sketchDrawerSet, state.sketchDrawerSketchId);
-        } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.error_request") + ` [${error.code || 'search'}]`, 'bad'); }
-      }, 220);
-    });
-  }
   main.querySelectorAll('[data-sketch-mode]').forEach((button) => button.addEventListener('click', () => {
     state.sketchSelectionMode = button.dataset.sketchMode;
     renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], state.sketchDrawerSet, state.sketchDrawerSketchId);
@@ -2795,38 +2758,10 @@ function bindSketchGallery(repositoryId) {
     closeSketchDrawer(repositoryId);
   }));
   main.querySelectorAll('[data-sketch-drawer-sketch]').forEach((button) => button.addEventListener('click', (event) => {
-    if (button.dataset.sketchDrawerDecision || event.target.closest('[data-sketch-continuation]')) return;
+    if (button.dataset.sketchDrawerDecision) return;
     event.preventDefault();
     openSketchDrawer(repositoryId, state.sketchDrawerSet, button.dataset.sketchDrawerSketch);
   }));
-  main.querySelectorAll('[data-sketch-continuation]').forEach((input) => input.addEventListener('change', () => {
-    const id = input.dataset.sketchContinuation;
-    const next = new Set(state.sketchContinuationIds || []);
-    if (input.checked) next.add(id); else next.delete(id);
-    state.sketchContinuationIds = next;
-    renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], state.sketchDrawerSet, state.sketchDrawerSketchId);
-  }));
-  $('[data-sketch-activate]', main)?.addEventListener('click', async () => {
-    const group = sketchSetGroups(state.sketchGalleryData).find((item) => item.key === state.sketchDrawerSet);
-    const ids = [...(state.sketchContinuationIds || [])];
-    if (!group?.surfaceId || !ids.length) return;
-    const expectedRevision = Number((state.sketchDrawerStory?.activations || []).at(-1)?.revision || 0);
-    const button = $('[data-sketch-activate]', main);
-    if (button) button.disabled = true;
-    try {
-      await api('design.sketch.activate', { repository_id: repositoryId, surface_id: group.surfaceId, sketch_ids: ids, expected_revision: expectedRevision, action: 'select', rationale: 'Selected for the next design direction from Sketches history.' }, false);
-      const result = await listAllSketches(repositoryId);
-      const refreshed = sketchSetGroups(result.sketches).find((item) => item.key === group.key);
-      if (refreshed) {
-        state.sketchDrawerDetail = await api('design.sketch.get', { repository_id: repositoryId, sketch_id: state.sketchDrawerSketchId }, false);
-        state.sketchDrawerStory = await api('design.sketch.story', { repository_id: repositoryId, surface_id: group.surfaceId, include_legacy: true, limit: 200 }, false);
-        state.sketchContinuationIds = new Set(ids);
-        state.sketchGalleryHasMore = false;
-        renderSketchGalleryPage(repositoryId, result.sketches, group.key, state.sketchDrawerSketchId);
-      }
-      toast(() => 'Continuation set saved.', 'ok');
-    } catch (error) { toast(() => `Continuation set failed: ${error.message}`, 'bad'); if (button) button.disabled = false; }
-  });
   main.querySelectorAll('[data-sketch-drawer-decision]').forEach((button) => button.addEventListener('click', async () => {
     const sketch = sketchGallerySketch(button.dataset.sketchDrawerSketch); if (!sketch) return;
     await saveSketchDecisions(repositoryId, sketch, button.dataset.sketchDrawerDecision, 'Updated during detailed sketch-set review.');
@@ -2851,34 +2786,6 @@ function bindSketchGallery(repositoryId) {
     } catch (error) { toast(() => window.DevCoordinatorI18n.t("common.comment_failed_value1_19ac4b", {value1: error.message}), 'bad'); }
     finally { if (submitter) submitter.disabled = false; }
   });
-  $('[data-sketch-description-form]', main)?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const detail = state.sketchDrawerDetail;
-    const current = detail?.sketch;
-    if (!current || current.legacy) return;
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const submitter = event.submitter;
-    if (submitter) submitter.disabled = true;
-    try {
-      await api('design.sketch.description', {
-        repository_id: repositoryId,
-        sketch_id: current.sketch_id,
-        expected_revision: current.description_revision || 0,
-        description: String(formData.get('description') || '').trim(),
-        journey: current.journey || 'Review the selected surface and continue the design direction.',
-        decisions: current.decisions || 'Preserve the selected surface and its named elements.',
-        instructions: current.instructions || 'Continue from the explicitly selected mockup heads.',
-        constraints: current.constraints || 'Keep one window per mockup file.',
-        rationale: String(formData.get('rationale') || '').trim(),
-      }, false);
-      const group = sketchSetGroups(state.sketchGalleryData).find((item) => item.key === state.sketchDrawerSet);
-      state.sketchDrawerDetail = await api('design.sketch.get', { repository_id: repositoryId, sketch_id: current.sketch_id }, false);
-      if (group?.surfaceId) state.sketchDrawerStory = await api('design.sketch.story', { repository_id: repositoryId, surface_id: group.surfaceId, include_legacy: true, limit: 200 }, false);
-      renderSketchGalleryPage(repositoryId, state.sketchGalleryData || [], state.sketchDrawerSet, current.sketch_id);
-      toast(() => 'Context update saved.', 'ok');
-    } catch (error) { toast(() => `Context update failed: ${error.message}`, 'bad'); if (submitter) submitter.disabled = false; }
-  });
   document.removeEventListener('keydown', sketchDrawerEscape);
   if (state.sketchDrawerSet) document.addEventListener('keydown', sketchDrawerEscape);
 }
@@ -2896,7 +2803,7 @@ function openSketchDrawer(repositoryId, setName, sketchId = null) {
 }
 
 function closeSketchDrawer(repositoryId) {
-  state.sketchDrawerSet = null; state.sketchDrawerSketchId = null; state.sketchDrawerDetail = null; state.sketchDrawerStory = null; state.sketchContinuationIds = new Set();
+  state.sketchDrawerSet = null; state.sketchDrawerSketchId = null; state.sketchDrawerDetail = null;
   history.replaceState(null, '', sketchRoute(repositoryId));
   renderSketchGalleryPage(repositoryId, state.sketchGalleryData || []);
 }
@@ -2929,7 +2836,6 @@ async function listSketchPage(repositoryId, offset = 0, sketchSet = null) {
   const params = {
     repository_id: repositoryId,
     limit: SKETCH_PAGE_SIZE,
-    include_legacy: true,
     ...(sketchSet ? { sketch_set: sketchSet } : {}),
   };
   if (offset) params.offset = offset;
@@ -3012,10 +2918,22 @@ async function viewSketchSetEvidence(repositoryId, group, activeSketchId) {
 }
 
 const viewSketches = guard(async (repositoryId, sketchId = null, setName = null) => {
+  const query = new URLSearchParams(location.hash.split('?')[1] || '');
+  if (query.has('surface') || (!sketchId && !setName)) {
+    return window.DevCoordinatorSketches.mount(main, {
+      repositoryId, api, esc, signal: viewAbort.signal, imageUrl: sketchImageUrl,
+      openAnnotations: async (nodes, selectedId) => {
+        await viewSketchSetEvidence(repositoryId, { key: nodes[0]?.sketch_set, sketches: nodes }, selectedId);
+        const link = document.createElement('a'); link.className = 'btn btn-small sketch-back';
+        link.href = window.DevCoordinatorSketches.route(repositoryId, query.get('surface'), selectedId);
+        window.DevCoordinatorI18n.text(link, 'sketches.backToHistory'); main.prepend(link);
+      },
+    });
+  }
   if (sketchId && setName) {
     main.innerHTML = `${pageHeading('Sketches', '#/sketches', window.DevCoordinatorI18n.t("shell.loading_ba3bbb"))}<div class="sketch-set-list">${skeleton(6)}</div>`;
-    const result = await listAllSketches(repositoryId);
-    const group = sketchSetGroups(result.sketches).find((item) => item.key === setName || item.title === setName);
+    const result = await listAllSketches(repositoryId, setName);
+    const group = sketchSetGroups(result.sketches).find((item) => item.key === setName);
     if (!group) { main.innerHTML = `${pageHeading('Sketches', '#/sketches')}${stateBlock('empty', window.DevCoordinatorI18n.t("evidence.sketchSetUnavailable"))}`; return; }
     return viewSketchSetEvidence(repositoryId, group, sketchId);
   }
@@ -4970,11 +4888,12 @@ async function render() {
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
   const sketchQuery = new URLSearchParams(location.hash.split('?')[1] || '');
-  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set');
+  const sketchDetailRoute = view === 'sketches' && sketchQuery.has('sketch') && !sketchQuery.has('set') && (!sketchQuery.has('surface') || sketchQuery.has('annotate'));
   const sketchSetEvidenceRoute = view === 'sketches' && sketchQuery.has('sketch') && sketchQuery.has('set');
   main.classList.toggle('test-evidence-page', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   main.classList.toggle('tests-collection-page', view === 'tests' && !arg);
   main.classList.toggle('sketches-page', view === 'sketches');
+  main.classList.toggle('sketch-history-page', view === 'sketches' && !sketchQuery.has('annotate') && (sketchQuery.has('surface') || !sketchQuery.has('sketch')));
   document.body.classList.toggle('plan-shell', view === 'plan' && !!arg);
   document.body.classList.toggle('evidence-shell', (view === 'tests' && !!arg) || sketchDetailRoute || sketchSetEvidenceRoute);
   if (!(view === 'tests' && arg) && !sketchDetailRoute && !sketchSetEvidenceRoute && state.evidenceRunId) {

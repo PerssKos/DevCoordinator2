@@ -47,5 +47,24 @@
       "other": "{count} seturi",
       "few": "{count} sets"
     }
-  }
+  },
+  "legacy": "Arhivă veche",
+  "currentSelection": "Selecția curentă",
+  "search": "Caută",
+  "theme": "Temă",
+  "earlier": "Istoric anterior",
+  "basedOn": "Bazat pe",
+  "surface": "Ecran",
+  "selectionNote": "Notă despre selecție",
+  "continueSelected": "Continuă cu selecția",
+  "initialContext": "Contextul inițial al agentului",
+  "latestContext": "Cel mai recent context",
+  "history": "Istoric",
+  "description": "Descriere",
+  "whyChanged": "Motivul modificării",
+  "journey": "Parcursul utilizatorului",
+  "instructions": "Instrucțiuni",
+  "constraints": "Restricții",
+  "backToHistory": "Înapoi la istoric",
+  "elements": "Elemente"
 }

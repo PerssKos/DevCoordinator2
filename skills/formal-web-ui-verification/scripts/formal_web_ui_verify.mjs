@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { measureDeclaredLayout, formalReceipt } from "../../../rust/tooling/formal-handoff.mjs";
 
 const require = createRequire(import.meta.url);
 const VERIFIER_PATH = fileURLToPath(import.meta.url);
@@ -54,7 +55,8 @@ let fallbackArtifacts;
 let activeArtifacts;
 let activeConfigSha256 = null;
 const runStartedAt = new Date().toISOString();
-const verifierSha256 = createHash("sha256").update(fs.readFileSync(VERIFIER_PATH)).digest("hex");
+const verifierSha256 = createHash("sha256").update(fs.readFileSync(VERIFIER_PATH))
+  .update(fs.readFileSync(new URL('../../../rust/tooling/formal-handoff.mjs', import.meta.url))).digest("hex");
 
 function usage() {
   return `Usage:
@@ -1165,6 +1167,8 @@ function normalizeTargetDefaults(value) {
   }
   return {
     journeys: normalizeJourneyDefinitions(value.journeys, "targetDefaults.journeys"),
+    fixtureDataShapes: value.fixtureDataShapes,
+    geometryAssertions: value.geometryAssertions,
     primaryJourney: value.primaryJourney === undefined || value.primaryJourney === null
       ? null
       : String(value.primaryJourney).trim(),
@@ -1215,6 +1219,8 @@ function normalizeTargets(config, cli) {
       }
       return {
         name: state.name.trim(),
+        fixtureDataShapes: state.fixtureDataShapes,
+        geometryAssertions: state.geometryAssertions,
         actions,
         waitFor: normalizeWaitFor(state.waitFor, `target.states[${stateIndex}].waitFor`),
         afterFailureWaitFor: normalizeWaitFor(
@@ -1270,6 +1276,8 @@ function normalizeTargets(config, cli) {
         }
         targets.push({
           ...item,
+          fixtureDataShapes: item.fixtureDataShapes ?? targetDefaults.fixtureDataShapes,
+          geometryAssertions: item.geometryAssertions ?? targetDefaults.geometryAssertions,
           states: normalizeStates(item.states),
           contentInsets: normalizeContentInsetList(item.contentInsets, `targets[${targetIndex}].contentInsets`),
           journeys: item.journeys === undefined
@@ -1957,6 +1965,8 @@ function expandTargetStates(targets) {
         primaryJourney: state.primaryJourney ?? target.primaryJourney,
         priorityOverrideReason: state.priorityOverrideReason ?? target.priorityOverrideReason,
         regions: state.regions ?? target.regions,
+        fixtureDataShapes: state.fixtureDataShapes ?? target.fixtureDataShapes,
+        geometryAssertions: state.geometryAssertions ?? target.geometryAssertions,
         theme: state.theme ?? target.theme,
         reviewInputs: [
           ...(target.reviewInputs || []),
@@ -2131,6 +2141,8 @@ function prepareTargetContracts(targets, config) {
       }
     }
     const intentContract = {
+      fixtureDataShapes: target.fixtureDataShapes || [],
+      geometryAssertions: target.geometryAssertions || [],
       journeys: target.journeys || [],
       primaryJourney: target.primaryJourney || null,
       priorityOverrideReason: target.priorityOverrideReason || "",
@@ -3362,6 +3374,9 @@ function pageVerifier() {
       ancestor && ancestor !== document.body && ancestor !== document.documentElement;
       ancestor = composedParent(ancestor)) {
       ancestors.push(ancestor);
+      // A positioned popup owns its controls. Its anchor's narrow box is not
+      // their layout container; still inspect the popup and every inner box.
+      if (["absolute", "fixed"].includes(cs(ancestor).position)) break;
     }
     if (ancestors.some(activeHorizontalScroller)) continue;
     const controlRect = nowRect(el);
@@ -5145,6 +5160,12 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   });
   result.metrics.journey = journeyEvaluation;
   result.findings.push(...journeyEvaluation.findings);
+  result.metrics.declaredLayout = await page.evaluate(measureDeclaredLayout, {
+    assertions: target.geometryAssertions, shapes: target.fixtureDataShapes,
+  });
+  for (const assertion of result.metrics.declaredLayout.assertions) {
+    if (assertion.result === 'failed') result.findings.push({ severity: 'critical', rule: 'declared-geometry', selector: assertion.selector, message: `Geometry assertion ${assertion.id} (${assertion.kind}) failed`, detail: assertion.measurements });
+  }
   try {
     result.screenshots.viewport = await captureEvidenceScreenshot(
       page,
@@ -5200,6 +5221,7 @@ async function verifyTarget(page, target, viewport, config, cellId) {
     journey: journeyEvaluation,
     continuation: result.continuation,
     performance: result.metrics.performance,
+    declaredLayout: result.metrics.declaredLayout,
     scroll: scrollMetrics,
     frames: [],
     frameDocuments: [],
@@ -6110,6 +6132,7 @@ function emitReceipt(receipt) {
     line = JSON.stringify({
       tool: "formal-web-ui-verification",
       status: receipt.status,
+      formal: receipt.formal,
       exitCode: receipt.exitCode,
       artifacts,
       receiptTruncated: true,
@@ -6122,6 +6145,7 @@ function resultReceipt(report, exitCode, config, blocking) {
   return {
     tool: "formal-web-ui-verification",
     runId: report.runId,
+    formal: report.formal,
     status: exitCode === 0
       ? (report.coverage.readinessEligible ? "passed" : "development-passed")
       : (exitCode === 1 ? "blocking-findings" : "coverage-failed"),
@@ -6165,6 +6189,7 @@ function setupFailureArtifacts(error, preferred, fallback) {
     endedAt,
     durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(runStartedAt)),
     status: "setup-failure",
+    formal: { result: 'blocked', reasons: ['setup-failure'] },
     exitCode: 2,
     error: evidence,
     evidence: {
@@ -6835,11 +6860,12 @@ async function main() {
   finalizeProgress(config, report);
   report.evidence.journey = writeJourneyEvidenceArtifact(report, config.journeyEvidenceOut);
   publishGovernedJourneyEvidenceArtifact(config.journeyEvidenceOut);
-  const markdown = markdownReport(report);
-  writeReportArtifacts(report, markdown, activeArtifacts);
   const failThreshold = SEVERITY_ORDER[config.rules.failOn];
   const blocking = report.findings.filter((finding) => SEVERITY_ORDER[finding.severity] >= failThreshold);
   const exitCode = report.coverage.failed ? 3 : (blocking.length ? 1 : 0);
+  report.formal = formalReceipt(report, exitCode, blocking);
+  const markdown = markdownReport(report);
+  writeReportArtifacts(report, markdown, activeArtifacts);
   if (config.humanReadableStdout) {
     console.log(markdown);
   } else {
@@ -6867,6 +6893,7 @@ if (isEntrypoint) {
       tool: "formal-web-ui-verification",
       runId: failure.report.runId,
       status: "setup-failure",
+      formal: failure.report.formal,
       exitCode: 2,
       artifacts: artifactReceipt(failure.artifacts),
       artifactStatus: failure.artifacts ? "written" : "unavailable",

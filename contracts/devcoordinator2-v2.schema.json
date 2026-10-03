@@ -42036,6 +42036,13 @@
           "SketchImageInput": {
             "additionalProperties": false,
             "properties": {
+              "display_order": {
+                "description": "Position in the order actually displayed to the user, not generation order.",
+                "format": "uint16",
+                "maximum": 64,
+                "minimum": 1,
+                "type": "integer"
+              },
               "manifest": {
                 "$ref": "#/$defs/SketchManifest"
               },
@@ -42053,6 +42060,7 @@
             "required": [
               "title",
               "path",
+              "display_order",
               "manifest"
             ],
             "type": "object"
@@ -42243,6 +42251,13 @@
               "SketchImageInput": {
                 "additionalProperties": false,
                 "properties": {
+                  "display_order": {
+                    "description": "Position in the order actually displayed to the user, not generation order.",
+                    "format": "uint16",
+                    "maximum": 64,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "manifest": {
                     "$ref": "#/$defs/SketchManifest"
                   },
@@ -42260,6 +42275,7 @@
                 "required": [
                   "title",
                   "path",
+                  "display_order",
                   "manifest"
                 ],
                 "type": "object"
@@ -42460,6 +42476,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -42501,6 +42520,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -42607,6 +42635,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -42699,6 +42728,13 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "batch_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "current_only": {
             "default": false,
             "type": "boolean"
@@ -42750,9 +42786,23 @@
               "null"
             ]
           },
+          "state": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "surface_id": {
             "default": null,
             "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "theme": {
+            "default": null,
             "type": [
               "string",
               "null"
@@ -42782,6 +42832,13 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "current_only": {
                 "default": false,
                 "type": "boolean"
@@ -42833,9 +42890,23 @@
                   "null"
                 ]
               },
+              "state": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "surface_id": {
                 "default": null,
                 "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
+                "default": null,
                 "type": [
                   "string",
                   "null"
@@ -42866,6 +42937,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -42907,6 +42981,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -43013,6 +43096,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -43104,7 +43188,21 @@
             "pattern": "^r[0-9a-f]{16}$",
             "type": "string"
           },
+          "state": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "surface_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "theme": {
             "default": null,
             "type": [
               "string",
@@ -43157,7 +43255,21 @@
                 "pattern": "^r[0-9a-f]{16}$",
                 "type": "string"
               },
+              "state": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "surface_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "theme": {
                 "default": null,
                 "type": [
                   "string",
@@ -43190,6 +43302,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -43231,6 +43346,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -43337,6 +43461,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -43397,6 +43522,12 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "activation_offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "include_legacy": {
             "default": false,
             "type": "boolean"
@@ -43406,6 +43537,12 @@
             "format": "uint16",
             "maximum": 200,
             "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
             "type": "integer"
           },
           "repository_id": {
@@ -43432,6 +43569,12 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "activation_offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "include_legacy": {
                 "default": false,
                 "type": "boolean"
@@ -43441,6 +43584,12 @@
                 "format": "uint16",
                 "maximum": 200,
                 "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
                 "type": "integer"
               },
               "repository_id": {
@@ -43523,6 +43672,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -43564,6 +43716,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -43670,6 +43831,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -43754,6 +43916,22 @@
             },
             "type": "array"
           },
+          "next_activation_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "nodes": {
             "items": {
               "$ref": "#/$defs/SketchImageSummary"
@@ -43762,6 +43940,11 @@
           },
           "repository_id": {
             "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
           },
           "surface_id": {
             "type": "string"
@@ -43780,7 +43963,8 @@
           "nodes",
           "lineage",
           "activations",
-          "has_more"
+          "has_more",
+          "revision"
         ],
         "title": "SketchStoryResult",
         "type": "object"
@@ -43861,6 +44045,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -43902,6 +44089,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -44008,6 +44204,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -44091,6 +44288,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "context_before_revision": {
+            "default": null,
+            "description": "Retrieve earlier context revisions only when needed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "max_bytes": {
             "default": 184320,
             "format": "uint32",
@@ -44128,6 +44335,16 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "context_before_revision": {
+                "default": null,
+                "description": "Retrieve earlier context revisions only when needed.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "max_bytes": {
                 "default": 184320,
                 "format": "uint32",
@@ -44529,6 +44746,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -44570,6 +44790,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -44676,6 +44905,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -44745,6 +44975,9 @@
             },
             "type": "array"
           },
+          "context_history_has_more": {
+            "type": "boolean"
+          },
           "description_history": {
             "items": {
               "$ref": "#/$defs/SketchDescriptionRevision"
@@ -44765,6 +44998,16 @@
             },
             "type": "array"
           },
+          "initial_context": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SketchDescriptionRevision"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lineage": {
             "items": {
               "$ref": "#/$defs/SketchLineageEvent"
@@ -44782,7 +45025,8 @@
           "history",
           "annotations",
           "lineage",
-          "description_history"
+          "description_history",
+          "context_history_has_more"
         ],
         "title": "SketchDetail",
         "type": "object"
@@ -44941,6 +45185,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "context_before_revision": {
+            "default": null,
+            "description": "Retrieve earlier context revisions only when needed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "max_bytes": {
             "default": 184320,
             "format": "uint32",
@@ -44978,6 +45232,16 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "context_before_revision": {
+                "default": null,
+                "description": "Retrieve earlier context revisions only when needed.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "max_bytes": {
                 "default": 184320,
                 "format": "uint32",
@@ -45217,6 +45481,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -45258,6 +45525,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -45364,6 +45640,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -45449,7 +45726,6 @@
               "type": "string"
             },
             "maxItems": 64,
-            "minItems": 1,
             "type": "array"
           },
           "surface_id": {
@@ -45508,7 +45784,6 @@
                   "type": "string"
                 },
                 "maxItems": 64,
-                "minItems": 1,
                 "type": "array"
               },
               "surface_id": {
@@ -45591,6 +45866,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -45632,6 +45910,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -45738,6 +46025,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -45991,6 +46279,9 @@
           "SketchImageSummary": {
             "additionalProperties": false,
             "properties": {
+              "batch_id": {
+                "type": "string"
+              },
               "byte_size": {
                 "format": "uint64",
                 "minimum": 0,
@@ -46032,6 +46323,15 @@
                 "format": "uint32",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "display_order": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "element_ids": {
                 "items": {
@@ -46138,6 +46438,7 @@
               "sketch_id",
               "repository_id",
               "sketch_set",
+              "batch_id",
               "source_skill",
               "title",
               "image_id",
@@ -46433,7 +46734,6 @@
               "$ref": "#/$defs/Mark"
             },
             "maxItems": 64,
-            "minItems": 1,
             "type": "array"
           },
           "repository_id": {
@@ -46703,7 +47003,6 @@
                   "$ref": "#/$defs/Mark"
                 },
                 "maxItems": 64,
-                "minItems": 1,
                 "type": "array"
               },
               "repository_id": {

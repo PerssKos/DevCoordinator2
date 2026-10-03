@@ -47,5 +47,24 @@
       "many": "{count} gruppi",
       "other": "{count} gruppi"
     }
-  }
+  },
+  "legacy": "Archivio precedente",
+  "currentSelection": "Selezione attuale",
+  "search": "Cerca",
+  "theme": "Tema",
+  "earlier": "Cronologia precedente",
+  "basedOn": "Basato su",
+  "surface": "Schermata",
+  "selectionNote": "Nota sulla selezione",
+  "continueSelected": "Continua con la selezione",
+  "initialContext": "Contesto iniziale dell’agente",
+  "latestContext": "Contesto più recente",
+  "history": "Cronologia",
+  "description": "Descrizione",
+  "whyChanged": "Motivo della modifica",
+  "journey": "Percorso dell’utente",
+  "instructions": "Istruzioni",
+  "constraints": "Vincoli",
+  "backToHistory": "Torna alla cronologia",
+  "elements": "Elementi"
 }

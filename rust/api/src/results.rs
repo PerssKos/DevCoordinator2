@@ -15,6 +15,8 @@ pub struct SketchImageSummary {
     pub sketch_id: String,
     pub repository_id: String,
     pub sketch_set: String,
+    pub batch_id: String,
+    pub display_order: Option<u16>,
     pub source_skill: String,
     pub title: String,
     pub image_id: String,
@@ -85,6 +87,8 @@ pub struct SketchDetail {
     pub annotations: Vec<SketchAnnotation>,
     pub lineage: Vec<SketchLineageEvent>,
     pub description_history: Vec<SketchDescriptionRevision>,
+    pub initial_context: Option<SketchDescriptionRevision>,
+    pub context_history_has_more: bool,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -143,6 +147,9 @@ pub struct SketchStoryResult {
     pub lineage: Vec<SketchLineageEvent>,
     pub activations: Vec<SketchActivationEvent>,
     pub has_more: bool,
+    pub next_offset: Option<u32>,
+    pub revision: u32,
+    pub next_activation_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

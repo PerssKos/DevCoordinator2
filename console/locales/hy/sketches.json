@@ -46,5 +46,24 @@
       "one": "{count} հավաքածու",
       "other": "{count} հավաքածու"
     }
-  }
+  },
+  "legacy": "Նախորդ արխիվ",
+  "currentSelection": "Ընթացիկ ընտրություն",
+  "search": "Որոնել",
+  "theme": "Թեմա",
+  "earlier": "Նախորդ պատմություն",
+  "basedOn": "Հիմնված է",
+  "surface": "Էկրան",
+  "selectionNote": "Ընտրության նշում",
+  "continueSelected": "Շարունակել ընտրվածներով",
+  "initialContext": "Գործակալի սկզբնական համատեքստ",
+  "latestContext": "Վերջին համատեքստ",
+  "history": "Պատմություն",
+  "description": "Նկարագրություն",
+  "whyChanged": "Փոփոխության պատճառ",
+  "journey": "Օգտատիրոջ ուղի",
+  "instructions": "Հրահանգներ",
+  "constraints": "Սահմանափակումներ",
+  "backToHistory": "Վերադառնալ պատմությանը",
+  "elements": "Տարրեր"
 }

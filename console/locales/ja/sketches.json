@@ -44,5 +44,24 @@
       "one": "{count} セット",
       "other": "{count} セット"
     }
-  }
+  },
+  "legacy": "旧アーカイブ",
+  "currentSelection": "現在の選択",
+  "search": "検索",
+  "theme": "テーマ",
+  "earlier": "以前の履歴",
+  "basedOn": "元の案",
+  "surface": "画面",
+  "selectionNote": "選択に関するメモ",
+  "continueSelected": "選択した案で続ける",
+  "initialContext": "エージェントの初期コンテキスト",
+  "latestContext": "最新のコンテキスト",
+  "history": "履歴",
+  "description": "説明",
+  "whyChanged": "変更理由",
+  "journey": "ユーザーの操作手順",
+  "instructions": "指示",
+  "constraints": "制約",
+  "backToHistory": "履歴に戻る",
+  "elements": "要素"
 }

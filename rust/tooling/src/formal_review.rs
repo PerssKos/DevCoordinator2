@@ -124,6 +124,24 @@ fn load_run(report_path: &Path, queue_path: &Path) -> Result<RunEvidence, String
     if report.get("schemaVersion") != Some(&json!(2)) {
         return Err("report schemaVersion must be 2".to_owned());
     }
+    if report
+        .get("formal")
+        .and_then(|value| value.get("result"))
+        .and_then(Value::as_str)
+        != Some("passed")
+    {
+        return Err("manual review requires formal.result == passed".to_owned());
+    }
+    if report
+        .get("formal")
+        .and_then(|value| value.get("manifestSha256"))
+        .and_then(Value::as_str)
+        .is_none_or(|value| {
+            value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err("formal receipt requires its evidence manifest digest".to_owned());
+    }
     if queue.get("schemaVersion") != Some(&json!(1))
         || queue.get("kind") != Some(&json!(QUEUE_KIND))
     {
@@ -278,7 +296,7 @@ pub fn finalize(
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
     let supplied = normalize_decisions(&load_decisions(decisions_path)?, &queued)?;
-    let mut decisions = Vec::new();
+    let mut decisions: Vec<Value> = Vec::new();
     for cell in &run.cells {
         let key = cell["reviewCellKey"]
             .as_str()
@@ -313,6 +331,7 @@ pub fn finalize(
             "targetName":cell.get("targetName").cloned().unwrap_or(Value::Null),
             "requestedPath":cell.get("requestedPath").cloned().unwrap_or(Value::Null),
             "stateName":cell.get("stateName").cloned().unwrap_or(Value::Null),
+            "theme":cell.get("theme").cloned().unwrap_or(Value::Null),
             "viewport":cell.get("viewport").cloned().unwrap_or(Value::Null),
             "decision":decision,"note":note,"basis":basis,
             "sourceFingerprint":cell.get("sourceFingerprint").cloned().unwrap_or(Value::Null),
@@ -324,6 +343,12 @@ pub fn finalize(
         "schemaVersion":SCHEMA_VERSION,"kind":KIND,
         "reviewedRunId":run.report["runId"],"reviewedAt":reviewed_at,
         "reportSha256":run.report_sha256,"reviewQueueSha256":run.queue_sha256,
+        "manual": {
+            "result": if decisions.iter().all(|item| item["decision"] == "pass") { "passed" } else { "failed" },
+            "formalRunId":run.report["runId"],
+            "formalManifestSha256":run.report["formal"]["manifestSha256"],
+            "reviewer":"agent", "reviewedAt":reviewed_at, "cells":decisions,
+        },
         "decisions":decisions,
     }))
 }
@@ -413,6 +438,31 @@ pub fn validate(
     if !missing.is_empty() {
         return Err(format!("manual review omits current cells: {missing:?}"));
     }
+    let result = if decisions.iter().all(|item| item["decision"] == "pass") {
+        "passed"
+    } else {
+        "failed"
+    };
+    if actual
+        .get("manual")
+        .and_then(|value| value.get("result"))
+        .and_then(Value::as_str)
+        != Some(result)
+        || actual
+            .get("manual")
+            .and_then(|value| value.get("formalRunId"))
+            != run.report.get("runId")
+        || actual
+            .get("manual")
+            .and_then(|value| value.get("formalManifestSha256"))
+            != run
+                .report
+                .get("formal")
+                .and_then(|value| value.get("manifestSha256"))
+        || actual.get("manual").and_then(|value| value.get("cells")) != actual.get("decisions")
+    {
+        return Err("manual receipt does not bind the complete reviewed cell set".to_owned());
+    }
     Ok(Value::Object(actual))
 }
 
@@ -458,7 +508,7 @@ mod tests {
         let queue_path = directory.path().join("review-queue.json");
         std::fs::write(&queue_path, serde_json::to_vec(&queue).unwrap()).unwrap();
         let report = json!({
-            "schemaVersion":2,"runId":"run-1","review":{
+            "schemaVersion":2,"runId":"run-1","formal":{"result":"passed","manifestSha256":"c".repeat(64)},"review":{
                 "queueSha256":sha256_hex(&std::fs::read(&queue_path).unwrap()),
                 "cells":[{
                     "reviewCellKey":"cell-1","status":"review-required",
@@ -488,10 +538,21 @@ mod tests {
         let (directory, report, queue, decisions, _) = fixture();
         let review = finalize(&report, &queue, Some(&decisions), "2026-09-04T00:00:00Z").unwrap();
         assert_eq!(summary(&review).unwrap()["ok"], true);
+        assert_eq!(review["manual"]["result"], "passed");
         let output = directory.path().join("manual-review.json");
         write_new_review(&output, &review).unwrap();
         assert_eq!(validate(&output, &report, &queue).unwrap(), review);
         assert!(write_new_review(&output, &review).is_err());
+        let mut invalid: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+        for result in ["failed", "blocked", "incomplete"] {
+            invalid["formal"]["result"] = json!(result);
+            std::fs::write(&report, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(
+                finalize(&report, &queue, Some(&decisions), "now")
+                    .unwrap_err()
+                    .contains("formal.result")
+            );
+        }
     }
 
     #[test]

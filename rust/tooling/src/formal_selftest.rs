@@ -380,32 +380,52 @@ fn wait_child(
     mut child: std::process::Child,
     timeout: Duration,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
+    // Drain both pipes while the child runs. Waiting for exit first deadlocks
+    // once a test reporter fills either pipe (including small Linux pipes).
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || -> Result<Vec<u8>, String> {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                pipe.read_to_end(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(bytes)
+        })
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
+            break Ok(status);
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
+            break Err(format!(
                 "formal UI verifier exceeded {} seconds",
                 timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)
-            .map_err(|error| error.to_string())?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok((status, stdout, stderr))
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "stdout reader panicked")??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "stderr reader panicked")??;
+    Ok((status?, stdout, stderr))
 }
 
 fn default_target_contract() -> Map<String, Value> {
@@ -1019,6 +1039,12 @@ fn run_state_and_wait_phase(
 ) -> Result<usize, String> {
     let base = server.base_url();
     let mut scenarios = 0usize;
+    run_node_probe(
+        root,
+        "process.stdout.write('o'.repeat(131072)); process.stderr.write('e'.repeat(131072));",
+        timeout,
+    )?;
+    scenarios += 1;
     run_node_probe(
         root,
         &format!(
@@ -1743,11 +1769,23 @@ fn run_transport_and_cache_phase(
         timeout,
         &[],
     )?;
+    use sha2::{Digest, Sha256};
+    let mut verifier_hash = Sha256::new();
+    for file in [
+        "skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs",
+        "rust/tooling/formal-handoff.mjs",
+    ] {
+        verifier_hash.update(std::fs::read(root.join(file)).map_err(|error| error.to_string())?);
+    }
     if matched.pointer("/evidence/config/sha256") != repeated.pointer("/evidence/config/sha256")
         || matched.pointer("/evidence/verifier/sha256")
-            != Some(&json!(sha256_file(&root.join(
-                "skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs"
-            ))?))
+            != Some(&json!(
+                verifier_hash
+                    .finalize()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ))
     {
         return Err(
             "equivalent source-binding configs did not preserve evidence identity".to_owned(),
@@ -2891,7 +2929,20 @@ fn review_config(root: &Path, repo: &Path, base: &str) -> Value {
         root,
         json!({
             "repoRoot":repo,
-            "targets":[{"url":format!("{base}/dynamic-review.html"),"reviewInputs":[{"path":"ui/screen.css","kind":"style"}]}],
+            "targets":[{
+                "url":format!("{base}/dynamic-review.html"),"reviewInputs":[{"path":"ui/screen.css","kind":"style"}],
+                "fixtureDataShapes":[{"id":"dynamic-review","revision":"v2","conditionalDom":["main","#primary","#hidden-track"],"layoutEffect":"Populated primary content beside a hidden navigation track"}],
+                "geometryAssertions":[
+                    {"id":"navigation","kind":"hidden-navigation-track","selector":"#hidden-track"},
+                    {"id":"width","kind":"primary-content-width","selector":"main","minWidth":300},
+                    {"id":"heading","kind":"readable-heading","selector":"h1"},
+                    {"id":"identifier","kind":"readable-canonical-identifier","selector":"h1"},
+                    {"id":"wrap","kind":"no-character-wrapping","selector":"h1"},
+                    {"id":"overflow","kind":"document-horizontal-overflow"},
+                    {"id":"arrival","kind":"initial-viewport-placement","selector":"main"},
+                    {"id":"clip","kind":"clipping","selector":"main"}
+                ]
+            }],
             "viewports":[{"name":"mobile","width":390,"height":844}]
         }),
     )
@@ -2940,6 +2991,9 @@ fn run_review_phase(
     let base_config = review_config(root, &repo, &base);
     let first_dir = work.join("first");
     let first = run_verifier(root, &base_config, &first_dir, &[0], timeout, &[])?;
+    if first.pointer("/formal/result") != Some(&json!("passed")) {
+        return Err("complete review fixture did not produce a passing formal receipt".to_owned());
+    }
     if first.pointer("/review/pendingCount") != Some(&json!(1)) {
         return Err("a newly covered cell did not enter visual review".to_owned());
     }

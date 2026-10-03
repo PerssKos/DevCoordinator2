@@ -45,5 +45,24 @@
       "one": "{count} Set",
       "other": "{count} Sets"
     }
-  }
+  },
+  "legacy": "Bisheriges Archiv",
+  "currentSelection": "Aktuelle Auswahl",
+  "search": "Suchen",
+  "theme": "Farbschema",
+  "earlier": "Älterer Verlauf",
+  "basedOn": "Basierend auf",
+  "surface": "Ansicht",
+  "selectionNote": "Anmerkung zur Auswahl",
+  "continueSelected": "Mit Auswahl fortfahren",
+  "initialContext": "Ursprünglicher Agentenkontext",
+  "latestContext": "Aktueller Kontext",
+  "history": "Verlauf",
+  "description": "Beschreibung",
+  "whyChanged": "Grund der Änderung",
+  "journey": "Nutzungsablauf",
+  "instructions": "Anweisungen",
+  "constraints": "Vorgaben",
+  "backToHistory": "Zurück zum Verlauf",
+  "elements": "Elemente"
 }

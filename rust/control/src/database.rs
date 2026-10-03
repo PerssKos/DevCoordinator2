@@ -236,6 +236,8 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
         "INTEGER NOT NULL DEFAULT 1",
     )?;
     ensure_column(&connection, "sketches", "surface_id", "TEXT")?;
+    ensure_column(&connection, "sketches", "display_order", "INTEGER")?;
+    ensure_column(&connection, "sketch_batches", "request_sha256", "TEXT")?;
     ensure_column(&connection, "sketches", "surface_title", "TEXT")?;
     ensure_column(
         &connection,
@@ -296,7 +298,10 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     backfill_lease_ids(&connection)?;
-    refresh_sketch_search_index(&connection)?;
+    connection.execute_batch(include_str!("sketch_history.sql"))?;
+    if current.is_none_or(|version| version < 30) {
+        refresh_sketch_search_index(&connection)?;
+    }
     connection.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1)",
         [DATABASE_SCHEMA_VERSION.to_string()],
@@ -305,32 +310,12 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
 }
 
 fn refresh_sketch_search_index(connection: &Connection) -> Result<(), DatabaseError> {
-    connection.execute("DELETE FROM sketches_fts", [])?;
-    let mut statement = connection.prepare(
-        "SELECT sketch_id,repository_id,COALESCE(surface_id,''),
-                title,COALESCE(surface_title,''),element_ids_json,
-                COALESCE(state_name,''),COALESCE(theme,''),COALESCE(viewport,''),
-                description,journey,decisions,instructions,constraints,transition_note
-         FROM sketches",
-    )?;
-    let rows = statement
-        .query_map([], |row| {
-            let fields = (3..15)
-                .map(|index| row.get::<_, String>(index))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                fields.join(" "),
-            ))
-        })?
+    let mut q = connection.prepare("SELECT sketch_id FROM sketches")?;
+    let ids = q
+        .query_map([], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
-    for (sketch_id, repository_id, surface_id, searchable) in rows {
-        connection.execute(
-            "INSERT INTO sketches_fts(sketch_id,repository_id,surface_id,searchable) VALUES(?1,?2,?3,?4)",
-            rusqlite::params![sketch_id, repository_id, surface_id, searchable],
-        )?;
+    for id in ids {
+        crate::sketches::reindex_sketch(connection, &id)?;
     }
     Ok(())
 }
@@ -647,6 +632,50 @@ mod tests {
                 supported
             }) if found == future_version && supported == DATABASE_SCHEMA_VERSION
         ));
+    }
+
+    // The browser fixture starts with an empty database; this extends migration
+    // coverage for an existing archive without borrowing production state.
+    #[test]
+    fn schema_twenty_nine_sketch_archive_remains_historical() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("old.sqlite3");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          INSERT INTO meta VALUES('schema_version','29');
+          CREATE TABLE repositories(repository_id TEXT PRIMARY KEY,root_path TEXT UNIQUE,display_name TEXT,registered_at TEXT,registered_by_uid INTEGER,last_seen_at TEXT);
+          INSERT INTO repositories VALUES('r1111111111111111','/fixture','Old project','old',1000,'old');
+          CREATE TABLE sketch_batches(batch_id TEXT PRIMARY KEY,repository_id TEXT,sketch_set TEXT,source_skill TEXT,generation_record_path TEXT,generation_record_size INTEGER,generation_record_sha256 TEXT,idempotency_key TEXT,created_at TEXT,created_by TEXT,UNIQUE(repository_id,idempotency_key));
+          INSERT INTO sketch_batches VALUES('k1111111111111111','r1111111111111111','Old choices','agent','/fixture/record',5,'record-digest','old-key','old','agent');
+          CREATE TABLE sketches(sketch_id TEXT PRIMARY KEY,batch_id TEXT,repository_id TEXT,title TEXT,file_path TEXT,byte_size INTEGER,sha256 TEXT,mime TEXT,width INTEGER,height INTEGER,decision TEXT,decision_revision INTEGER,created_at TEXT,created_by TEXT);
+          INSERT INTO sketches VALUES('s1111111111111111','k1111111111111111','r1111111111111111','Old selection','/fixture/image',99,'original-digest','image/png',1440,1024,'keep',1,'old','agent');").unwrap();
+        drop(old);
+        let database = Database::open(&path).unwrap();
+        database
+            .call(|c| {
+                let row: (String, String, bool, Option<String>) = c.query_row(
+                    "SELECT sha256,decision,legacy,surface_id FROM sketches",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?;
+                assert_eq!(row, ("original-digest".into(), "keep".into(), true, None));
+                assert_eq!(
+                    c.query_row(
+                        "SELECT COUNT(*) FROM sketches_fts WHERE sketches_fts MATCH 'selection'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )?,
+                    1
+                );
+                assert!(c.execute("UPDATE sketches SET legacy=0", []).is_err());
+                assert_eq!(
+                    c.query_row("SELECT COUNT(*) FROM sketch_surface_activations", [], |r| r
+                        .get::<_, i64>(0))?,
+                    0
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]
