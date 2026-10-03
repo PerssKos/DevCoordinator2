@@ -15,7 +15,7 @@ use crate::{
     platform::Clock,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError, storage as api};
-use model::{Record, RootRecord, StoredPlan, atom};
+use model::{Locator, Record, RootRecord, StoredPlan, atom};
 use rusqlite::OptionalExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -502,10 +502,30 @@ impl StorageService {
                 &mut ordered,
             )?;
         }
+        // A selected directory removes its known nested directories too. Bind
+        // them into the reviewed plan, including their protection and effects.
+        let directories = ordered
+            .iter()
+            .filter_map(|id| records.get(id))
+            .filter(|r| matches!(r.locator, Locator::Directory { .. }))
+            .map(|r| r.resource_key.clone())
+            .collect::<BTreeSet<_>>();
+        for r in records.values().filter(|r| {
+            r.artifact.removed_at_ms.is_none()
+                && matches!(r.locator, Locator::Directory { .. })
+                && r.ancestor_keys.iter().any(|key| directories.contains(key))
+        }) {
+            visit(
+                &r.artifact.artifact_id,
+                &records,
+                &mut BTreeSet::new(),
+                &mut visited,
+                &mut ordered,
+            )?;
+        }
+        order_contained_directories(&mut ordered, &records)?;
         let mut items = Vec::new();
         let mut policies = BTreeMap::new();
-        let mut physical = BTreeSet::new();
-        let mut total = 0;
         policies.insert(String::new(), self.policy(api::Scope::default())?.revision);
         let mut bound = Vec::new();
         for id in ordered {
@@ -526,9 +546,6 @@ impl StorageService {
             }
             let policy = projection.policy(row.repository_id.as_deref());
             policies.insert(policy.repository_id.unwrap_or_default(), policy.revision);
-            if physical.insert(r.resource_key.clone()) && blockers.is_empty() {
-                total += row.allocated_bytes.unwrap_or(0);
-            }
             items.push(api::PlanItem {
                 artifact_id: id,
                 revision: row.revision,
@@ -540,6 +557,23 @@ impl StorageService {
             });
             bound.push(r.clone());
         }
+        let eligible = bound
+            .iter()
+            .zip(&items)
+            .filter(|(_, item)| item.blockers.is_empty())
+            .map(|(r, _)| r.resource_key.clone())
+            .collect::<BTreeSet<_>>();
+        let mut physical = BTreeSet::new();
+        let total = bound
+            .iter()
+            .zip(&items)
+            .filter(|(r, item)| {
+                item.blockers.is_empty()
+                    && !r.ancestor_keys.iter().any(|key| eligible.contains(key))
+                    && physical.insert(r.resource_key.clone())
+            })
+            .map(|(_, item)| item.allocated_bytes.unwrap_or(0))
+            .sum();
         let now = self.now_ms();
         let public = api::CleanupPlan {
             plan_id: new_id("sp")?,
@@ -1130,6 +1164,33 @@ fn remember_lease_use(
             record.update_sequence = next_sequence(c)?;
             c.execute("UPDATE storage_artifacts SET revision=?1,record_json=?2,updated_at_ms=?3 WHERE artifact_id=?4",rusqlite::params![record.artifact.revision as i64,json(&record).map_err(DatabaseError::Domain)?,now as i64,id])?;
         }
+    }
+    Ok(())
+}
+
+fn order_contained_directories(
+    ordered: &mut Vec<String>,
+    records: &BTreeMap<String, Record>,
+) -> Result<(), ProtocolError> {
+    let mut pending = std::mem::take(ordered);
+    while !pending.is_empty() {
+        let next = pending
+            .iter()
+            .position(|id| {
+                let record = &records[id];
+                pending.iter().all(|other| {
+                    if other == id {
+                        return true;
+                    }
+                    let parent = &records[other];
+                    !(record.artifact.dependencies.contains(other)
+                        || (matches!(record.locator, Locator::Directory { .. })
+                            && matches!(parent.locator, Locator::Directory { .. })
+                            && record.ancestor_keys.contains(&parent.resource_key)))
+                })
+            })
+            .ok_or_else(|| blocked("dependency_cycle"))?;
+        ordered.push(pending.remove(next));
     }
     Ok(())
 }

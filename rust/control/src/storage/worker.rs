@@ -596,7 +596,11 @@ impl StorageService {
                     return Err(conflict("artifact_changed"));
                 }
                 let context = self.context()?;
-                if completed_resources.contains(&record.resource_key)
+                if (completed_resources.contains(&record.resource_key)
+                    || record
+                        .ancestor_keys
+                        .iter()
+                        .any(|key| completed_resources.contains(key)))
                     && self.backend.absent(&record, &context)?
                 {
                     shared_removed = true;

@@ -34,6 +34,11 @@ original job on retries. Follow its events and retain its terminal receipt;
 `storage job cancel <job-id>` prevents subsequent steps but does not undo
 already completed removals.
 
+Selecting a directory also lists known nested directories affected by that
+removal. Their protection and ownership checks still apply. Aliases and nested
+data contribute to the planned space only once; each tracked identity retains
+its own result even when one containing-directory removal handles them together.
+
 ## Legacy Docker ownership
 
 Observed deployments remain read-only through ordinary deployment controls.
@@ -74,6 +79,9 @@ show` or `storage policy set --file <request.json>` for global settings; include
 first verified observation. Current use and leases extend the inactivity
 baseline. Hourly discovery and relevant lifecycle events refresh the inventory;
 eligibility deadlines trigger another observation before automatic deletion.
+Discovery and state changes carry a persistent sequence. A slow earlier scan
+cannot restore removed inventory or overwrite newer use, protection or failed
+safety checks, including across a daemon restart.
 
 `storage roots set --file <request.json>` declares a directory containing
 generated outputs, dependency caches, backups or unrecognized data. Roots bind

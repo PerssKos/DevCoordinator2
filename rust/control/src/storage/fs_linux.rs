@@ -13,8 +13,18 @@ const MAX_ENTRIES: usize = 1_000_000;
 const MAX_DEPTH: usize = 128;
 
 pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
+    open_directory_if_present(path)?.ok_or_else(|| blocked("directory_identity_unavailable"))
+}
+
+fn open_directory_if_present(path: &Path) -> Result<Option<File>, ProtocolError> {
     if !path.is_absolute() {
         return Err(blocked("path_not_absolute"));
+    }
+    if path
+        .components()
+        .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(blocked("path_traversal"));
     }
     let mut fd = File::from(
         unix::open(
@@ -28,24 +38,26 @@ pub fn open_directory(path: &Path) -> Result<File, ProtocolError> {
         match part {
             Component::RootDir => {}
             Component::Normal(name) => {
-                fd = File::from(
-                    unix::openat(
-                        &fd,
-                        name,
-                        OFlags::RDONLY
-                            | OFlags::DIRECTORY
-                            | OFlags::NOFOLLOW
-                            | OFlags::CLOEXEC
-                            | OFlags::NONBLOCK,
-                        Mode::empty(),
-                    )
-                    .map_err(|_| blocked("directory_identity_unavailable"))?,
-                )
+                let opened = unix::openat(
+                    &fd,
+                    name,
+                    OFlags::RDONLY
+                        | OFlags::DIRECTORY
+                        | OFlags::NOFOLLOW
+                        | OFlags::CLOEXEC
+                        | OFlags::NONBLOCK,
+                    Mode::empty(),
+                );
+                fd = match opened {
+                    Ok(fd) => File::from(fd),
+                    Err(rustix::io::Errno::NOENT) => return Ok(None),
+                    Err(_) => return Err(blocked("directory_identity_unavailable")),
+                };
             }
             _ => return Err(blocked("path_traversal")),
         }
     }
-    Ok(fd)
+    Ok(Some(fd))
 }
 
 pub fn identity(path: &Path) -> Result<(u64, u64), ProtocolError> {
@@ -55,8 +67,8 @@ pub fn identity(path: &Path) -> Result<(u64, u64), ProtocolError> {
     Ok((m.dev(), m.ino()))
 }
 
-/// Only a successful lookup in a no-follow parent can prove absence. Permission
-/// errors, an unavailable mount, and substituted symlinks never mean removed.
+/// A missing entry or ancestor in a no-follow walk proves absence. Permission
+/// errors and substituted symlinks never mean removed.
 pub fn absent(path: &Path) -> Result<bool, ProtocolError> {
     let parent = path
         .parent()
@@ -64,7 +76,9 @@ pub fn absent(path: &Path) -> Result<bool, ProtocolError> {
     let name = path
         .file_name()
         .ok_or_else(|| blocked("invalid_storage_path"))?;
-    let fd = open_directory(parent)?;
+    let Some(fd) = open_directory_if_present(parent)? else {
+        return Ok(true);
+    };
     match unix::statat(&fd, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(_) => Ok(false),
         Err(rustix::io::Errno::NOENT) => Ok(true),

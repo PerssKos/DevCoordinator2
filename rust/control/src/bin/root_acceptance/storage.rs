@@ -678,6 +678,55 @@ pub(super) fn shared_alias_protection(world: &mut World) -> Result<(), String> {
         parent["last_used_at_ms"].as_u64() >= released["expires_at_ms"].as_u64(),
         "parent inactivity ignored recent descendant use"
     );
+    let mut failures = Vec::new();
+    let nested = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[leaf["artifact_id"],tree["artifact_id"]]}),
+    )?;
+    ensure!(
+        nested["ready"] == true,
+        "nested cleanup is unexpectedly blocked"
+    );
+    if nested["reclaimable_bytes"] != tree["allocated_bytes"] {
+        failures.push("nested cleanup counted descendant bytes twice");
+    }
+    let parent_only = mcp(
+        world,
+        "storage_cleanup_plan",
+        json!({"artifact_ids":[tree["artifact_id"]]}),
+    )?;
+    if !parent_only["items"].as_array().is_some_and(|items| {
+        items
+            .iter()
+            .any(|r| r["artifact_id"] == leaf["artifact_id"])
+    }) {
+        failures.push("parent cleanup omitted the nested artifact from its exact targets");
+    }
+    let job = mcp(
+        world,
+        "storage_cleanup_start",
+        json!({"plan_id":nested["plan_id"],"idempotency_key":"remove-nested-once"}),
+    )?;
+    let result = wait_job(
+        world,
+        job["job_id"].as_str().ok_or("nested cleanup job missing")?,
+    )?;
+    if result["state"] != "completed"
+        || result["receipts"]
+            .as_array()
+            .is_none_or(|rows| rows.len() != 2 || rows.iter().any(|r| r["status"] != "removed"))
+    {
+        failures.push("nested cleanup did not retain one successful receipt per selected identity");
+    }
+    if world.repo.join("cache/tree").exists() || !world.repo.join("cache/sibling/data").exists() {
+        failures.push("nested cleanup left selected data or affected a sibling");
+    }
+    ensure!(
+        failures.is_empty(),
+        "nested cleanup failures: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 
@@ -770,6 +819,7 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
         &[
             "run",
             "--rm",
+            "--network=none",
             "--label",
             &instance,
             "--mount",
@@ -786,6 +836,7 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
         let output = Command::new("docker")
             .args([
                 "create",
+                "--network=none",
                 "--label",
                 &instance,
                 "--label",
