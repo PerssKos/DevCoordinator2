@@ -1055,6 +1055,139 @@ pub(super) fn legacy_docker_consumers(world: &mut World) -> Result<(), String> {
         ensure!(!output.status.success(), "legacy consumer survived cleanup");
     }
     world.forget_volume(&volume);
+    unused_volume_ownership(world, &repo)?;
+    Ok(())
+}
+
+fn unused_volume_ownership(world: &mut World, repo: &str) -> Result<(), String> {
+    let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+    set_clock(world, now)?;
+    let instance = format!("devcoordinator2.instance={}", world.unit_prefix);
+    let repository = format!("devcoordinator2.repository={repo}");
+    let mut volumes = Vec::new();
+    let mut mountpoints = Vec::new();
+    for (name, owner) in [
+        ("labelled", Some(repository.as_str())),
+        ("remembered", None),
+        ("unknown", None),
+    ] {
+        let volume = format!("{}-{name}", world.unit_prefix);
+        let mut args = vec!["volume", "create", "--label", &instance];
+        if let Some(owner) = owner {
+            args.extend(["--label", owner]);
+        }
+        args.push(&volume);
+        run_status("docker", &args)?;
+        world.track_volume(&volume);
+        let inspected = Command::new("docker")
+            .args(["volume", "inspect", "--format", "{{.Mountpoint}}", &volume])
+            .output()
+            .map_err(|e| e.to_string())?;
+        ensure!(
+            inspected.status.success(),
+            "owned volume mountpoint unavailable"
+        );
+        mountpoints.push(PathBuf::from(
+            String::from_utf8(inspected.stdout)
+                .map_err(|e| e.to_string())?
+                .trim(),
+        ));
+        volumes.push(volume);
+    }
+    let consumer = Command::new("docker")
+        .args([
+            "create",
+            "--network=none",
+            "--label",
+            &instance,
+            "--label",
+            &repository,
+            "--mount",
+            &format!("type=volume,source={},target=/data", volumes[1]),
+            "--entrypoint",
+            "/bin/true",
+            "postgres:16-alpine",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        consumer.status.success(),
+        "owned stopped consumer could not be created"
+    );
+    let consumer = String::from_utf8(consumer.stdout)
+        .map_err(|e| e.to_string())?
+        .trim()
+        .to_owned();
+    let global = |world: &World, key: &str| -> Result<Value, String> {
+        let scan = world.call("storage.scan", json!({"idempotency_key":key}))?;
+        ensure!(
+            wait_job(
+                world,
+                data(&scan)?["job_id"]
+                    .as_str()
+                    .ok_or("volume scan missing")?
+            )?["state"]
+                == "completed",
+            "volume discovery failed"
+        );
+        mcp(
+            world,
+            "storage_inventory",
+            json!({"kind":"volume","limit":100}),
+        )
+    };
+    global(world, "volume-owners-with-consumer")?;
+    run_status("docker", &["rm", &consumer])?;
+    world.stop_daemon(false)?;
+    world.start_daemon(None, None, None)?;
+    let observed = global(world, "volume-owners-after-consumer")?;
+    let rows = observed["artifacts"]
+        .as_array()
+        .ok_or("volume inventory missing")?;
+    let mut failures = Vec::new();
+    let mut owned = Vec::new();
+    for name in &volumes[..2] {
+        let row = rows
+            .iter()
+            .find(|r| r["name"] == *name)
+            .ok_or("owned volume absent from inventory")?;
+        if row["repository_id"] != repo || row["deletable"] != true {
+            failures.push("an unused volume lost its verified ownership");
+        }
+        owned.push(row.clone());
+    }
+    let unknown = rows
+        .iter()
+        .find(|r| r["name"] == volumes[2])
+        .ok_or("unknown volume missing")?;
+    if unknown["deletable"] != false {
+        failures.push("unknown volume ownership authorized deletion");
+    }
+    set_clock(world, now + 14 * 86_400_000 - 1)?;
+    global(world, "volume-before-fourteen-days")?;
+    for name in &volumes {
+        if !volume_exists(name)? {
+            failures.push("a volume was removed before its observation deadline");
+        }
+    }
+    set_clock(world, now + 14 * 86_400_000)?;
+    global(world, "volume-at-fourteen-days")?;
+    for (index, row) in owned.iter().enumerate() {
+        if row["deletable"] == true {
+            let id = row["artifact_id"]
+                .as_str()
+                .ok_or("owned volume id missing")?;
+            wait_automatic_removal(world, id, &mountpoints[index])?;
+        }
+    }
+    if !volume_exists(&volumes[2])? {
+        failures.push("an old timestamp authorized removal of unknown data");
+    }
+    ensure!(
+        failures.is_empty(),
+        "unused volume ownership failures: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 

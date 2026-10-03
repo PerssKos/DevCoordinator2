@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 const CONTAINER_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"state":{{json .State.Status}},"finished":{{json .State.FinishedAt}},"image":{{json .Image}},"instance":{{json (index .Config.Labels "devcoordinator2.instance")}},"repository":{{json (index .Config.Labels "devcoordinator2.repository")}},"deployment":{{json (index .Config.Labels "devcoordinator2.deployment")}},"project":{{json (index .Config.Labels "com.docker.compose.project")}},"mounts":[{{range $i,$m := .Mounts}}{{if $i}},{{end}}{"type":{{json $m.Type}},"name":{{json (index $m "Name")}},"source":{{json (index $m "Source")}}}{{end}}]}"#;
-const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
+const VOLUME_FORMAT: &str = r#"{"name":{{json .Name}},"created":{{json .CreatedAt}},"driver":{{json .Driver}},"mountpoint":{{json .Mountpoint}},"options":{{len .Options}},"repository":{{json (index .Labels "devcoordinator2.repository")}},"deployment":{{json (index .Labels "devcoordinator2.deployment")}},"project":{{json (index .Labels "com.docker.compose.project")}}}"#;
 const IMAGE_FORMAT: &str = r#"{"id":{{json .Id}},"created":{{json .Created}},"size":{{json .Size}},"tags":{{json .RepoTags}},"digests":{{json .RepoDigests}}}"#;
 const NETWORK_FORMAT: &str = r#"{"id":{{json .Id}},"name":{{json .Name}},"created":{{json .Created}},"driver":{{json .Driver}},"project":{{json (index .Labels "com.docker.compose.project")}},"containers":[{{$sep := ""}}{{range $i,$c := .Containers}}{{$sep}}{{json $i}}{{$sep = ","}}{{end}}]}"#;
 
@@ -375,6 +375,16 @@ impl HostBackend {
         }
         let volumes = volumes.into_iter().collect::<Vec<_>>();
         let mount_entries = self.mount_entries()?;
+        let prior = self.database.call(|c| {
+            let mut q=c.prepare("SELECT record_json FROM storage_artifacts WHERE kind='volume' AND removed_at_ms IS NULL")?;
+            Ok(q.query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?)
+        }).map_err(crate::storage::db_error)?;
+        let prior = prior
+            .into_iter()
+            .map(|value| {
+                crate::storage::parse::<Record>(&value).map(|r| (r.artifact.artifact_id.clone(), r))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         for v in self.inspect_rows("volume", &volumes, VOLUME_FORMAT)? {
             let name = s(&v, "name");
             let path = PathBuf::from(s(&v, "mountpoint"));
@@ -397,7 +407,7 @@ impl HostBackend {
                         .any(|m| s(m, "type") == "volume" && s(m, "name") == name)
                 })
                 .collect::<Vec<_>>();
-            let owners = consumers
+            let mut owners = consumers
                 .iter()
                 .filter_map(|c| container_records.get(s(c, "id")))
                 .filter_map(|r| {
@@ -407,6 +417,24 @@ impl HostBackend {
                         .map(|repo| (repo.clone(), r.owner_deployment.clone()))
                 })
                 .collect::<BTreeSet<_>>();
+            if let Some(owner) = volume_label_owner(&v, context)
+                && (owners.is_empty() || owners.iter().any(|(repo, _)| *repo != owner.0))
+            {
+                owners.insert(owner);
+            }
+            if owners.is_empty()
+                && let Some(old) = prior.get(&r.artifact.artifact_id)
+                && old.artifact.ownership == "managed"
+                && let Some(repo) = &old.artifact.repository_id
+                && context.repositories.iter().any(|p| &p.id == repo)
+                && fs::identity(&path)
+                    .is_ok_and(|(device, inode)| old.resource_key == format!("fs:{device}:{inode}"))
+            {
+                // Removing a consumer does not invalidate ownership of the
+                // same volume creation and backing inode. A replacement
+                // never inherits this evidence.
+                owners.insert((repo.clone(), old.owner_deployment.clone()));
+            }
             if owners.len() == 1 {
                 let (repo, dep) = owners.iter().next().unwrap();
                 assign(&mut r, repo, dep.as_deref(), context);
@@ -447,6 +475,13 @@ impl HostBackend {
             {
                 r.blockers.push("disposal_not_authorized".into());
                 r.artifact.ownership = "observed_cleanup_candidate".into();
+            }
+            if context
+                .deployment_repositories
+                .contains_key(s(&v, "deployment"))
+                || context.current_projects.contains_key(s(&v, "project"))
+            {
+                r.blockers.push("current_deployment".into());
             }
             if s(&v, "driver") != "local"
                 || v.get("options").and_then(Value::as_u64).unwrap_or(0) != 0
@@ -807,6 +842,13 @@ impl HostBackend {
         if s(value, "created") != created {
             return Err(blocked("identity_changed"));
         }
+        if context
+            .deployment_repositories
+            .contains_key(s(value, "deployment"))
+            || context.current_projects.contains_key(s(value, "project"))
+        {
+            return Err(blocked("current_deployment"));
+        }
         let containers = self.container_rows()?;
         if object_type == "container" {
             if !inactive(value) {
@@ -957,6 +999,41 @@ impl HostBackend {
         self.docker_output(args)?;
         Ok(())
     }
+}
+
+fn volume_label_owner(value: &Value, context: &Context) -> Option<(String, Option<String>)> {
+    let project = s(value, "project");
+    let deployment = (!s(value, "deployment").is_empty())
+        .then(|| s(value, "deployment").to_owned())
+        .or_else(|| context.current_projects.get(project).cloned())
+        .or_else(|| {
+            context
+                .observed
+                .iter()
+                .find(|(_, (_, name))| !project.is_empty() && name == project)
+                .map(|(id, _)| id.clone())
+        });
+    let repository = deployment
+        .as_ref()
+        .and_then(|id| {
+            context
+                .deployment_repositories
+                .get(id)
+                .or_else(|| context.observed.get(id).map(|(repo, _)| repo))
+        })
+        .cloned()
+        .or_else(|| {
+            context
+                .repositories
+                .iter()
+                .find(|r| r.id == s(value, "repository"))
+                .map(|r| r.id.clone())
+        })?;
+    context
+        .repositories
+        .iter()
+        .any(|r| r.id == repository)
+        .then_some((repository, deployment))
 }
 
 fn assign(r: &mut Record, repo: &str, deployment: Option<&str>, context: &Context) {
