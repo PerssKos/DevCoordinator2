@@ -112,6 +112,8 @@ pub fn validate_dev_coordinator_contract(
             "do not ask the user for another approval",
             "deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove",
             "config show|authorize|revoke|reload",
+            "storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease",
+            "storage legacy-register",
             "active_revision",
             "pending_apply",
             "plan overview",
@@ -135,7 +137,15 @@ pub fn validate_dev_coordinator_contract(
     };
     require_tokens(
         lookup(&[])?,
-        &["test", "deployment", "health", "plan", "task", "decision"],
+        &[
+            "test",
+            "deployment",
+            "health",
+            "plan",
+            "task",
+            "decision",
+            "storage",
+        ],
         "root CLI help",
     )?;
     require_tokens(
@@ -170,7 +180,33 @@ pub fn validate_dev_coordinator_contract(
         &["resolve", "save", "configure", "history", "check", "impact"],
         "glossary CLI help",
     )?;
-    for command in ["test", "deployment", "decision", "glossary"] {
+    require_tokens(
+        lookup(&["storage"])?,
+        &[
+            "inventory",
+            "scan",
+            "legacy-register",
+            "protect",
+            "policy",
+            "roots",
+            "cleanup",
+            "job",
+            "history",
+            "lease",
+        ],
+        "storage CLI help",
+    )?;
+    require_tokens(
+        lookup(&["storage", "cleanup"])?,
+        &["plan", "start"],
+        "storage cleanup CLI help",
+    )?;
+    require_tokens(
+        lookup(&["storage", "job"])?,
+        &["status", "cancel"],
+        "storage job CLI help",
+    )?;
+    for command in ["test", "deployment", "decision", "glossary", "storage"] {
         require_tokens(
             lookup(&[command])?,
             &["Usage:"],
@@ -190,6 +226,9 @@ pub fn dev_coordinator(source_root: &Path, control_binary: &Path) -> Result<Valu
         vec!["deployment"],
         vec!["decision"],
         vec!["glossary"],
+        vec!["storage"],
+        vec!["storage", "cleanup"],
+        vec!["storage", "job"],
         vec!["test", "log"],
         vec!["test", "evidence"],
         vec!["test", "artifact"],
@@ -272,7 +311,7 @@ mod tests {
         let help = vec![
             (
                 vec![],
-                "test deployment health plan task decision".to_owned(),
+                "test deployment health plan task decision storage".to_owned(),
             ),
             (
                 vec!["test"],
@@ -280,6 +319,9 @@ mod tests {
             ),
             (vec!["deployment"], "Usage: deployment".to_owned()),
             (vec!["decision"], "Usage: decision".to_owned()),
+            (vec!["storage"], "Usage: storage inventory scan legacy-register protect policy roots cleanup job history lease".to_owned()),
+            (vec!["storage","cleanup"], "plan start".to_owned()),
+            (vec!["storage","job"], "status cancel".to_owned()),
             (
                 vec!["glossary"],
                 "Usage: glossary list resolve get save configure inherit history check impact"

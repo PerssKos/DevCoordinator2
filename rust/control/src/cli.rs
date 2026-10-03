@@ -26,6 +26,10 @@ use review_cli::ReviewCommand;
 #[path = "cli_work_context.rs"]
 mod work_context_cli;
 
+#[path = "cli_storage.rs"]
+mod storage_cli;
+use storage_cli::StorageCommand;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     #[default]
@@ -102,6 +106,7 @@ impl Cli {
             Command::Review { command } => command.into_invocation(),
             Command::Glossary { command } => command.into_invocation(),
             Command::Config { command } => command.into_invocation(),
+            Command::Storage { command } => command.into_invocation(),
         }
     }
 }
@@ -185,6 +190,10 @@ pub enum CliValidationError {
 #[derive(Debug, Subcommand)]
 enum Command {
     Daemon,
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
+    },
     Mcp,
     Ping,
     Config {

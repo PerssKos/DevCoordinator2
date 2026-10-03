@@ -82,6 +82,7 @@ struct World {
     daemon: Option<Child>,
     route_consumer: Option<Child>,
     cleanup_volumes: Vec<String>,
+    cleanup_storage_mount_units: Vec<String>,
     measurements: std::collections::BTreeMap<String, u128>,
 }
 
@@ -120,6 +121,9 @@ macro_rules! ensure {
         }
     };
 }
+
+#[path = "root_acceptance/storage.rs"]
+mod storage_cases;
 
 impl World {
     fn new(harness: &Harness, name: &str) -> Result<Self, String> {
@@ -181,6 +185,7 @@ impl World {
             daemon: None,
             route_consumer: None,
             cleanup_volumes: Vec::new(),
+            cleanup_storage_mount_units: Vec::new(),
             measurements: std::collections::BTreeMap::new(),
         };
         world.start_daemon(None, None, None)?;
@@ -575,6 +580,11 @@ impl World {
         }
         if let Err(error) = self.cleanup_compose() {
             failures.push(error);
+        }
+        for unit in std::mem::take(&mut self.cleanup_storage_mount_units) {
+            if let Err(error) = run_status_allow_absent("systemctl", &["stop", &unit]) {
+                failures.push(error);
+            }
         }
         for volume in std::mem::take(&mut self.cleanup_volumes) {
             let output = Command::new("docker")
@@ -1624,7 +1634,7 @@ fn case_pass_uid_and_catalogued_output(world: &mut World) -> Result<(), String> 
             == "passed",
         "summary did not retain passed status"
     );
-    Ok(())
+    storage_cases::retained_evidence_after_run(world, run_id)
 }
 
 fn case_broken_command_terminal_failure(world: &mut World) -> Result<(), String> {
@@ -3855,6 +3865,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         )? == "exited",
         "database container was not stopped"
     );
+    let storage_protection = storage_cases::current_stopped_data(world, &volume);
     let started = world.call(
         "deployment.start",
         json!({"path": world.repo, "name": "web@worktree"}),
@@ -3968,6 +3979,7 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     );
     remove_volume(&volume)?;
     world.forget_volume(&volume);
+    storage_protection?;
     Ok(())
 }
 
@@ -6462,6 +6474,30 @@ health={{path="/healthz",timeout_seconds=30}}
 
 fn cases() -> Vec<Case> {
     vec![
+        (
+            "storage_shared_alias_protection",
+            storage_cases::shared_alias_protection,
+        ),
+        (
+            "storage_cancellation_receipts",
+            storage_cases::cancellation_receipts,
+        ),
+        (
+            "storage_worktrees_and_backup_floor",
+            storage_cases::worktrees_and_backup_floor,
+        ),
+        (
+            "storage_automatic_policy_boundaries",
+            storage_cases::automatic_policy_boundaries,
+        ),
+        (
+            "storage_real_files_and_protection",
+            storage_cases::real_files_and_protection,
+        ),
+        (
+            "storage_legacy_docker_consumers",
+            storage_cases::legacy_docker_consumers,
+        ),
         (
             "selected_database_templates_are_reused_without_sharing_writes",
             case_selected_database_templates_are_reused_without_sharing_writes,

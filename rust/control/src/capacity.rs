@@ -241,6 +241,12 @@ struct ConnectionPermit {
     permit_id: Option<String>,
 }
 
+/// Native maintenance uses the same admission queue as governed executor leaves.
+/// The owner registers and retires its run; dropping a leaf releases only its permit.
+pub(crate) struct NativePermit {
+    _ownership: ConnectionPermit,
+}
+
 impl Drop for ConnectionPermit {
     fn drop(&mut self) {
         if let Some(id) = &self.permit_id {
@@ -289,6 +295,47 @@ struct BrokerResponse<'a> {
 }
 
 impl CapacityBroker {
+    pub(crate) async fn admit_native(
+        &self,
+        run_id: &str,
+        leaf_id: &str,
+        uid: u32,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<NativePermit, ProtocolError> {
+        let pending_id = self.enqueue(run_id, leaf_id, uid)?;
+        let mut ownership = ConnectionPermit {
+            broker: self.clone(),
+            pending_id,
+            permit_id: None,
+        };
+        loop {
+            let notified = self.inner.notify.notified();
+            match self.take_outcome(pending_id)? {
+                Some(PendingOutcome::Granted(grant)) => {
+                    ownership.permit_id = Some(grant.permit_id);
+                    return Ok(NativePermit {
+                        _ownership: ownership,
+                    });
+                }
+                Some(PendingOutcome::Denied(_)) => {
+                    return Err(ProtocolError::new(
+                        ErrorCode::Busy,
+                        "maintenance_admission_unavailable",
+                    ));
+                }
+                _ => {}
+            }
+            tokio::select! {
+                _ = notified => {},
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return Err(ProtocolError::new(ErrorCode::Busy, "maintenance_cancelled"));
+                    }
+                },
+            }
+        }
+    }
+
     pub fn new(database: Database, socket_path: PathBuf) -> Result<Self, ProtocolError> {
         let logical_cpus = std::thread::available_parallelism()
             .map(|value| value.get())

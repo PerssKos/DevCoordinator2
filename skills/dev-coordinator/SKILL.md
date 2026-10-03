@@ -37,6 +37,11 @@ devcoordinator2 health --help
   message.
 - Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
+- Use `storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease`
+  for tracked artifacts and exact-target cleanup. For legacy observed resources,
+  use `storage legacy-register`; do not recreate their deployment to delete them.
+  Read [the storage contract](../../docs/storage.md) for that journey and its
+  shared CLI, MCP and Console operations.
 - Use `config show|authorize|revoke|reload` for exact declared Compose
   environment-file grants in the existing private policy. Apply recorded
   standing owner authority for trusted local development configuration: when
@@ -96,6 +101,27 @@ authorized for it, invoke the command directly. Do not interrupt for another
 DevCoordinator confirmation or chat approval. Preserve server authorization,
 exact-target validation, permanent history, and any approval mechanism owned by
 the host or calling tool.
+
+Storage cleanup starts with a fresh scan and its completed job, followed by
+the inventory's concrete safety reasons. “Safe to delete” requires verified
+ownership and no current use; age or a stopped container alone is insufficient.
+Current deployments, including stopped deployments, remain protected. For a
+verified legacy group, bind the existing disposal authorization through
+`storage legacy-register`, then inspect the complete cleanup plan, including
+dependent consumers and any permanent data. Existing authorization does not
+need another chat confirmation. Unknown ownership, changed identities, or
+missing observations remain blocked; never bypass a refusal with direct
+Docker, filesystem or mount changes.
+
+Keep active-use leases for tracked artifacts that ongoing work needs. Release
+them when the work ends. Automatic policy defaults are three inactive days for
+build outputs and caches and fourteen for other disposable resources; unknown
+activity starts an observation period. Retained test evidence uses its existing
+retention service and protection records. After starting cleanup, follow its
+operation ID through `event wait` and `storage job status`, retain the per-item
+receipt, and verify the original surface. A partial or cancelled job does not
+prove that all selected data was removed. Reclaimed-space measurements and
+unmeasured items are separate from the inventory's estimated data size.
 
 Apply recorded standing owner authority for trusted local development and
 Coordinator dependency repairs. Where applicable, diagnose and fix a Coordinator

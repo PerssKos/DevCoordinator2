@@ -27,12 +27,21 @@ pub struct TicketService {
 
 impl TicketService {
     pub fn new(database: Database, base_domain: &str) -> Result<Self, ProtocolError> {
-        let local = normalize_upstream(base_domain).map_err(storage_error)?;
+        let local = normalize_upstream(if base_domain.trim().is_empty() {
+            "local"
+        } else {
+            base_domain
+        })
+        .map_err(storage_error)?;
         let store = TicketStore::new(database.clone(), &local).map_err(storage_error)?;
         Ok(Self {
             database,
             store,
-            label: base_domain.to_owned(),
+            label: if base_domain.trim().is_empty() {
+                "This server".into()
+            } else {
+                base_domain.to_owned()
+            },
             local,
         })
     }

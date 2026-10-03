@@ -10,7 +10,7 @@ use devcoordinator2_api::results::{Retention, RetentionDefaults};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use devcoordinator2_executor_core::log_query::{
     LogPruneRequest, LogQueryError, LogQueryOperation, LogQueryOptions, LogQueryRequest,
-    LogQueryResult, LogQuerySelector, execute_log_query, prune_logs,
+    LogQueryResult, LogQuerySelector, execute_log_query, prune_logs_receipt,
 };
 use rusqlite::OptionalExtension;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -199,17 +199,34 @@ impl TestLogService {
                     continue;
                 }
             };
-            match prune_logs(
-                &worktree,
-                LogPruneRequest {
-                    schema: 2,
-                    repository_id: repository_id.clone(),
-                    max_age_seconds: u64::from(settings.max_age_seconds),
-                    case_depth: u64::from(settings.case_depth),
-                    active_run_id,
-                },
-            ) {
-                Ok(result) => {
+            let request = LogPruneRequest {
+                schema: 2,
+                repository_id: repository_id.clone(),
+                max_age_seconds: u64::from(settings.max_age_seconds),
+                case_depth: u64::from(settings.case_depth),
+                active_run_id,
+            };
+            match prune_logs_receipt(&worktree, request.clone(), || {
+                crate::storage::evidence::protected_runs(&self.database, &worktree)
+                    .map_err(|_| LogQueryError::Unavailable)
+            }) {
+                Ok(receipt) => {
+                    let result = receipt.summary;
+                    if !receipt.removed_runs.is_empty() {
+                        if crate::storage::evidence::record_expired(
+                            &self.database,
+                            &worktree,
+                            &receipt.removed_runs,
+                        )
+                        .is_err()
+                        {
+                            push_maintenance_error(
+                                &mut errors,
+                                &mut error_count,
+                                repository_id.clone(),
+                            );
+                        }
+                    }
                     removed_leaf_folders =
                         removed_leaf_folders.saturating_add(result.removed_leaf_folders);
                     retained_active = retained_active.saturating_add(result.retained_active);
@@ -405,7 +422,7 @@ fn push_maintenance_error(
     }
 }
 
-fn active_run_id(worktree: &Path) -> Result<Option<String>, LogQueryError> {
+pub(crate) fn active_run_id(worktree: &Path) -> Result<Option<String>, LogQueryError> {
     let worktree = open(
         worktree,
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
