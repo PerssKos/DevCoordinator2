@@ -836,3 +836,39 @@ recorded in the feature catalog; it is not claimed as translated coverage.
 
 **Final result: passed.** Shared-source comparison and rendered interactions
 are complete; the temporary acceptance ticket was removed after verification.
+# Mockup history and continuation-set surface — preliminary
+
+final result: blocked
+
+## Selected source
+
+- Selected displayed direction: revised option 1, Story Ledger with a collapsed
+  current-version summary, visible rejected options, multiple continuation
+  selections, and separate initial/latest context.
+- Source image: retained generated artifact bound to the Coordinator decision
+  `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
+- Source SHA-256: `383a9bd5d8881c3c841ff9512a4650afd7648eb605470de416a381765286a226`.
+- Displayed ideation set retained in Coordinator decision
+  `DC2-SKETCH-HISTORY-SURFACE-DIRECTIONS-20261002`; selected direction is
+  `DC2-SKETCH-HISTORY-SURFACE-REVISED-OPTION1-20261002`.
+
+## Current verification state
+
+- Policy, API, migration, and Console source changes exist. Their complete
+  acceptance path has not yet been verified.
+- The locked Playwright runtime is installed under `ci/playwright`. The
+  425-check run covered the existing Tests page and contained no Sketches
+  assertions. It does not verify mockup history, continuation selection, or
+  description editing. The previous Sketches browser-pass claim is withdrawn
+  under `DC2-SKETCH-EVIDENCE-SCOPE-CORRECTION-20261002`.
+- The complete Console matrix stopped while waiting for
+  `#plan-tooltip:not([hidden])`. Rendered event tracing reproduced the popup
+  opening and then closing when scheduled timeline alignment moved its task
+  bar away from the pointer. The hover journey now uses the visible Fit control
+  before aiming the pointer and checks appearance, continued visibility, and
+  dismissal. The corrected complete Console regression run passed 3,130 checks
+  with zero failures. It still contains no Sketches acceptance assertions and
+  does not establish the required formal UI receipt for mockup history.
+- No manual-review or Product Design pass receipt is recorded. The history
+  surface remains preliminary until a fresh rendered candidate is captured and
+  the fail-closed UI handoff pipeline passes.

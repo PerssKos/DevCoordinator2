@@ -45,5 +45,24 @@
       "one": "{count} set",
       "other": "{count} sets"
     }
-  }
+  },
+  "legacy": "Legacy archive",
+  "currentSelection": "Current selection",
+  "search": "Search",
+  "theme": "Theme",
+  "earlier": "Earlier history",
+  "basedOn": "Based on",
+  "surface": "Surface",
+  "selectionNote": "Selection note",
+  "continueSelected": "Continue with selected",
+  "initialContext": "Initial agent context",
+  "latestContext": "Latest context",
+  "history": "History",
+  "description": "Description",
+  "whyChanged": "Reason for change",
+  "journey": "User journey",
+  "instructions": "Instructions",
+  "constraints": "Constraints",
+  "backToHistory": "Back to history",
+  "elements": "Elements"
 }

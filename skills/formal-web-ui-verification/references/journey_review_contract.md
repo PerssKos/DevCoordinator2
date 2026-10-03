@@ -185,6 +185,60 @@ data shape without its applicable assertion cells is incomplete evidence. A
 formal pass requires every required assertion to pass or have an explicit,
 reviewed allowance retained in the report.
 
+The executable geometry schema is a target/state `geometryAssertions` array.
+Every row has a unique `id`, a `kind` from the list above, and exactly one
+`selector` or `region` (the exact name of a declared region). Each effective cell
+requires measured width, heading, canonical-identifier, wrapping, document
+overflow, initial-placement and clipping assertions. Add the hidden-track
+assertion when that layout contains a hidden navigation track.
+
+```json
+{
+  "geometryAssertions": [
+    {"id":"content-width","kind":"primary-content-width","selector":"main","minWidthRatio":0.75},
+    {"id":"hidden-nav","kind":"hidden-navigation-track","selector":"#nav",
+     "primarySelector":"main","track":{"selector":"#layout","axis":"columns","index":0},
+     "maxReservedSize":0}
+  ]
+}
+```
+
+`minWidth` is a finite nonnegative pixel bound; `minWidthRatio` is a finite
+nonnegative ratio of the viewport width. At least one is required for width
+assertions. A hidden-track assertion also requires a width assertion resolving
+to the same actual primary element. It measures the resolved computed grid
+track, including a remaining column when its navigation element is
+`display:none`. `rows` measures height and `columns` measures width;
+`maxReservedSize` is an explicit finite pixel bound. Flex or unresolved tracks
+are incomplete evidence. Initial placement remains a separate assertion.
+
+Optional `allowance: {"reason":"..."}` retains a measured intentional
+difference. It cannot excuse a missing selector, region, track or measurement.
+Wrapping uses rendered text ranges grouped by line and grapheme counts without
+retaining text. Single-character labels are a guard; intentional stacked or
+CJK text requires an explicit allowance when it meets the detector condition.
+
+Every `fixtureDataShapes` row requires `id`, `revision`, `route`, `state`,
+nonempty `conditionalDom`, and `layoutEffect`. `route` includes the path and
+query. Optional `target` resolves an exact target name and is required when
+route/state alone matches multiple target groups. Each declared selector is
+measured for attached and visible element counts. Attached-hidden tracks are
+valid only with the applicable geometry measurements; missing/ambiguous cells
+or unrendered shape branches are incomplete. Metadata alone never proves a
+shape.
+
+`reportedBrowserStates` matches an exact required cell and actual context.
+`device` is `desktop` or the exact Playwright descriptor; optional `engine`
+matches the measured renderer name, such as `chromium`. A mobile descriptor is
+an emulated context: its Safari-like user agent does not establish native
+Safari/WebKit or physical-phone coverage. Actual renderer/version, user agent,
+mobile/touch context and device pixel ratio remain separate evidence.
+`auth` identifies the actual named in-memory profile, or an anonymous fresh
+context without supplied credentials. Unknown conditions remain incomplete.
+Only requested browser `zoom: 1` is supported by the fresh isolated-context
+default guarantee. Other browser zoom requests are incomplete; device pixel
+ratio, CSS zoom and visual-viewport scale are not substitutes for browser zoom.
+
 ## Journey And Region Rules
 
 - Journey IDs are stable. Each definition includes `frequencyPercent` and
@@ -476,6 +530,15 @@ Preserve non-passing artifacts as diagnostic evidence and do not replace them
 with prose. Repair the product and rerun formal verification on a fresh
 candidate before starting any downstream gate.
 
+The source digest explicitly covers declared UI-input fingerprints and matched
+observed source bindings; it is not a complete-repository digest. Verifier
+identity covers the canonical entrypoint and its handoff-contract module.
+Candidate identity combines the actual source/config/verifier/plan identities.
+`formal-artifacts.json` hashes the retained report, Markdown, queue, journey and
+screenshots; `formal-receipt.json` binds that manifest without circularly hashing
+itself. Legacy status/exit fields remain diagnostics; only `formal.result`
+determines this gate.
+
 ### Manual screenshot review
 
 Run this stage only when `formal.result == passed`. Read only
@@ -517,6 +580,16 @@ including carried cells, and bind each screenshot identity to the formal run.
 `pass`; `gap`, `blocked`, missing cells, missing screenshots, or missing notes
 where required keep it non-passing. A formal failure means no screenshot is
 opened and no manual pass receipt is created.
+
+The finalizer rejects absent or non-passed formal evidence before accepting
+review, and checks the retained run/source/artifact/screenshot identities. Its
+separate `manual` object is retained with the compatibility decision list.
+`manual.result` is `passed` only for complete passing decisions; a noted gap is
+`incomplete` and an explicit blocked decision is `blocked`. Every cell records
+the observed local tool caller UID and RFC3339 review time. Carried cells keep
+the actual prior manifest, source/intent and screenshot bindings without
+reopening unchanged images. A stale or missing upstream receipt is never a
+legacy-compatible success.
 
 The existing finalizer remains the required command:
 

@@ -49,5 +49,24 @@
       "many": "{count} наборов",
       "other": "{count} набора"
     }
-  }
+  },
+  "legacy": "Старый архив",
+  "currentSelection": "Текущий выбор",
+  "search": "Поиск",
+  "theme": "Тема",
+  "earlier": "Предыдущая история",
+  "basedOn": "На основе",
+  "surface": "Экран",
+  "selectionNote": "Примечание к выбору",
+  "continueSelected": "Продолжить с выбранными",
+  "initialContext": "Исходный контекст агента",
+  "latestContext": "Последний контекст",
+  "history": "История",
+  "description": "Описание",
+  "whyChanged": "Причина изменения",
+  "journey": "Путь пользователя",
+  "instructions": "Указания",
+  "constraints": "Ограничения",
+  "backToHistory": "К истории",
+  "elements": "Элементы"
 }

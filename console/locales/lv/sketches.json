@@ -47,5 +47,24 @@
       "one": "{count} kopa",
       "other": "{count} kopas"
     }
-  }
+  },
+  "legacy": "Iepriekšējais arhīvs",
+  "currentSelection": "Pašreizējā atlase",
+  "search": "Meklēt",
+  "theme": "Motīvs",
+  "earlier": "Iepriekšējā vēsture",
+  "basedOn": "Pamatojoties uz",
+  "surface": "Ekrāns",
+  "selectionNote": "Atlases piezīme",
+  "continueSelected": "Turpināt ar atlasīto",
+  "initialContext": "Aģenta sākotnējais konteksts",
+  "latestContext": "Jaunākais konteksts",
+  "history": "Vēsture",
+  "description": "Apraksts",
+  "whyChanged": "Izmaiņu iemesls",
+  "journey": "Lietotāja ceļš",
+  "instructions": "Norādījumi",
+  "constraints": "Ierobežojumi",
+  "backToHistory": "Atpakaļ uz vēsturi",
+  "elements": "Elementi"
 }

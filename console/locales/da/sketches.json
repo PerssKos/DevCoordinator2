@@ -45,5 +45,24 @@
       "one": "{count} sæt",
       "other": "{count} sæt"
     }
-  }
+  },
+  "legacy": "Ældre arkiv",
+  "currentSelection": "Aktuelt valg",
+  "search": "Søg",
+  "theme": "Tema",
+  "earlier": "Tidligere historik",
+  "basedOn": "Baseret på",
+  "surface": "Visning",
+  "selectionNote": "Note om valget",
+  "continueSelected": "Fortsæt med valget",
+  "initialContext": "Agentens oprindelige kontekst",
+  "latestContext": "Seneste kontekst",
+  "history": "Historik",
+  "description": "Beskrivelse",
+  "whyChanged": "Årsag til ændring",
+  "journey": "Brugerforløb",
+  "instructions": "Instruktioner",
+  "constraints": "Begrænsninger",
+  "backToHistory": "Tilbage til historik",
+  "elements": "Elementer"
 }

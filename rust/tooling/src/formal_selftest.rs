@@ -139,7 +139,14 @@ impl StaticServer {
                     } else {
                         "text/html; charset=utf-8"
                     },
-                    headers: Vec::new(),
+                    headers: if path == "dynamic-review.html" {
+                        vec![(
+                            "X-UI-Source-Revision".to_owned(),
+                            crate::audit_common::sha256_hex(body),
+                        )]
+                    } else {
+                        Vec::new()
+                    },
                     body: body.clone(),
                     delay: Duration::ZERO,
                 },
@@ -284,6 +291,22 @@ fn source_root() -> PathBuf {
         .to_owned()
 }
 
+fn verifier_source_sha256(root: &Path) -> Result<String, String> {
+    let mut source = Vec::new();
+    for name in ["formal_web_ui_verify.mjs", "formal_handoff_contract.mjs"] {
+        let bytes = read_bytes_nofollow(
+            &root
+                .join("skills/formal-web-ui-verification/scripts")
+                .join(name),
+            Some(root),
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("verifier source {name} is missing"))?;
+        source.extend_from_slice(&bytes);
+    }
+    Ok(crate::audit_common::sha256_hex(&source))
+}
+
 fn load_json(path: &Path, root: &Path, label: &str) -> Result<Value, String> {
     let bytes = read_bytes_nofollow(path, Some(root))
         .map_err(|error| error.to_string())?
@@ -380,32 +403,52 @@ fn wait_child(
     mut child: std::process::Child,
     timeout: Duration,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), String> {
+    // Drain both pipes while the child runs. Waiting for exit first deadlocks
+    // once a test reporter fills either pipe (including small Linux pipes).
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || -> Result<Vec<u8>, String> {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                pipe.read_to_end(&mut bytes)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(bytes)
+        })
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
     let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            break status;
+            break Ok(status);
         }
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
+            break Err(format!(
                 "formal UI verifier exceeded {} seconds",
                 timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)
-            .map_err(|error| error.to_string())?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok((status, stdout, stderr))
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| "stdout reader panicked")??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| "stderr reader panicked")??;
+    Ok((status?, stdout, stderr))
 }
 
 fn default_target_contract() -> Map<String, Value> {
@@ -457,8 +500,15 @@ fn contracted_config(root: &Path, mut config: Value) -> Value {
                                 .get("action")
                                 .and_then(Value::as_str)
                                 .is_some_and(|action| {
-                                    ["click", "press", "check", "uncheck", "selectOption"]
-                                        .contains(&action)
+                                    [
+                                        "click",
+                                        "dblclick",
+                                        "press",
+                                        "check",
+                                        "uncheck",
+                                        "selectOption",
+                                    ]
+                                    .contains(&action)
                                 })
                         });
                     if has_trigger {
@@ -1021,10 +1071,26 @@ fn run_state_and_wait_phase(
     let mut scenarios = 0usize;
     run_node_probe(
         root,
+        "process.stdout.write('o'.repeat(131072)); process.stderr.write('e'.repeat(131072));",
+        timeout,
+    )?;
+    scenarios += 1;
+    run_node_probe(
+        root,
         &format!(
             "process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES = {}; await import({});",
             json!(playwright_module_dir(root)?),
             json!(root.join("rust/tooling/tests/formal_occlusion.mjs")),
+        ),
+        timeout,
+    )?;
+    scenarios += 1;
+    run_node_probe(
+        root,
+        &format!(
+            "process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES = {}; await import({});",
+            json!(playwright_module_dir(root)?),
+            json!(root.join("rust/tooling/tests/formal_handoff.mjs")),
         ),
         timeout,
     )?;
@@ -1745,9 +1811,7 @@ fn run_transport_and_cache_phase(
     )?;
     if matched.pointer("/evidence/config/sha256") != repeated.pointer("/evidence/config/sha256")
         || matched.pointer("/evidence/verifier/sha256")
-            != Some(&json!(sha256_file(&root.join(
-                "skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs"
-            ))?))
+            != Some(&json!(verifier_source_sha256(root)?))
     {
         return Err(
             "equivalent source-binding configs did not preserve evidence identity".to_owned(),
@@ -2887,11 +2951,24 @@ if (result.executionCount !== 1 || result.unsafeStop !== 'browser-authority-lost
 }
 
 fn review_config(root: &Path, repo: &Path, base: &str) -> Value {
+    let pages = load_pages(root).expect("review fixture pages exist");
+    let revision = crate::audit_common::sha256_hex(&pages["dynamic-review.html"]);
     contracted_config(
         root,
         json!({
             "repoRoot":repo,
-            "targets":[{"url":format!("{base}/dynamic-review.html"),"reviewInputs":[{"path":"ui/screen.css","kind":"style"}]}],
+            "targets":[{"name":"dynamic-review","url":format!("{base}/dynamic-review.html"),"sourceBinding":{"expected":revision},"reviewInputs":[{"path":"ui/screen.css","kind":"style"}],
+                "geometryAssertions":[
+                    {"id":"width","kind":"primary-content-width","selector":"main","minWidthRatio":0.8},
+                    {"id":"heading","kind":"readable-heading","selector":"h1"},
+                    {"id":"identifier","kind":"readable-canonical-identifier","selector":"#dynamic"},
+                    {"id":"wrapping","kind":"no-character-wrapping","selector":"h1"},
+                    {"id":"overflow","kind":"document-horizontal-overflow","selector":"main"},
+                    {"id":"placement","kind":"initial-viewport-placement","selector":"#primary"},
+                    {"id":"clipping","kind":"clipping","selector":"#dynamic"}
+                ]}],
+            "fixtureDataShapes":[{"id":"dynamic","revision":"v1","target":"dynamic-review","route":"/dynamic-review.html","state":"base","conditionalDom":["#primary","#dynamic"],"layoutEffect":"Visible dynamic review content"}],
+            "requiredCoverage":[{"target":"dynamic-review","state":"base","viewport":"mobile","width":390}],
             "viewports":[{"name":"mobile","width":390,"height":844}]
         }),
     )
@@ -3074,6 +3151,8 @@ fn run_review_phase(
 
     let mut removed = second_config.clone();
     removed["viewports"] = json!([{"name":"desktop","width":1280,"height":800}]);
+    removed["requiredCoverage"] =
+        json!([{"target":"dynamic-review","state":"base","viewport":"desktop","width":1280}]);
     let undisposed = run_verifier(
         root,
         &removed,
@@ -4405,6 +4484,49 @@ pub fn run(options: &SelfTestOptions) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn child_output_is_drained_while_waiting_for_exit() {
+        let child = Command::new("node")
+            .args(["--eval", "process.stdout.write('x'.repeat(262144)); process.stderr.write('y'.repeat(262144));"])
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let (status, stdout, stderr) = wait_child(child, Duration::from_secs(2)).unwrap();
+        assert!(status.success());
+        assert_eq!(stdout, vec![b'x'; 262144]);
+        assert_eq!(stderr, vec![b'y'; 262144]);
+    }
+
+    #[test]
+    fn child_output_drain_preserves_failure_and_timeout_results() {
+        let child = Command::new("node")
+            .args([
+                "--eval",
+                "process.stdout.write('x'.repeat(262144)); process.exitCode=7;",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (status, stdout, _) = wait_child(child, Duration::from_secs(2)).unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(stdout.len(), 262144);
+        let child = Command::new("node")
+            .args([
+                "--eval",
+                "process.stdout.write('x'.repeat(262144)); setInterval(()=>{},1000);",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        assert!(
+            wait_child(child, Duration::from_millis(100))
+                .unwrap_err()
+                .contains("exceeded")
+        );
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 
     #[test]
     fn fixture_http_handles_inherited_nonblocking_sockets_without_truncating_media() {

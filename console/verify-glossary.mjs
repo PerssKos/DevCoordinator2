@@ -12,6 +12,7 @@ import { createEdge } from '../edge/devcoordinator2-edge.mjs';
 import { createSessionManager } from '../edge/lib/session.mjs';
 import { canonicalJson } from '../edge/lib/routes-store.mjs';
 import { verifyHealth, healthReadFixture } from './verify-health.mjs';
+import { verifySketches } from './verify-sketches.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const out = path.resolve(process.env.GLOSSARY_VERIFY_OUT || path.join(os.tmpdir(), 'dc2-glossary-verification'));
@@ -60,6 +61,7 @@ async function check(name, run, page) {
   catch (error) {
     const filename = `${checks.length}-${name.replace(/[^a-z0-9]+/gi, '-')}.log`;
     await fs.writeFile(path.join(out, filename), error.stack || String(error));
+    if (page && !page.isClosed()) await fs.writeFile(path.join(out, `${filename}.dom.txt`), await page.locator('main').innerText().catch(() => 'Unavailable'));
     if (page && !page.isClosed()) await page.screenshot({ path: path.join(out, `${filename}.png`), fullPage: true }).catch(() => {});
     checks.push({ name, status: 'failed', duration_ms: Date.now() - started, evidence: filename });
   }
@@ -69,13 +71,20 @@ async function main() {
   await fs.mkdir(out, { recursive: true });
   temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-glossary-browser-'));
   const fixture = process.env.GLOSSARY_FIXTURE_BINARY || path.join(root, 'target/debug/examples/glossary_console_fixture');
-  bridge = spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const startBridge = () => {
+  bridge = spawn(fixture, [path.join(temporary, 'authority'), ...(process.env.CONSOLE_VERIFY_HEALTH_ONLY ? ['health'] : process.env.CONSOLE_VERIFY_SKETCHES_ONLY ? ['sketches'] : [])], { stdio: ['pipe', 'pipe', 'pipe'] });
   bridge.stderr.on('data', (bytes) => fs.appendFile(path.join(out, 'backend.stderr.log'), bytes));
   bridge.on('exit', (code) => { for (const callback of pending.values()) callback.reject(new Error(`Fixture exited with ${code}`)); pending.clear(); });
   readline.createInterface({ input: bridge.stdout }).on('line', (line) => {
     const result = JSON.parse(line); const callback = pending.get(result.id);
     pending.delete(result.id); callback?.resolve(result);
   });
+  };
+  startBridge();
+  const restart = async () => {
+    const exited = new Promise(resolve => bridge.once('exit', resolve));
+    bridge.stdin.end(); await exited; startBridge(); await call('ping');
+  };
   await call('ping');
   const socketPath = path.join(temporary, 'bridge.sock');
   socketServer = net.createServer({ allowHalfOpen: true }, (socket) => {
@@ -93,7 +102,7 @@ async function main() {
   await fs.writeFile(path.join(temporary, 'routes.json'), JSON.stringify({ schema: 1, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload }));
   const secret = crypto.randomBytes(32).toString('hex');
   const sessions = createSessionManager({ secret, ttlMs: 3600000, cookieName: 'dc2_session', secure: false });
-  edge = await createEdge({ baseDomain: 'example.test', consoleHost: '127.0.0.1', httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(temporary, 'routes.json'), stateDir: path.join(temporary, 'edge'), daemonSocket: socketPath, consoleDir: path.join(root, 'console') }, { log: { info() {}, warn() {}, error() {}, debug() {} } });
+  edge = await createEdge({ baseDomain: 'example.test', consoleHost: '127.0.0.1', trustLocalConsole: process.env.CONSOLE_VERIFY_SKETCHES_ONLY === '1', httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(temporary, 'routes.json'), stateDir: path.join(temporary, 'edge'), daemonSocket: socketPath, consoleDir: path.join(root, 'console') }, { log: { info() {}, warn() {}, error() {}, debug() {} } });
   const [port] = await edge.listen();
   const base = `http://127.0.0.1:${port}/`;
   browser = await chromium.launch();
@@ -105,6 +114,15 @@ async function main() {
   await context.addCookies([cookieFor('owner@example.test')]);
   const page = await context.newPage();
   page.on('pageerror', (error) => pageErrors.push(error.message));
+  if (process.env.CONSOLE_VERIFY_SKETCHES_ONLY) {
+    await verifySketches({ page, browser, base, call, request, check, cookieFor, out, root, temporary, restart });
+    await check('Sketch history has no browser exceptions', async () => assert.deepEqual(pageErrors, []), page);
+    await fs.writeFile(path.join(out, 'report.json'), JSON.stringify({ checks }, null, 2));
+    const failures = checks.filter(item => item.status === 'failed');
+    console.log(JSON.stringify({ checks: checks.length, failures, report: path.join(out, 'report.json') }));
+    process.exitCode = failures.length ? 1 : 0;
+    await context.close(); return;
+  }
   if (process.env.CONSOLE_VERIFY_HEALTH_ONLY) {
     await verifyHealth({ page, browser, base, call, request, check, cookieFor, out, root });
     await check('Health has no browser exceptions', async () => assert.deepEqual(pageErrors, []), page);

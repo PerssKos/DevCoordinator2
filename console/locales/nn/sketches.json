@@ -45,5 +45,24 @@
       "one": "{count} sett",
       "other": "{count} sett"
     }
-  }
+  },
+  "legacy": "Eldre arkiv",
+  "currentSelection": "Gjeldande val",
+  "search": "Søk",
+  "theme": "Tema",
+  "earlier": "Tidlegare historikk",
+  "basedOn": "Basert på",
+  "surface": "Vising",
+  "selectionNote": "Merknad til valet",
+  "continueSelected": "Hald fram med valet",
+  "initialContext": "Den opphavlege konteksten til agenten",
+  "latestContext": "Siste kontekst",
+  "history": "Historikk",
+  "description": "Skildring",
+  "whyChanged": "Grunn til endringa",
+  "journey": "Brukarferd",
+  "instructions": "Instruksjonar",
+  "constraints": "Avgrensingar",
+  "backToHistory": "Tilbake til historikken",
+  "elements": "Element"
 }

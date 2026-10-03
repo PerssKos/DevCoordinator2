@@ -45,5 +45,24 @@
       "one": "{count} ნაკრები",
       "other": "{count} ნაკრები"
     }
-  }
+  },
+  "legacy": "ძველი არქივი",
+  "currentSelection": "მიმდინარე არჩევანი",
+  "search": "ძებნა",
+  "theme": "თემა",
+  "earlier": "ადრინდელი ისტორია",
+  "basedOn": "ეფუძნება",
+  "surface": "ეკრანი",
+  "selectionNote": "არჩევანის შენიშვნა",
+  "continueSelected": "გაგრძელება არჩეულით",
+  "initialContext": "აგენტის საწყისი კონტექსტი",
+  "latestContext": "უახლესი კონტექსტი",
+  "history": "ისტორია",
+  "description": "აღწერა",
+  "whyChanged": "ცვლილების მიზეზი",
+  "journey": "მომხმარებლის გზა",
+  "instructions": "ინსტრუქციები",
+  "constraints": "შეზღუდვები",
+  "backToHistory": "ისტორიაზე დაბრუნება",
+  "elements": "ელემენტები"
 }

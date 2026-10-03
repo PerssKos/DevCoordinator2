@@ -51,5 +51,24 @@
       "many": "{count} sets",
       "two": "{count} sets"
     }
-  }
+  },
+  "legacy": "Arkivju qadim",
+  "currentSelection": "Għażla attwali",
+  "search": "Fittex",
+  "theme": "Tema",
+  "earlier": "Storja preċedenti",
+  "basedOn": "Ibbażat fuq",
+  "surface": "Skrin",
+  "selectionNote": "Nota dwar l-għażla",
+  "continueSelected": "Kompli bl-għażliet",
+  "initialContext": "Kuntest inizjali tal-aġent",
+  "latestContext": "L-aħħar kuntest",
+  "history": "Storja",
+  "description": "Deskrizzjoni",
+  "whyChanged": "Raġuni għall-bidla",
+  "journey": "Vjaġġ tal-utent",
+  "instructions": "Istruzzjonijiet",
+  "constraints": "Restrizzjonijiet",
+  "backToHistory": "Lura għall-istorja",
+  "elements": "Elementi"
 }

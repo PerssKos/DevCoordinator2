@@ -47,5 +47,24 @@
       "other": "{count} σύνολα",
       "many": "{count} σύνολα"
     }
-  }
+  },
+  "legacy": "Παλαιό αρχείο",
+  "currentSelection": "Τρέχουσα επιλογή",
+  "search": "Αναζήτηση",
+  "theme": "Θέμα",
+  "earlier": "Παλαιότερο ιστορικό",
+  "basedOn": "Βασίζεται σε",
+  "surface": "Οθόνη",
+  "selectionNote": "Σημείωση επιλογής",
+  "continueSelected": "Συνέχεια με τα επιλεγμένα",
+  "initialContext": "Αρχικό πλαίσιο του πράκτορα",
+  "latestContext": "Πρόσφατο πλαίσιο",
+  "history": "Ιστορικό",
+  "description": "Περιγραφή",
+  "whyChanged": "Αιτία αλλαγής",
+  "journey": "Διαδρομή χρήστη",
+  "instructions": "Οδηγίες",
+  "constraints": "Περιορισμοί",
+  "backToHistory": "Επιστροφή στο ιστορικό",
+  "elements": "Στοιχεία"
 }

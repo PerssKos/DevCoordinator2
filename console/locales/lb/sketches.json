@@ -45,5 +45,24 @@
       "one": "{count} Set",
       "other": "{count} Sets"
     }
-  }
+  },
+  "legacy": "Eeleren Archiv",
+  "currentSelection": "Aktuell Auswiel",
+  "search": "Sichen",
+  "theme": "Thema",
+  "earlier": "Eelere Verlaf",
+  "basedOn": "Baséiert op",
+  "surface": "Usiicht",
+  "selectionNote": "Notiz zur Auswiel",
+  "continueSelected": "Mat der Auswiel weiderfueren",
+  "initialContext": "Urspréngleche Kontext vum Agent",
+  "latestContext": "Neiste Kontext",
+  "history": "Verlaf",
+  "description": "Beschreiwung",
+  "whyChanged": "Grond fir d’Ännerung",
+  "journey": "Benotzerwee",
+  "instructions": "Uweisungen",
+  "constraints": "Aschränkungen",
+  "backToHistory": "Zréck an de Verlaf",
+  "elements": "Elementer"
 }

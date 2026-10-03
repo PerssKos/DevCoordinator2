@@ -6,6 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { normalizeGeometry, normalizeShapes, normalizeReported, resolveHandoffRequirements, measureHandoff, formalDecision, retainFormalReceipt } from "./formal_handoff_contract.mjs";
 
 const require = createRequire(import.meta.url);
 const VERIFIER_PATH = fileURLToPath(import.meta.url);
@@ -54,7 +55,7 @@ let fallbackArtifacts;
 let activeArtifacts;
 let activeConfigSha256 = null;
 const runStartedAt = new Date().toISOString();
-const verifierSha256 = createHash("sha256").update(fs.readFileSync(VERIFIER_PATH)).digest("hex");
+const verifierSha256 = createHash("sha256").update(fs.readFileSync(VERIFIER_PATH)).update(fs.readFileSync(new URL("./formal_handoff_contract.mjs", import.meta.url))).digest("hex");
 
 function usage() {
   return `Usage:
@@ -599,6 +600,9 @@ function loadPriorManualReview(value) {
   if (payload.schemaVersion !== MANUAL_REVIEW_SCHEMA_VERSION || payload.kind !== MANUAL_REVIEW_KIND) {
     throw new Error("reviewAgainst is not a supported reviewed manifest");
   }
+  if (!payload.manual || !["passed", "blocked", "incomplete"].includes(payload.manual.result) || payload.manual.formalRunId !== payload.reviewedRunId || !SHA256_RE.test(payload.manual.formalManifestSha256 || "") || !SHA256_RE.test(payload.manual.sourceSha256 || "")) {
+    throw new Error("reviewAgainst is not a supported reviewed manifest with passed upstream formal evidence");
+  }
   for (const field of ["reviewedRunId", "reportSha256", "reviewQueueSha256"]) {
     if (typeof payload[field] !== "string" || !payload[field].trim()) {
       throw new Error(`reviewAgainst.${field} must be non-empty`);
@@ -634,6 +638,7 @@ function loadPriorManualReview(value) {
     if (item.decision !== "pass" && (typeof item.note !== "string" || !item.note.trim())) {
       throw new Error(`reviewAgainst.decisions[${index}] requires a note for ${item.decision}`);
     }
+    if (typeof item.reviewer !== "string" || !item.reviewer.trim() || !Number.isFinite(Date.parse(item.reviewedAt || ""))) throw new Error("reviewAgainst requires a reviewer and review timestamp for every cell");
     return { ...item, reviewCellKey };
   });
   return {
@@ -994,7 +999,7 @@ function normalizeActionList(value, name, { allowEmpty = false } = {}) {
       throw new Error(`${name}[${actionIndex}] must be an object`);
     }
     const kind = action.action;
-    if (!["click", "hover", "focus", "fill", "check", "uncheck", "press", "selectOption"].includes(kind)) {
+    if (!["click", "dblclick", "hover", "focus", "fill", "check", "uncheck", "press", "selectOption"].includes(kind)) {
       throw new Error(`Unsupported declarative action: ${kind}`);
     }
     if (typeof action.selector !== "string" || !action.selector.trim()) {
@@ -1174,6 +1179,7 @@ function normalizeTargetDefaults(value) {
     regions: normalizeJourneyRegions(value.regions, "targetDefaults.regions"),
     theme: normalizeTheme(value.theme, "targetDefaults.theme"),
     reviewInputs: normalizeReviewInputs(value.reviewInputs, "targetDefaults.reviewInputs"),
+    geometryAssertions: normalizeGeometry(value.geometryAssertions, "targetDefaults.geometryAssertions"),
     allowContrast: normalizeSelectorReasonList(value.allowContrast, "targetDefaults.allowContrast"),
     themeExceptions: normalizeSelectorReasonList(value.themeExceptions, "targetDefaults.themeExceptions"),
     screenshotMasks: normalizeSelectorReasonList(value.screenshotMasks, "targetDefaults.screenshotMasks"),
@@ -1241,6 +1247,7 @@ function normalizeTargets(config, cli) {
         reviewInputs: state.reviewInputs === undefined
           ? undefined
           : normalizeReviewInputs(state.reviewInputs, `target.states[${stateIndex}].reviewInputs`),
+        geometryAssertions: state.geometryAssertions === undefined ? undefined : normalizeGeometry(state.geometryAssertions, `target.states[${stateIndex}].geometryAssertions`),
         execution: state.execution === undefined
           ? undefined
           : normalizeExecutionOverride(state.execution, `target.states[${stateIndex}].execution`),
@@ -1290,6 +1297,7 @@ function normalizeTargets(config, cli) {
           reviewInputs: item.reviewInputs === undefined
             ? (targetDefaults.reviewInputs || [])
             : normalizeReviewInputs(item.reviewInputs, `targets[${targetIndex}].reviewInputs`),
+          geometryAssertions: item.geometryAssertions === undefined ? (targetDefaults.geometryAssertions || []) : normalizeGeometry(item.geometryAssertions, `targets[${targetIndex}].geometryAssertions`),
           allowContrast: [
             ...(targetDefaults.allowContrast || []),
             ...normalizeSelectorReasonList(item.allowContrast, `targets[${targetIndex}].allowContrast`),
@@ -1567,6 +1575,8 @@ function normalizeConfig(config, cli, artifacts) {
     priorReview: loadPriorManualReview(cli.reviewAgainst || config.reviewAgainst),
     reviewRemovedCells: normalizeRemovedReviewCells(config.reviewRemovedCells),
     requiredCoverage: normalizeRequiredCoverage(config.requiredCoverage),
+    fixtureDataShapes: normalizeShapes(config.fixtureDataShapes),
+    reportedBrowserStates: normalizeReported(config.reportedBrowserStates),
   };
 }
 
@@ -1686,6 +1696,8 @@ function privacySafeConfigContract(config) {
       : null,
     reviewRemovedCells: config.reviewRemovedCells,
     requiredCoverage: config.requiredCoverage,
+    fixtureDataShapes: config.fixtureDataShapes,
+    reportedBrowserStates: config.reportedBrowserStates,
     browserExecutable: config.browserExecutable || null,
     playwrightModuleDir: config.playwrightModuleDir || null,
   };
@@ -1957,6 +1969,7 @@ function expandTargetStates(targets) {
         primaryJourney: state.primaryJourney ?? target.primaryJourney,
         priorityOverrideReason: state.priorityOverrideReason ?? target.priorityOverrideReason,
         regions: state.regions ?? target.regions,
+        geometryAssertions: state.geometryAssertions ?? target.geometryAssertions,
         theme: state.theme ?? target.theme,
         reviewInputs: [
           ...(target.reviewInputs || []),
@@ -2100,7 +2113,7 @@ function journeyContractErrors(target) {
   }
   const actions = target.verificationState?.actions || [];
   const activating = actions.some((action) =>
-    ["click", "press", "check", "uncheck", "selectOption"].includes(action.action) &&
+    ["click", "dblclick", "press", "check", "uncheck", "selectOption"].includes(action.action) &&
     (!action.ownerState || action.ownerState === target.stateName)
   );
   if (activating && !target.continuation) {
@@ -2135,6 +2148,7 @@ function prepareTargetContracts(targets, config) {
       primaryJourney: target.primaryJourney || null,
       priorityOverrideReason: target.priorityOverrideReason || "",
       regions: target.regions || [],
+      geometryAssertions: target.geometryAssertions || [],
       theme: target.theme || null,
       stateName: target.stateName || "base",
       continuation: target.continuation || null,
@@ -2261,6 +2275,7 @@ async function applyInteractionState(page, state, target = null) {
         }));
       }
       if (action.action === "click") await locator.click(options);
+      else if (action.action === "dblclick") await locator.dblclick(options);
       else if (action.action === "hover") await locator.hover(options);
       else if (action.action === "focus") await locator.focus(options);
       else if (action.action === "fill") await locator.fill(action.value, options);
@@ -3362,6 +3377,8 @@ function pageVerifier() {
       ancestor && ancestor !== document.body && ancestor !== document.documentElement;
       ancestor = composedParent(ancestor)) {
       ancestors.push(ancestor);
+      // Positioned popup controls belong to that popup, not its narrow anchor.
+      if (["absolute", "fixed"].includes(cs(ancestor).position)) break;
     }
     if (ancestors.some(activeHorizontalScroller)) continue;
     const controlRect = nowRect(el);
@@ -5145,6 +5162,9 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   });
   result.metrics.journey = journeyEvaluation;
   result.findings.push(...journeyEvaluation.findings);
+  const handoffEvaluation = await stage("declared-handoff-measurements", () => measureHandoff(page, target, viewport, config, cellId));
+  result.metrics.handoff = handoffEvaluation.measured;
+  result.findings.push(...handoffEvaluation.findings);
   try {
     result.screenshots.viewport = await captureEvidenceScreenshot(
       page,
@@ -5198,6 +5218,7 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   const mergedMetrics = {
     ...evaluated.metrics,
     journey: journeyEvaluation,
+    handoff: result.metrics.handoff,
     continuation: result.continuation,
     performance: result.metrics.performance,
     scroll: scrollMetrics,
@@ -5440,6 +5461,7 @@ function buildChangedReviewQueue(pages, config, runId) {
         decision: prior.decision,
         note: prior.note || "",
         basis: "unchanged-ui-inputs-and-intent",
+        carriedFrom: { manualManifestSha256: config.priorReview.sha256, formalRunId: config.priorReview.reviewedRunId, sourceFingerprint: prior.sourceFingerprint, intentFingerprint: prior.intentFingerprint, screenshots: prior.screenshots, reviewer: prior.reviewer, reviewedAt: prior.reviewedAt },
       };
       cells.push(cell);
       if (prior.decision !== "pass") {
@@ -6111,6 +6133,7 @@ function emitReceipt(receipt) {
       tool: "formal-web-ui-verification",
       status: receipt.status,
       exitCode: receipt.exitCode,
+      formal: receipt.formal,
       artifacts,
       receiptTruncated: true,
     });
@@ -6122,7 +6145,8 @@ function resultReceipt(report, exitCode, config, blocking) {
   return {
     tool: "formal-web-ui-verification",
     runId: report.runId,
-    status: exitCode === 0
+    formal: report.formalReceipt,
+    status: exitCode === 2 ? "setup-failure" : exitCode === 0
       ? (report.coverage.readinessEligible ? "passed" : "development-passed")
       : (exitCode === 1 ? "blocking-findings" : "coverage-failed"),
     exitCode,
@@ -6749,6 +6773,7 @@ async function main() {
   const { chromium, devices } = resolvePlaywright(config.playwrightModuleDir);
   config.viewports = resolveViewports(config.viewports, devices);
   const fullPlanCells = buildExecutionPlan(targets, config.viewports, config.maxPageCount);
+  config.handoffRequirements = resolveHandoffRequirements(config, fullPlanCells);
   const requiredCoverage = evaluateRequiredCoverage(fullPlanCells, config.requiredCoverage);
   const selected = selectExecutionCells(fullPlanCells, config.development);
   const planCells = selected.cells;
@@ -6777,7 +6802,7 @@ async function main() {
     targets: targets.map(publicTarget),
     plan: publicExecutionPlan(planCells, config.maxPageCount, selected.selection, requiredCoverage),
     evidence: {
-      verifier: { algorithm: "sha256", sha256: verifierSha256 },
+      verifier: { algorithm: "sha256", sha256: verifierSha256, scope: "canonical verifier entrypoint and formal_handoff_contract.mjs" },
       config: {
         algorithm: "sha256",
         sha256: activeConfigSha256,
@@ -6829,17 +6854,31 @@ async function main() {
     selected.selection,
     requiredCoverage,
   );
+  report.coverage.handoff = config.handoffRequirements;
   report.endedAt = new Date().toISOString();
   report.generatedAt = report.endedAt;
   report.durationMs = Math.max(0, Date.parse(report.endedAt) - Date.parse(report.startedAt));
   finalizeProgress(config, report);
   report.evidence.journey = writeJourneyEvidenceArtifact(report, config.journeyEvidenceOut);
   publishGovernedJourneyEvidenceArtifact(config.journeyEvidenceOut);
-  const markdown = markdownReport(report);
-  writeReportArtifacts(report, markdown, activeArtifacts);
   const failThreshold = SEVERITY_ORDER[config.rules.failOn];
   const blocking = report.findings.filter((finding) => SEVERITY_ORDER[finding.severity] >= failThreshold);
-  const exitCode = report.coverage.failed ? 3 : (blocking.length ? 1 : 0);
+  let exitCode = report.coverage.failed ? 3 : (blocking.length ? 1 : 0);
+  report.formal = formalDecision(report, exitCode, config, blocking);
+  const markdown = markdownReport(report);
+  writeReportArtifacts(report, markdown, activeArtifacts);
+  try {
+    report.formalReceipt = retainFormalReceipt(report, activeArtifacts);
+  } catch {
+    exitCode = 2;
+    report.formal.result = "blocked";
+    report.formal.exitCode = exitCode;
+    report.formal.evidenceFailure = "required-artifact-unavailable-or-mismatched";
+    const formal = { ...report.formal };
+    delete formal.gaps;
+    report.formalReceipt = formal;
+    writeReportArtifacts(report, markdownReport(report), activeArtifacts);
+  }
   if (config.humanReadableStdout) {
     console.log(markdown);
   } else {
@@ -6863,11 +6902,13 @@ if (isEntrypoint) {
   main().catch((error) => {
     const failure = setupFailureArtifacts(error, activeArtifacts, fallbackArtifacts);
     activeArtifacts = failure.artifacts;
+    const formal = formalDecision(failure.report, 2, {}, []);
     emitReceipt({
       tool: "formal-web-ui-verification",
       runId: failure.report.runId,
       status: "setup-failure",
       exitCode: 2,
+      formal,
       artifacts: artifactReceipt(failure.artifacts),
       artifactStatus: failure.artifacts ? "written" : "unavailable",
     });

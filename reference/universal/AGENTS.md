@@ -124,6 +124,19 @@ earlier model messages or reload unchanged instructions.
   block handoff until the implementation is fixed and the applicable gates
   pass; retain the report and iteration evidence. Record confirmed repeatable
   mistakes as durable corrections.
+  For every generated mockup, retain one immutable image file for exactly one
+  surface/window, state, theme, and viewport. The file may show multiple named
+  controls belonging to that one window, but it must not combine windows,
+  themes, states, or contact-sheet alternatives. Require an agent-authored
+  searchable manifest describing visible content, the user journey, decisions,
+  generation instructions, constraints, and parent mockup nodes. Later image
+  generation creates new files and explicit lineage; it never overwrites or
+  silently reuses a previous source. Resolve the current continuation set from
+  Coordinator sketch history immediately before implementation or audit and
+  again after any new generation or user-directed adjustment. Preserve every
+  option, including rejected options, and allow multiple selected options to
+  continue together. Legacy sketches remain historical and cannot become
+  current.
   Finish only when the intended outcome and verification are complete, the
   user explicitly stops it, or a genuine blocker prevents authorized progress.
 - Write progress updates and completion reports for a capable non-specialist.
