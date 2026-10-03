@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::install::{
     self, CommandRequest, CommandRunner, InstallManifest, read_and_verify_manifest_owned,
-    render_daemon_unit, render_edge_unit, render_tests_slice_unit,
+    render_daemon_unit_for_binary, render_edge_unit, render_tests_slice_unit,
 };
 
 const DRAIN_FILE: &str = "test-drain.json";
@@ -383,7 +383,13 @@ impl HostCutover {
             expected_owner.0,
         )?;
         let source_root = Path::new(&manifest.source_root);
-        let daemon_unit_text = render_daemon_unit(source_root)?;
+        let daemon_binary = manifest
+            .binaries
+            .iter()
+            .find(|binary| binary.name == "devcoordinator2")
+            .map(|binary| PathBuf::from(&binary.path))
+            .ok_or_else(|| "candidate manifest has no control binary".to_owned())?;
+        let daemon_unit_text = render_daemon_unit_for_binary(source_root, &daemon_binary)?;
         let edge_unit_text = render_edge_unit(source_root, config.canary)?;
         let tests_slice_unit_text = render_tests_slice_unit(source_root)?;
         let tmpfiles_text = install::state_tmpfiles(source_root, &config.tmpfiles_path)?;
@@ -453,11 +459,7 @@ impl HostCutover {
     }
 
     fn verify_candidate_binaries(&self) -> Result<(), String> {
-        let verified = install::verify_release_binaries(
-            Path::new(&self.manifest.source_root),
-            &self.manifest.source_commit,
-            self.runner.as_ref(),
-        )?;
+        let verified = install::verify_manifest_binaries(&self.manifest, self.runner.as_ref())?;
         if verified != self.manifest.binaries {
             return Err(
                 "candidate release binaries changed after the cutover plan was verified".to_owned(),

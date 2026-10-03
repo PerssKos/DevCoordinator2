@@ -2150,14 +2150,24 @@ fn run_install(command: InstallCommand) -> ExitCode {
                 .map_err(|error| format!("cannot resolve source root: {error}"))?;
             let source_commit = install::validate_live_checkout(&source_root, false, &HostRunner)?;
             let identity = install::checkout_build_identity(&source_root)?;
-            let binaries = install::build_release_binaries(
+            let built_at = timestamp()?;
+            let artifact_id = format!(
+                "{}-{}-{}",
+                source_commit,
+                std::process::id(),
+                time::OffsetDateTime::now_utc().unix_timestamp_nanos()
+            );
+            let artifact_target = source_root
+                .join("target/coordinator-releases")
+                .join(artifact_id);
+            let binaries = install::build_release_binaries_at(
                 &source_root,
                 &source_commit,
                 &identity,
                 &install::BuildTools::default(),
                 &HostRunner,
+                &artifact_target,
             )?;
-            let built_at = timestamp()?;
             let document = install::manifest(&source_root, &source_commit, &built_at, binaries)?;
             install::write_manifest(&manifest_path, &document, (0, 0))?;
             serde_json::to_value(document)
