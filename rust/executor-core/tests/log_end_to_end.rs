@@ -10,8 +10,9 @@ use sha2::{Digest, Sha256};
 use devcoordinator2_executor_core::{
     Cancellation, Executor, LocalPermitProvider,
     log_query::{
-        LogPruneRequest, LogQueryOperation, LogQueryOptions, LogQueryRequest, LogQueryResult,
-        LogQuerySelector, execute_log_query, prune_logs,
+        LogPruneRequest, LogQueryError, LogQueryOperation, LogQueryOptions, LogQueryRequest,
+        LogQueryResult, LogQuerySelector, execute_log_query, lock_retention, prune_logs,
+        remove_retained_run, retention_runs,
     },
     protocol::{
         CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
@@ -633,4 +634,60 @@ async fn executor_logs_remain_complete_queryable_and_catalogue_safe() {
     .expect("deterministic no-op retention pass");
     assert_eq!(prune.removed_leaf_folders, 0);
     assert_eq!(prune.retained_active, 0);
+    let retention = LogPruneRequest {
+        schema: 2,
+        repository_id: REPOSITORY_ID.into(),
+        max_age_seconds: 24 * 60 * 60,
+        case_depth: 3,
+        active_run_id: None,
+    };
+    let tracked =
+        retention_runs(&repository.root, &retention).expect("content-free evidence inventory");
+    assert_eq!(tracked.len(), 1);
+    assert_eq!(tracked[0].run_id, RUN_ID);
+    assert!(!tracked[0].active);
+    assert!(
+        !tracked[0].eligible,
+        "young evidence unexpectedly crossed the automatic retention window"
+    );
+    let kept = remove_retained_run(
+        &repository.root,
+        retention.clone(),
+        || Ok(BTreeSet::from([RUN_ID.to_owned()])),
+        RUN_ID,
+    )
+    .expect("explicit pin");
+    assert_eq!(kept.removed_leaf_folders, 0);
+    let mut active = retention.clone();
+    active.active_run_id = Some(RUN_ID.into());
+    assert_eq!(
+        remove_retained_run(&repository.root, active, || Ok(BTreeSet::new()), RUN_ID)
+            .expect("active evidence guard")
+            .removed_leaf_folders,
+        0
+    );
+    let pin_write = lock_retention(&repository.root).expect("protection write lease");
+    assert!(matches!(
+        remove_retained_run(
+            &repository.root,
+            retention.clone(),
+            || Ok(BTreeSet::new()),
+            RUN_ID
+        ),
+        Err(LogQueryError::MaintenanceBusy)
+    ));
+    drop(pin_write);
+    let removed = remove_retained_run(
+        &repository.root,
+        retention.clone(),
+        || Ok(BTreeSet::new()),
+        RUN_ID,
+    )
+    .expect("exact manual evidence removal");
+    assert!(removed.removed_leaf_folders > 0);
+    assert!(
+        retention_runs(&repository.root, &retention)
+            .expect("retention readback")
+            .is_empty()
+    );
 }

@@ -173,6 +173,11 @@ fn settings_edits_closure_and_removal_preserve_owner_and_reject_stale_updates() 
     let directory = tempfile::tempdir().unwrap();
     let database = Database::open(directory.path().join("authority.sqlite3")).unwrap();
     let store = TicketStore::new(database.clone(), "upstream.example").unwrap();
+    let local_database = Database::open(directory.path().join("local-authority.sqlite3")).unwrap();
+    let local = TicketStore::new(local_database, "local").unwrap();
+    let local_ticket = local.create(request("local-only-request"), NOW).unwrap();
+    assert_eq!(local_ticket.summary.upstream, "local");
+    assert_eq!(local.get(&local_ticket.summary.id).unwrap(), local_ticket);
     let settings = store.settings().unwrap();
     assert_eq!(settings.upstream, "https://vr.ae");
     let saved = store

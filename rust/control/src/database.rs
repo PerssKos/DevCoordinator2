@@ -204,6 +204,7 @@ fn open_connection(path: &Path) -> Result<Connection, DatabaseError> {
     }
     connection.execute_batch(FINAL_SCHEMA)?;
     connection.execute_batch(include_str!("tickets.sql"))?;
+    connection.execute_batch(include_str!("storage.sql"))?;
     ensure_column(
         &connection,
         "deployments",

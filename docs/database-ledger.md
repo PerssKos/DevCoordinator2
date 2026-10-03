@@ -1,5 +1,14 @@
 # Database Completion Ledger
 
+## Schema version 31 — tracked storage cleanup
+
+The storage registry records current artifact identities and private locators,
+revisioned policies and configured roots, expiring exact-target plans, durable
+scan/cleanup jobs, permanent per-item receipts, active-use leases and change
+history. Public inventory projections omit private paths and raw host output.
+Existing deployment ownership, planning records and evidence-retention settings
+are preserved. Migration adds these tables without adopting or deleting data.
+
 One SQLite authority database (default
 `/var/lib/devcoordinator2/authority.sqlite3`; dev override via instance
 configuration). WAL mode, foreign keys on. Table count is an architectural

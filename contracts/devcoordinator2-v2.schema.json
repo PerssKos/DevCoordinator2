@@ -72,6 +72,3771 @@
     },
     {
       "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage inventory"
+          }
+        ]
+      },
+      "description": "List measured artifacts and evidence-backed deletion safety.",
+      "inputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Safety": {
+            "enum": [
+              "safe",
+              "in_use",
+              "protected",
+              "needs_review",
+              "observing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "filesystem_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_removed": {
+            "default": false,
+            "type": "boolean"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Kind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limit": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "safety": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Safety"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "List",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Kind": {
+                "enum": [
+                  "container",
+                  "image",
+                  "build_cache",
+                  "network",
+                  "volume",
+                  "mount",
+                  "backing_directory",
+                  "build_output",
+                  "dependency_cache",
+                  "worktree",
+                  "backup",
+                  "evidence",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "Safety": {
+                "enum": [
+                  "safe",
+                  "in_use",
+                  "protected",
+                  "needs_review",
+                  "observing"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "filesystem_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "include_removed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Kind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "limit": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "query": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "safety": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Safety"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "title": "List",
+            "type": "object"
+          },
+          "name": "storage_inventory",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.inventory",
+      "outputSchema": {
+        "$defs": {
+          "Artifact": {
+            "additionalProperties": false,
+            "properties": {
+              "accounting_id": {
+                "default": "",
+                "type": "string"
+              },
+              "aliases": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "automatic_eligible": {
+                "type": "boolean"
+              },
+              "deletable": {
+                "type": "boolean"
+              },
+              "dependencies": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "effect": {
+                "$ref": "#/$defs/Effect"
+              },
+              "eligible_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "filesystem_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "last_used_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "observed_since_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "ownership": {
+                "type": "string"
+              },
+              "protected": {
+                "type": "boolean"
+              },
+              "reasons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "safety": {
+                "$ref": "#/$defs/Safety"
+              },
+              "verified_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "revision",
+              "name",
+              "kind",
+              "effect",
+              "ownership",
+              "observed_since_ms",
+              "safety",
+              "reasons",
+              "protected",
+              "deletable",
+              "automatic_eligible",
+              "dependencies",
+              "aliases"
+            ],
+            "type": "object"
+          },
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Filesystem": {
+            "additionalProperties": false,
+            "properties": {
+              "available_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "capacity_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "label",
+              "capacity_bytes",
+              "available_bytes",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          },
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Safety": {
+            "enum": [
+              "safe",
+              "in_use",
+              "protected",
+              "needs_review",
+              "observing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/$defs/Artifact"
+            },
+            "type": "array"
+          },
+          "coverage_gaps": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "filesystems": {
+            "items": {
+              "$ref": "#/$defs/Filesystem"
+            },
+            "type": "array"
+          },
+          "last_scan_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "artifacts",
+          "filesystems",
+          "coverage_gaps",
+          "total"
+        ],
+        "title": "Inventory",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage show"
+          }
+        ]
+      },
+      "description": "Inspect one tracked artifact and its protection reasons.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "Reference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id"
+            ],
+            "title": "Reference",
+            "type": "object"
+          },
+          "name": "storage_artifact_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.artifact.get",
+      "outputSchema": {
+        "$defs": {
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Safety": {
+            "enum": [
+              "safe",
+              "in_use",
+              "protected",
+              "needs_review",
+              "observing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "accounting_id": {
+            "default": "",
+            "type": "string"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allocated_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "automatic_eligible": {
+            "type": "boolean"
+          },
+          "deletable": {
+            "type": "boolean"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "effect": {
+            "$ref": "#/$defs/Effect"
+          },
+          "eligible_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filesystem_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "last_used_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_since_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "safety": {
+            "$ref": "#/$defs/Safety"
+          },
+          "verified_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "revision",
+          "name",
+          "kind",
+          "effect",
+          "ownership",
+          "observed_since_ms",
+          "safety",
+          "reasons",
+          "protected",
+          "deletable",
+          "automatic_eligible",
+          "dependencies",
+          "aliases"
+        ],
+        "title": "Artifact",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage scan"
+          }
+        ]
+      },
+      "description": "Queue storage discovery and return a durable job.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "Scan",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "idempotency_key"
+            ],
+            "title": "Scan",
+            "type": "object"
+          },
+          "name": "storage_scan",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.scan",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage register"
+          }
+        ]
+      },
+      "description": "Record a disposal decision for an exact discovered artifact.",
+      "inputSchema": {
+        "$defs": {
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "effect": {
+            "$ref": "#/$defs/Effect"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "description": "An explicit disposal decision; it never overrides a live reference.",
+            "type": "string"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "expected_revision",
+          "effect",
+          "reason"
+        ],
+        "title": "Register",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Effect": {
+                "enum": [
+                  "rebuildable",
+                  "permanent_data",
+                  "source_worktree",
+                  "recovery_copy",
+                  "retained_evidence",
+                  "runtime_resource",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "effect": {
+                "$ref": "#/$defs/Effect"
+              },
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "description": "An explicit disposal decision; it never overrides a live reference.",
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "artifact_id",
+              "expected_revision",
+              "effect",
+              "reason"
+            ],
+            "title": "Register",
+            "type": "object"
+          },
+          "name": "storage_register",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.register",
+      "outputSchema": {
+        "$defs": {
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Safety": {
+            "enum": [
+              "safe",
+              "in_use",
+              "protected",
+              "needs_review",
+              "observing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "accounting_id": {
+            "default": "",
+            "type": "string"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allocated_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "automatic_eligible": {
+            "type": "boolean"
+          },
+          "deletable": {
+            "type": "boolean"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "effect": {
+            "$ref": "#/$defs/Effect"
+          },
+          "eligible_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filesystem_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "last_used_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_since_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "safety": {
+            "$ref": "#/$defs/Safety"
+          },
+          "verified_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "revision",
+          "name",
+          "kind",
+          "effect",
+          "ownership",
+          "observed_since_ms",
+          "safety",
+          "reasons",
+          "protected",
+          "deletable",
+          "automatic_eligible",
+          "dependencies",
+          "aliases"
+        ],
+        "title": "Artifact",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage legacy-register"
+          }
+        ]
+      },
+      "description": "Queue cleanup-only ownership verification of a legacy group.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deployment_id": {
+            "type": "string"
+          },
+          "expected_inventory_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "expected_inventory_revision",
+          "reason"
+        ],
+        "title": "LegacyRegister",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deployment_id": {
+                "type": "string"
+              },
+              "expected_inventory_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deployment_id",
+              "expected_inventory_revision",
+              "reason"
+            ],
+            "title": "LegacyRegister",
+            "type": "object"
+          },
+          "name": "storage_legacy_register",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.legacy.register",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage protect"
+          }
+        ]
+      },
+      "description": "Protect an artifact or remove its explicit protection.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "expected_revision",
+          "protected"
+        ],
+        "title": "Protection",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "protected": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "expected_revision",
+              "protected"
+            ],
+            "title": "Protection",
+            "type": "object"
+          },
+          "name": "storage_protection_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.protection.set",
+      "outputSchema": {
+        "$defs": {
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Safety": {
+            "enum": [
+              "safe",
+              "in_use",
+              "protected",
+              "needs_review",
+              "observing"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "accounting_id": {
+            "default": "",
+            "type": "string"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "allocated_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "automatic_eligible": {
+            "type": "boolean"
+          },
+          "deletable": {
+            "type": "boolean"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "effect": {
+            "$ref": "#/$defs/Effect"
+          },
+          "eligible_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filesystem_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "last_used_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "observed_since_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ownership": {
+            "type": "string"
+          },
+          "protected": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "removed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "safety": {
+            "$ref": "#/$defs/Safety"
+          },
+          "verified_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_id",
+          "revision",
+          "name",
+          "kind",
+          "effect",
+          "ownership",
+          "observed_since_ms",
+          "safety",
+          "reasons",
+          "protected",
+          "deletable",
+          "automatic_eligible",
+          "dependencies",
+          "aliases"
+        ],
+        "title": "Artifact",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage policy show"
+          }
+        ]
+      },
+      "description": "Read the effective automatic cleanup policy.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "Scope",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "Scope",
+            "type": "object"
+          },
+          "name": "storage_policy_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.policy.get",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "type": "boolean"
+          },
+          "cache_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inherited": {
+            "type": "boolean"
+          },
+          "minimum_verified_backups": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "automatic",
+          "cache_idle_seconds",
+          "data_idle_seconds",
+          "minimum_verified_backups",
+          "inherited"
+        ],
+        "title": "Policy",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage policy set"
+          }
+        ]
+      },
+      "description": "Change a revision of an automatic cleanup policy.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "type": "boolean"
+          },
+          "cache_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minimum_verified_backups": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "automatic",
+          "cache_idle_seconds",
+          "data_idle_seconds",
+          "minimum_verified_backups"
+        ],
+        "title": "PolicySet",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "automatic": {
+                "type": "boolean"
+              },
+              "cache_idle_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "data_idle_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "minimum_verified_backups": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "automatic",
+              "cache_idle_seconds",
+              "data_idle_seconds",
+              "minimum_verified_backups"
+            ],
+            "title": "PolicySet",
+            "type": "object"
+          },
+          "name": "storage_policy_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.policy.set",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "type": "boolean"
+          },
+          "cache_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "data_idle_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "inherited": {
+            "type": "boolean"
+          },
+          "minimum_verified_backups": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "automatic",
+          "cache_idle_seconds",
+          "data_idle_seconds",
+          "minimum_verified_backups",
+          "inherited"
+        ],
+        "title": "Policy",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage roots list"
+          }
+        ]
+      },
+      "description": "List shared discovery roots without private paths.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "EmptyParams",
+            "type": "object"
+          },
+          "name": "storage_roots_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.roots.list",
+      "outputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Root": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "label": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "root_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "root_id",
+              "label",
+              "kind",
+              "revision"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "roots": {
+            "items": {
+              "$ref": "#/$defs/Root"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "roots"
+        ],
+        "title": "Roots",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage roots set"
+          }
+        ]
+      },
+      "description": "Configure an exact shared discovery root.",
+      "inputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "expected_revision",
+          "label",
+          "path",
+          "kind"
+        ],
+        "title": "RootSet",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Kind": {
+                "enum": [
+                  "container",
+                  "image",
+                  "build_cache",
+                  "network",
+                  "volume",
+                  "mount",
+                  "backing_directory",
+                  "build_output",
+                  "dependency_cache",
+                  "worktree",
+                  "backup",
+                  "evidence",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "label": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "root_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "expected_revision",
+              "label",
+              "path",
+              "kind"
+            ],
+            "title": "RootSet",
+            "type": "object"
+          },
+          "name": "storage_roots_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.roots.set",
+      "outputSchema": {
+        "$defs": {
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/Kind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "root_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "root_id",
+          "label",
+          "kind",
+          "revision"
+        ],
+        "title": "Root",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage cleanup plan"
+          }
+        ]
+      },
+      "description": "Resolve removal dependencies and blockers without deleting data.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "automatic": {
+            "default": false,
+            "type": "boolean"
+          },
+          "include_persistent_data": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "artifact_ids"
+        ],
+        "title": "PlanRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "automatic": {
+                "default": false,
+                "type": "boolean"
+              },
+              "include_persistent_data": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "artifact_ids"
+            ],
+            "title": "PlanRequest",
+            "type": "object"
+          },
+          "name": "storage_cleanup_plan",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.cleanup.plan",
+      "outputSchema": {
+        "$defs": {
+          "Effect": {
+            "enum": [
+              "rebuildable",
+              "permanent_data",
+              "source_worktree",
+              "recovery_copy",
+              "retained_evidence",
+              "runtime_resource",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Kind": {
+            "enum": [
+              "container",
+              "image",
+              "build_cache",
+              "network",
+              "volume",
+              "mount",
+              "backing_directory",
+              "build_output",
+              "dependency_cache",
+              "worktree",
+              "backup",
+              "evidence",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "PlanItem": {
+            "additionalProperties": false,
+            "properties": {
+              "allocated_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "artifact_id": {
+                "type": "string"
+              },
+              "blockers": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "effect": {
+                "$ref": "#/$defs/Effect"
+              },
+              "kind": {
+                "$ref": "#/$defs/Kind"
+              },
+              "name": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "revision",
+              "name",
+              "kind",
+              "effect",
+              "blockers"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "automatic": {
+            "type": "boolean"
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "includes_persistent_data": {
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/PlanItem"
+            },
+            "type": "array"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "reclaimable_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_id",
+          "created_at_ms",
+          "expires_at_ms",
+          "items",
+          "reclaimable_bytes",
+          "ready",
+          "automatic",
+          "includes_persistent_data"
+        ],
+        "title": "CleanupPlan",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage cleanup start"
+          }
+        ]
+      },
+      "description": "Start an identity-bound cleanup plan.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id",
+          "idempotency_key"
+        ],
+        "title": "Start",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "plan_id",
+              "idempotency_key"
+            ],
+            "title": "Start",
+            "type": "object"
+          },
+          "name": "storage_cleanup_start",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.cleanup.start",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage job status"
+          }
+        ]
+      },
+      "description": "Read cleanup progress and exact artifact receipts.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "storage_job_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.job.status",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage job cancel"
+          }
+        ]
+      },
+      "description": "Cancel pending steps without undoing completed deletions.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "JobReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "job_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_id"
+            ],
+            "title": "JobReference",
+            "type": "object"
+          },
+          "name": "storage_job_cancel",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.job.cancel",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "completed_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "created_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/$defs/ItemReceipt"
+            },
+            "type": "array"
+          },
+          "reclaimed_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/JobState"
+          },
+          "unmeasured_items": {
+            "default": 0,
+            "description": "Items whose removal was verified but whose space change was unavailable.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "created_at_ms",
+          "actor",
+          "receipts",
+          "reclaimed_bytes"
+        ],
+        "title": "Job",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage history"
+          }
+        ]
+      },
+      "description": "Read bounded permanent cleanup history.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "HistoryRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "before_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "limit": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "title": "HistoryRequest",
+            "type": "object"
+          },
+          "name": "storage_history",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.history",
+      "outputSchema": {
+        "$defs": {
+          "ItemReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "artifact_id": {
+                "type": "string"
+              },
+              "code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "measured_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "removed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "space_change": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SpaceChange"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "artifact_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "Job": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "completed_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "created_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "error_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "job_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "plan_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "receipts": {
+                "items": {
+                  "$ref": "#/$defs/ItemReceipt"
+                },
+                "type": "array"
+              },
+              "reclaimed_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/JobState"
+              },
+              "unmeasured_items": {
+                "default": 0,
+                "description": "Items whose removal was verified but whose space change was unavailable.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_id",
+              "kind",
+              "state",
+              "created_at_ms",
+              "actor",
+              "receipts",
+              "reclaimed_bytes"
+            ],
+            "type": "object"
+          },
+          "JobState": {
+            "enum": [
+              "queued",
+              "running",
+              "cancelling",
+              "cancelled",
+              "completed",
+              "partial",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "SpaceChange": {
+            "additionalProperties": false,
+            "properties": {
+              "available_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "available_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filesystem_id": {
+                "type": "string"
+              },
+              "measured_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "filesystem_id",
+              "available_before",
+              "available_after",
+              "measured_at_ms"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/$defs/Job"
+            },
+            "type": "array"
+          },
+          "next_before_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "jobs"
+        ],
+        "title": "History",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage lease set"
+          }
+        ]
+      },
+      "description": "Register or renew an active-use lease.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "duration_seconds": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "artifact_ids",
+          "duration_seconds"
+        ],
+        "title": "LeaseSet",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "artifact_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "duration_seconds": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "artifact_ids",
+              "duration_seconds"
+            ],
+            "title": "LeaseSet",
+            "type": "object"
+          },
+          "name": "storage_lease_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.lease.set",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id",
+          "artifact_ids",
+          "expires_at_ms"
+        ],
+        "title": "Lease",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "storage lease release"
+          }
+        ]
+      },
+      "description": "Release an active-use lease without bypassing usage checks.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "lease_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id"
+        ],
+        "title": "LeaseRelease",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "lease_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "lease_id"
+            ],
+            "title": "LeaseRelease",
+            "type": "object"
+          },
+          "name": "storage_lease_release",
+          "transform": "identity"
+        }
+      ],
+      "name": "storage.lease.release",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id",
+          "artifact_ids",
+          "expires_at_ms"
+        ],
+        "title": "Lease",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
         "excludedReason": "Use Console or MCP ticket_request.",
         "routes": []
       },
@@ -16745,6 +20510,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -17372,6 +21142,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -18151,6 +21926,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -18714,6 +22494,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -19291,6 +23076,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -19868,6 +23658,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],
@@ -20445,6 +24240,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
               "internal_error",
               "daemon_unavailable"
             ],

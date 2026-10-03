@@ -346,6 +346,11 @@ impl TicketStore {
 
 pub fn normalize_upstream(value: &str) -> Result<String, TicketError> {
     let value = value.trim();
+    // "local" is an internal destination, never a fabricated network origin.
+    // The transport adapter still requires an actual URL for remote requests.
+    if value == "local" {
+        return Ok(value.to_owned());
+    }
     let input = if value.contains("://") {
         value.to_owned()
     } else {
