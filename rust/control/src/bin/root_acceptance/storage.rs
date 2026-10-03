@@ -29,7 +29,12 @@ fn start_fixture_engine(world: &mut World) -> Result<String, String> {
             "--property=TimeoutStartSec=90",
             "--property=TimeoutStopSec=15",
             "--property=PrivateNetwork=yes",
-            "/usr/sbin/dockerd",
+            ["/usr/bin/dockerd", "/usr/sbin/dockerd"]
+                .into_iter()
+                .find(|path| Path::new(path).is_file())
+                .ok_or_else(|| {
+                    "Docker daemon is unavailable in standard installation paths".to_owned()
+                })?,
             "--config-file",
             config.to_str().unwrap(),
             "--host",
