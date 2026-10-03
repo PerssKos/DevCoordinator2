@@ -3351,7 +3351,27 @@ impl Deployments {
                     "PostgreSQL binding identity is invalid",
                 )
             })?;
-            return Ok(self.postgres_ready(&identity, &credentials, Duration::from_secs(120)));
+            let readiness = self.postgres_ready(&identity, &credentials, Duration::from_secs(120));
+            if !readiness.ready {
+                return Ok(readiness);
+            }
+            let Some(port) = port_map.get(&component.name).copied() else {
+                return Ok(Readiness::failed(
+                    "PostgreSQL component has no allocated host port",
+                ));
+            };
+            let host = self
+                .health
+                .tcp_ready("127.0.0.1", port, Duration::from_secs(10), &|| None);
+            if !host.ready {
+                return Ok(Readiness::failed(format!(
+                    "PostgreSQL host port {port} is unreachable: {}",
+                    host.note
+                )));
+            }
+            return Ok(Readiness::ready(
+                "accepting connections on container and host port",
+            ));
         }
 
         let routed_compose_port = if binding.0 == "compose"
@@ -4637,7 +4657,7 @@ mod tests {
     };
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tempfile::tempdir;
     use time::macros::datetime;
 
@@ -5530,6 +5550,36 @@ mod tests {
             _terminal: &(dyn Fn() -> Option<String> + Sync),
         ) -> Readiness {
             Readiness::ready("tcp open")
+        }
+    }
+
+    struct ToggleHealth {
+        host_tcp_ready: Arc<AtomicBool>,
+    }
+
+    impl DeploymentHealth for ToggleHealth {
+        fn http_ready(
+            &self,
+            _port: u16,
+            _path: &str,
+            _timeout: Duration,
+            _terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            Readiness::ready("http 204")
+        }
+
+        fn tcp_ready(
+            &self,
+            _host: &str,
+            _port: u16,
+            _timeout: Duration,
+            _terminal: &(dyn Fn() -> Option<String> + Sync),
+        ) -> Readiness {
+            if self.host_tcp_ready.load(Ordering::SeqCst) {
+                Readiness::ready("tcp open")
+            } else {
+                Readiness::failed("tcp closed")
+            }
         }
     }
 
@@ -6791,6 +6841,10 @@ database="app"
             codex_usage_sources: Vec::new(),
         };
         let docker = Arc::new(MutationDocker::new());
+        let host_tcp_ready = Arc::new(AtomicBool::new(true));
+        let health = Arc::new(ToggleHealth {
+            host_tcp_ready: Arc::clone(&host_tcp_ready),
+        });
         let deployments = Deployments::with_runtime_adapters(
             config.clone(),
             database.clone(),
@@ -6799,7 +6853,7 @@ database="app"
             Arc::new(FakeSystemd),
             Arc::new(ReadyNetwork),
             Arc::new(FixtureGit),
-            Arc::new(FixtureHealth),
+            health,
             DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
             Arc::new(FixturePorts),
             Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
@@ -6839,6 +6893,20 @@ database="app"
         let serialized = serde_json::to_string(&applied).unwrap();
         assert!(!serialized.contains("password"));
         assert!(!serialized.contains("postgresql://"));
+
+        host_tcp_ready.store(false, Ordering::SeqCst);
+        let failure = deployments
+            .control(
+                "restart",
+                None,
+                None,
+                Some(&applied.deployment_id),
+                None,
+                &caller,
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::DeploymentActionFailed);
+        assert!(failure.message.contains("PostgreSQL host port"));
 
         let removed = deployments
             .remove(None, None, Some(&applied.deployment_id), true, &caller)
