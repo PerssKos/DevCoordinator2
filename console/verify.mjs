@@ -2283,7 +2283,20 @@ async function main() {
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
   await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
-  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) === 0);
+  await waitForRenderFrame(page);
+  // The first visible row may be unsized or start after completed hidden work.
+  // Vertical arrival must retain the automatic alignment, not force chart x=0.
+  check('plan: returning to the first row preserves a visible task bar', await initialPlanViewport.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    const first = [...element.querySelectorAll('.gtask:not(.ghidden)')].find(row => {
+      const box = row.getBoundingClientRect();
+      return box.bottom > viewport.top + 82 && box.top < viewport.bottom;
+    });
+    return element.scrollTop === 0 && !!first && [...first.querySelectorAll('.gbar')].some(bar => {
+      const box = bar.getBoundingClientRect();
+      return box.width > 0 && box.right > viewport.left && box.left < viewport.right;
+    });
+  }));
   await initialPlanViewport.evaluate((element, taskId) => {
     const row = element.querySelector(`[data-task-row="${taskId}"]`);
     element.scrollTop = row?.offsetTop || 0;
