@@ -325,8 +325,8 @@
   "agent_save_roles": "Save roles",
   "agent_always_spawn": "Always spawn",
   "agent_never_spawn": "Never spawn",
-  "agent_skip_model": "Skip if current model matches",
-  "agent_skip_model_effort": "Skip if current model and effort matches",
+  "agent_skip_model": "Don't spawn if model matches",
+  "agent_skip_model_effort": "Don't spawn if model + effort match",
   "agent_select_model": "Select model",
   "agent_select_effort": "Select effort",
   "agent_updated": "Updated {value}"
