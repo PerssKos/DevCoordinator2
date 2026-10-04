@@ -2228,8 +2228,8 @@ async function main() {
   await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
-  await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
-  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) === 0);
+  await initialPlanViewport.evaluate((element) => element.scrollTo({ top: 0, left: 0, behavior: 'auto' }));
+  await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) <= 1);
   await initialPlanViewport.evaluate((element, taskId) => {
     const row = element.querySelector(`[data-task-row="${taskId}"]`);
     element.scrollTop = row?.offsetTop || 0;
