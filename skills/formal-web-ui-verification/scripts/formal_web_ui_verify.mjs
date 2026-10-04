@@ -676,6 +676,14 @@ function normalizeContentInsetList(value, name) {
   });
 }
 
+function normalizeExpectedHttpStatus(value, name) {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 400 || value > 599) {
+    throw new Error(`${name} must be one integer HTTP error status from 400 to 599`);
+  }
+  return value;
+}
+
 function normalizeSourceBinding(value, name) {
   if (value === undefined || value === null) return null;
   const input = typeof value === "string" ? { expected: value } : value;
@@ -1202,6 +1210,9 @@ function normalizeTargetDefaults(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("targetDefaults must be an object");
   }
+  if (value.expectedHttpStatus !== undefined) {
+    throw new Error("expectedHttpStatus belongs to one explicit target, not targetDefaults");
+  }
   return {
     journeys: normalizeJourneyDefinitions(value.journeys, "targetDefaults.journeys"),
     primaryJourney: value.primaryJourney === undefined || value.primaryJourney === null
@@ -1239,6 +1250,9 @@ function normalizeTargets(config, cli) {
       }
       if (typeof state.name !== "string" || !state.name.trim()) {
         throw new Error(`target.states[${stateIndex}].name must be a non-empty string`);
+      }
+      if (state.expectedHttpStatus !== undefined) {
+        throw new Error("expectedHttpStatus belongs to one explicit target, not a state override");
       }
       const actions = normalizeActionList(state.actions, `target.states[${stateIndex}].actions`);
       if (state.allowFailure !== undefined && (typeof state.allowFailure !== "string" || !state.allowFailure.trim())) {
@@ -1352,6 +1366,7 @@ function normalizeTargets(config, cli) {
           sourceBinding: item.sourceBinding === undefined
             ? undefined
             : normalizeSourceBinding(item.sourceBinding, `targets[${targetIndex}].sourceBinding`),
+          expectedHttpStatus: normalizeExpectedHttpStatus(item.expectedHttpStatus, `targets[${targetIndex}].expectedHttpStatus`),
           waitFor: normalizeWaitFor(item.waitFor, `targets[${targetIndex}].waitFor`),
           execution: normalizeExecution(
             item.execution,
@@ -2122,6 +2137,9 @@ function collectReviewInputFiles(repoRoot, declaredInputs) {
 
 function journeyContractErrors(target) {
   const errors = [];
+  if (target.expectedHttpStatus !== undefined && !target.waitFor?.selector) {
+    errors.push("an expected HTTP error target requires an explicit waitFor.selector for its rendered recovery view");
+  }
   const journeys = Array.isArray(target.journeys) ? target.journeys : [];
   const journeyIds = new Set(journeys.map((journey) => journey.id));
   if (!journeys.length) errors.push("journeys must declare at least one journey");
@@ -2187,6 +2205,7 @@ function prepareTargetContracts(targets, config) {
       }
     }
     const intentContract = {
+      ...(target.expectedHttpStatus === undefined ? {} : { expectedHttpStatus: target.expectedHttpStatus }),
       journeys: target.journeys || [],
       primaryJourney: target.primaryJourney || null,
       priorityOverrideReason: target.priorityOverrideReason || "",
@@ -5134,6 +5153,7 @@ async function verifyTarget(page, target, viewport, config, cellId) {
     endedAt: null,
     durationMs: null,
     status: null,
+    ...(target.expectedHttpStatus === undefined ? {} : { expectedHttpStatus: target.expectedHttpStatus }),
     contentType: null,
     title: "",
     metrics: {},
@@ -5227,14 +5247,19 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   result.redirected = Boolean(response?.request()?.redirectedFrom()) ||
     result.requestedPath !== result.finalPath ||
     result.requestedOrigin !== result.finalOrigin;
-  if (!response || result.status >= 400 || (result.contentType && !/html|xhtml/i.test(result.contentType))) {
+  const statusMismatch = target.expectedHttpStatus === undefined
+    ? result.status >= 400
+    : result.status !== target.expectedHttpStatus;
+  if (!response || statusMismatch || (result.contentType && !/html|xhtml/i.test(result.contentType))) {
     result.skipped = true;
     if (!response) {
       result.outcome = "navigation_error";
       result.skipReason = "navigation-no-response";
-    } else if (result.status >= 400) {
+    } else if (statusMismatch) {
       result.outcome = "http_error";
-      result.skipReason = `non-success-status-${result.status}`;
+      result.skipReason = target.expectedHttpStatus === undefined
+        ? `non-success-status-${result.status}`
+        : `unexpected-status-${result.status}-expected-${target.expectedHttpStatus}`;
     } else {
       result.outcome = "non_html";
       result.skipReason = `non-html-content-type-${result.contentType || "unknown"}`;

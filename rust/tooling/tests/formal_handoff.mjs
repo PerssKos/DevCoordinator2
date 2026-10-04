@@ -20,7 +20,12 @@ const variants = new Map([
   ['/overflow', html.replace('body{margin:0', 'body{width:2000px;margin:0')],
   ['/offscreen', html.replace('main{padding:20px;grid-column:2;min-width:0}', 'main{padding:20px;margin-top:1000px}')],
 ]);
-const server = createServer((request, response) => { response.writeHead(200, { 'content-type': 'text/html', 'x-ui-source-revision': revision }); response.end(variants.get(new URL(request.url, 'http://fixture').pathname) ?? html); });
+const server = createServer((request, response) => {
+  const pathname = new URL(request.url, 'http://fixture').pathname;
+  const status = Number(pathname.match(/^\/http-(403|404|503)(?:-overflow)?$/)?.[1] ?? 200);
+  response.writeHead(status, { 'content-type': 'text/html', 'x-ui-source-revision': revision });
+  response.end(pathname.endsWith('-overflow') ? variants.get('/overflow') : variants.get(pathname) ?? html);
+});
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
 const target = {
@@ -43,7 +48,7 @@ const geometry = (primary, heading, identifier) => [
 const full = (pathname = '/') => structuredClone({ ...base, targets: [{ ...target, url: `${target.url.slice(0, -1)}${pathname}`, geometryAssertions: [...geometry('#primary', '#heading', '#label'), { id: 'hidden-track', kind: 'hidden-navigation-track', selector: '#nav', primarySelector: '#primary', track: { selector: '#layout', axis: 'columns', index: 0 }, maxReservedSize: 0 }] }], fixtureDataShapes: [{ id: 'workspace', revision: 'v1', target: 'handoff', route: pathname, state: 'base', conditionalDom: ['#layout', '#nav', '#primary', '#label'], layoutEffect: 'Workspace and attached hidden navigation track' }], requiredCoverage: [{ target: 'handoff', state: 'base', viewport: 'desktop', width: 1440 }] });
 const results = [];
 let measuredUserAgent;
-async function verify(name, config, check) {
+async function verify(name, config, check, setupError = null) {
   const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
   const path = join(directory, 'config.json'); await writeFile(path, JSON.stringify(config));
   const args = [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', path, '--json-out', join(directory, 'report.json'), '--markdown-out', join(directory, 'report.md')];
@@ -57,6 +62,11 @@ async function verify(name, config, check) {
     const report = JSON.parse(await readFile(join(directory, 'report.json'), 'utf8'));
     assert(Buffer.byteLength(stdout) <= 2048, 'Receipt must remain bounded');
     assert.equal(stderr, '');
+    if (setupError) {
+      assert.equal(exitCode, 2); assert.equal(receipt.formal.result, 'blocked');
+      assert.match(report.error.message, setupError);
+      results.push({ name, passed: true, exitCode }); return;
+    }
     await check({ exitCode, receipt, report, directory });
     results.push({ name, passed: true, exitCode });
   } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
@@ -74,6 +84,39 @@ try {
     }),
   ]);
   const expect = expected => ({ receipt }) => assert.equal(receipt.formal.result, expected);
+  for (const status of [403, 404, 503]) {
+    const expectedError = full(`/http-${status}`); expectedError.targets[0].expectedHttpStatus = status;
+    await verify(`expected-http-${status}`, expectedError, ({ receipt, report }) => {
+      assert.equal(receipt.formal.result, 'passed');
+      assert.equal(report.pages[0].status, status);
+      assert.equal(report.pages[0].expectedHttpStatus, status);
+      assert.equal(report.pages[0].outcome, 'checked');
+      assert(report.pages[0].screenshots.viewport && report.pages[0].screenshots.fullPage);
+    });
+  }
+  await verify('unexpected-http-error', full('/http-503'), expect('blocked'));
+  const wrongStatus = full('/http-404'); wrongStatus.targets[0].expectedHttpStatus = 503;
+  await verify('different-http-error', wrongStatus, expect('blocked'));
+  const wrongSuccess = full(); wrongSuccess.targets[0].expectedHttpStatus = 503;
+  await verify('unexpected-success-not-error-view', wrongSuccess, expect('blocked'));
+  const brokenError = full('/http-503-overflow'); brokenError.targets[0].expectedHttpStatus = 503;
+  await verify('http-error-layout-still-checked', brokenError, expect('failed'));
+  for (const [name, value] of [['success', 200], ['string', '503'], ['range', [400, 599]], ['null', null], ['fraction', 503.5], ['outside', 600]]) {
+    const invalid = full('/http-503'); invalid.targets[0].expectedHttpStatus = value;
+    await verify(`http-error-invalid-${name}`, invalid, null, /expectedHttpStatus.*integer HTTP error status/);
+  }
+  const blanketError = full('/http-503'); blanketError.targetDefaults = { expectedHttpStatus: 503 };
+  await verify('http-error-not-global-default', blanketError, null, /explicit target, not targetDefaults/);
+  const stateError = full('/http-503'); stateError.targets[0].states = [{ name: 'error', expectedHttpStatus: 503 }];
+  await verify('http-error-not-state-override', stateError, null, /explicit target, not a state override/);
+  const unrecognizedError = full('/http-503'); unrecognizedError.targets[0].expectedHttpStatus = 503; delete unrecognizedError.targets[0].waitFor;
+  await verify('http-error-needs-recovery-marker', unrecognizedError, ({ receipt, report }) => {
+    assert.equal(receipt.formal.result, 'incomplete');
+    assert.equal(report.pages[0].outcome, 'journey_contract_error');
+    assert.equal(report.pages[0].skipReason, 'an expected HTTP error target requires an explicit waitFor.selector for its rendered recovery view');
+  });
+  const staleError = full('/http-503'); staleError.targets[0].expectedHttpStatus = 503; staleError.targets[0].sourceBinding.expected = 'different-error-source';
+  await verify('http-error-needs-source-identity', staleError, ({ receipt, report }) => { assert.notEqual(receipt.formal.result, 'passed'); assert.equal(report.pages[0].outcome, 'stale_deployment'); });
   await verify('fresh-complete', full(), async ({ receipt, report, directory }) => {
     assert.equal(receipt.formal.result, 'passed'); assert.equal(receipt.formal.freshComplete, true);
     assert.equal(receipt.formal.coverage.requiredCells, 1); assert.equal(receipt.formal.coverage.checkedCells, 1);

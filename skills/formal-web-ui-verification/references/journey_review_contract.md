@@ -297,6 +297,33 @@ control as conditionally owned merely to avoid a legitimate readiness wait.
 
 ## Observable Readiness
 
+### Native HTTP error pages
+
+A target may set `expectedHttpStatus` to one integer from 400 through 599 when
+its user journey is the application's actual HTML recovery page. Set
+`waitFor.selector` to that view's recognizable element, for example:
+
+```json
+{
+  "name": "download-unavailable",
+  "url": "http://127.0.0.1:3000/files/example",
+  "expectedHttpStatus": 503,
+  "waitFor": {"selector": ".file-error-card"}
+}
+```
+
+This is only the status/readiness part of a target: it still needs the ordinary
+journey, theme, regions, UI inputs, exact source binding and required geometry
+and coverage declarations. Do not replace the application's error with HTTP
+200 to obtain verification. The observed and expected statuses are retained;
+a different status, non-HTML body, unexpected redirect, stale source or missing
+view does not pass. Matching status does not exempt layout, contrast,
+performance, screenshots or interaction checks. The status expectation enters
+the review-intent fingerprint so a changed expectation cannot reuse an old
+manual decision. Arrays, status ranges, strings, global defaults and state
+overrides are rejected. Targets without this explicit declaration still refuse
+HTTP errors.
+
 `waitFor` may combine these exact signals:
 
 - `selector`, optionally raced against `errorSelector`;

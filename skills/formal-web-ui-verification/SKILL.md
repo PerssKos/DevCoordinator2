@@ -104,6 +104,14 @@ This deterministic verification layer is not a replacement for human visual
 judgment. Use it before reporting changed web UI as done, and include its
 critical findings in the implementation or audit result.
 
+An intentional server-rendered HTML error page may declare one exact
+`expectedHttpStatus` from 400 through 599 on its own target, with an explicit
+`waitFor.selector` for the recovery view. This preserves its real HTTP status
+while running the same source, journey, geometry, performance and screenshot
+checks. It is not a global default or state override. A different status,
+including 200 instead of the expected error, remains blocked; undeclared HTTP
+errors retain the normal refusal. See the journey contract for an example.
+
 Complex SVG internals remain excluded from ordinary overlap sampling because
 charts, maps, icons, and artwork legitimately layer many elements. Important
 SVG text can opt into deterministic internal collision protection with
