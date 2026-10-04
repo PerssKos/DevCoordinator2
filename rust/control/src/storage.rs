@@ -27,6 +27,10 @@ pub const SAFETY_FRESH_MS: u64 = 300_000;
 // Inventory refreshes hourly and may require a substantial filesystem walk.
 // Its observation time stays truthful; removal still performs fresh checks.
 const OBSERVATION_FRESH_MS: u64 = 2 * 3_600_000;
+/// Keep expensive host-wide observations away from daemon start and coalesce
+/// event-driven refreshes so one large tree cannot create a scan loop.
+pub(crate) const STORAGE_SCAN_INTERVAL_MS: u64 = 3_600_000;
+pub(crate) const STORAGE_SCAN_MIN_GAP_MS: u64 = 300_000;
 const MAX_SELECTION: usize = 200;
 const MAX_PLAN_ITEMS: usize = 500;
 

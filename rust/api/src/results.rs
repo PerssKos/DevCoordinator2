@@ -9,6 +9,53 @@ use serde::{Deserialize, Serialize};
 
 use crate::params::{AccessRole, DecisionAspect, ReleaseKind, ReleaseStatus, TaskKind, TaskStatus};
 
+pub type AgentSettings = crate::agent_routing::Settings;
+pub type AgentCapabilities = crate::agent_routing::Capabilities;
+pub type AgentRole = crate::agent_routing::Role;
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSettingsSaved {
+    pub settings: AgentSettings,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRolesSaved {
+    pub revision: u32,
+    pub roles: Vec<AgentRole>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCapabilitiesReported {
+    pub capabilities: AgentCapabilities,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentAssignment {
+    pub role_id: String,
+    pub title: String,
+    pub action: crate::agent_routing::Action,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub resolved: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentInstruction {
+    pub repository_id: Option<String>,
+    pub harness: crate::ClientKind,
+    pub current_model: Option<String>,
+    pub current_effort: Option<String>,
+    pub assignments: Vec<AgentAssignment>,
+    pub text: String,
+    pub cache_expires_at_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SketchImageSummary {

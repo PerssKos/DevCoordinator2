@@ -76,6 +76,11 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "config.get",
     "config.env.set",
     "config.reload",
+    "agent.settings.get",
+    "agent.settings.save",
+    "agent.roles.save",
+    "agent.capabilities.report",
+    "agent.instruction.current",
     "deployment.preflight",
     "user.whoami",
     "user.accept_invitation",
@@ -233,6 +238,7 @@ pub struct ControlPlane {
     rate_cards: crate::rate_card::RateCardService,
     progress: ProgressService,
     telegram: TelegramService,
+    agent_routing: crate::agent_routing::AgentRoutingService,
     clock: Arc<dyn Clock>,
 }
 
@@ -331,6 +337,7 @@ impl ControlPlane {
             Arc::clone(&clock),
         )?;
         let telegram = TelegramService::from_config(&config, database.clone());
+        let agent_routing = crate::agent_routing::AgentRoutingService::new(database.clone())?;
         let alert_telegram = telegram.clone();
         let alert_events = events.clone();
         let alert_clock = Arc::clone(&clock);
@@ -411,6 +418,7 @@ impl ControlPlane {
             rate_cards,
             progress,
             telegram,
+            agent_routing,
             clock,
         })
     }
@@ -599,6 +607,73 @@ impl ControlPlane {
                     source_commit: SOURCE_COMMIT.to_owned(),
                     socket: self.config.socket_path.display().to_string(),
                 })
+            }
+            "agent.settings.get" => {
+                let p: devcoordinator2_api::params::AgentSettingsGet = decode(params)?;
+                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
+                    self.repository_by_id(
+                        p.repository_id.as_deref().ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::ParamsInvalid,
+                                "repository settings require a repository",
+                            )
+                        })?,
+                        false,
+                    )?;
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                encode(
+                    self.agent_routing
+                        .settings(p.scope, p.repository_id, p.harness, now_ms)?,
+                )
+            }
+            "agent.settings.save" => {
+                let p: devcoordinator2_api::params::AgentSettingsSave = decode(params)?;
+                if p.scope == devcoordinator2_api::agent_routing::Scope::Repository {
+                    self.repository_by_id(
+                        p.repository_id.as_deref().ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::ParamsInvalid,
+                                "repository settings require a repository",
+                            )
+                        })?,
+                        false,
+                    )?;
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                encode(self.agent_routing.save_settings(p, &actor, now_ms)?)
+            }
+            "agent.roles.save" => {
+                let p: devcoordinator2_api::params::AgentRolesSave = decode(params)?;
+                let (revision, roles) = self.agent_routing.save_roles(p, &actor)?;
+                encode(results::AgentRolesSaved { revision, roles })
+            }
+            "agent.capabilities.report" => {
+                let p: devcoordinator2_api::params::AgentCapabilitiesReport = decode(params)?;
+                if !caller.is_local() {
+                    return Err(ProtocolError::new(
+                        ErrorCode::PermissionDenied,
+                        "capability reports are accepted from local harnesses only",
+                    ));
+                }
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                encode(self.agent_routing.report_capabilities(
+                    p,
+                    caller.client_kind,
+                    &actor,
+                    now_ms,
+                )?)
+            }
+            "agent.instruction.current" => {
+                let p: devcoordinator2_api::params::AgentInstructionCurrent = decode(params)?;
+                let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                encode(self.agent_routing.instruction(
+                    p.repository_id,
+                    caller.client_kind,
+                    caller.model.clone(),
+                    caller.effort.clone(),
+                    now_ms,
+                )?)
             }
             "config.get" => {
                 let _: EmptyParams = decode(params)?;
@@ -2120,6 +2195,8 @@ mod tests {
             uid: 1000,
             gid: 1000,
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: Some("fixture".into()),
             work: None,
             identity: None,
@@ -2133,6 +2210,8 @@ mod tests {
             uid: 999,
             gid: 999,
             client_kind: devcoordinator2_api::ClientKind::Edge,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: Some(identity.into()),

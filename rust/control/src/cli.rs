@@ -19,6 +19,10 @@ use glossary_cli::GlossaryCommand;
 mod configuration_cli;
 use configuration_cli::ConfigCommand;
 
+#[path = "cli_agent.rs"]
+mod agent_cli;
+use agent_cli::AgentCommand;
+
 #[path = "cli_review.rs"]
 mod review_cli;
 use review_cli::ReviewCommand;
@@ -78,6 +82,10 @@ pub struct Cli {
     pub client: ClientArg,
     #[arg(long, global = true)]
     pub session: Option<String>,
+    #[arg(long, global = true)]
+    pub model: Option<String>,
+    #[arg(long, global = true)]
+    pub effort: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -106,6 +114,7 @@ impl Cli {
             Command::Review { command } => command.into_invocation(),
             Command::Glossary { command } => command.into_invocation(),
             Command::Config { command } => command.into_invocation(),
+            Command::Agent { command } => command.into_invocation(),
             Command::Storage { command } => command.into_invocation(),
         }
     }
@@ -199,6 +208,10 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
     },
     Glossary {
         #[command(subcommand)]
@@ -2728,6 +2741,10 @@ mod tests {
         ] {
             std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
         }
+        let agent_rules_file = glossary_inputs.path().join("agent-rules.json");
+        std::fs::write(&agent_rules_file, r#"[]"#).unwrap();
+        std::fs::write("/tmp/dc2-cli-agent-roles.json", r#"[]"#).unwrap();
+        std::fs::write("/tmp/dc2-cli-agent-capabilities.json", r#"{"harness":"codex","models":["gpt-6-astra"],"efforts":["high"],"pairs":[{"model":"gpt-6-astra","effort":"high"}]}"#).unwrap();
         let cases: &[(&[&str], &str)] = &[
             (&["storage", "inventory"], "storage.inventory"),
             (&["storage", "show", "artifact"], "storage.artifact.get"),
@@ -2910,6 +2927,47 @@ mod tests {
             ),
             (&["ping"], "ping"),
             (&["config", "show"], "config.get"),
+            (
+                &["agent", "settings-get", "--harness", "codex"],
+                "agent.settings.get",
+            ),
+            (
+                &[
+                    "agent",
+                    "settings-save",
+                    "--harness",
+                    "codex",
+                    "--expected-revision",
+                    "0",
+                    "--file",
+                    agent_rules_file.to_str().unwrap(),
+                ],
+                "agent.settings.save",
+            ),
+            (
+                &[
+                    "agent",
+                    "roles-save",
+                    "--expected-revision",
+                    "1",
+                    "--file",
+                    "/tmp/dc2-cli-agent-roles.json",
+                ],
+                "agent.roles.save",
+            ),
+            (
+                &[
+                    "agent",
+                    "capabilities-report",
+                    "--file",
+                    "/tmp/dc2-cli-agent-capabilities.json",
+                ],
+                "agent.capabilities.report",
+            ),
+            (
+                &["agent", "instruction-current"],
+                "agent.instruction.current",
+            ),
             (
                 &[
                     "config",

@@ -1587,3 +1587,53 @@ pub struct TestList {
     #[serde(default)]
     pub limit: Option<u16>,
 }
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSettingsGet {
+    pub scope: crate::agent_routing::Scope,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    pub harness: crate::ClientKind,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSettingsSave {
+    pub scope: crate::agent_routing::Scope,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    pub harness: crate::ClientKind,
+    pub expected_revision: u32,
+    #[schemars(length(max = 128))]
+    pub rules: Vec<crate::agent_routing::RuleInput>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRolesSave {
+    pub expected_revision: u32,
+    #[schemars(length(max = 128))]
+    pub roles: Vec<crate::agent_routing::RoleInput>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCapabilitiesReport {
+    pub harness: crate::ClientKind,
+    #[schemars(length(max = 256))]
+    pub models: Vec<String>,
+    #[schemars(length(max = 64))]
+    pub efforts: Vec<String>,
+    #[schemars(length(max = 512))]
+    pub pairs: Vec<crate::agent_routing::Pair>,
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentInstructionCurrent {
+    #[serde(default)]
+    pub repository_id: Option<String>,
+}

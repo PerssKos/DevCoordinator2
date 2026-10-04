@@ -463,3 +463,13 @@ Review history lists the latest revision of each review, newest first, independe
 A retained change is labelled a verified improvement only when the existing evidence validator accepts the before/after workload and passing quality evidence, complete source coverage exists, and an exact token, active-time or execution-time measure improves. Waiting alone is not an improvement. Partial or incomparable results retain their narrative and explicitly lack a verified-gain claim. Percentages use a nonzero exact baseline and are never combined across experiments.
 
 The Console retains no separate accounting database. The lightweight history request is independent of measurement requests, and pagination keeps frozen outcome totals. Refresh discards the bounded display cache.
+
+## Agent Settings
+
+Administrators can open **Agent Settings** from the global header. The page
+selects global defaults or one repository override, chooses Codex, Claude,
+Cursor, Antigravity, or Other, shows capability freshness, and edits each work
+role's action, model, effort, inheritance source, and stale-target state. Save
+uses a revision check and rereads the persisted profile. The generated
+ownership and spawn instruction is available through the shared protocol for
+harnesses; the Console does not launch agents itself.

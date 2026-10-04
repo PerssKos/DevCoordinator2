@@ -137,3 +137,12 @@ owns integrated agent-tool coverage, global formatting/schemas and the
 scheduler acceptance fixture in
 `acceptance/project-alpha.json`. No scheduler behavior is claimed by loader
 tests, and no prose-policy suite is required.
+
+## Current agent routing instruction
+
+At work start, a harness should call `agent.instruction.current` through the
+shared protocol with its `client.kind` and optional `client.model` and
+`client.effort`. The returned text and structured assignments are authoritative
+for current ownership. Harnesses may cache the response only until
+`cache_expires_at_ms`; when no fresh response is available they continue with
+the universal policy and leave dynamic ownership unresolved.

@@ -58,8 +58,8 @@ pub trait MetricSource: Send + Sync + 'static {
     fn own_cgroup(&self) -> Option<PathBuf>;
     fn container_cgroup(&self, container_id: &str) -> PathBuf;
     fn directory_size(&self, path: &Path, timeout: Duration) -> Option<u64>;
-    fn container_sizes(&self) -> BTreeMap<String, u64>;
-    fn docker_shared_sizes(&self) -> DockerStorage;
+    fn container_sizes(&self, timeout: Duration) -> BTreeMap<String, u64>;
+    fn docker_shared_sizes(&self, timeout: Duration) -> DockerStorage;
     fn logical_cpus(&self) -> u32;
 }
 
@@ -252,7 +252,7 @@ impl MetricSource for HostMetricSource {
             .ok()
     }
 
-    fn container_sizes(&self) -> BTreeMap<String, u64> {
+    fn container_sizes(&self, timeout: Duration) -> BTreeMap<String, u64> {
         let invocation = DockerInvocation::new(
             vec![
                 "ps".into(),
@@ -262,7 +262,7 @@ impl MetricSource for HostMetricSource {
                 "--format".into(),
                 "{{.ID}} {{.Size}}".into(),
             ],
-            Duration::from_secs(120),
+            timeout,
         )
         .expect("static Docker size invocation is valid");
         let Ok(output) = self.docker.invoke(invocation) else {
@@ -281,7 +281,7 @@ impl MetricSource for HostMetricSource {
             .collect()
     }
 
-    fn docker_shared_sizes(&self) -> DockerStorage {
+    fn docker_shared_sizes(&self, timeout: Duration) -> DockerStorage {
         let invocation = DockerInvocation::new(
             vec![
                 "system".into(),
@@ -290,7 +290,7 @@ impl MetricSource for HostMetricSource {
                 "--format".into(),
                 "{{range .Images}}image={{.UniqueSize}}{{println}}{{end}}{{range .BuildCache}}build_cache={{.Size}}{{println}}{{end}}{{range .Volumes}}volume={{.Name}}={{.Size}}{{println}}{{end}}".into(),
             ],
-            Duration::from_secs(120),
+            timeout,
         )
         .expect("static Docker storage invocation is valid");
         let Ok(output) = self.docker.invoke(invocation) else {

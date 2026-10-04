@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod agent_routing;
 pub mod completion;
 pub mod configuration;
 pub mod delivery;
@@ -26,7 +27,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 31;
+pub const DATABASE_SCHEMA_VERSION: u32 = 32;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -61,6 +62,12 @@ pub struct ClientContext {
     pub work_source: Option<work_context::WorkSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work_diagnostic: Option<work_context::WorkDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 160))]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 80))]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -628,6 +635,51 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["storage_inventory"],
         storage::List,
         storage::Inventory
+    ),
+    operation!(
+        "agent.settings.get",
+        "Read the effective harness routing rules and capability freshness.",
+        READ_SERVER_ADMIN,
+        Protocol["agent settings-get"],
+        ["agent_settings_get"],
+        params::AgentSettingsGet,
+        agent_routing::Settings
+    ),
+    operation!(
+        "agent.settings.save",
+        "Save global or repository harness routing rules with revision checks.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["agent settings-save"],
+        ["agent_settings_save"],
+        params::AgentSettingsSave,
+        agent_routing::Settings
+    ),
+    operation!(
+        "agent.roles.save",
+        "Create, rename, reorder, or retire agent work roles.",
+        REVERSIBLE_SERVER_ADMIN,
+        Protocol["agent roles-save"],
+        ["agent_roles_save"],
+        params::AgentRolesSave,
+        results::AgentRolesSaved
+    ),
+    operation!(
+        "agent.capabilities.report",
+        "Report the current model and effort capabilities of one harness.",
+        APPEND_SELF,
+        Protocol["agent capabilities-report"],
+        ["agent_capabilities_report"],
+        params::AgentCapabilitiesReport,
+        results::AgentCapabilitiesReported
+    ),
+    operation!(
+        "agent.instruction.current",
+        "Return concise current ownership and spawn guidance for this harness.",
+        READ_SERVER_ADMIN,
+        Protocol["agent instruction-current"],
+        ["agent_instruction_current"],
+        params::AgentInstructionCurrent,
+        results::AgentInstruction
     ),
     operation!(
         "storage.artifact.get",
@@ -2268,9 +2320,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 153);
-        assert_eq!(tools.len(), 124);
-        assert_eq!(cli_routes.len(), 118);
+        assert_eq!(OPERATIONS.len(), 158);
+        assert_eq!(tools.len(), 129);
+        assert_eq!(cli_routes.len(), 123);
     }
 
     #[test]
