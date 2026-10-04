@@ -117,6 +117,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 ClientKind::Other
             },
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: request.client.identity,
