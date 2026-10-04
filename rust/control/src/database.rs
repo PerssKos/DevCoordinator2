@@ -533,6 +533,10 @@ mod tests {
             "visual_feedback_comments",
             "visual_feedback_events",
             "owned_events",
+            "agent_roles",
+            "agent_capabilities",
+            "agent_routing_settings",
+            "agent_routing_history",
         ] {
             assert!(
                 tables.iter().any(|table| table == required),

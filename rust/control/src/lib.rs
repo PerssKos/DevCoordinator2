@@ -1,6 +1,7 @@
 //! Rust control plane for DevCoordinator2.
 
 pub mod access;
+pub mod agent_routing;
 pub mod alerts;
 pub mod artifact_materialize;
 pub mod bugs;

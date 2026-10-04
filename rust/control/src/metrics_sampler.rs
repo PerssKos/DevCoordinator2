@@ -1,10 +1,10 @@
 //! Host-wide metric sampling, attribution, storage ownership, and alerts.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 use devcoordinator2_api::results::{HealthHost, HostReconciliation, MetricSample};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
@@ -19,12 +19,20 @@ use crate::deployment_files::DeploymentFiles;
 use crate::docker::{DockerControl, ExactContainerId};
 use crate::inventory::ContainerInventory;
 use crate::metrics::{Aggregate, MetricsStore};
-use crate::metrics_source::{CgroupStats, HostMetricSource, MetricSource};
+use crate::metrics_source::{CgroupStats, DockerStorage, HostMetricSource, MetricSource};
 use crate::platform::{Clock, HostMonotonicClock, MonotonicClock};
 use crate::systemd::SystemdControl;
 
 pub const SAMPLE_SECONDS: u32 = 15;
 pub const STORAGE_SECONDS: u32 = 300;
+
+// Directory and Docker storage probes walk user-controlled trees and can be
+// much more expensive than the health request that consumes their result.
+// Keep one refresh bounded and advance through the records over subsequent
+// refreshes instead of allowing one large checkout to monopolize the daemon.
+const STORAGE_SCAN_BUDGET: StdDuration = StdDuration::from_secs(10);
+const STORAGE_DIRECTORY_TIMEOUT: StdDuration = StdDuration::from_secs(3);
+const STORAGE_DOCKER_TIMEOUT: StdDuration = StdDuration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SubjectKey {
@@ -79,6 +87,7 @@ struct Inner {
     monotonic: Arc<dyn MonotonicClock>,
     state: Mutex<Option<SamplerSnapshot>>,
     working: Mutex<Working>,
+    storage_scan: Mutex<StorageScanState>,
     storage_requested: AtomicBool,
 }
 
@@ -90,6 +99,14 @@ struct Working {
     previous_host: Option<(u64, u64)>,
     restart_history: BTreeMap<String, Vec<(f64, u32)>>,
     last_expire: f64,
+}
+
+#[derive(Clone, Default)]
+struct StorageScanState {
+    worktree_cursor: usize,
+    deployment_cursor: usize,
+    container_sizes: BTreeMap<String, u64>,
+    shared: DockerStorage,
 }
 
 #[derive(Clone)]
@@ -173,6 +190,7 @@ impl MetricSampler {
                 monotonic,
                 state: Mutex::new(None),
                 working: Mutex::new(Working::default()),
+                storage_scan: Mutex::new(StorageScanState::default()),
                 storage_requested: AtomicBool::new(true),
             }),
         }
@@ -383,63 +401,194 @@ impl MetricSampler {
         let (repositories, worktrees, deployments, components, observed) =
             self.storage_records()
                 .inspect_err(|_| self.request_storage())?;
-        let mut storage = BTreeMap::new();
-        let mut metric_records = Vec::new();
-        let mut per_repository = repositories
-            .iter()
-            .map(|(id, _)| (id.clone(), repository_storage()))
-            .collect::<BTreeMap<_, _>>();
-        for worktree in &worktrees {
-            let Some(buckets) = per_repository.get_mut(&worktree.repository_id) else {
-                continue;
-            };
-            if let Some(size) = self
+
+        // A storage probe must not monopolize the daemon. Keep the previous
+        // values for entries that were not reached and advance a stable cursor
+        // so large repositories make progress across refreshes.
+        let mut worktrees = worktrees;
+        worktrees.sort_by(|left, right| left.worktree_id.cmp(&right.worktree_id));
+        let mut deployments = deployments;
+        deployments.sort_by(|left, right| left.deployment_id.cmp(&right.deployment_id));
+
+        let previous = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|snapshot| snapshot.storage.clone())
+            .unwrap_or_default();
+        let previous_host = previous
+            .get(&SubjectKey::new("host", "storage"))
+            .cloned()
+            .unwrap_or_default();
+
+        let mut current_keys = BTreeSet::new();
+        current_keys.extend(
+            worktrees
+                .iter()
+                .map(|worktree| SubjectKey::new("worktree", &worktree.worktree_id)),
+        );
+        current_keys.extend(
+            deployments
+                .iter()
+                .map(|deployment| SubjectKey::new("deployment", &deployment.deployment_id)),
+        );
+        current_keys.extend(components.iter().map(|component| {
+            SubjectKey::new(
+                "component",
+                format!("{}/{}", component.deployment_id, component.name),
+            )
+        }));
+        current_keys.extend(observed.iter().map(|(_, _, deployment_id, component)| {
+            SubjectKey::new("component", format!("{deployment_id}/{component}"))
+        }));
+
+        let mut storage = previous;
+        storage.retain(|key, _| current_keys.contains(key));
+
+        let (mut worktree_cursor, mut deployment_cursor, mut container_sizes, mut shared) = {
+            let scan = self
                 .inner
-                .source
-                .directory_size(&worktree.path, StdDuration::from_secs(120))
-            {
-                add(buckets, "checkout", size);
-            }
-            if let Some(size) = self.inner.source.directory_size(
-                &worktree.path.join(".devcoordinator/test"),
-                StdDuration::from_secs(60),
+                .storage_scan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (
+                scan.worktree_cursor,
+                scan.deployment_cursor,
+                scan.container_sizes.clone(),
+                scan.shared.clone(),
+            )
+        };
+
+        let scan_started = Instant::now();
+        let half_budget = StdDuration::from_millis((STORAGE_SCAN_BUDGET.as_millis() / 2) as u64);
+        let worktree_deadline = scan_started + half_budget;
+        let worktree_start = worktree_cursor;
+        let mut worktrees_scanned = 0;
+        while !worktrees.is_empty()
+            && worktrees_scanned < worktrees.len()
+            && Instant::now() < worktree_deadline
+        {
+            let worktree = &worktrees[(worktree_start + worktrees_scanned) % worktrees.len()];
+            let key = SubjectKey::new("worktree", &worktree.worktree_id);
+            let values = storage.entry(key).or_default();
+            if let Some(size) = bounded_directory_size(
+                self.inner.source.as_ref(),
+                &worktree.path,
+                worktree_deadline,
             ) {
-                add(buckets, "test_scratch", size);
-                storage.insert(
-                    SubjectKey::new("worktree", &worktree.worktree_id),
-                    BTreeMap::from([("test_scratch".into(), size)]),
-                );
+                values.insert("checkout".into(), size);
             }
+            if let Some(size) = bounded_directory_size(
+                self.inner.source.as_ref(),
+                &worktree.path.join(".devcoordinator/test"),
+                worktree_deadline,
+            ) {
+                values.insert("test_scratch".into(), size);
+            }
+            worktrees_scanned += 1;
         }
+        worktree_cursor = if worktrees.is_empty() {
+            0
+        } else {
+            (worktree_start + worktrees_scanned) % worktrees.len()
+        };
+
         let deployment_map = deployments
             .iter()
             .map(|deployment| (deployment.deployment_id.as_str(), deployment))
             .collect::<HashMap<_, _>>();
-        for deployment in &deployments {
-            if let Some(size) = self.inner.source.directory_size(
+        let deployment_start = deployment_cursor;
+        let mut deployments_scanned = 0;
+        let deployment_deadline = scan_started + STORAGE_SCAN_BUDGET;
+        while !deployments.is_empty()
+            && deployments_scanned < deployments.len()
+            && Instant::now() < deployment_deadline
+        {
+            let deployment =
+                &deployments[(deployment_start + deployments_scanned) % deployments.len()];
+            let key = SubjectKey::new("deployment", &deployment.deployment_id);
+            let values = storage.entry(key).or_default();
+            if let Some(size) = bounded_directory_size(
+                self.inner.source.as_ref(),
                 &self
                     .inner
                     .config
                     .deployments_dir()
                     .join(&deployment.deployment_id),
-                StdDuration::from_secs(60),
+                deployment_deadline,
             ) {
-                if let Some(buckets) = per_repository.get_mut(&deployment.repository_id) {
-                    add(buckets, "deployment_artifacts", size);
-                }
-                storage.insert(
-                    SubjectKey::new("deployment", &deployment.deployment_id),
-                    BTreeMap::from([("artifacts".into(), size)]),
-                );
+                values.insert("artifacts".into(), size);
+            }
+            deployments_scanned += 1;
+        }
+        deployment_cursor = if deployments.is_empty() {
+            0
+        } else {
+            (deployment_start + deployments_scanned) % deployments.len()
+        };
+
+        let remaining = deployment_deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            let fresh = self
+                .inner
+                .source
+                .container_sizes(remaining.min(STORAGE_DOCKER_TIMEOUT));
+            if !fresh.is_empty() || container_sizes.is_empty() {
+                container_sizes = fresh;
             }
         }
-        let container_sizes = self.inner.source.container_sizes();
-        let shared = self.inner.source.docker_shared_sizes();
+        let remaining = deployment_deadline.saturating_duration_since(Instant::now());
+        if !remaining.is_zero() {
+            let fresh = self
+                .inner
+                .source
+                .docker_shared_sizes(remaining.min(STORAGE_DOCKER_TIMEOUT));
+            if fresh != DockerStorage::default() || shared == DockerStorage::default() {
+                shared = fresh;
+            }
+        }
+
+        let mut metric_records = Vec::new();
+        let mut per_repository = repositories
+            .iter()
+            .map(|(id, _)| (id.clone(), repository_storage()))
+            .collect::<BTreeMap<_, _>>();
+
+        for worktree in &worktrees {
+            let Some(buckets) = per_repository.get_mut(&worktree.repository_id) else {
+                continue;
+            };
+            if let Some(values) = storage.get(&SubjectKey::new("worktree", &worktree.worktree_id)) {
+                if let Some(size) = values.get("checkout") {
+                    add(buckets, "checkout", *size);
+                }
+                if let Some(size) = values.get("test_scratch") {
+                    add(buckets, "test_scratch", *size);
+                }
+            }
+        }
+        for deployment in &deployments {
+            if let Some(values) =
+                storage.get(&SubjectKey::new("deployment", &deployment.deployment_id))
+                && let Some(size) = values.get("artifacts")
+                && let Some(buckets) = per_repository.get_mut(&deployment.repository_id)
+            {
+                add(buckets, "deployment_artifacts", *size);
+            }
+        }
+
         let mut volume_owners = BTreeMap::new();
+        let mut postgres_probe_allowed = true;
         for component in &components {
             let Some(deployment) = deployment_map.get(component.deployment_id.as_str()) else {
                 continue;
             };
+            let component_key = SubjectKey::new(
+                "component",
+                format!("{}/{}", component.deployment_id, component.name),
+            );
             let prefix = format!(
                 "devcoordinator2-{}-{}-",
                 component.deployment_id, component.name
@@ -454,21 +603,27 @@ impl MetricSampler {
                     (deployment.repository_id.clone(), component.kind.clone()),
                 );
             }
+
             if component.binding_kind.as_deref() == Some("container")
                 && let Some(identity) = &component.binding_identity
-                && let Some(size) = container_sizes.get(identity)
             {
-                if let Some(buckets) = per_repository.get_mut(&deployment.repository_id) {
-                    add(buckets, "container_layers", *size);
+                let size = container_sizes.get(identity).copied().or_else(|| {
+                    storage
+                        .get(&component_key)
+                        .and_then(|values| values.get("container_layer"))
+                        .copied()
+                });
+                if let Some(size) = size {
+                    if let Some(buckets) = per_repository.get_mut(&deployment.repository_id) {
+                        add(buckets, "container_layers", size);
+                    }
+                    storage
+                        .entry(component_key.clone())
+                        .or_default()
+                        .insert("container_layer".into(), size);
                 }
-                storage
-                    .entry(SubjectKey::new(
-                        "component",
-                        format!("{}/{}", component.deployment_id, component.name),
-                    ))
-                    .or_insert_with(BTreeMap::new)
-                    .insert("container_layer".into(), *size);
             }
+
             if component.kind == "postgres"
                 && component.binding_kind.as_deref() == Some("container")
                 && let Some(identity) = &component.binding_identity
@@ -477,37 +632,52 @@ impl MetricSampler {
                     .inner
                     .files
                     .read_postgres_credentials(&component.deployment_id, &component.name)
-                && let Ok(Some(facts)) = self.inner.docker.postgres_facts(
+                && postgres_probe_allowed
+            {
+                let remaining = deployment_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    postgres_probe_allowed = false;
+                } else if let Ok(Some(facts)) = self.inner.docker.postgres_facts(
                     &identity,
                     &credentials.user,
                     &credentials.database,
-                )
-            {
-                let key = SubjectKey::new(
-                    "component",
-                    format!("{}/{}", component.deployment_id, component.name),
-                );
-                storage
-                    .entry(key.clone())
-                    .or_insert_with(BTreeMap::new)
-                    .extend(facts.clone());
-                for (metric, value) in facts {
-                    metric_records.push((key.kind.clone(), key.id.clone(), metric, value as f64));
+                    remaining.min(STORAGE_DOCKER_TIMEOUT),
+                ) {
+                    storage
+                        .entry(component_key.clone())
+                        .or_default()
+                        .extend(facts.clone());
+                    for (metric, value) in facts {
+                        metric_records.push((
+                            component_key.kind.clone(),
+                            component_key.id.clone(),
+                            metric,
+                            value as f64,
+                        ));
+                    }
                 }
             }
         }
+
         for (container_id, repository_id, deployment_id, component) in observed {
-            let Some(size) = container_sizes.get(&container_id) else {
+            let key = SubjectKey::new("component", format!("{deployment_id}/{component}"));
+            let Some(size) = container_sizes.get(&container_id).copied().or_else(|| {
+                storage
+                    .get(&key)
+                    .and_then(|values| values.get("container_layer"))
+                    .copied()
+            }) else {
                 continue;
             };
             if let Some(buckets) = per_repository.get_mut(&repository_id) {
-                add(buckets, "container_layers", *size);
+                add(buckets, "container_layers", size);
             }
-            storage.insert(
-                SubjectKey::new("component", format!("{deployment_id}/{component}")),
-                BTreeMap::from([("container_layer".into(), *size)]),
-            );
+            storage
+                .entry(key)
+                .or_default()
+                .insert("container_layer".into(), size);
         }
+
         let mut shared_volumes = 0_u64;
         for (volume, size) in &shared.volumes {
             if let Some((repository_id, kind)) = volume_owners.get(volume)
@@ -526,6 +696,7 @@ impl MetricSampler {
                 shared_volumes = shared_volumes.saturating_add(*size);
             }
         }
+
         for (repository_id, mut buckets) in per_repository {
             let total = buckets.values().copied().fold(0_u64, u64::saturating_add);
             buckets.insert("total".into(), total);
@@ -537,11 +708,14 @@ impl MetricSampler {
             ));
             storage.insert(SubjectKey::new("repository", repository_id), buckets);
         }
-        let state_size = self
-            .inner
-            .source
-            .directory_size(&self.inner.config.state_dir, StdDuration::from_secs(60))
-            .unwrap_or(0);
+
+        let state_size = bounded_directory_size(
+            self.inner.source.as_ref(),
+            &self.inner.config.state_dir,
+            deployment_deadline,
+        )
+        .or_else(|| previous_host.get("devcoordinator_state").copied())
+        .unwrap_or(0);
         let filesystem = self.inner.source.filesystem(Path::new("/"));
         let managed_total = storage
             .iter()
@@ -573,6 +747,19 @@ impl MetricSampler {
                 ),
             ]),
         );
+
+        {
+            let mut scan = self
+                .inner
+                .storage_scan
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            scan.worktree_cursor = worktree_cursor;
+            scan.deployment_cursor = deployment_cursor;
+            scan.container_sizes = container_sizes;
+            scan.shared = shared;
+        }
+
         let mut working = self
             .inner
             .working
@@ -977,6 +1164,18 @@ fn query_components(
         .collect::<Result<Vec<_>, _>>()?)
 }
 
+fn bounded_directory_size(
+    source: &dyn MetricSource,
+    path: &Path,
+    deadline: Instant,
+) -> Option<u64> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return None;
+    }
+    source.directory_size(path, remaining.min(STORAGE_DIRECTORY_TIMEOUT))
+}
+
 fn delta_sample(
     working: &mut Working,
     key: &SubjectKey,
@@ -1233,10 +1432,10 @@ mod tests {
             }
             Some(10)
         }
-        fn container_sizes(&self) -> BTreeMap<String, u64> {
+        fn container_sizes(&self, _: StdDuration) -> BTreeMap<String, u64> {
             BTreeMap::new()
         }
-        fn docker_shared_sizes(&self) -> DockerStorage {
+        fn docker_shared_sizes(&self, _: StdDuration) -> DockerStorage {
             DockerStorage::default()
         }
         fn logical_cpus(&self) -> u32 {

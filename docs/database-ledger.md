@@ -250,3 +250,14 @@ promotes the exact existing routed assignment to generation zero; a conflict
 withdraws the route, preserves reservations and marks the component for repair.
 The route-generation floor is durable publication metadata outside the SQLite
 backup; restoring a database does not restore that floor.
+
+## Schema version 32 — harness routing policy
+
+The Coordinator stores the built-in harness routing registry and append-only
+configuration history. `agent_roles` contains ordered active or retired role
+identities; `agent_role_history` preserves role edits. `agent_capabilities`
+contains the latest value-free model/effort catalog and expiry for each harness.
+`agent_routing_settings` stores revisioned global and repository rules, while
+`agent_routing_history` retains every saved revision. Repository rows inherit
+missing roles from the global row; stale capability reports remain visible but
+cannot authorize a new spawn target.

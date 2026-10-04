@@ -1188,6 +1188,7 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         user: &str,
         database: &str,
+        timeout: Duration,
     ) -> Result<Option<BTreeMap<String, u64>>, DockerError> {
         if user.is_empty()
             || database.is_empty()
@@ -1218,7 +1219,7 @@ pub trait DockerControl: Send + Sync {
                 "-c".into(),
                 SQL.into(),
             ],
-            Duration::from_secs(20),
+            timeout,
         )?)?;
         if !output.success() || output.stdout_truncated || output.stderr_truncated {
             return Ok(None);
@@ -2577,7 +2578,7 @@ mod tests {
     fn postgres_facts_are_numeric_and_use_one_fixed_exact_id_query() {
         let docker = FakeDocker::new(vec![output(0, "1|2|3|4\n", "")]);
         let facts = docker
-            .postgres_facts(&id('d'), "app", "app_test")
+            .postgres_facts(&id('d'), "app", "app_test", Duration::from_secs(20))
             .unwrap()
             .unwrap();
         assert_eq!(facts["pg_connections"], 1);

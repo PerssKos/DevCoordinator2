@@ -578,6 +578,1417 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "agent settings-get"
+          }
+        ]
+      },
+      "description": "Read the effective harness routing rules and capability freshness.",
+      "inputSchema": {
+        "$defs": {
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "Scope": {
+            "enum": [
+              "global",
+              "repository"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "$ref": "#/$defs/Scope"
+          }
+        },
+        "required": [
+          "scope",
+          "harness"
+        ],
+        "title": "AgentSettingsGet",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "ClientKind": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "cursor",
+                  "antigravity",
+                  "human",
+                  "edge",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "Scope": {
+                "enum": [
+                  "global",
+                  "repository"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scope": {
+                "$ref": "#/$defs/Scope"
+              }
+            },
+            "required": [
+              "scope",
+              "harness"
+            ],
+            "title": "AgentSettingsGet",
+            "type": "object"
+          },
+          "name": "agent_settings_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.settings.get",
+      "outputSchema": {
+        "$defs": {
+          "Action": {
+            "enum": [
+              "always_spawn",
+              "never_spawn",
+              "skip_if_model_matches",
+              "skip_if_model_and_effort_matches"
+            ],
+            "type": "string"
+          },
+          "Capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "efforts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "models": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pairs": {
+                "items": {
+                  "$ref": "#/$defs/Pair"
+                },
+                "type": "array"
+              },
+              "reported_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "harness",
+              "models",
+              "efforts",
+              "pairs",
+              "fresh"
+            ],
+            "type": "object"
+          },
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "Pair": {
+            "additionalProperties": false,
+            "properties": {
+              "effort": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "effort"
+            ],
+            "type": "object"
+          },
+          "Role": {
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retired": {
+                "type": "boolean"
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "title",
+              "position",
+              "retired"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inherited": {
+                "type": "boolean"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "stale": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "role_id",
+              "action",
+              "inherited",
+              "stale"
+            ],
+            "type": "object"
+          },
+          "Scope": {
+            "enum": [
+              "global",
+              "repository"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/$defs/Capabilities"
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          },
+          "roles_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/Rule"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/$defs/Scope"
+          }
+        },
+        "required": [
+          "scope",
+          "harness",
+          "revision",
+          "roles_revision",
+          "roles",
+          "rules",
+          "capabilities"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "agent settings-save"
+          }
+        ]
+      },
+      "description": "Save global or repository harness routing rules with revision checks.",
+      "inputSchema": {
+        "$defs": {
+          "Action": {
+            "enum": [
+              "always_spawn",
+              "never_spawn",
+              "skip_if_model_matches",
+              "skip_if_model_and_effort_matches"
+            ],
+            "type": "string"
+          },
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "RuleInput": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "role_id": {
+                "pattern": "^[a-z][a-z0-9_]{0,79}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "action"
+            ],
+            "type": "object"
+          },
+          "Scope": {
+            "enum": [
+              "global",
+              "repository"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/RuleInput"
+            },
+            "maxItems": 128,
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/$defs/Scope"
+          }
+        },
+        "required": [
+          "scope",
+          "harness",
+          "expected_revision",
+          "rules"
+        ],
+        "title": "AgentSettingsSave",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Action": {
+                "enum": [
+                  "always_spawn",
+                  "never_spawn",
+                  "skip_if_model_matches",
+                  "skip_if_model_and_effort_matches"
+                ],
+                "type": "string"
+              },
+              "ClientKind": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "cursor",
+                  "antigravity",
+                  "human",
+                  "edge",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "RuleInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "$ref": "#/$defs/Action"
+                  },
+                  "effort": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "role_id": {
+                    "pattern": "^[a-z][a-z0-9_]{0,79}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "role_id",
+                  "action"
+                ],
+                "type": "object"
+              },
+              "Scope": {
+                "enum": [
+                  "global",
+                  "repository"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rules": {
+                "items": {
+                  "$ref": "#/$defs/RuleInput"
+                },
+                "maxItems": 128,
+                "type": "array"
+              },
+              "scope": {
+                "$ref": "#/$defs/Scope"
+              }
+            },
+            "required": [
+              "scope",
+              "harness",
+              "expected_revision",
+              "rules"
+            ],
+            "title": "AgentSettingsSave",
+            "type": "object"
+          },
+          "name": "agent_settings_save",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.settings.save",
+      "outputSchema": {
+        "$defs": {
+          "Action": {
+            "enum": [
+              "always_spawn",
+              "never_spawn",
+              "skip_if_model_matches",
+              "skip_if_model_and_effort_matches"
+            ],
+            "type": "string"
+          },
+          "Capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "efforts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "models": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pairs": {
+                "items": {
+                  "$ref": "#/$defs/Pair"
+                },
+                "type": "array"
+              },
+              "reported_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "harness",
+              "models",
+              "efforts",
+              "pairs",
+              "fresh"
+            ],
+            "type": "object"
+          },
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "Pair": {
+            "additionalProperties": false,
+            "properties": {
+              "effort": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "effort"
+            ],
+            "type": "object"
+          },
+          "Role": {
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retired": {
+                "type": "boolean"
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "title",
+              "position",
+              "retired"
+            ],
+            "type": "object"
+          },
+          "Rule": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inherited": {
+                "type": "boolean"
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "stale": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "role_id",
+              "action",
+              "inherited",
+              "stale"
+            ],
+            "type": "object"
+          },
+          "Scope": {
+            "enum": [
+              "global",
+              "repository"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/$defs/Capabilities"
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          },
+          "roles_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/Rule"
+            },
+            "type": "array"
+          },
+          "scope": {
+            "$ref": "#/$defs/Scope"
+          }
+        },
+        "required": [
+          "scope",
+          "harness",
+          "revision",
+          "roles_revision",
+          "roles",
+          "rules",
+          "capabilities"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "agent roles-save"
+          }
+        ]
+      },
+      "description": "Create, rename, reorder, or retire agent work roles.",
+      "inputSchema": {
+        "$defs": {
+          "RoleInput": {
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retired": {
+                "type": "boolean"
+              },
+              "role_id": {
+                "pattern": "^[a-z][a-z0-9_]{0,79}$",
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "title",
+              "position",
+              "retired"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/RoleInput"
+            },
+            "maxItems": 128,
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "roles"
+        ],
+        "title": "AgentRolesSave",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "RoleInput": {
+                "additionalProperties": false,
+                "properties": {
+                  "position": {
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "retired": {
+                    "type": "boolean"
+                  },
+                  "role_id": {
+                    "pattern": "^[a-z][a-z0-9_]{0,79}$",
+                    "type": "string"
+                  },
+                  "title": {
+                    "maxLength": 200,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "role_id",
+                  "title",
+                  "position",
+                  "retired"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "roles": {
+                "items": {
+                  "$ref": "#/$defs/RoleInput"
+                },
+                "maxItems": 128,
+                "type": "array"
+              }
+            },
+            "required": [
+              "expected_revision",
+              "roles"
+            ],
+            "title": "AgentRolesSave",
+            "type": "object"
+          },
+          "name": "agent_roles_save",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.roles.save",
+      "outputSchema": {
+        "$defs": {
+          "Role": {
+            "additionalProperties": false,
+            "properties": {
+              "position": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retired": {
+                "type": "boolean"
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "title",
+              "position",
+              "retired"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "roles": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "roles"
+        ],
+        "title": "AgentRolesSaved",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "agent capabilities-report"
+          }
+        ]
+      },
+      "description": "Report the current model and effort capabilities of one harness.",
+      "inputSchema": {
+        "$defs": {
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "Pair": {
+            "additionalProperties": false,
+            "properties": {
+              "effort": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "effort"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "type": "array"
+          },
+          "expires_at_ms": {
+            "default": null,
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 256,
+            "type": "array"
+          },
+          "pairs": {
+            "items": {
+              "$ref": "#/$defs/Pair"
+            },
+            "maxItems": 512,
+            "type": "array"
+          }
+        },
+        "required": [
+          "harness",
+          "models",
+          "efforts",
+          "pairs"
+        ],
+        "title": "AgentCapabilitiesReport",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "ClientKind": {
+                "enum": [
+                  "codex",
+                  "claude",
+                  "cursor",
+                  "antigravity",
+                  "human",
+                  "edge",
+                  "other"
+                ],
+                "type": "string"
+              },
+              "Pair": {
+                "additionalProperties": false,
+                "properties": {
+                  "effort": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model",
+                  "effort"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "efforts": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              },
+              "expires_at_ms": {
+                "default": null,
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "models": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 256,
+                "type": "array"
+              },
+              "pairs": {
+                "items": {
+                  "$ref": "#/$defs/Pair"
+                },
+                "maxItems": 512,
+                "type": "array"
+              }
+            },
+            "required": [
+              "harness",
+              "models",
+              "efforts",
+              "pairs"
+            ],
+            "title": "AgentCapabilitiesReport",
+            "type": "object"
+          },
+          "name": "agent_capabilities_report",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.capabilities.report",
+      "outputSchema": {
+        "$defs": {
+          "Capabilities": {
+            "additionalProperties": false,
+            "properties": {
+              "efforts": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "expires_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "fresh": {
+                "type": "boolean"
+              },
+              "harness": {
+                "$ref": "#/$defs/ClientKind"
+              },
+              "models": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pairs": {
+                "items": {
+                  "$ref": "#/$defs/Pair"
+                },
+                "type": "array"
+              },
+              "reported_at_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "harness",
+              "models",
+              "efforts",
+              "pairs",
+              "fresh"
+            ],
+            "type": "object"
+          },
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          },
+          "Pair": {
+            "additionalProperties": false,
+            "properties": {
+              "effort": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "model",
+              "effort"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "capabilities": {
+            "$ref": "#/$defs/Capabilities"
+          }
+        },
+        "required": [
+          "capabilities"
+        ],
+        "title": "AgentCapabilitiesReported",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "agent instruction-current"
+          }
+        ]
+      },
+      "description": "Return concise current ownership and spawn guidance for this harness.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "repository_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "AgentInstructionCurrent",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "repository_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "title": "AgentInstructionCurrent",
+            "type": "object"
+          },
+          "name": "agent_instruction_current",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.instruction.current",
+      "outputSchema": {
+        "$defs": {
+          "Action": {
+            "enum": [
+              "always_spawn",
+              "never_spawn",
+              "skip_if_model_matches",
+              "skip_if_model_and_effort_matches"
+            ],
+            "type": "string"
+          },
+          "AgentAssignment": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "effort": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resolved": {
+                "type": "boolean"
+              },
+              "role_id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "role_id",
+              "title",
+              "action",
+              "resolved"
+            ],
+            "type": "object"
+          },
+          "ClientKind": {
+            "enum": [
+              "codex",
+              "claude",
+              "cursor",
+              "antigravity",
+              "human",
+              "edge",
+              "other"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "assignments": {
+            "items": {
+              "$ref": "#/$defs/AgentAssignment"
+            },
+            "type": "array"
+          },
+          "cache_expires_at_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "current_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "current_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness": {
+            "$ref": "#/$defs/ClientKind"
+          },
+          "repository_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "harness",
+          "assignments",
+          "text"
+        ],
+        "title": "AgentInstruction",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "storage show"
           }
         ]
@@ -52109,6 +53520,13 @@
       "ClientContext": {
         "additionalProperties": false,
         "properties": {
+          "effort": {
+            "maxLength": 80,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "identity": {
             "type": [
               "string",
@@ -52118,6 +53536,13 @@
           "kind": {
             "$ref": "#/$defs/ClientKind",
             "default": "other"
+          },
+          "model": {
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "session": {
             "type": [

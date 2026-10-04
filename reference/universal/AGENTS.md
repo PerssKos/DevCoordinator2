@@ -13,6 +13,15 @@ and more-specific project rules
 retain their existing precedence. Policy updates append context; do not rewrite
 earlier model messages or reload unchanged instructions.
 
+- At the beginning of each work session, fetch the current concise ownership and
+  spawn instruction from the configured Coordinator with `agent.instruction.current`.
+  The CLI form is `devcoordinator2 --client <harness> [--model <model>] [--effort <effort>] agent instruction-current`.
+  Identify the harness and provide the current model and effort when the harness
+  knows them. Cache a successful response only until its returned expiry. If the
+  Coordinator is unavailable and no unexpired cached response exists, continue
+  with these universal instructions and treat dynamic ownership as unresolved;
+  never invent a current model, effort level, or spawn assignment.
+
 - Infer and complete the intended, authorized outcome, including necessary
   integration and verification. Honor analysis-only, specification-only, pause,
   cancellation, ownership, and publication limits. An interim question steers

@@ -1,0 +1,10 @@
+{
+  "artifact_type": "test-fixture-snapshot",
+  "fixture_id": "agent-settings-policy-matrix-implementation-dark-20261004",
+  "generator": "ConsoleFormalJourney",
+  "height": 1058,
+  "schema_version": 1,
+  "sha256": "507e62074443d3721d2a703d6e0bff8bfd01a4fc6877098278108664c5b88993",
+  "source": "isolated-test-fixture",
+  "width": 1487
+}

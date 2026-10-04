@@ -58,6 +58,8 @@ impl Cli {
         let mut context = ClientContext {
             kind: self.client.into(),
             session: self.session.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
             ..ClientContext::default()
         };
         let Some(environment) = environment else {

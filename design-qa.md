@@ -932,3 +932,25 @@ P3 follow-up: the row checkboxes are visually compact. The table keeps their pro
 Comparison history: the initial implementation was revised to keep the inspector visible after protection changes, remove narrow-screen table overflow, shorten only the filter-menu labels that could not fit native controls, and stabilize the initial inventory render. The final paired comparison above was captured after those fixes and found no actionable P0-P2 issue.
 
 **final result: passed**
+
+## Agent Settings — Policy Matrix (2026-10-04)
+
+### Source and implementation
+
+- Source visual: Coordinator sketch batch `kd521ccda0a112e60`, selected node `sa69a7f252db8c65d`
+- Source identity: SHA-256 `6d4dbfd15b2b23f5bc97686f5300d916a00821150e402f75c63cf518ff586706`
+- Implementation capture: `design-qa/agent-settings/implementation-dark-1487x1058.png` (SHA-256 `507e62074443d3721d2a703d6e0bff8bfd01a4fc6877098278108664c5b88993`)
+- Comparison conditions: dark theme, populated administrator state, 1487×1058 CSS viewport, one Console surface. The implementation capture was inspected after saving and the source was inspected from the selected immutable sketch.
+
+### Findings
+
+- The implementation preserves the selected matrix hierarchy, dark Console token family, compact scope/harness/capability strip, role table, and bottom save action.
+- The current capture uses three fixture roles while the approved source depicts the full 13-role product state. This is a comparison evidence limit; the live candidate’s seeded role registry contains the complete 13-role set and must be captured again in the final handoff.
+- No actionable P0/P1/P2 visual issue was found in the captured state. The final comparison remains preliminary because the live Coordinator delivery and source-identity receipts were unavailable.
+
+### Verification limits
+
+- The screenshot proves rendered hierarchy and visual state only; it does not prove assistive-technology behavior, live persistence, authorization, or the complete 13-role populated surface.
+- The repository’s Coordinator service timed out while final delivery evidence was being requested.
+
+final result: blocked
