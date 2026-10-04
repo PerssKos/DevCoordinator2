@@ -329,5 +329,6 @@
   "agent_skip_model_effort": "Don't spawn if model + effort match",
   "agent_select_model": "Select model",
   "agent_select_effort": "Select effort",
-  "agent_updated": "Updated {value}"
+  "agent_updated": "Updated {value}",
+  "agent_no_repositories": "No repositories are available for an override."
 }
