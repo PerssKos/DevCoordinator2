@@ -4754,25 +4754,84 @@ function screenshotArtifactPath(config, cellId, target, viewport, kind) {
   );
 }
 
+function screenshotRedaction({ key, style, operation }) {
+  if (operation === "remove") {
+    for (const { root, sheet } of window[key] || []) {
+      root.adoptedStyleSheets = root.adoptedStyleSheets.filter((entry) => entry !== sheet);
+    }
+    delete window[key];
+    return;
+  }
+  const roots = [document];
+  for (let index = 0; index < roots.length; index += 1) {
+    for (const element of roots[index].querySelectorAll("*")) {
+      if (element.shadowRoot) roots.push(element.shadowRoot);
+    }
+  }
+  if (operation === "apply") {
+    window[key] = [];
+    for (const root of roots) {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(style);
+      root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+      window[key].push({ root, sheet });
+    }
+  }
+  if (roots.length !== window[key]?.length || window[key].some(({ root, sheet }) => !root.adoptedStyleSheets.includes(sheet))) {
+    throw new Error("screenshot redaction context changed");
+  }
+  const selector = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),textarea,select';
+  for (const root of roots) {
+    for (const control of root.querySelectorAll(selector)) {
+      const computed = getComputedStyle(control);
+      const placeholder = control.hasAttribute("placeholder") ? getComputedStyle(control, "::placeholder") : null;
+      if ((computed.webkitTextFillColor || computed.color) !== "rgba(0, 0, 0, 0)" || placeholder && (placeholder.webkitTextFillColor || placeholder.color) !== "rgba(0, 0, 0, 0)") {
+        throw new Error("screenshot form redaction could not be applied");
+      }
+    }
+  }
+}
+
 async function captureEvidenceScreenshot(page, target, viewport, config, cellId, kind, deadline = null) {
   fs.mkdirSync(config.screenshotDir, { recursive: true, mode: 0o700 });
   const file = screenshotArtifactPath(config, cellId, target, viewport, kind);
   const masks = await screenshotMasks(page, target, config, deadline !== null);
   if (deadline !== null && Date.now() >= deadline) throw new Error("diagnostic capture deadline");
-  const buffer = await page.screenshot({
-    ...(deadline === null ? { path: file } : { timeout: Math.max(1, deadline - Date.now()) }),
-    fullPage: kind === "full-page",
-    animations: "disabled",
-    caret: "hide",
-    scale: "css",
-    style: SCREENSHOT_REDACTION_STYLE,
-    mask: masks,
-    maskColor: "#777777",
-  });
-  if (deadline !== null) {
-    if (Date.now() >= deadline) throw new Error("diagnostic capture deadline");
-    fs.writeFileSync(file, buffer, { mode: 0o600 });
+  const frames = page.frames();
+  const key = `__formalScreenshotRedaction_${randomBytes(12).toString("hex")}`;
+  const originalScroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+  let buffer;
+  try {
+    for (const frame of frames) await frame.evaluate(screenshotRedaction, { key, style: SCREENSHOT_REDACTION_STYLE, operation: "apply" });
+    if (kind === "full-page") {
+      await page.evaluate(() => {
+        window.scrollTo({ left: 0, top: 0, behavior: "instant" });
+        return document.documentElement.getBoundingClientRect().top;
+      });
+    }
+    const captureScroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    if (deadline !== null && Date.now() >= deadline) throw new Error("diagnostic capture deadline");
+    buffer = await page.screenshot({
+      ...(deadline === null ? {} : { timeout: Math.max(1, deadline - Date.now()) }),
+      fullPage: kind === "full-page",
+      animations: "disabled",
+      caret: "hide",
+      scale: "css",
+      mask: masks,
+      maskColor: "#777777",
+    });
+    const capturedScroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    if (captureScroll.x !== capturedScroll.x || captureScroll.y !== capturedScroll.y) throw new Error("screenshot changed capture coordinates");
+    const currentFrames = page.frames();
+    if (currentFrames.length !== frames.length || frames.some((frame) => !currentFrames.includes(frame))) throw new Error("screenshot frame context changed");
+    for (const frame of frames) await frame.evaluate(screenshotRedaction, { key, operation: "validate" });
+  } finally {
+    const cleanup = await Promise.allSettled(frames.filter((frame) => !frame.isDetached()).map((frame) => frame.evaluate(screenshotRedaction, { key, operation: "remove" })));
+    await page.evaluate(({ x, y }) => window.scrollTo({ left: x, top: y, behavior: "instant" }), originalScroll);
+    if (cleanup.some((result) => result.status === "rejected")) throw new Error("screenshot redaction cleanup failed");
   }
+  if (deadline !== null && Date.now() >= deadline) throw new Error("diagnostic capture deadline");
+  fs.writeFileSync(file, buffer, { mode: 0o600 });
   const dimensions = pngDimensions(buffer);
   return {
     kind,
@@ -7107,7 +7166,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, screenshotActionValues, writeJourneyEvidenceArtifact };
+export { captureEvidenceScreenshot, evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, screenshotActionValues, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {

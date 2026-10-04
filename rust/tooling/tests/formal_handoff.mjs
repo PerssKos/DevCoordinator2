@@ -3,15 +3,18 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import { captureEvidenceScreenshot } from '../../../skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const scratch = await mkdtemp(join(process.env.FORMAL_WEB_UI_HANDOFF_SCRATCH ?? process.env.TMPDIR ?? tmpdir(), 'formal-handoff-'));
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;color:#111;background:white;font:16px system-ui}main{padding:20px;grid-column:2;min-width:0}#editor{position:fixed;left:20px;top:120px;background:white;padding:12px;border:1px solid #555}#editor[hidden]{display:none}input{width:220px;max-width:100%;box-sizing:border-box}#editor-label{display:grid;gap:6px}button{min-height:32px}h1{font-size:24px}#layout{display:grid;grid-template-columns:0px minmax(0,1fr)}#nav{display:none}</style></head><body><div id="layout"><nav id="nav"></nav><main id="primary"><h1 id="heading">HDL workspace</h1><button id="label">Edit signal</button><form id="editor" role="dialog" data-ui-contextual-overlay="Inline declaration editor" hidden><h2 id="editor-heading">Edit signal</h2><label id="editor-label">Declaration<input id="declaration"></label><button type="button" id="cancel">Cancel</button></form></main></div><script>document.querySelector('#label').addEventListener('dblclick',()=>{document.querySelector('#editor').hidden=false;document.querySelector('#declaration').focus()});document.querySelector('#cancel').onclick=()=>{document.querySelector('#editor').hidden=true;document.querySelector('#label').focus()};</script></body></html>`;
 const revision = createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex');
+const captureHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style nonce="fixture">body{margin:0;background:white;color:#008888;font:16px sans-serif;height:1302px}#private{position:absolute;left:12px;top:472px;width:366px;height:20px;color:#de1d48}input{color:#de1d48;border:1px solid #222;background:white}#declaration{position:absolute;left:12px;top:584px;width:340px;height:40px}#public{position:absolute;left:12px;top:500px}#shadow{position:absolute;left:12px;top:700px}iframe{position:absolute;left:12px;top:790px;width:340px;height:80px}#checkpoint{position:absolute;left:12px;top:1090px;width:300px;height:44px}</style></head><body><div id="private">SYNTHETIC_PRIVATE_ID</div><div id="public">Public action must remain readable</div><input id="declaration" value="SYNTHETIC_INPUT"><div id="shadow"></div><iframe title="Isolated fixture" src="/capture-child"></iframe><p id="checkpoint" tabindex="-1">Validation needs attention</p></body></html>`;
 const variants = new Map([
   ['/grid-reserved', html.replace('grid-template-columns:0px', 'grid-template-columns:200px')],
   ['/character-wrap', html.replace('h1{font-size:24px}', 'h1{font-size:24px;width:1px;overflow-wrap:anywhere}')],
@@ -23,8 +26,9 @@ const variants = new Map([
 const server = createServer((request, response) => {
   const pathname = new URL(request.url, 'http://fixture').pathname;
   const status = Number(pathname.match(/^\/http-(403|404|503)(?:-overflow)?$/)?.[1] ?? 200);
-  response.writeHead(status, { 'content-type': 'text/html', 'x-ui-source-revision': revision });
-  response.end(pathname.endsWith('-overflow') ? variants.get('/overflow') : variants.get(pathname) ?? html);
+  const csp = pathname === '/capture-csp' || pathname === '/capture-child' ? { 'content-security-policy': "default-src 'self';style-src 'nonce-fixture'" } : {};
+  response.writeHead(status, { 'content-type': 'text/html', 'x-ui-source-revision': revision, ...csp });
+  response.end(pathname === '/capture-child' ? '<!doctype html><style nonce="fixture">body{background:white}input{color:#de1d48;background:white;border:1px solid #222;width:280px}</style><input value="SYNTHETIC_CHILD_INPUT">' : pathname.startsWith('/capture') ? captureHtml : pathname.endsWith('-overflow') ? variants.get('/overflow') : variants.get(pathname) ?? html);
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -47,6 +51,73 @@ const geometry = (primary, heading, identifier) => [
 ];
 const full = (pathname = '/') => structuredClone({ ...base, targets: [{ ...target, url: `${target.url.slice(0, -1)}${pathname}`, geometryAssertions: [...geometry('#primary', '#heading', '#label'), { id: 'hidden-track', kind: 'hidden-navigation-track', selector: '#nav', primarySelector: '#primary', track: { selector: '#layout', axis: 'columns', index: 0 }, maxReservedSize: 0 }] }], fixtureDataShapes: [{ id: 'workspace', revision: 'v1', target: 'handoff', route: pathname, state: 'base', conditionalDom: ['#layout', '#nav', '#primary', '#label'], layoutEffect: 'Workspace and attached hidden navigation track' }], requiredCoverage: [{ target: 'handoff', state: 'base', viewport: 'desktop', width: 1440 }] });
 const results = [];
+async function capturePrivacy() {
+  const require = createRequire(import.meta.url);
+  const modules = process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES ?? join(root, 'ci/playwright/node_modules');
+  const { chromium, devices } = require(join(modules, 'playwright'));
+  const { PNG } = require(join(modules, 'playwright-core/lib/utilsBundle.js'));
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const csp of [false, true]) for (const phone of [false, true]) for (const scrolled of [false, true]) {
+      const name = `capture-${csp ? 'csp' : 'plain'}-${phone ? 'phone' : 'desktop'}-${scrolled ? 'scrolled' : 'top'}`;
+      const context = await browser.newContext(phone ? { ...devices['iPhone 13'] } : { viewport: { width: 390, height: 664 } });
+      const page = await context.newPage();
+      try {
+        await page.goto(`${target.url.slice(0, -1)}/capture${csp ? '-csp' : ''}`);
+        await page.locator('#checkpoint').focus();
+        await page.evaluate(scrolled => {
+          const existing = new CSSStyleSheet();existing.replaceSync('#public{letter-spacing:.1px}');document.adoptedStyleSheets = [existing];
+          const shadow = document.querySelector('#shadow').attachShadow({ mode: 'open' });
+          shadow.innerHTML = '<style nonce="fixture">input{color:#de1d48;background:white;border:1px solid #222;width:300px}</style><input value="SYNTHETIC_SHADOW_INPUT">';
+          window.scrollTo({ top: scrolled ? 552 : 0, behavior: 'instant' });
+        }, scrolled);
+        const settings = { screenshotDir: join(scratch, name), screenshotMasks: [] };
+        const captureTarget = { name, screenshotMasks: [{ selector: '#private', reason: 'synthetic identity' }] };
+        const state = async () => ({ main: await page.evaluate(() => ({ scroll: { x: scrollX, y: scrollY }, focus: document.activeElement?.id, color: getComputedStyle(document.querySelector('#declaration')).color, sheets: document.adoptedStyleSheets.length, shadowSheets: document.querySelector('#shadow').shadowRoot.adoptedStyleSheets.length })), children: await Promise.all(page.frames().filter(frame => frame !== page.mainFrame()).map(frame => frame.evaluate(() => ({ color: getComputedStyle(document.querySelector('input')).color, sheets: document.adoptedStyleSheets.length })))) });
+        const original = await state();
+        const failures = [];
+        for (const kind of ['viewport', 'full-page']) {
+          const shot = await captureEvidenceScreenshot(page, captureTarget, { name: phone ? 'phone' : 'desktop' }, settings, name, kind);
+          const png = PNG.sync.read(await readFile(shot.path));
+          let protectedPixels = 0, maskPixels = 0, publicPixels = 0;
+          for (let index = 0; index < png.data.length; index += 4) {
+            const [red, green, blue] = png.data.subarray(index, index + 3);
+            if (red > 150 && green < 80 && blue < 130) protectedPixels++;
+            if (red === 119 && green === 119 && blue === 119) maskPixels++;
+            if (red < 60 && green > 90 && blue > 90) publicPixels++;
+          }
+          if (protectedPixels) failures.push(`${kind}: ${protectedPixels} protected text pixels`);
+          if (kind === 'full-page' && (maskPixels < 7000 || publicPixels < 100)) failures.push(`${kind}: mask or ordinary content missing`);
+          try { assert.deepEqual(await state(), original); } catch { failures.push(`${kind}: screenshot changed page state`); }
+        }
+        await page.locator('#declaration').evaluate(element => element.style.setProperty('color', '#de1d48', 'important'));
+        try { await captureEvidenceScreenshot(page, captureTarget, { name: 'color-override' }, settings, name, 'full-page'); }
+        catch { failures.push('transparent text fill must allow an unrelated color override'); }
+        await page.locator('#declaration').evaluate(element => { element.style.removeProperty('color'); element.style.setProperty('-webkit-text-fill-color', '#de1d48', 'important'); });
+        try {
+          await assert.rejects(captureEvidenceScreenshot(page, captureTarget, { name: 'blocked' }, settings, name, 'full-page'), /form redaction could not be applied/);
+          await assert.rejects(access(join(settings.screenshotDir, `${name}-${name}-blocked-full-page.png`)), { code: 'ENOENT' });
+        } catch { failures.push('unredacted input must block retention'); }
+        await page.locator('#declaration').evaluate(element => element.style.removeProperty('-webkit-text-fill-color'));
+        try { assert.deepEqual(await state(), original); } catch { failures.push('failed redaction changed page state'); }
+        const screenshot = page.screenshot.bind(page);
+        page.screenshot = async () => { throw new Error('synthetic capture failure'); };
+        try {
+          await assert.rejects(captureEvidenceScreenshot(page, captureTarget, { name: 'failed' }, settings, name, 'full-page'), /synthetic capture failure/);
+          await assert.rejects(access(join(settings.screenshotDir, `${name}-${name}-failed-full-page.png`)), { code: 'ENOENT' });
+          assert.deepEqual(await state(), original);
+        } catch { failures.push('failed capture must restore the page without an artifact'); }
+        finally { page.screenshot = screenshot; }
+        if (csp) {
+          const protectedColor = await page.evaluate(() => { const injected = document.createElement('style');injected.textContent = '#public{color:red!important}';document.head.append(injected);const color = getComputedStyle(document.querySelector('#public')).color;injected.remove();return color; });
+          if (protectedColor !== 'rgb(0, 136, 136)') failures.push('page CSP was not preserved');
+        }
+        results.push({ name, passed: failures.length === 0, failures });
+      } catch (error) { results.push({ name, passed: false, error: error.message }); }
+      finally { await context.close(); }
+    }
+  } finally { await browser.close(); }
+}
 let measuredUserAgent;
 async function verify(name, config, check, setupError = null) {
   const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
@@ -72,6 +143,8 @@ async function verify(name, config, check, setupError = null) {
   } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
 }
 try {
+  await capturePrivacy();
+  if (!process.argv.includes('--capture-only')) {
   await Promise.all([
     verify('formal-receipt', base, ({ exitCode, receipt }) => {
       assert.equal(exitCode, 0); assert(receipt.formal, 'The verifier must emit its measured formal receipt');
@@ -195,6 +268,7 @@ try {
   await verify('setup-blocked', setup, expect('blocked'));
   const failedAction = full(); failedAction.targets[0].states = [{ name: 'failed-action', actions: [{ action: 'dblclick', selector: '#absent-label', timeoutMs: 10 }], continuation: { kind: 'in-page', anchor: '#editor-heading', focusWithin: '#editor' } }];
   await verify('rendered-action-failed', failedAction, expect('failed'));
+  }
 } finally { await new Promise(resolve => server.close(resolve)); }
 await writeFile(join(scratch, 'results.json'), JSON.stringify({ results }, null, 2));
 console.log(JSON.stringify({ scratch, results }));

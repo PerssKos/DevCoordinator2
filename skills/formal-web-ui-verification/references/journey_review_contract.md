@@ -571,6 +571,13 @@ replaces the defaults; resource/marker arrays are not concatenated.
   PNG. Native control values, placeholders, selected labels, and declarative
   fill payloads are removed or masked. Add `screenshotMasks` with a reason for
   other sensitive regions.
+- Capture preserves the tested page's CSP. Temporary constructed stylesheets
+  hide control text in documents, open shadow roots, and reachable frames;
+  failed redaction or changed capture coordinates prevents image retention.
+  Full-page capture starts at the document origin so mobile scrolling cannot
+  displace masks. The original scroll position and existing styles are restored
+  after successful or failed capture. The initial-viewport image still records
+  the user's actual interaction position, not the full-page capture origin.
 - Every run also produces `journey-evidence.json`: an ordered, path-free
   Console index of the declared route/state/viewport cells, action kinds and
   outcomes, automatic finding kinds, and the two screenshot integrity records.
