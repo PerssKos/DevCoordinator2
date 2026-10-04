@@ -1235,18 +1235,6 @@ impl StorageService {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{scan_after_completion, scan_after_request};
-
-    #[test]
-    fn storage_scan_requests_are_delayed_after_a_large_run() {
-        assert_eq!(scan_after_request(1_000, None), 2_000);
-        assert_eq!(scan_after_request(1_000, Some(900_000)), 1_200_000);
-        assert_eq!(scan_after_completion(1_000), 301_000);
-    }
-}
-
 fn collect_declared(v: &serde_json::Value, root: &std::path::Path, context: &mut Context) {
     if let Some(o) = v.as_object() {
         for (k, v) in o {
@@ -1284,5 +1272,17 @@ fn system_caller() -> Caller {
         client_session: Some("storage-maintenance".into()),
         work: None,
         identity: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scan_after_completion, scan_after_request};
+
+    #[test]
+    fn storage_scan_requests_are_delayed_after_a_large_run() {
+        assert_eq!(scan_after_request(1_000, None), 2_000);
+        assert_eq!(scan_after_request(1_000, Some(900_000)), 1_200_000);
+        assert_eq!(scan_after_completion(1_000), 301_000);
     }
 }

@@ -124,7 +124,7 @@ impl AgentRoutingService {
                                     .iter()
                                     .any(|candidate| candidate == effort)
                             })
-                            || (capability.pairs.len() > 0
+                            || (!capability.pairs.is_empty()
                                 && rule.effort.as_ref().is_none_or(|effort| {
                                     !capability
                                         .pairs
@@ -469,20 +469,19 @@ fn validate_rules(
         if !needs_target && (rule.model.is_some() || rule.effort.is_some()) {
             return Err(invalid("never-spawn rules cannot carry a target"));
         }
-        if let (Some(model), Some(effort)) = (&rule.model, &rule.effort) {
-            if !capability.fresh
+        if let (Some(model), Some(effort)) = (&rule.model, &rule.effort)
+            && (!capability.fresh
                 || !capability.models.contains(model)
                 || !capability.efforts.contains(effort)
                 || (!capability.pairs.is_empty()
                     && !capability
                         .pairs
                         .iter()
-                        .any(|pair| &pair.model == model && &pair.effort == effort))
-            {
-                return Err(invalid(
-                    "target model and effort are not present in a fresh capability report",
-                ));
-            }
+                        .any(|pair| &pair.model == model && &pair.effort == effort)))
+        {
+            return Err(invalid(
+                "target model and effort are not present in a fresh capability report",
+            ));
         }
     }
     Ok(())
