@@ -65,6 +65,7 @@ export function loadConfig(e = process.env) {
     stateDir: e.EDGE_STATE_DIR || '/var/lib/devcoordinator2-edge',
     daemonSocket: e.EDGE_DAEMON_SOCKET || '/run/devcoordinator2/daemon.sock',
     consoleDir: e.EDGE_CONSOLE_DIR || '',
+    uiSourceRevision: e.EDGE_UI_SOURCE_REVISION || '',
     trustLocalConsole: e.EDGE_TRUST_LOCAL_CONSOLE === '1',
     trustLocalAgent: e.EDGE_TRUST_LOCAL_AGENT === '1',
   };
@@ -172,7 +173,7 @@ export async function createEdge(config, { log = console } = {}) {
     renderBadGateway: (req, res, { kind, target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind, consoleUrl: consoleOrigin })),
     renderUpstreamAuthFailure: (req, res, { target }) => writePage(res, pages.forRequest(req).renderUpstreamError({ slug: target.slug, kind: 'upstream_auth', consoleUrl: consoleOrigin })) });
   const daemon = createDaemonClient({ socketPath: config.daemonSocket });
-  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log }) : null;
+  const consoleStatic = config.consoleDir ? createStaticServer({ dir: config.consoleDir, log, sourceRevision: config.uiSourceRevision }) : null;
 
   function identityOf(req) {
     const session = sessions.parse(req.headers.cookie);

@@ -45,7 +45,7 @@ function acceptedEncoding(header) {
   return null;
 }
 
-export function createStaticServer({ dir, log } = {}) {
+export function createStaticServer({ dir, log, sourceRevision = '' } = {}) {
   if (!dir) throw new TypeError('createStaticServer: dir is required');
   const root = path.resolve(dir);
 
@@ -128,6 +128,7 @@ export function createStaticServer({ dir, log } = {}) {
         'cache-control': 'no-cache',
         'x-content-type-options': 'nosniff',
       };
+      if (sourceRevision) headers['x-ui-source-revision'] = sourceRevision;
       if (COMPRESSIBLE.has(ext)) headers.vary = 'Accept-Encoding';
       if (encoding) headers['content-encoding'] = encoding;
 
