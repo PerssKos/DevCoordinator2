@@ -345,9 +345,12 @@ Reference args on every command except `list`: `path` (required) plus
   `name`/`source`/`deployment_id` triples of that repository.
 - `deployment.preflight` → `{repository_id, name, ready, blockers:
   [{component, code, file, message}]}`. Deployment administrators can inspect
-  every declared environment-file prerequisite without registration, port
-  reservation, or runtime changes. `authorization_required` names the exact
-  missing grant; preflight never supplies it automatically.
+  every declared environment-file and Docker host prerequisite without
+  registration, port reservation, or runtime changes. A
+  `docker_network_unavailable` blocker names the missing bridge/veth condition
+  and the authorized host-repair boundary; retry `apply`, `start`, or
+  `restart` only after preflight is clear. `authorization_required` names the
+  exact missing grant; preflight never supplies it automatically.
 - `deployment.apply` → status (below) after: validate all environment-file
   prerequisites, fingerprint (spec + commit + dirty flag + source digest),
   reserve ports/domain transactionally, prepare the

@@ -131,6 +131,7 @@ pub enum ErrorCode {
     Busy,
     DeploymentApplyFailed,
     DeploymentActionFailed,
+    DockerNetworkUnavailable,
     RouteLeaseConflict,
     ObservedOnly,
     RollbackUnavailable,
