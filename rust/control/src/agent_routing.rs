@@ -1,14 +1,17 @@
 //! Durable harness routing policy and concise current-work instructions.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use devcoordinator2_api::agent_routing::{Action, Capabilities, Role, Rule, RuleInput, Scope};
 use devcoordinator2_api::{ClientKind, ErrorCode, ProtocolError};
 use rusqlite::OptionalExtension;
 
+use crate::config::Config;
 use crate::database::{Database, DatabaseError};
 
 const DEFAULT_EXPIRY_MS: u64 = 24 * 60 * 60 * 1000;
+const DISCOVERY_REFRESH_INTERVAL_MS: u64 = 60 * 60 * 1000;
 
 const DEFAULT_ROLES: &[(&str, &str)] = &[
     ("ui_design", "UI design"),
@@ -29,11 +32,17 @@ const DEFAULT_ROLES: &[(&str, &str)] = &[
 #[derive(Clone)]
 pub struct AgentRoutingService {
     database: Database,
+    discovery_lock: Arc<Mutex<()>>,
+    last_discovery_attempt_ms: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
 impl AgentRoutingService {
     pub fn new(database: Database) -> Result<Self, ProtocolError> {
-        let service = Self { database };
+        let service = Self {
+            database,
+            discovery_lock: Arc::new(Mutex::new(())),
+            last_discovery_attempt_ms: Arc::new(Mutex::new(BTreeMap::new())),
+        };
         service.seed_roles()?;
         Ok(service)
     }
@@ -51,6 +60,135 @@ impl AgentRoutingService {
                         )?;
                     }
                 }
+                Ok(())
+            })
+            .map_err(db_error)
+    }
+
+    pub fn ensure_capability(
+        &self,
+        config: &Config,
+        harness: ClientKind,
+        now_ms: u64,
+    ) -> Result<Capabilities, ProtocolError> {
+        let current = self
+            .database
+            .call(move |c| read_capability(c, harness, now_ms))
+            .map_err(db_error)?;
+        if current.reported_at_ms.is_some() {
+            return Ok(current);
+        }
+        let guard = self
+            .discovery_lock
+            .lock()
+            .map_err(|_| invalid("agent capability discovery lock unavailable"))?;
+        let latest = self
+            .database
+            .call(move |c| read_capability(c, harness, now_ms))
+            .map_err(db_error)?;
+        if latest.reported_at_ms.is_some() {
+            drop(guard);
+            return Ok(latest);
+        }
+        let key = harness_text(harness).to_owned();
+        {
+            let attempts = self
+                .last_discovery_attempt_ms
+                .lock()
+                .map_err(|_| invalid("agent capability discovery state unavailable"))?;
+            if attempts
+                .get(&key)
+                .is_some_and(|attempt| now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS)
+            {
+                drop(guard);
+                return Ok(latest);
+            }
+        }
+        self.last_discovery_attempt_ms
+            .lock()
+            .map_err(|_| invalid("agent capability discovery state unavailable"))?
+            .insert(key.clone(), now_ms);
+        let Ok(discovered) = crate::capability_discovery::discover(config, harness, now_ms) else {
+            drop(guard);
+            return Ok(latest);
+        };
+        self.store_discovered(&discovered, harness_text(harness), now_ms)?;
+        self.last_discovery_attempt_ms
+            .lock()
+            .map_err(|_| invalid("agent capability discovery state unavailable"))?
+            .remove(&key);
+        drop(guard);
+        self.database
+            .call(move |c| read_capability(c, harness, now_ms))
+            .map_err(db_error)
+    }
+
+    pub fn refresh_capabilities(
+        &self,
+        config: &Config,
+        now_ms: u64,
+    ) -> Result<(), ProtocolError> {
+        let _guard = self
+            .discovery_lock
+            .lock()
+            .map_err(|_| invalid("agent capability discovery lock unavailable"))?;
+        for harness in [ClientKind::Codex, ClientKind::Antigravity] {
+            let current = self
+                .database
+                .call(|c| read_capability(c, harness, now_ms))
+                .map_err(db_error)?;
+            let due = current
+                .reported_at_ms
+                .is_none_or(|reported| now_ms.saturating_sub(reported) >= DISCOVERY_REFRESH_INTERVAL_MS);
+            if !due {
+                continue;
+            }
+            let key = harness_text(harness).to_owned();
+            let attempted_recently = self
+                .last_discovery_attempt_ms
+                .lock()
+                .map_err(|_| invalid("agent capability discovery state unavailable"))?
+                .get(&key)
+                .is_some_and(|attempt| now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS);
+            if attempted_recently {
+                continue;
+            }
+            self.last_discovery_attempt_ms
+                .lock()
+                .map_err(|_| invalid("agent capability discovery state unavailable"))?
+                .insert(key.clone(), now_ms);
+            if let Ok(discovered) = crate::capability_discovery::discover(config, harness, now_ms) {
+                self.store_discovered(&discovered, harness_text(harness), now_ms)?;
+                self.last_discovery_attempt_ms
+                    .lock()
+                    .map_err(|_| invalid("agent capability discovery state unavailable"))?
+                    .remove(&key);
+            }
+        }
+        Ok(())
+    }
+
+    fn store_discovered(
+        &self,
+        capabilities: &Capabilities,
+        source: &str,
+        now_ms: u64,
+    ) -> Result<(), ProtocolError> {
+        let models_json = serde_json::to_string(&capabilities.models)
+            .map_err(|_| invalid("cannot encode discovered models"))?;
+        let efforts_json = serde_json::to_string(&capabilities.efforts)
+            .map_err(|_| invalid("cannot encode discovered efforts"))?;
+        let pairs_json = serde_json::to_string(&capabilities.pairs)
+            .map_err(|_| invalid("cannot encode discovered capability pairs"))?;
+        let harness = harness_text(capabilities.harness);
+        let expires_at_ms = capabilities.expires_at_ms;
+        let source = source.to_owned();
+        self.database
+            .call(move |c| {
+                c.execute(
+                    "INSERT INTO agent_capabilities(harness,models_json,efforts_json,pairs_json,reported_at_ms,expires_at_ms,reported_by) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(harness) DO UPDATE SET models_json=excluded.models_json,efforts_json=excluded.efforts_json,pairs_json=excluded.pairs_json,reported_at_ms=excluded.reported_at_ms,expires_at_ms=excluded.expires_at_ms,reported_by=excluded.reported_by",
+                    rusqlite::params![harness, models_json, efforts_json, pairs_json, now_ms as i64, expires_at_ms.map(|value| value as i64), source],
+                )?;
                 Ok(())
             })
             .map_err(db_error)

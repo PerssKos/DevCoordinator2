@@ -2453,13 +2453,13 @@ impl HostRepositoryProbe {
     }
 }
 
-struct UserRecord {
-    name: OsString,
-    home: OsString,
-    gid: u32,
+pub(crate) struct UserRecord {
+    pub(crate) name: OsString,
+    pub(crate) home: OsString,
+    pub(crate) gid: u32,
 }
 
-fn user_record(uid: u32) -> io::Result<UserRecord> {
+pub(crate) fn user_record(uid: u32) -> io::Result<UserRecord> {
     let mut buffer = vec![0_u8; 16 * 1024];
     // SAFETY: A zeroed passwd value is a valid getpwuid_r output buffer.
     let mut record: libc::passwd = unsafe { std::mem::zeroed() };
@@ -2496,23 +2496,27 @@ fn user_record(uid: u32) -> io::Result<UserRecord> {
     })
 }
 
-struct ProbeOutput {
-    status: std::process::ExitStatus,
-    stdout: Vec<u8>,
-    stdout_truncated: bool,
-    stderr: Vec<u8>,
-    stderr_truncated: bool,
+pub(crate) struct ProbeOutput {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) stderr_truncated: bool,
 }
 
-fn run_probe(mut command: Command, deadline: Instant) -> Result<ProbeOutput, String> {
+pub(crate) fn run_probe_with_limit(
+    mut command: Command,
+    deadline: Instant,
+    output_limit: usize,
+) -> Result<ProbeOutput, String> {
     if Instant::now() >= deadline {
         return Err("query_budget_exhausted".into());
     }
     let mut child = command.spawn().map_err(|_| "source_unavailable")?;
     let stdout = child.stdout.take().ok_or("source_unavailable")?;
     let stderr = child.stderr.take().ok_or("source_unavailable")?;
-    let stdout = thread::spawn(move || read_capture(stdout, SOURCE_OUTPUT_BYTES));
-    let stderr = thread::spawn(move || read_capture(stderr, SOURCE_OUTPUT_BYTES));
+    let stdout = thread::spawn(move || read_capture(stdout, output_limit));
+    let stderr = thread::spawn(move || read_capture(stderr, output_limit));
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|_| "source_unavailable")? {
             break status;
@@ -2542,6 +2546,10 @@ fn run_probe(mut command: Command, deadline: Instant) -> Result<ProbeOutput, Str
         stderr,
         stderr_truncated,
     })
+}
+
+fn run_probe(command: Command, deadline: Instant) -> Result<ProbeOutput, String> {
+    run_probe_with_limit(command, deadline, SOURCE_OUTPUT_BYTES)
 }
 
 fn read_capture(mut source: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {

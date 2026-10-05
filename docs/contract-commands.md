@@ -761,6 +761,14 @@ updates the ordered role registry and retains role history. `agent.capabilities.
 is sent by a harness and records its model, effort, supported-pair catalog and
 expiry. A target cannot be saved without a fresh matching capability report.
 
+The daemon can also populate the same report shape from configured same-owner
+harness executables. Codex uses `codex debug models` and accepts visible models
+with their supported reasoning levels. Antigravity uses `agy models` and
+accepts only bounded lines with an explicit effort suffix or thinking label.
+The first valid source for each harness is selected; stale data remains
+visible while the daemon refreshes it, and source paths, identities, raw
+output, credentials, and command errors never enter the protocol.
+
 `agent.instruction.current` returns structured assignments plus concise text for
 the current harness. The optional client `model` and `effort` metadata resolve
 conditional rules; absent metadata leaves those assignments unresolved. A

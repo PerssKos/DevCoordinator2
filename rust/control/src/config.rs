@@ -10,6 +10,8 @@ use rustix::fs::{Mode, OFlags, fstat, open};
 use serde::Deserialize;
 use thiserror::Error;
 
+use devcoordinator2_api::ClientKind;
+
 const INSTALLED_ENV_PATH: &str = "/etc/devcoordinator2/instance.env";
 const MAX_POLICY_BYTES: u64 = 65_536;
 
@@ -19,6 +21,15 @@ pub struct CodexUsageSource {
     pub codex_home: PathBuf,
     pub executable: PathBuf,
     pub api_socket: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentCapabilitySource {
+    pub harness: ClientKind,
+    pub uid: u32,
+    pub executable: PathBuf,
+    pub codex_home: Option<PathBuf>,
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -362,6 +373,79 @@ fn read_usage_policy(path: Option<&Path>) -> Result<Vec<CodexUsageSource>, Confi
     Ok(sources)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentCapabilityPolicy {
+    schema: u32,
+    sources: Vec<AgentCapabilityPolicySource>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentCapabilityPolicySource {
+    harness: ClientKind,
+    uid: u32,
+    executable: String,
+    #[serde(default)]
+    codex_home: Option<String>,
+    #[serde(default)]
+    home: Option<String>,
+}
+
+pub fn read_agent_capability_sources() -> Result<Vec<AgentCapabilitySource>, ConfigError> {
+    let file_values = instance_file_values();
+    let path = std::env::var("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| file_values.get("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE").cloned())
+        .map(PathBuf::from);
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let policy: AgentCapabilityPolicy =
+        read_private_json_mode(&path, "Agent capability source policy", true)?;
+    if policy.schema != 1 || policy.sources.len() > 32 {
+        return Err(ConfigError::Invalid(
+            "agent capability source policy must be schema 1 with at most 32 sources".into(),
+        ));
+    }
+    let mut sources = Vec::with_capacity(policy.sources.len());
+    for source in policy.sources {
+        if source.uid == 0
+            || !uid_exists(source.uid)
+            || !matches!(source.harness, ClientKind::Codex | ClientKind::Antigravity)
+            || sources
+                .iter()
+                .any(|existing: &AgentCapabilitySource| existing.harness == source.harness)
+        {
+            return Err(ConfigError::Invalid(
+                "agent capability source uid or harness is invalid".into(),
+            ));
+        }
+        let executable = validate_absolute_policy_path("executable", source.executable)?;
+        let codex_home = source
+            .codex_home
+            .map(|path| validate_absolute_policy_path("codex_home", path))
+            .transpose()?;
+        if source.harness == ClientKind::Codex && codex_home.is_none() {
+            return Err(ConfigError::Invalid(
+                "Codex capability sources require codex_home".into(),
+            ));
+        }
+        let home = source.home
+            .map(|path| validate_absolute_policy_path("home", path))
+            .transpose()?;
+        sources.push(AgentCapabilitySource {
+            harness: source.harness,
+            uid: source.uid,
+            executable,
+            codex_home,
+            home,
+        });
+    }
+    Ok(sources)
+}
+
 fn validate_absolute_policy_path(name: &str, value: String) -> Result<PathBuf, ConfigError> {
     if value.is_empty()
         || value.len() > 4096
@@ -378,6 +462,14 @@ fn validate_absolute_policy_path(name: &str, value: String) -> Result<PathBuf, C
 fn read_private_json<T: for<'de> Deserialize<'de>>(
     path: &Path,
     label: &str,
+) -> Result<T, ConfigError> {
+    read_private_json_mode(path, label, false)
+}
+
+fn read_private_json_mode<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+    label: &str,
+    require_root_private: bool,
 ) -> Result<T, ConfigError> {
     if !path.is_absolute() {
         return Err(ConfigError::Invalid(format!(
@@ -400,6 +492,7 @@ fn read_private_json<T: for<'de> Deserialize<'de>>(
     if status.st_mode & libc::S_IFMT != libc::S_IFREG
         || status.st_size < 0
         || status.st_size as u64 > MAX_POLICY_BYTES
+        || (require_root_private && (status.st_uid != 0 || status.st_mode & 0o7777 != 0o600))
         || status.st_mode & 0o022 != 0
         || (status.st_uid != 0 && status.st_uid != rustix::process::geteuid().as_raw())
     {

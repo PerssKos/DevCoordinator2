@@ -490,6 +490,12 @@ impl ControlPlane {
         )
     }
 
+    pub fn refresh_agent_capabilities(&self) -> Result<(), ProtocolError> {
+        let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+        self.agent_routing
+            .refresh_capabilities(&self.config, now_ms)
+    }
+
     fn dispatch_authorized(
         &self,
         operation: &str,
@@ -622,6 +628,8 @@ impl ControlPlane {
                     )?;
                 }
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing
+                    .ensure_capability(&self.config, p.harness, now_ms)?;
                 encode(
                     self.agent_routing
                         .settings(p.scope, p.repository_id, p.harness, now_ms)?,
@@ -667,6 +675,8 @@ impl ControlPlane {
             "agent.instruction.current" => {
                 let p: devcoordinator2_api::params::AgentInstructionCurrent = decode(params)?;
                 let now_ms = (self.clock.now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+                self.agent_routing
+                    .ensure_capability(&self.config, caller.client_kind, now_ms)?;
                 encode(self.agent_routing.instruction(
                     p.repository_id,
                     caller.client_kind,
