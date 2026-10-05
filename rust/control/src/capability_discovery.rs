@@ -76,7 +76,7 @@ fn run_source(source: &AgentCapabilitySource, harness: ClientKind) -> Result<cra
         return Err("source_unavailable".to_owned());
     }
     let user = user_record(source.uid).map_err(|_| "source_unavailable".to_owned())?;
-    let home = source.home.as_ref().unwrap_or(&user.home);
+    let home = source.home.as_deref().unwrap_or_else(|| Path::new(&user.home));
     let effective = rustix::process::geteuid().as_raw();
     let mut command = if effective == 0 && source.uid != 0 {
         let setpriv = ["/usr/bin/setpriv", "/bin/setpriv"]

@@ -135,7 +135,7 @@ impl AgentRoutingService {
         for harness in [ClientKind::Codex, ClientKind::Antigravity] {
             let current = self
                 .database
-                .call(|c| read_capability(c, harness, now_ms))
+                .call(move |c| read_capability(c, harness, now_ms))
                 .map_err(db_error)?;
             let due = current
                 .reported_at_ms
