@@ -15,6 +15,30 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::watch;
 
+#[cfg(target_os = "linux")]
+fn lower_scan_priority() {
+    // The scan is observational and may traverse very large trusted-local
+    // trees. Keep normal Coordinator requests ahead of it without weakening
+    // its completeness or safety checks.
+    unsafe {
+        let _ = libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lower_scan_priority() {}
+
+fn scan_after_request(now: u64, last_started: Option<u64>) -> u64 {
+    last_started
+        .map(|at| at.saturating_add(super::STORAGE_SCAN_MIN_GAP_MS))
+        .unwrap_or(now.saturating_add(1000))
+        .max(now)
+}
+
+fn scan_after_completion(now: u64) -> u64 {
+    now.saturating_add(super::STORAGE_SCAN_MIN_GAP_MS)
+}
+
 impl StorageService {
     fn has_intent(&self, job: &str, record: &super::model::Record) -> Result<bool, ProtocolError> {
         let job = job.to_owned();
@@ -275,7 +299,11 @@ impl StorageService {
         let _ = self.recover_jobs();
         let mut workers = tokio::task::JoinSet::new();
         let mut active = BTreeSet::new();
-        let mut next_scan = self.now_ms();
+        // A host-wide scan can legitimately walk millions of entries. Do not
+        // start one during daemon initialization, and never immediately chain
+        // another global scan after a slow run or an event burst.
+        let mut next_scan = self.now_ms().saturating_add(super::STORAGE_SCAN_MIN_GAP_MS);
+        let mut last_scan_started: Option<u64> = None;
         let mut event_cursor = None;
         let mut event_retry = Duration::from_secs(1);
         let mut rescan_requested = false;
@@ -287,10 +315,12 @@ impl StorageService {
                 .discovery_requested
                 .swap(false, std::sync::atomic::Ordering::AcqRel)
             {
-                next_scan = next_scan.min(self.now_ms().saturating_add(1000));
+                let now = self.now_ms();
+                next_scan = next_scan.min(scan_after_request(now, last_scan_started));
             }
             if self.now_ms() >= next_scan {
                 let now = self.now_ms();
+                last_scan_started = Some(now);
                 let caller = system_caller();
                 let scanning = self.database.call(|c| c.query_row("SELECT EXISTS(SELECT 1 FROM storage_jobs WHERE kind='scan' AND state IN ('queued','running') AND json_extract(request_json,'$.repository_id') IS NULL)",[],|r|r.get::<_,bool>(0)).map_err(DatabaseError::from)).unwrap_or(true);
                 if scanning {
@@ -307,7 +337,7 @@ impl StorageService {
                         &caller,
                     );
                 }
-                next_scan = now.saturating_add(3_600_000);
+                next_scan = now.saturating_add(super::STORAGE_SCAN_INTERVAL_MS);
             }
             // The observation window and lease end are deadlines, not merely
             // hints for the next hourly scan. Deletion still follows a fresh scan.
@@ -379,8 +409,8 @@ impl StorageService {
                 _=self.wake.notified()=>{},
                 // The event deadline is a wakeup, not proof that the storage
                 // clock advanced. Recheck next_scan at the top of the loop.
-                event=lifecycle=>{if let Some(event)=event {event_cursor=Some(event.cursor);if !event.events.is_empty(){next_scan=next_scan.min(self.now_ms().saturating_add(1000));}}},
-                result=workers.join_next(),if !workers.is_empty()=>{if let Some(Ok((id,())))=result{active.remove(&id);if rescan_requested {next_scan=self.now_ms();rescan_requested=false;}}},
+                event=lifecycle=>{if let Some(event)=event {event_cursor=Some(event.cursor);if !event.events.is_empty(){let now=self.now_ms();next_scan=next_scan.min(scan_after_request(now,last_scan_started));}}},
+                result=workers.join_next(),if !workers.is_empty()=>{if let Some(Ok((id,())))=result{active.remove(&id);if rescan_requested {next_scan=scan_after_completion(self.now_ms());rescan_requested=false;}}},
                 changed=shutdown.changed()=>{if changed.is_err()||*shutdown.borrow(){break;}},
             }
         }
@@ -407,7 +437,42 @@ impl StorageService {
                 self.publish(&job, "started");
                 let service = self.clone();
                 let id = job.job_id.clone();
-                let result = tokio::task::spawn_blocking(move || service.execute_job(&id)).await;
+                let result = if job.kind == "scan" {
+                    // Filesystem discovery is deliberately isolated from the
+                    // Tokio blocking pool. A large scan must not inherit the
+                    // daemon's normal scheduling priority or starve request
+                    // work that happens to reuse that pool.
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    let thread = std::thread::Builder::new()
+                        .name("devcoordinator2-storage-scan".to_owned())
+                        .spawn(move || {
+                            lower_scan_priority();
+                            let _ = sender.send(service.execute_job(&id));
+                        });
+                    match thread {
+                        Ok(_) => receiver.await.map_err(|_| {
+                            ProtocolError::new(
+                                devcoordinator2_api::ErrorCode::InternalError,
+                                "storage scan worker stopped",
+                            )
+                        }),
+                        Err(error) => Err(ProtocolError::new(
+                            devcoordinator2_api::ErrorCode::InternalError,
+                            "storage scan worker could not start",
+                        )
+                        .with_detail(error.to_string())),
+                    }
+                } else {
+                    tokio::task::spawn_blocking(move || service.execute_job(&id))
+                        .await
+                        .map_err(|error| {
+                            ProtocolError::new(
+                                devcoordinator2_api::ErrorCode::InternalError,
+                                "storage worker interrupted",
+                            )
+                            .with_detail(error.to_string())
+                        })
+                };
                 if !matches!(result, Ok(Ok(()))) {
                     let mut latest = self.job(&job.job_id).unwrap_or(job.clone());
                     latest.state = if latest.receipts.iter().any(|r| r.status == "removed") {
@@ -1202,8 +1267,22 @@ fn system_caller() -> Caller {
         uid: unsafe { libc::geteuid() },
         gid: unsafe { libc::getegid() },
         client_kind: ClientKind::Other,
+        model: None,
+        effort: None,
         client_session: Some("storage-maintenance".into()),
         work: None,
         identity: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scan_after_completion, scan_after_request};
+
+    #[test]
+    fn storage_scan_requests_are_delayed_after_a_large_run() {
+        assert_eq!(scan_after_request(1_000, None), 2_000);
+        assert_eq!(scan_after_request(1_000, Some(900_000)), 1_200_000);
+        assert_eq!(scan_after_completion(1_000), 301_000);
     }
 }

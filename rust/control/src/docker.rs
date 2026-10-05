@@ -36,6 +36,7 @@ pub enum DockerErrorKind {
     TimedOut,
     Cancelled,
     CommandFailed,
+    NetworkUnavailable,
     InvalidOutput,
     InvalidTarget,
     InvalidRequest,
@@ -58,6 +59,8 @@ pub enum DockerError {
     #[error("{0}")]
     Command(String),
     #[error("{0}")]
+    NetworkUnavailable(String),
+    #[error("{0}")]
     InvalidOutput(String),
     #[error("{0}")]
     InvalidTarget(String),
@@ -73,6 +76,7 @@ impl DockerError {
             Self::Timeout { .. } => DockerErrorKind::TimedOut,
             Self::Cancelled { .. } => DockerErrorKind::Cancelled,
             Self::Command(_) => DockerErrorKind::CommandFailed,
+            Self::NetworkUnavailable(_) => DockerErrorKind::NetworkUnavailable,
             Self::InvalidOutput(_) => DockerErrorKind::InvalidOutput,
             Self::InvalidTarget(_) => DockerErrorKind::InvalidTarget,
             Self::InvalidRequest(_) => DockerErrorKind::InvalidRequest,
@@ -778,11 +782,70 @@ fn scan_postgres_ready(mut source: impl Read, sender: mpsc::Sender<PostgresLogEv
 
 fn first_error(output: &DockerOutput, limit: usize, fallback: &str) -> DockerError {
     let detail = bounded_prefix(&output.stderr, limit);
+    if let Some(reason) = classify_network_failure(&detail) {
+        return DockerError::NetworkUnavailable(reason);
+    }
     DockerError::Command(if detail.is_empty() {
         fallback.to_owned()
     } else {
         detail
     })
+}
+
+const DOCKER_BRIDGE_RECOVERY: &str = "repair the Docker bridge through the authorized host maintenance path, then rerun deployment preflight";
+
+fn classify_network_failure(stderr: &str) -> Option<String> {
+    let normalized = stderr.to_ascii_lowercase();
+    let missing_veth = normalized.contains("veth")
+        && (normalized.contains("bridge")
+            || normalized.contains("endpoint")
+            || normalized.contains("netlink")
+            || normalized.contains("device does not exist"));
+    let missing_bridge = normalized.contains("docker0")
+        && (normalized.contains("does not exist")
+            || normalized.contains("not found")
+            || (normalized.contains("bridge") && normalized.contains("failed to add"))
+            || normalized.contains("cannot connect"));
+    if missing_veth || missing_bridge {
+        Some(format!(
+            "Docker could not attach the container to its bridge network (the bridge or veth device is missing); {DOCKER_BRIDGE_RECOVERY}"
+        ))
+    } else {
+        None
+    }
+}
+
+fn default_bridge_name(inspect: &str) -> Result<String, DockerError> {
+    let value: Value = serde_json::from_str(inspect).map_err(|_| {
+        DockerError::InvalidOutput("Docker default bridge inspection returned invalid JSON".into())
+    })?;
+    let value = value
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or(&value);
+    let name = value
+        .get("Options")
+        .and_then(Value::as_object)
+        .and_then(|options| options.get("com.docker.network.bridge.name"))
+        .and_then(Value::as_str)
+        .unwrap_or("docker0");
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err(DockerError::InvalidOutput(
+            "Docker default bridge inspection returned an invalid host interface name".into(),
+        ));
+    }
+    Ok(name.to_owned())
+}
+
+fn missing_bridge_error(name: &str) -> DockerError {
+    DockerError::NetworkUnavailable(format!(
+        "Docker default bridge is unavailable: network \"bridge\" expects host interface \"{name}\", but that interface is absent; {DOCKER_BRIDGE_RECOVERY}"
+    ))
 }
 
 fn combined_tail_error(output: &DockerOutput, fallback: &str) -> DockerError {
@@ -829,6 +892,13 @@ pub trait DockerControl: Send + Sync {
         &self,
         container_id: &ExactContainerId,
     ) -> Result<LogFollower, DockerError>;
+
+    /// Check the host-side bridge used by Docker's default network before a
+    /// deployment mutates any containers. Test adapters intentionally inherit
+    /// the no-op default; the production CLI adapter performs the host check.
+    fn default_bridge_preflight(&self) -> Result<(), DockerError> {
+        Ok(())
+    }
 
     fn available(&self) -> bool {
         self.invoke(
@@ -1018,8 +1088,16 @@ pub trait DockerControl: Send + Sync {
             // diagnostics are intentionally not returned because a hostile
             // executable could echo them. A failed detached run can still
             // leave a Created container, so remove only the exact requested
-            // name and expose the safe exit/cleanup facts.
+            // name and expose the safe exit/cleanup facts. Known bridge
+            // failures are reduced to a fixed, secret-free recovery reason.
+            let network_reason = classify_network_failure(&output.stderr);
             let cleanup = self.cleanup_failed_run_container(&request.name);
+            if let Some(reason) = network_reason {
+                return Err(DockerError::NetworkUnavailable(format!(
+                    "{reason} (exit_code={}; cleanup={cleanup})",
+                    output.exit_code
+                )));
+            }
             return Err(DockerError::Command(format!(
                 "docker run failed (exit_code={}; cleanup={cleanup})",
                 output.exit_code
@@ -1188,6 +1266,7 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         user: &str,
         database: &str,
+        timeout: Duration,
     ) -> Result<Option<BTreeMap<String, u64>>, DockerError> {
         if user.is_empty()
             || database.is_empty()
@@ -1218,7 +1297,7 @@ pub trait DockerControl: Send + Sync {
                 "-c".into(),
                 SQL.into(),
             ],
-            Duration::from_secs(20),
+            timeout,
         )?)?;
         if !output.success() || output.stdout_truncated || output.stderr_truncated {
             return Ok(None);
@@ -1972,6 +2051,44 @@ impl DockerControl for DockerCli {
     ) -> Result<LogFollower, DockerError> {
         spawn_log_process(&self.executable, container_id)
     }
+
+    fn default_bridge_preflight(&self) -> Result<(), DockerError> {
+        #[cfg(feature = "root-acceptance")]
+        if std::env::var_os("DEVCOORDINATOR2_ROOT_DOCKER_NETWORK").is_some() {
+            // The isolated root suite binds every managed container to its
+            // exact per-run network. The suite validates that network's
+            // identity separately, so the host default bridge is irrelevant.
+            return Ok(());
+        }
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "network".into(),
+                "inspect".into(),
+                "bridge".into(),
+                "--format".into(),
+                "{{json .}}".into(),
+            ],
+            Duration::from_secs(15),
+        )?)?;
+        if !output.success() {
+            let detail = bounded_prefix(&output.stderr, 1_024);
+            return Err(DockerError::NetworkUnavailable(if detail.is_empty() {
+                format!(
+                    "Docker default bridge network could not be inspected; {DOCKER_BRIDGE_RECOVERY}"
+                )
+            } else {
+                format!(
+                    "Docker default bridge network could not be inspected ({detail}); {DOCKER_BRIDGE_RECOVERY}"
+                )
+            }));
+        }
+        ensure_exact_output(&output, "network inspect")?;
+        let bridge = default_bridge_name(&output.stdout)?;
+        if !Path::new("/sys/class/net").join(&bridge).exists() {
+            return Err(missing_bridge_error(&bridge));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2577,7 +2694,7 @@ mod tests {
     fn postgres_facts_are_numeric_and_use_one_fixed_exact_id_query() {
         let docker = FakeDocker::new(vec![output(0, "1|2|3|4\n", "")]);
         let facts = docker
-            .postgres_facts(&id('d'), "app", "app_test")
+            .postgres_facts(&id('d'), "app", "app_test", Duration::from_secs(20))
             .unwrap()
             .unwrap();
         assert_eq!(facts["pg_connections"], 1);
@@ -2704,6 +2821,69 @@ mod tests {
         );
         assert_eq!(&calls[2].args[..2], ["rm", "--force"]);
         assert_eq!(calls.len(), 3, "the sibling name must not be removed");
+    }
+
+    #[test]
+    fn bridge_failures_are_classified_without_echoing_private_run_environment() {
+        let container_id = "a".repeat(64);
+        let fake = FakeDocker::new(vec![
+            output(
+                125,
+                "",
+                "POSTGRES_PASSWORD=fixture-value\nfailed to create endpoint on network bridge: failed to add veth7cc3401 to bridge via netlink: Device does not exist",
+            ),
+            output(0, format!("{container_id}\tfixture\n"), ""),
+            output(0, "", ""),
+        ]);
+        let error = fake
+            .run_detached(&RunDetachedRequest {
+                name: "fixture".into(),
+                image: "postgres:16-alpine".into(),
+                label_context: labels(),
+                labels: BTreeMap::new(),
+                env_names: vec!["POSTGRES_PASSWORD".into()],
+                env_values: BTreeMap::from([("POSTGRES_PASSWORD".into(), "fixture-value".into())]),
+                publish: vec!["127.0.0.1::5432".into()],
+                tmpfs: vec!["/tmp:rw,noexec".into()],
+                command: vec!["postgres".into()],
+            })
+            .expect_err("bridge failure should be classified");
+        assert_eq!(error.kind(), DockerErrorKind::NetworkUnavailable);
+        assert!(
+            error
+                .to_string()
+                .contains("bridge or veth device is missing")
+        );
+        assert!(error.to_string().contains("deployment preflight"));
+        assert!(!error.to_string().contains("fixture-value"));
+    }
+
+    #[test]
+    fn bridge_classifier_has_false_positive_guards_and_parses_default_network_identity() {
+        assert!(classify_network_failure(
+            "failed to create endpoint: failed to add veth1 to bridge via netlink: Device does not exist"
+        )
+        .is_some());
+        assert!(
+            classify_network_failure(
+                "application payload mentions docker0 and veth but the command succeeded"
+            )
+            .is_none()
+        );
+        let object = serde_json::json!({
+            "Options": {"com.docker.network.bridge.name": "docker0"}
+        });
+        assert_eq!(default_bridge_name(&object.to_string()).unwrap(), "docker0");
+        let array = serde_json::json!([object]);
+        assert_eq!(default_bridge_name(&array.to_string()).unwrap(), "docker0");
+        assert!(
+            default_bridge_name(r#"{"Options":{"com.docker.network.bridge.name":"../proc"}}"#)
+                .is_err()
+        );
+        assert_eq!(
+            missing_bridge_error("docker0").kind(),
+            DockerErrorKind::NetworkUnavailable
+        );
     }
 
     #[test]

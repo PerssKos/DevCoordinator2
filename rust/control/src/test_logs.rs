@@ -744,6 +744,8 @@ mod tests {
             uid: 999,
             gid: 999,
             client_kind: devcoordinator2_api::ClientKind::Edge,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: Some("reader@example.test".into()),

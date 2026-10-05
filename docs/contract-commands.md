@@ -17,7 +17,7 @@ multi-filter event/heartbeat tool described below.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 16, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 32, "socket": "<path>"}`
 
 ## event.wait
 
@@ -345,9 +345,12 @@ Reference args on every command except `list`: `path` (required) plus
   `name`/`source`/`deployment_id` triples of that repository.
 - `deployment.preflight` → `{repository_id, name, ready, blockers:
   [{component, code, file, message}]}`. Deployment administrators can inspect
-  every declared environment-file prerequisite without registration, port
-  reservation, or runtime changes. `authorization_required` names the exact
-  missing grant; preflight never supplies it automatically.
+  every declared environment-file and Docker host prerequisite without
+  registration, port reservation, or runtime changes. A
+  `docker_network_unavailable` blocker names the missing bridge/veth condition
+  and the authorized host-repair boundary; retry `apply`, `start`, or
+  `restart` only after preflight is clear. `authorization_required` names the
+  exact missing grant; preflight never supplies it automatically.
 - `deployment.apply` → status (below) after: validate all environment-file
   prerequisites, fingerprint (spec + commit + dirty flag + source digest),
   reserve ports/domain transactionally, prepare the
@@ -748,3 +751,18 @@ MCP tools: `plan_overview`, `task_create`, `task_update`, `task_history`,
 record|tail|search|summarize`.
 
 All follow the same envelope, error model, and file-reference conventions.
+
+## agent routing
+
+`agent.settings.get` reads the effective global or repository harness profile.
+`agent.settings.save` writes role rules with an expected revision; repository
+profiles inherit roles that are not explicitly overridden. `agent.roles.save`
+updates the ordered role registry and retains role history. `agent.capabilities.report`
+is sent by a harness and records its model, effort, supported-pair catalog and
+expiry. A target cannot be saved without a fresh matching capability report.
+
+`agent.instruction.current` returns structured assignments plus concise text for
+the current harness. The optional client `model` and `effort` metadata resolve
+conditional rules; absent metadata leaves those assignments unresolved. A
+successful response supplies a cache expiry for harnesses that need to retain
+the instruction while the Coordinator is temporarily unavailable.

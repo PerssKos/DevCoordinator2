@@ -274,6 +274,11 @@ const fixtures = (scenario) => {
   };
   return {
     'user.whoami': { local: false, identity: scenario.identity, user_id: 'u1', administrator: scenario.admin, grants: scenario.admin ? {} : { [DEP]: scenario.denied ? 'viewer' : 'operator' } },
+    'agent.settings.get': { scope: 'global', repository_id: null, harness: 'codex', revision: 0, roles: [{ role_id: 'ui_design', title: 'UI design', position: 0, retired: false }, { role_id: 'backend_implementation', title: 'Back-end implementation', position: 1, retired: false }, { role_id: 'testing', title: 'Testing', position: 2, retired: false }], rules: [{ role_id: 'ui_design', action: 'never_spawn', model: null, effort: null, inherited: false, stale: false }, { role_id: 'backend_implementation', action: 'never_spawn', model: null, effort: null, inherited: false, stale: false }, { role_id: 'testing', action: 'never_spawn', model: null, effort: null, inherited: false, stale: false }], capabilities: { harness: 'codex', models: ['gpt-6-astra', 'gpt-6.1-sol'], efforts: ['high', 'max'], pairs: [{ model: 'gpt-6-astra', effort: 'high' }, { model: 'gpt-6.1-sol', effort: 'max' }], reported_at_ms: Date.now() - 1000, expires_at_ms: Date.now() + 86400000, fresh: true }, roles_revision: 1 },
+    'agent.settings.save': { scope: 'global', repository_id: null, harness: 'codex', revision: 1, roles_revision: 1, roles: [], rules: [], capabilities: { harness: 'codex', models: ['gpt-6-astra'], efforts: ['high'], pairs: [{ model: 'gpt-6-astra', effort: 'high' }], reported_at_ms: Date.now(), expires_at_ms: Date.now() + 86400000, fresh: true } },
+    'agent.roles.save': { revision: 2, roles: [] },
+    'agent.capabilities.report': { capabilities: { harness: 'codex', models: ['gpt-6-astra'], efforts: ['high'], pairs: [{ model: 'gpt-6-astra', effort: 'high' }], reported_at_ms: Date.now(), expires_at_ms: Date.now() + 86400000, fresh: true } },
+    'agent.instruction.current': { repository_id: null, harness: 'codex', current_model: null, current_effort: null, assignments: [], text: 'Follow the configured routing rules.', cache_expires_at_ms: Date.now() + 86400000 },
     'health.incidents': {attention_count:scenario.empty?0:1,dismissed_count:0,total:scenario.empty?0:1,next_before:null,incidents:scenario.empty?[]:[{incident_id:'fixture-web-incident',alert_key:'fixture-web',opened_at:new Date(Date.now()-3600000).toISOString(),last_seen_at:new Date().toISOString(),repository_name:primaryRepositoryName,repository_id:REPO,deployment_id:'d1111111111111111',deployment_name:degraded.name,component:'worker',summary:'Preview is unavailable',what_happened:'The worker exited and the preview is unavailable.',agent_response:'The agent inspected the failed worker.',escalation_reason:'The owner needs to choose which version to restore.',next_step:'Review the deployment and its logs.',status:'escalated',severity:'critical',condition_active:true,revision:1,updated_at:new Date().toISOString()}]},
     'deployment.list': { deployments: scenario.empty ? [] : [running, degraded, observed], declared: scenario.empty ? [] : [{ name: 'tool', source: 'worktree', deployment_id: 'd2222222222222222' }] },
     'deployment.status': { ...running, previous_generation: 16, route_port: 20002, route_component: 'api', components, log_dir: '/state/logs' },
@@ -409,8 +414,8 @@ const SCENARIOS = {
   logPageError: { identity: 'owner@example.test', admin: true, logPageError: true, targetedOnly: true },
   logShortPaged: { identity: 'owner@example.test', admin: true, logShortPaged: true, targetedOnly: true },
 };
-const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, `#/performance/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin'];
-const VIEWPORTS = { wide: { width: 1280, height: 800 }, narrow: { width: 390, height: 844 } };
+const VIEWS = ['#/deployments', `#/deployments/${DEP}`, '#/plan', `#/plan/${REPO}`, '#/progress', `#/progress/${REPO}`, '#/usage', `#/usage/${REPO}`, `#/performance/${REPO}`, '#/decisions', `#/decisions/${REPO}`, '#/tests', `#/tests/${TEST_RUN}`, '#/health', '#/health/containers', '#/bugs', '#/admin', '#/agent-settings'];
+const VIEWPORTS = { wide: { width: Number(process.env.CONSOLE_VERIFY_WIDE_WIDTH || 1280), height: Number(process.env.CONSOLE_VERIFY_WIDE_HEIGHT || 800) }, narrow: { width: 390, height: 844 } };
 const EVIDENCE_WIDE = { width: 1440, height: 1024 };
 const destinationHref = (view) => {
   if (view.startsWith('#/deployments')) return '#/deployments';
@@ -422,10 +427,11 @@ const destinationHref = (view) => {
   if (view.startsWith('#/tests')) return '#/tests';
   if (view.startsWith('#/health')) return '#/health';
   if (view.startsWith('#/bugs')) return '#/bugs';
+  if (view.startsWith('#/agent-settings')) return '#/agent-settings';
   return '#/admin';
 };
 const PROJECT_DETAIL_VIEWS = new Set([`#/plan/${REPO}`, `#/progress/${REPO}`, `#/usage/${REPO}`, `#/performance/${REPO}`, `#/decisions/${REPO}`]);
-const ADMIN_ONLY = ['health.summary', 'health.incidents', 'health.incident.update', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
+const ADMIN_ONLY = ['agent.settings.get', 'agent.settings.save', 'agent.roles.save', 'agent.capabilities.report', 'agent.instruction.current', 'health.summary', 'health.incidents', 'health.incident.update', 'health.containers', 'health.container_remove', 'user.list', 'user.invite', 'user.remove', 'grant.set', 'grant.remove', 'test.list', 'test.start', 'test.stop', 'test.history', 'test.artifact.catalog', 'test.artifact.file', 'test.log.catalog', 'test.log.tail', 'test.log.search', 'test.log.range', 'test.log.failure_context', 'test.log.retention.get', 'test.log.retention.set', 'test.evidence.get', 'test.evidence.image', 'test.evidence.feedback.create', 'test.evidence.feedback.reply', 'test.evidence.feedback.edit', 'test.evidence.feedback.state', 'test.evidence.feedback.delete', 'test.capacity.get', 'test.capacity.set', 'deployment.apply', 'deployment.rollback', 'deployment.remove', 'deployment.set_domain', 'task.create', 'task.update', 'release.create', 'release.update', 'release.request', 'release.deliver', 'decision.record', 'decision.summarize'];
 const OPERATOR_ONLY = ['usage.repositories', 'usage.repository', 'progress.repositories', 'progress.repository'];
 
 async function startFakeDaemon(dir) {
@@ -1038,7 +1044,7 @@ async function main() {
   if (!process.env.CONSOLE_VERIFY_INTERACTIONS_ONLY) for (const [scenarioName, scenario] of Object.entries(SCENARIOS).filter(([, scenario]) => !scenario.targetedOnly)) {
     daemon.setScenario(scenario);
     for (const [vpName, viewport] of Object.entries(VIEWPORTS)) {
-      const context = await browser.newContext({ viewport, ignoreHTTPSErrors: true });
+      const context = await browser.newContext({ viewport, ignoreHTTPSErrors: true, colorScheme: process.env.CONSOLE_VERIFY_THEME || 'light' });
       const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
       const [nameValue] = cookie.split(';');
       await context.addCookies([{ name: 'dc2_session', value: nameValue.split('=')[1], domain: `.${BASE}`, path: '/' }]);
@@ -1156,7 +1162,7 @@ async function main() {
           check(`${label}: one shared repository selector replaces per-page pickers`, metrics.projectPickerCount === 0 && metrics.sharedRepositoryCount === 1);
         }
         if (scenarioName === 'loading') check(`${label}: loading state visible`, metrics.skeleton || /Loading/.test(metrics.text));
-        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work|performance reviews|measured outcomes)/.test(metrics.text), metrics.text.slice(0, 120));
+        if (scenarioName === 'empty' && !view.includes(DEP) && view !== '#/admin' && view !== '#/agent-settings') check(`${label}: explicit empty state`, /No (deployments|test runs|visual evidence|open bugs|containers|repositories|plan|decisions|provider-reported|open work|performance reviews|measured outcomes)/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'error') check(`${label}: error state with retry`, /Could not load|Cannot reach/.test(metrics.text) && /Retry/.test(metrics.text), metrics.text.slice(0, 120));
         if (scenarioName === 'denied' && (view === '#/admin' || view === '#/tests' || view === '#/health/containers')) check(`${label}: permission denied shown`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
         if (scenarioName === 'denied' && view.startsWith('#/usage')) check(`${label}: usage requires operator access`, /Permission denied/.test(metrics.notice), metrics.notice.slice(0, 120));
@@ -2282,7 +2288,7 @@ async function main() {
   await page.waitForFunction(() => Number(document.querySelector('[data-plan-viewport]')?.scrollLeft || 0) > 0);
   const anchoredTimelineScroll = await initialPlanViewport.evaluate((element) => element.scrollLeft);
   check('plan: vertical scrolling anchors the timeline to the earliest visible task', anchoredTimelineScroll > 0, String(anchoredTimelineScroll));
-  await initialPlanViewport.evaluate((element) => { element.scrollTop = 0; element.scrollLeft = 0; });
+  await initialPlanViewport.evaluate((element) => element.scrollTo({ top: 0, left: 0, behavior: 'auto' }));
   await waitForRenderFrame(page);
   // The first visible row may be unsized or start after completed hidden work.
   // Vertical arrival must retain the automatic alignment, not force chart x=0.
@@ -2658,6 +2664,22 @@ async function main() {
   await page.waitForSelector('text=REPO-EXPORT-FILES');
   check('interaction: search calls decision.search with the typed query',
     daemon.calls.some((c) => c.operation === 'decision.search' && c.params.query === 'export' && c.params.aspect === 'ui'));
+  daemon.calls.length = 0;
+  await page.goto(`http://${HOST}:${port}/#/agent-settings`);
+  await page.waitForSelector('.agent-role-table');
+  check('agent settings: selected Policy Matrix surface renders the real role matrix',
+    /Work role configuration/.test(await page.innerText('main'))
+    && await page.locator('.agent-role-table tbody tr').count() === 3);
+  await page.selectOption('#agent-harness', 'claude');
+  await page.waitForSelector('.agent-role-table');
+  check('agent settings: changing harness rereads the harness profile', daemon.calls.some((c) => c.operation === 'agent.settings.get' && c.params.harness === 'claude'));
+  await page.selectOption('[data-agent-role="backend_implementation"] [data-agent-action]', 'always_spawn');
+  await page.selectOption('[data-agent-role="backend_implementation"] [data-agent-model]', 'gpt-6-astra');
+  await page.selectOption('[data-agent-role="backend_implementation"] [data-agent-effort]', 'high');
+  await page.click('#agent-save');
+  await waitForSettledCall(daemon, page, 'agent.settings.save');
+  check('agent settings: saving a role posts the action, model and effort', daemon.calls.some((c) => c.operation === 'agent.settings.save' && c.params.rules.some((rule) => rule.role_id === 'backend_implementation' && rule.action === 'always_spawn')));
+  check('agent settings: save rereads the resulting profile', daemon.calls.filter((c) => c.operation === 'agent.settings.get').length >= 2);
   check('administrator actions never open a native confirmation dialog', nativeDialogCount === 0, `${nativeDialogCount} native dialogs`);
   await context.close();
 

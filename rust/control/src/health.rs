@@ -651,6 +651,8 @@ mod tests {
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Other,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,

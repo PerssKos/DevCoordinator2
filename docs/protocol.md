@@ -59,6 +59,8 @@ re-queried rather than replayed.
   "client": {
     "kind": "codex",
     "session": "<optional task id>",
+    "model": "<optional current model>",
+    "effort": "<optional current effort>",
     "identity": "<edge-only signed-in e-mail>"
   }
 }
@@ -67,6 +69,9 @@ re-queried rather than replayed.
 - `client` is descriptive attribution only (`codex`, `claude`, `cursor`,
   `antigravity`, `human`, `other`, `edge`); only the edge identity assertion
   has authorization meaning, after peer-uid verification.
+- `model` and `effort` are optional current-runtime metadata. They are used by
+  `agent.instruction.current` for conditional routing and are never inferred
+  when absent.
 - Unknown envelope or operation-parameter fields are rejected. Protocol 1 is
   rejected with `protocol_unsupported` and is never translated or executed.
 

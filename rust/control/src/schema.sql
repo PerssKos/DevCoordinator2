@@ -771,3 +771,54 @@ END;
 CREATE TRIGGER IF NOT EXISTS review_clock_history_no_delete BEFORE DELETE ON review_clock_history BEGIN
  SELECT RAISE(ABORT, 'clock history is permanent');
 END;
+
+CREATE TABLE IF NOT EXISTS agent_roles (
+  role_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  retired INTEGER NOT NULL DEFAULT 0 CHECK(retired IN (0,1)),
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_role_history (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  role_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  retired INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_capabilities (
+  harness TEXT PRIMARY KEY,
+  models_json TEXT NOT NULL,
+  efforts_json TEXT NOT NULL,
+  pairs_json TEXT NOT NULL,
+  reported_at_ms INTEGER NOT NULL,
+  expires_at_ms INTEGER,
+  reported_by TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_routing_settings (
+  scope TEXT NOT NULL CHECK(scope IN ('global','repository')),
+  repository_id TEXT NOT NULL DEFAULT '',
+  harness TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  rules_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  PRIMARY KEY(scope, repository_id, harness)
+);
+CREATE TABLE IF NOT EXISTS agent_routing_history (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL,
+  repository_id TEXT NOT NULL DEFAULT '',
+  harness TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  rules_json TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_routing_history_lookup
+  ON agent_routing_history(scope,repository_id,harness,revision);

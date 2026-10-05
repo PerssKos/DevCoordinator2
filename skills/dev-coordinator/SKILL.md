@@ -53,6 +53,15 @@ devcoordinator2 health --help
   message.
 - Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
+- Run `deployment preflight` before retrying a failed Docker or PostgreSQL
+  deployment. A `docker_network_unavailable` blocker identifies a missing
+  host bridge or veth and includes the recovery boundary: repair Docker
+  networking through the authorized host maintenance path, then rerun
+  preflight. Do not retry `apply`, `start`, or `restart` while that blocker is
+  present; the Coordinator has already prevented a runtime mutation. After
+  repair, inspect `deployment status` and `health containers` before checking
+  readiness so the recovered database endpoint and its dependent services are
+  both verified.
 - Use `storage inventory|show|scan|protect|policy|roots|cleanup|job|history|lease`
   for tracked artifacts and exact-target cleanup. For legacy observed resources,
   use `storage legacy-register`; do not recreate their deployment to delete them.

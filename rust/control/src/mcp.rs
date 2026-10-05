@@ -39,6 +39,8 @@ impl McpAdapter {
         arguments: Map<String, Value>,
         client_kind: ClientKind,
         work: Option<devcoordinator2_api::work_context::WorkContext>,
+        model: Option<String>,
+        effort: Option<String>,
     ) -> CallToolResult {
         let raw = Value::Object(arguments);
         if let Err(error) = (tool.validate_params)(&raw) {
@@ -54,6 +56,8 @@ impl McpAdapter {
                 session: work.as_ref().map(|work| work.thread_id.clone()),
                 work,
                 identity: None,
+                model,
+                effort,
                 ..ClientContext::default()
             },
         )
@@ -135,7 +139,24 @@ impl ServerHandler for McpAdapter {
                 .ok()
             })
             .filter(|work| work.validate().is_ok());
-        let execution = self.execute(tool, request.arguments.unwrap_or_default(), kind, work);
+        let model = context
+            .meta
+            .get("devcoordinator/model")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let effort = context
+            .meta
+            .get("devcoordinator/effort")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let execution = self.execute(
+            tool,
+            request.arguments.unwrap_or_default(),
+            kind,
+            work,
+            model,
+            effort,
+        );
         tokio::select! {
             result = execution => Ok(result.into()),
             _ = context.ct.cancelled() => Err(McpError::internal_error("tool request cancelled", None)),
@@ -305,7 +326,7 @@ mod tests {
         .unwrap()
         .clone();
         let result = adapter
-            .execute(tool, arguments, ClientKind::Codex, None)
+            .execute(tool, arguments, ClientKind::Codex, None, None, None)
             .await;
         server.await.unwrap();
         let encoded = serde_json::to_value(result).unwrap();

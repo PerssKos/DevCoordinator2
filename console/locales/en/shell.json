@@ -83,5 +83,6 @@
   "montenegrinLatin": "Montenegrin (Latin)",
   "montenegrinCyrillic": "Montenegrin (Cyrillic)",
   "loadFailed": "The Console could not load. Reload to try again.",
-  "reload": "Reload"
+  "reload": "Reload",
+  "destination_storage": "Storage"
 }

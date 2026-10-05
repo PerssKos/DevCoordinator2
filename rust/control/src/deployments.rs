@@ -30,8 +30,9 @@ use crate::deployment_state::{
     DeploymentRuntimePatch, DeploymentStore, RegisteredDeploymentTarget,
 };
 use crate::docker::{
-    ComposeContext, CreateContainerRequest, DockerCli, DockerControl, ExactContainerId,
-    ManagedLabelContext, RuntimeState, compose_project, container_name, managed_volume_name,
+    ComposeContext, CreateContainerRequest, DockerCli, DockerControl, DockerErrorKind,
+    ExactContainerId, ManagedLabelContext, RuntimeState, compose_project, container_name,
+    managed_volume_name,
 };
 use crate::platform::{Clock, HostClock};
 use crate::repository::Registry;
@@ -287,11 +288,53 @@ impl Deployments {
         Ok(self.prerequisites(&target))
     }
 
+    fn docker_component(component: &ComponentSpec) -> bool {
+        matches!(
+            component.kind,
+            ComponentKind::Docker | ComponentKind::Postgres
+        )
+    }
+
+    fn docker_preflight_blocker(
+        &self,
+        components: &[ComponentSpec],
+    ) -> Option<devcoordinator2_api::results::DeploymentBlocker> {
+        if !components.iter().any(Self::docker_component) {
+            return None;
+        }
+        let error = self.docker.default_bridge_preflight().err()?;
+        let (code, message) = match error.kind() {
+            DockerErrorKind::NetworkUnavailable => {
+                (ErrorCode::DockerNetworkUnavailable, error.to_string())
+            }
+            _ => (
+                ErrorCode::DeploymentApplyFailed,
+                format!(
+                    "Docker prerequisite check failed: {}",
+                    truncate(&error.to_string(), 512)
+                ),
+            ),
+        };
+        Some(devcoordinator2_api::results::DeploymentBlocker {
+            component: components
+                .iter()
+                .find(|component| Self::docker_component(component))
+                .map(|component| component.name.clone())
+                .unwrap_or_else(|| "docker".into()),
+            code,
+            file: None,
+            message,
+        })
+    }
+
     fn prerequisites(
         &self,
         target: &DeploymentTarget,
     ) -> devcoordinator2_api::results::DeploymentPreflight {
         let mut blockers = Vec::new();
+        if let Some(blocker) = self.docker_preflight_blocker(&target.specification.components) {
+            blockers.push(blocker);
+        }
         for component in &target.specification.components {
             let Some(file) = component.compose_env_file.as_deref() else {
                 continue;
@@ -899,6 +942,11 @@ impl Deployments {
             }
             components = vec![specification.clone()];
         }
+        if matches!(action, "start" | "restart")
+            && let Some(blocker) = self.docker_preflight_blocker(&components)
+        {
+            return Err(ProtocolError::new(blocker.code, blocker.message));
+        }
         if matches!(action, "stop" | "restart") {
             let mut reverse = components.clone();
             reverse.reverse();
@@ -1152,6 +1200,8 @@ impl Deployments {
                     uid: row.created_by_uid,
                     gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
                     client_kind: devcoordinator2_api::ClientKind::Other,
+                    model: None,
+                    effort: None,
                     client_session: None,
                     work: None,
                     identity: None,
@@ -5022,6 +5072,7 @@ mod tests {
         compose_missing_port: std::sync::atomic::AtomicBool,
         block_finite: std::sync::atomic::AtomicBool,
         finite_started: std::sync::atomic::AtomicBool,
+        bridge_unavailable: std::sync::atomic::AtomicBool,
     }
 
     impl MutationDocker {
@@ -5036,6 +5087,7 @@ mod tests {
                 compose_missing_port: std::sync::atomic::AtomicBool::new(false),
                 block_finite: std::sync::atomic::AtomicBool::new(false),
                 finite_started: std::sync::atomic::AtomicBool::new(false),
+                bridge_unavailable: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -5074,6 +5126,16 @@ mod tests {
             _container_id: &ExactContainerId,
         ) -> Result<LogFollower, DockerError> {
             Err(DockerError::InvalidRequest("unexpected follow".into()))
+        }
+
+        fn default_bridge_preflight(&self) -> Result<(), DockerError> {
+            if self.bridge_unavailable.load(Ordering::SeqCst) {
+                Err(DockerError::NetworkUnavailable(
+                    "Docker default bridge is unavailable: fixture bridge is absent; repair the Docker bridge through the authorized host maintenance path, then rerun deployment preflight".into(),
+                ))
+            } else {
+                Ok(())
+            }
         }
 
         fn ensure_image(&self, image: &str) -> Result<(), DockerError> {
@@ -5699,6 +5761,8 @@ tcp="127.0.0.1:25"
                 uid: 1000,
                 gid: 1000,
                 client_kind: devcoordinator2_api::ClientKind::Other,
+                model: None,
+                effort: None,
                 client_session: None,
                 work: None,
                 identity: None,
@@ -6050,6 +6114,8 @@ image="cache:1"
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: Some("fixture".into()),
             work: None,
             identity: None,
@@ -6219,6 +6285,8 @@ image="cache:1"
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,
@@ -6344,6 +6412,8 @@ command=["serve"]
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,
@@ -6459,6 +6529,8 @@ command=["serve"]
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,
@@ -6656,6 +6728,8 @@ route=true
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,
@@ -6872,6 +6946,8 @@ database="app"
             uid: rustix::process::getuid().as_raw(),
             gid: rustix::process::getgid().as_raw(),
             client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
             client_session: None,
             work: None,
             identity: None,
@@ -7123,6 +7199,26 @@ env_file=".web.env"
                 1 - index
             );
         }
+        docker.bridge_unavailable.store(true, Ordering::SeqCst);
+        let blocked = deployments
+            .preflight(Some(path), Some("web"), None, &caller)
+            .unwrap();
+        assert!(!blocked.ready);
+        let docker_blocker = blocked
+            .blockers
+            .iter()
+            .find(|blocker| blocker.code == ErrorCode::DockerNetworkUnavailable)
+            .expect("Docker bridge blocker");
+        assert!(docker_blocker.message.contains("fixture bridge is absent"));
+        assert_eq!(
+            deployments
+                .apply(Some(path), Some("web"), None, &caller)
+                .unwrap_err()
+                .code,
+            ErrorCode::DockerNetworkUnavailable
+        );
+        assert!(docker.actions.lock().unwrap().is_empty());
+        docker.bridge_unavailable.store(false, Ordering::SeqCst);
         let applied = deployments
             .apply(Some(path), Some("web"), None, &caller)
             .unwrap();
@@ -7136,6 +7232,21 @@ env_file=".web.env"
             .clone()
             .unwrap();
         assert_eq!(receipt[0].generation, 1);
+        docker.bridge_unavailable.store(true, Ordering::SeqCst);
+        let action_count = docker.actions.lock().unwrap().len();
+        let restart_blocked = deployments
+            .control(
+                "restart",
+                None,
+                None,
+                Some(&applied.deployment_id),
+                None,
+                &caller,
+            )
+            .unwrap_err();
+        assert_eq!(restart_blocked.code, ErrorCode::DockerNetworkUnavailable);
+        assert_eq!(docker.actions.lock().unwrap().len(), action_count);
+        docker.bridge_unavailable.store(false, Ordering::SeqCst);
         let compose_up_count = || {
             docker
                 .actions

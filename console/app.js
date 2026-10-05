@@ -71,6 +71,9 @@ const state = {
   collapsedDeploymentWorkers: new Set(),
   deploymentUsageResolutions: new Map(),
   planVisibilitySeededRepositoryId: null,
+  agentScope: 'global',
+  agentRepositoryId: null,
+  agentHarness: 'codex',
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -306,8 +309,8 @@ function currentDestinationHeading() {
     progress: ['Progress', '#/progress'], usage: ['Codex Usage', '#/usage'], performance: ['Performance', '#/performance'],
     decisions: ['Decisions', '#/decisions'], sketches: ['Sketches', '#/sketches'],
     glossary: ['Glossary', '#/glossary'],
-    tests: ['Tests', '#/tests'], health: ['Health', '#/health'],
-    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], requests: ['Feature requests', '#/requests'],
+    tests: ['Tests', '#/tests'], health: ['Health', '#/health'], storage: ['Storage', '#/storage'],
+    bugs: ['Bugs', '#/bugs'], admin: ['Administration', '#/admin'], 'agent-settings': ['Agent Settings', '#/agent-settings'], requests: ['Feature requests', '#/requests'],
   };
   const destination = destinations[view] || destinations.deployments;
   return pageHeading(destination[0], destination[1], view === 'health' && arg === 'containers' ? 'Containers' : '');
@@ -2983,6 +2986,7 @@ function healthStorageBreakdown(storage) {
   return `<dl class="health-storage-breakdown">${entries.map(([name, value]) => `<div><dt>${window.DevCoordinatorI18n.computedMarkup(() => healthLabel(name, HEALTH_STORAGE_LABELS))}</dt><dd>${window.DevCoordinatorI18n.computedMarkup(() => bytes(value))}</dd></div>`).join('')}</dl>`;
 }
 const healthPage = window.DevCoordinatorHealth.create({ api, esc, bytes, pct, spark, chart, pageHeading, icon: planIcon });
+const storagePage = window.DevCoordinatorStorage.create({ api, esc, bytes, icon: planIcon });
 const viewHealth = guard(async (sub) => sub === 'containers' ? viewContainers() : healthPage.show());
 
 
@@ -3858,6 +3862,32 @@ const viewAdmin = guard(async () => {
     $('#server').innerHTML = `daemon ${esc(ping.daemon_version)} · schema ${ping.schema_version} · route document generation ${edge.route_generation} (${esc(edge.source)})`;
   } catch (e) { window.DevCoordinatorI18n.bind($('#server'), () => e.message); }
 });
+
+// --- Agent routing settings -----------------------------------------------
+const AGENT_HARNESSES = ['codex', 'claude', 'cursor', 'antigravity', 'other'];
+const AGENT_ACTIONS = [['always_spawn','always_spawn'],['never_spawn','never_spawn'],['skip_if_model_matches','skip_model'],['skip_if_model_and_effort_matches','skip_model_effort']];
+const agentText = (key, params = {}) => window.DevCoordinatorI18n.t(`common.agent_${key}`, params);
+function agentFreshText(capabilities) { if (!capabilities?.reported_at_ms) return [agentText('unavailable'),'bad']; if (!capabilities.fresh) return [agentText('stale'),'warn']; return [agentText('up_to_date'),'ok']; }
+function agentRuleOptions(rule, capabilities) {
+  const action = AGENT_ACTIONS.map(([value,label]) => `<option value="${value}"${rule.action === value ? ' selected' : ''}>${agentText(label)}</option>`).join('');
+  const models = (capabilities?.models || []).map((model) => `<option value="${esc(model)}"${rule.model === model ? ' selected' : ''}>${esc(model)}</option>`).join('');
+  const efforts = (capabilities?.efforts || []).map((effort) => `<option value="${esc(effort)}"${rule.effort === effort ? ' selected' : ''}>${esc(effort)}</option>`).join('');
+  return { action, models: `<option value="">${agentText('select_model')}</option>${models}`, efforts: `<option value="">${agentText('select_effort')}</option>${efforts}`, disabled: capabilities?.fresh ? '' : ' disabled' };
+}
+const viewAgentSettings = guard(async () => {
+  const scope = state.agentScope === 'repository' ? 'repository' : 'global'; let repositoryId = scope === 'repository' ? state.agentRepositoryId : null; let overview = { repositories: [] };
+  if (scope === 'repository' && !repositoryId) { overview = await api('repository.list', {}); repositoryId = overview.repositories?.[0]?.repository_id || null; state.agentRepositoryId = repositoryId; }
+  if (scope === 'repository' && !repositoryId) { main.innerHTML = stateBlock('empty', () => agentText('no_repositories')); return; }
+  const [settings, repositoryOverview] = await Promise.all([api('agent.settings.get', { scope, repository_id: repositoryId, harness: state.agentHarness }), scope === 'repository' && !overview.repositories.length ? api('repository.list', {}) : Promise.resolve(overview)]); overview = repositoryOverview;
+  const repositories = overview.repositories || []; const [freshText, freshKind] = agentFreshText(settings.capabilities);
+  const repoOptions = repositories.map((repo) => `<option value="${esc(repo.repository_id)}"${repo.repository_id === repositoryId ? ' selected' : ''}>${esc(repo.display_name)}</option>`).join('');
+  const rows = settings.roles.filter((role) => !role.retired).map((role) => { const rule = settings.rules.find((candidate) => candidate.role_id === role.role_id) || { role_id: role.role_id, action: 'never_spawn', model: null, effort: null, inherited: false, stale: false }; const options = agentRuleOptions(rule, settings.capabilities); const stale = rule.stale ? `<span class="agent-status warn">${agentText('stale_target')}</span>` : `<span class="agent-status ${freshKind}">${freshText}</span>`; return `<tr data-agent-role="${esc(role.role_id)}"><td data-label="${agentText('role')}"><strong>${esc(role.title)}</strong><small class="muted mono">${esc(role.role_id)}</small></td><td data-label="${agentText('action')}"><select aria-label="${agentText('action')} — ${esc(role.title)}" data-agent-action>${options.action}</select></td><td data-label="${agentText('model')}"><select aria-label="${agentText('model')} — ${esc(role.title)}" data-agent-model${options.disabled}>${options.models}</select></td><td data-label="${agentText('effort')}"><select aria-label="${agentText('effort')} — ${esc(role.title)}" data-agent-effort${options.disabled}>${options.efforts}</select></td><td data-label="${agentText('capability_status')}">${stale}</td><td data-label="${agentText('source')}">${rule.inherited ? `<span class="muted">${agentText('global_default')}</span>` : `<span class="muted">${agentText('this_scope')}</span>`}</td></tr>`; }).join('');
+  main.innerHTML = `<section class="agent-settings-page"><header class="agent-settings-heading"><div><p class="eyebrow">${agentText('administration').toUpperCase()}</p><h1><a class="destination-link" href="#/agent-settings">${agentText('settings')}</a></h1><p class="muted">${agentText('configure_routing')}</p></div><span class="agent-admin-badge">${agentText('administrator_only')}</span></header><section class="agent-settings-controls"><div class="agent-control-group"><span class="agent-control-label">${agentText('scope')}</span><div class="seg" role="tablist"><button type="button" class="${scope === 'global' ? 'active' : ''}" data-agent-scope="global">${agentText('global_defaults')}</button><button type="button" class="${scope === 'repository' ? 'active' : ''}" data-agent-scope="repository">${agentText('repository_override')}</button></div>${scope === 'repository' ? `<select id="agent-repository" aria-label="${agentText('repository')}">${repoOptions}</select>` : `<small class="muted">${agentText('applied_to_all_repositories')}</small>`}</div><div class="agent-control-group"><label class="agent-control-label" for="agent-harness">${agentText('harness')}</label><select id="agent-harness">${AGENT_HARNESSES.map((harness) => `<option value="${harness}"${state.agentHarness === harness ? ' selected' : ''}>${harness[0].toUpperCase() + harness.slice(1)}</option>`).join('')}</select></div><div class="agent-capability"><span class="agent-control-label">${agentText('capabilities_reported')}</span><strong class="agent-status ${freshKind}">${freshText}</strong><small class="muted">${settings.capabilities.reported_at_ms ? agentText('updated', { value: new Date(settings.capabilities.reported_at_ms).toLocaleString() }) : agentText('no_capabilities')}</small></div><button class="btn" type="button" id="agent-manage-roles">${agentText('manage_roles')}</button></section><section class="agent-matrix"><div class="agent-matrix-heading"><div><h2>${agentText('work_role_configuration')}</h2><p class="muted">${agentText('choose_spawn_target')}</p></div><span class="muted">${agentText('revision', { value: settings.revision })}</span></div><div class="tablewrap"><table class="agent-role-table"><thead><tr><th>${agentText('role')}</th><th>${agentText('action')}</th><th>${agentText('model')}</th><th>${agentText('effort')}</th><th>${agentText('capability_status')}</th><th>${agentText('source')}</th></tr></thead><tbody>${rows}</tbody></table></div></section><section class="agent-settings-footer"><p class="muted">${agentText('inheritance_note')}</p><div><button class="btn" type="button" id="agent-reset">${agentText('reset_to_defaults')}</button><button class="btn btn-primary" type="button" id="agent-save">${agentText('save_changes')}</button></div></section></section>`;
+  bindSeg(main, 'agent-scope', (next) => { state.agentScope = next; if (next === 'repository' && !state.agentRepositoryId) state.agentRepositoryId = repositories[0]?.repository_id || null; render(); });
+  $('#agent-repository', main)?.addEventListener('change', (event) => { state.agentRepositoryId = event.target.value; render(); }); $('#agent-harness', main)?.addEventListener('change', (event) => { state.agentHarness = event.target.value; render(); }); $('#agent-reset', main)?.addEventListener('click', () => render()); $('#agent-manage-roles', main)?.addEventListener('click', () => openAgentRolesDialog(settings.roles, settings.roles_revision));
+  $('#agent-save', main)?.addEventListener('click', async (event) => { const rules = [...main.querySelectorAll('[data-agent-role]')].map((row) => { const action = $('[data-agent-action]', row).value; const model = action === 'never_spawn' ? null : ($('[data-agent-model]', row).value || null); const effort = action === 'never_spawn' ? null : ($('[data-agent-effort]', row).value || null); const original = settings.rules.find((candidate) => candidate.role_id === row.dataset.agentRole); if (scope === 'repository' && original?.inherited && original.action === action && original.model === model && original.effort === effort) return null; return { role_id: row.dataset.agentRole, action, model, effort }; }).filter(Boolean); await act(event.currentTarget, 'agent.settings.save', { scope, repository_id: repositoryId, harness: state.agentHarness, expected_revision: settings.revision, rules }, () => render()); });
+});
+function openAgentRolesDialog(roles, revision) { document.getElementById('agent-roles-dialog')?.remove(); const dialog = document.createElement('dialog'); dialog.id = 'agent-roles-dialog'; dialog.className = 'agent-roles-dialog'; dialog.innerHTML = `<div class="dialog-head"><h2>${agentText('roles_title')}</h2><button class="dialog-close" type="button" aria-label="${agentText('close')}">×</button></div><form class="dialog-form"><div class="agent-role-editor">${roles.map((role) => `<div class="agent-role-editor-row"><span>${esc(role.role_id)}</span><input name="title:${esc(role.role_id)}" value="${esc(role.title)}" maxlength="200"><label class="agent-retired"><input type="checkbox" name="retired:${esc(role.role_id)}"${role.retired ? ' checked' : ''}> ${agentText('retired')}</label></div>`).join('')}</div><fieldset class="agent-new-role"><legend>${agentText('add_role')}</legend><input name="new_role_id" placeholder="${agentText('role_id_placeholder')}" maxlength="80"><input name="new_role_title" placeholder="${agentText('role_title_placeholder')}" maxlength="200"></fieldset><div class="dialog-actions"><button class="btn" type="button" data-agent-role-cancel>${agentText('cancel')}</button><button class="btn btn-primary" type="submit">${agentText('save_roles')}</button></div></form></dialog>`; document.body.appendChild(dialog); dialog.showModal(); const close = () => { dialog.close(); dialog.remove(); }; $('.dialog-close', dialog).addEventListener('click', close); $('[data-agent-role-cancel]', dialog).addEventListener('click', close); $('form', dialog).addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.target); const result = roles.map((role, index) => ({ role_id: role.role_id, title: form.get(`title:${role.role_id}`), position: index, retired: form.get(`retired:${role.role_id}`) === 'on' })); const newId = String(form.get('new_role_id') || '').trim(); const newTitle = String(form.get('new_role_title') || '').trim(); if (newId || newTitle) result.push({ role_id: newId, title: newTitle, position: result.length, retired: false }); await act($('button[type=submit]', dialog), 'agent.roles.save', { expected_revision: revision, roles: result }, () => { close(); render(); }); }); requestAnimationFrame(() => $('input', dialog)?.focus()); }
 
 // --- Plan (completion ledger, releases, previews) ------------------------
 function locN(n) { return Number(n).toLocaleString(window.DevCoordinatorI18n.locale); }
@@ -4891,6 +4921,7 @@ async function render() {
   main.classList.toggle('progress-page', view === 'progress' && !!arg);
   main.classList.toggle('performance-page', view === 'performance');
   main.classList.toggle('health-page', view === 'health');
+  main.classList.toggle('storage-page', view === 'storage');
   main.classList.toggle('tickets-page', view === 'requests');
   if (view !== 'requests') main.classList.remove('ticket-selected');
   main.classList.toggle('deployments-page', view === 'deployments' && !arg);
@@ -4911,7 +4942,7 @@ async function render() {
   }
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === view));
   setBanner('');
-  if (route.empty) {
+  if (route.empty && view !== 'agent-settings') {
     main.innerHTML = currentDestinationHeading() + stateBlock('empty', () => window.DevCoordinatorI18n.t("common.no_repositories_visible_to_you_40cf12"));
     return;
   }
@@ -4927,9 +4958,11 @@ async function render() {
   if (view === 'tests') return viewTests(arg || null, route.settings);
   if (view === 'sketches') return viewSketches(arg, sketchQuery.get('sketch'), sketchQuery.get('set'));
   if (view === 'health') return viewHealth(arg);
+  if (view === 'storage') return storagePage.show(main, state.who?.administrator, signal);
   if (view === 'bugs') return viewBugs();
   if (view === 'requests') return window.DevCoordinatorTickets.mount(main, {api:(operation,params)=>api(operation,params,false),administrator:state.who?.administrator,signal});
   if (view === 'admin') return viewAdmin();
+  if (view === 'agent-settings') return viewAgentSettings();
   location.hash = '#/plan';
   return undefined;
 }
@@ -4947,6 +4980,8 @@ setupTopNavigation();
     state.who = await api('user.whoami', {});
     window.DevCoordinatorI18n.bind($('#who-email'), () => (state.who.identity || window.DevCoordinatorI18n.t("common.local_25bf8e")));
     $('#nav-admin').hidden = !state.who.administrator;
+    $('#nav-storage').hidden = !state.who.administrator;
+    $('#nav-agent-settings').hidden = !state.who.administrator;
   } catch (e) { if (e.code !== 'unauthenticated') setBanner(() => window.DevCoordinatorI18n.t("common.cannot_reach_the_coordinator_value1_7f685b", {value1: e.message})); }
   render();
 })();

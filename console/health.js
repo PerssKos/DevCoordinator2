@@ -29,7 +29,7 @@
     };
     const badge = (label, kind = '') => `<span class="badge ${kind}">${esc(label)}</span>`;
     const fault = (message, retry) => `<div class="notice hi-error" role="alert"><span><strong>${safe('could_not_load','Could not load.')}</strong> ${esc(message)}</span><button type="button" class="btn" data-hi-retry="${retry}">${safe('retry','Retry')}</button></div>`;
-    const heading = () => `<div class="hi-heading">${pageHeading(tr('health_558984','Health'), '#/health')}<div class="hi-heading-actions"><button class="btn" type="button" data-hi-refresh aria-label="${esc(tr('refresh_health','Refresh Health'))}">${icon('refresh')}</button><a class="btn" href="#/health/containers">${safe('view_containers_e26e60','View containers')}</a></div></div>`;
+    const heading = () => `<div class="hi-heading">${pageHeading(tr('health_558984','Health'), '#/health')}<div class="hi-heading-actions"><a class="btn hi-storage-link" href="#/storage" aria-label="${esc(tr('review_storage','Review storage'))}"><span class="hi-storage-link-label">${safe('review_storage','Review storage')}</span>${icon('arrow-right')}</a><button class="btn" type="button" data-hi-refresh aria-label="${esc(tr('refresh_health','Refresh Health'))}">${icon('refresh')}</button><a class="btn" href="#/health/containers">${safe('view_containers_e26e60','View containers')}</a></div></div>`;
 
     function incidentDetail(i) {
       const dismissed = i.status === 'dismissed';
