@@ -615,7 +615,16 @@ impl TestLifecycle {
         }
         let worktree = PathBuf::from(&registered.worktree_path);
         if mode == devcoordinator2_api::params::StartMode::Attach {
-            if let Some(active) = self.active_started(&registered.worktree_id, test_name)? {
+            // Admission is checked before attachment so an upgrade drain
+            // cannot be bypassed by an already-running equivalent test.
+            let admission = self
+                .inner
+                .admission
+                .start_guard_for(&registered.worktree_id)
+                .map_err(admission_error)?;
+            let active = self.active_started(&registered.worktree_id, test_name)?;
+            drop(admission);
+            if let Some(active) = active {
                 return Ok(active);
             }
         }
