@@ -94,10 +94,18 @@ Result (only after the process exists):
 Errors: `repository_not_found`, `repository_config_invalid`,
 `worktree_busy`, `tests_draining`, `unit_stop_failed`, `test_start_failed`.
 Never `queued`.
-Latest-start-wins: a concurrent earlier run ends `superseded`. A replacing
-start includes `superseded_run_id` with that exact active run; the field is
-absent when no active run was replaced. Compose independent same-worktree
-checks inside one schema-2 graph rather than starting competing named tests.
+An equivalent active run is returned with `attached: true`. A different active
+run returns `worktree_busy` with attach, wait and explicit replacement choices.
+Pass `mode: "replace"` to retain latest-start-wins deliberately; a replacing
+start includes `superseded_run_id` with that exact active run. Compose
+independent same-worktree checks inside one schema-2 graph rather than
+starting competing named tests.
+
+`test.admission.status` reports whether admission is `open` or `draining`,
+the bounded drain reason, lease state and active run IDs. `test.admission.wait`
+waits for admission to reopen until its RFC 3339 `deadline_at`. `test.wait`
+waits for one run to finish and returns `wait_deadline_reached` when it does
+not finish in time.
 
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
@@ -375,7 +383,9 @@ Reference args on every command except `list`: `path` (required) plus
   completed_services?: [{service, generation, container_id, image_id,
   exit_code, started_at, finished_at, recorded_at}]}], log_dir}`.
   Managed status also returns `readiness: {ready, expected_components,
-  missing_components, pending_apply, blockers}`. Missing declared components
+  missing_components, pending_apply, source_state, next_actions, blockers}`.
+  `source_state` is `current`, `changed_since_apply`, or `unknown`; `pending_apply`
+  remains a compatibility alias. Missing declared components
   make aggregate state `degraded`. Explicit status/apply compare current source
   with the applied generation, including successive dirty edits; a running
   component is not proof that current code or a new migration has run. A null
@@ -383,6 +393,10 @@ Reference args on every command except `list`: `path` (required) plus
   responses), never a readiness success. Lists report runtime state only;
   use explicit status for source freshness. Observed-only
   deployments have no managed-source readiness claim.
+- `deployment.wait` waits for `applied`, `ready`, `source_current`, or
+  `route_acknowledged` until a caller-supplied RFC 3339 deadline. A timeout is
+  returned as `wait_deadline_reached` with the latest status and recovery
+  choices.
 - `deployment.start | stop | restart {component?}` → status. Whole
   deployment in declared/reverse order, or one component whose declaration
   permits independent control. A declared independent Compose service is

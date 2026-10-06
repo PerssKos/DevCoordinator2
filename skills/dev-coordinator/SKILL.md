@@ -286,6 +286,39 @@ still requires one fresh complete passing graph.
 
 ## Plan, ledger, and decisions
 
+## Act on blocked responses without guessing
+
+Every failed operation may include a typed `error.recovery` object. Read it
+before retrying. `class`, `retryable`, `waitable`, and `safe_to_continue` are
+the coordinator's facts; the `options` list is a set of choices for the agent,
+not an instruction to select the first one.
+
+- Continue unrelated work when `safe_to_continue` is true and the target is
+  not needed for the next step.
+- Use the named wait operation when `waitable` is true and the target is
+  needed. Supply a real deadline; `wait_deadline_reached` is a state report,
+  not success.
+- Retry only when `retryable` is true and the state or source identity has
+  changed. Preserve the prior operation ID and result.
+- Inspect or repair when an option names an external prerequisite. Do not
+  bypass a typed refusal with direct Docker, systemd, database, socket, or
+  filesystem commands.
+- Ask the user only when `user_action_required` is true or the options expose
+  a material scope, data, or publication choice.
+
+For a `tests_draining` response, inspect `test.admission.status`; continue
+independent work or use `test.admission.wait --deadline-at ...`. For a
+`worktree_busy` response, attach to or inspect the named run, wait with
+`test wait`, or pass `--mode replace` only when replacing unfinished work is
+intentional. A normal `test start` attaches to an equivalent active run.
+
+For deployment status with `readiness.source_state=changed_since_apply`, the
+preview is still usable for inspection but does not represent the latest
+source. Use `deployment apply` to publish the current source, or continue
+independent work. Use `deployment wait --state ready|source-current|...`
+when a bounded transition is required. Treat `pending_apply` as a compatibility
+alias for the richer source state.
+
 ### Capability completeness before delivery
 
 Before implementation or a completion report, create a compact capability

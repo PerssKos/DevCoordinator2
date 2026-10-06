@@ -100,6 +100,7 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "server.stop",
     "deployment.list",
     "deployment.status",
+    "deployment.wait",
     "deployment.apply",
     "deployment.rollback",
     "deployment.start",
@@ -109,6 +110,9 @@ pub const FOUNDATION_OPERATIONS: &[&str] = &[
     "deployment.remove",
     "deployment.set_domain",
     "test.start",
+    "test.admission.status",
+    "test.admission.wait",
+    "test.wait",
     "test.retry",
     "test.status",
     "test.history",
@@ -852,6 +856,10 @@ impl ControlPlane {
                     params.deployment_id.as_deref(),
                     caller,
                 )?)
+            }
+            "test.admission.status" => {
+                let _: params::TestAdmissionStatus = decode(params)?;
+                encode(self.tests.admission_status()?)
             }
             "deployment.apply" => {
                 let params: params::DeploymentApply = decode(params)?;
@@ -2014,11 +2022,180 @@ impl OperationExecutor for ControlPlane {
         params: Value,
         caller: &Caller,
     ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
-        if operation != "event.wait" {
+        if !matches!(
+            operation,
+            "event.wait" | "test.admission.wait" | "test.wait" | "deployment.wait"
+        ) {
             return None;
         }
         Some((|| {
             let authorization = self.access.authorize(operation, &params, caller)?;
+            if operation == "test.admission.wait" {
+                let request: params::TestAdmissionWait = decode(authorization.params)?;
+                let deadline = parse_deadline(&request.deadline_at)?;
+                let runtime = self.tests.admission_runtime_dir();
+                let tests = self.tests.clone();
+                return Ok(Box::pin(async move {
+                    let wait = tokio::time::timeout_at(
+                        deadline,
+                        crate::test_admission::wait_for_admission_open(runtime),
+                    );
+                    match wait.await {
+                        Ok(Ok(())) => encode(tests.admission_status()?),
+                        Ok(Err(error)) => Err(ProtocolError::new(
+                            ErrorCode::InternalError,
+                            "test admission watcher failed",
+                        )
+                        .with_detail(error.to_string())),
+                        Err(_) => Err(wait_deadline_error(
+                            "test admission is still draining",
+                            Some("draining".into()),
+                            None,
+                            None,
+                        )),
+                    }
+                }) as crate::daemon::DeferredOperation);
+            }
+            if operation == "test.wait" {
+                let request: params::TestWait = decode(authorization.params.clone())?;
+                let current = self.tests.status(&request.path, caller)?;
+                if current.status != results::TestStatus::Running {
+                    return Ok(Box::pin(async move {
+                        encode(results::TestWaitResult {
+                            completed: true,
+                            timed_out: false,
+                            status: current,
+                        })
+                    }) as crate::daemon::DeferredOperation);
+                }
+                let repository =
+                    self.resolve_repository(Some(&request.path), None, caller, false)?;
+                let events = self.events.clone();
+                let access = self.access.clone();
+                let wait_caller = caller.clone();
+                let tests = self.tests.clone();
+                let run_id = request.run_id.clone();
+                let path = request.path.clone();
+                let deadline = request.deadline_at.clone();
+                let status_caller = caller.clone();
+                return Ok(Box::pin(async move {
+                    loop {
+                        let access_for_wait = access.clone();
+                        let caller_for_wait = wait_caller.clone();
+                        let subscription = events.subscribe_with_visibility(
+                            params::EventWait {
+                                cursor: None,
+                                filters: vec![params::EventFilter {
+                                    filter_id: "test-wait".into(),
+                                    categories: vec![params::EventCategory::Test],
+                                    kinds: vec!["test.finished".into()],
+                                    repository_ids: vec![repository.repository_id.clone()],
+                                    deployment_ids: vec![],
+                                    deadline_at: Some(deadline.clone()),
+                                }],
+                                limit: 10,
+                            },
+                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
+                        )?;
+                        let result = subscription.receive().await?;
+                        if !result.heartbeat_due.is_empty() {
+                            let latest = tests.status(&path, &status_caller)?;
+                            return Err(wait_deadline_error(
+                                "test run did not finish before the requested deadline",
+                                Some(format!("{:?}", latest.status)),
+                                Some(run_id.clone()),
+                                None,
+                            ));
+                        }
+                        let latest = tests.status(&path, &status_caller)?;
+                        if latest.run_id == run_id && latest.status != results::TestStatus::Running
+                        {
+                            return encode(results::TestWaitResult {
+                                completed: true,
+                                timed_out: false,
+                                status: latest,
+                            });
+                        }
+                    }
+                }) as crate::daemon::DeferredOperation);
+            }
+            if operation == "deployment.wait" {
+                let request: params::DeploymentWait = decode(authorization.params.clone())?;
+                let current = self.deployments.status(
+                    request.path.as_deref(),
+                    request.name.as_deref(),
+                    request.deployment_id.as_deref(),
+                    caller,
+                )?;
+                if deployment_wait_satisfied(&current, request.state) {
+                    return Ok(Box::pin(async move {
+                        encode(results::DeploymentWaitResult {
+                            completed: true,
+                            timed_out: false,
+                            status: current,
+                        })
+                    }) as crate::daemon::DeferredOperation);
+                }
+                let events = self.events.clone();
+                let access = self.access.clone();
+                let wait_caller = caller.clone();
+                let deployments = self.deployments.clone();
+                let path = request.path.clone();
+                let name = request.name.clone();
+                let deployment_id = request.deployment_id.clone();
+                let deadline = request.deadline_at.clone();
+                let target_deployment_id = current.deployment_id.clone();
+                let state = request.state;
+                let status_caller = caller.clone();
+                return Ok(Box::pin(async move {
+                    loop {
+                        let access_for_wait = access.clone();
+                        let caller_for_wait = wait_caller.clone();
+                        let subscription = events.subscribe_with_visibility(
+                            params::EventWait {
+                                cursor: None,
+                                filters: vec![params::EventFilter {
+                                    filter_id: "deployment-wait".into(),
+                                    categories: vec![params::EventCategory::Deployment],
+                                    kinds: vec![
+                                        "deployment.applied".into(),
+                                        "deployment.failed".into(),
+                                        "deployment.start".into(),
+                                        "deployment.restart".into(),
+                                    ],
+                                    repository_ids: vec![],
+                                    deployment_ids: vec![target_deployment_id.clone()],
+                                    deadline_at: Some(deadline.clone()),
+                                }],
+                                limit: 10,
+                            },
+                            Arc::new(move || access_for_wait.event_visibility(&caller_for_wait)),
+                        )?;
+                        let result = subscription.receive().await?;
+                        let latest = deployments.status(
+                            path.as_deref(),
+                            name.as_deref(),
+                            deployment_id.as_deref(),
+                            &status_caller,
+                        )?;
+                        if deployment_wait_satisfied(&latest, state) {
+                            return encode(results::DeploymentWaitResult {
+                                completed: true,
+                                timed_out: false,
+                                status: latest,
+                            });
+                        }
+                        if !result.heartbeat_due.is_empty() {
+                            return Err(wait_deadline_error(
+                                "deployment did not reach the requested state before the deadline",
+                                Some(latest.state.clone()),
+                                None,
+                                Some(latest.deployment_id.clone()),
+                            ));
+                        }
+                    }
+                }) as crate::daemon::DeferredOperation);
+            }
             let request: params::EventWait = decode(authorization.params)?;
             let access = self.access.clone();
             let wait_caller = caller.clone();
@@ -2034,6 +2211,78 @@ impl OperationExecutor for ControlPlane {
     }
 }
 
+fn parse_deadline(value: &str) -> Result<tokio::time::Instant, ProtocolError> {
+    let parsed = time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "deadline_at must be an RFC 3339 timestamp",
+            )
+        })?;
+    let now = time::OffsetDateTime::now_utc();
+    let duration = parsed - now;
+    Ok(tokio::time::Instant::now() + duration.try_into().unwrap_or_default())
+}
+
+fn wait_deadline_error(
+    reason: &str,
+    state: Option<String>,
+    run_id: Option<String>,
+    deployment_id: Option<String>,
+) -> ProtocolError {
+    ProtocolError::new(
+        ErrorCode::WaitDeadlineReached,
+        "the requested wait deadline was reached",
+    )
+    .with_recovery(devcoordinator2_api::recovery::Guidance {
+        class: devcoordinator2_api::recovery::Class::Transient,
+        retryable: false,
+        waitable: true,
+        safe_to_continue: true,
+        state,
+        reason: reason.into(),
+        run_id,
+        deployment_id,
+        generation: None,
+        repository_id: None,
+        options: vec![devcoordinator2_api::recovery::RecoveryOption {
+            id: "inspect".into(),
+            action: devcoordinator2_api::recovery::Action::Inspect,
+            operation: None,
+            effect:
+                "Read the latest status and choose whether to wait again or continue elsewhere."
+                    .into(),
+            target: None,
+            cost: Some("immediate".into()),
+            risk: Some("none".into()),
+            prerequisites: vec![],
+            independent_work_safe: true,
+            user_action_required: false,
+        }],
+        field_errors: vec![],
+        example: None,
+    })
+}
+
+fn deployment_wait_satisfied(
+    status: &results::DeploymentStatus,
+    state: params::DeploymentWaitState,
+) -> bool {
+    match state {
+        params::DeploymentWaitState::Applied => {
+            status.current_generation.is_some() && status.state != "applying"
+        }
+        params::DeploymentWaitState::Ready => status.readiness.as_ref().is_some_and(|r| r.ready),
+        params::DeploymentWaitState::SourceCurrent => status
+            .readiness
+            .as_ref()
+            .is_some_and(|r| r.pending_apply == Some(false)),
+        params::DeploymentWaitState::RouteAcknowledged => {
+            status.route_port.is_some() && status.state == "running"
+        }
+    }
+}
+
 struct RepositoryIdentity {
     repository_id: String,
     display_name: String,
@@ -2043,6 +2292,24 @@ fn decode<T: DeserializeOwned>(params: Value) -> Result<T, ProtocolError> {
     serde_json::from_value(params).map_err(|error| {
         ProtocolError::new(ErrorCode::ParamsInvalid, "operation parameters are invalid")
             .with_detail(error.to_string())
+            .with_recovery(devcoordinator2_api::recovery::Guidance {
+                class: devcoordinator2_api::recovery::Class::Invalid,
+                retryable: false,
+                waitable: false,
+                safe_to_continue: true,
+                state: Some("invalid_parameters".into()),
+                reason: "Correct the named parameter fields and submit the operation again.".into(),
+                run_id: None,
+                deployment_id: None,
+                generation: None,
+                repository_id: None,
+                options: vec![],
+                field_errors: vec![devcoordinator2_api::recovery::FieldError {
+                    field: "params".into(),
+                    message: error.to_string(),
+                }],
+                example: Some(serde_json::json!({})),
+            })
     })
 }
 

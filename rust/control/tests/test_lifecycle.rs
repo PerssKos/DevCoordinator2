@@ -777,6 +777,7 @@ command=["true"]
                     test: Some("all".into()),
                     checks: Vec::new(),
                     tier: ApiValidationTier::Release,
+                    mode: devcoordinator2_api::params::StartMode::Replace,
                 },
                 &self.caller,
             )
@@ -813,6 +814,7 @@ command=["true"]
                     test: Some("all".into()),
                     checks: Vec::new(),
                     tier: ApiValidationTier::Release,
+                    mode: devcoordinator2_api::params::StartMode::Replace,
                 },
                 &self.caller,
             )
@@ -892,6 +894,7 @@ command=["true"]
         checks: Vec::new(),
         cases: BTreeMap::new(),
         tier: ApiValidationTier::Development,
+        mode: devcoordinator2_api::params::StartMode::Replace,
     };
     let first = world
         .lifecycle
@@ -2076,6 +2079,33 @@ fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
 }
 
 #[test]
+fn equivalent_start_attaches_to_the_active_run_by_default() {
+    let world = LifecycleWorld::new();
+    let first = world.start();
+    let starts = world.systemd.starts.load(Ordering::SeqCst);
+    let attached = world
+        .lifecycle
+        .start(
+            StartTest {
+                targets: Vec::new(),
+                cases: Default::default(),
+                path: world.worktree.to_string_lossy().into_owned(),
+                test: Some("all".into()),
+                checks: Vec::new(),
+                tier: ApiValidationTier::Release,
+                mode: devcoordinator2_api::params::StartMode::Attach,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(attached.run_id, first.run_id);
+    assert!(attached.attached);
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), starts);
+    world.systemd.finish(&first.unit);
+    world.wait_status(TestStatus::Passed);
+}
+
+#[test]
 fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
     let world = LifecycleWorld::new();
     let first = world.start();
@@ -2165,6 +2195,7 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
             test: Some("all".into()),
             checks: Vec::new(),
             tier: ApiValidationTier::Release,
+            mode: devcoordinator2_api::params::StartMode::Replace,
         },
         &world.caller,
     );
@@ -2192,6 +2223,7 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
             test: Some("all".into()),
             checks: Vec::new(),
             tier: ApiValidationTier::Release,
+            mode: devcoordinator2_api::params::StartMode::Replace,
         },
         &world.caller,
     );
@@ -2217,6 +2249,7 @@ fn lifecycle_completes_cancels_supersedes_lists_and_retries() {
             test: Some("all".into()),
             checks: Vec::new(),
             tier: ApiValidationTier::Release,
+            mode: devcoordinator2_api::params::StartMode::Replace,
         },
         &world.caller,
     );
@@ -2337,6 +2370,7 @@ database="app_test"
                 test: Some("database".into()),
                 checks: Vec::new(),
                 tier: ApiValidationTier::Release,
+                mode: devcoordinator2_api::params::StartMode::Replace,
             },
             &caller,
         )

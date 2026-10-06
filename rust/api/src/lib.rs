@@ -93,6 +93,8 @@ pub struct ErrorBody {
     pub message: String,
     #[serde(default)]
     pub detail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<recovery::Guidance>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -129,6 +131,7 @@ pub enum ErrorCode {
     UnitStopFailed,
     DeploymentNotFound,
     Busy,
+    WaitDeadlineReached,
     DeploymentApplyFailed,
     DeploymentActionFailed,
     DockerNetworkUnavailable,
@@ -289,6 +292,7 @@ pub struct ProtocolError {
     pub code: ErrorCode,
     pub message: String,
     pub detail: String,
+    pub recovery: Option<recovery::Guidance>,
 }
 
 impl ProtocolError {
@@ -297,11 +301,17 @@ impl ProtocolError {
             code,
             message: message.into(),
             detail: String::new(),
+            recovery: None,
         }
     }
 
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = truncate_utf8(&detail.into(), MAX_ERROR_DETAIL_BYTES);
+        self
+    }
+
+    pub fn with_recovery(mut self, recovery: recovery::Guidance) -> Self {
+        self.recovery = Some(recovery);
         self
     }
 
@@ -311,12 +321,81 @@ impl ProtocolError {
     }
 
     fn into_body(self) -> ErrorBody {
+        let recovery = self
+            .recovery
+            .or_else(|| default_guidance(self.code, &self.message));
         ErrorBody {
             code: self.code,
             message: self.message,
             detail: truncate_utf8(&self.detail, MAX_ERROR_DETAIL_BYTES),
+            recovery,
         }
     }
+}
+
+fn default_guidance(code: ErrorCode, message: &str) -> Option<recovery::Guidance> {
+    use recovery::{Action, Class, Guidance, RecoveryOption};
+    let (class, retryable, waitable, safe_to_continue) = match code {
+        ErrorCode::Busy | ErrorCode::TestsDraining | ErrorCode::WorktreeBusy => {
+            (Class::Transient, false, true, true)
+        }
+        ErrorCode::DaemonUnavailable
+        | ErrorCode::DockerNetworkUnavailable
+        | ErrorCode::AuthorizationRequired => (Class::External, true, false, true),
+        ErrorCode::ParamsInvalid | ErrorCode::ProtocolInvalid => {
+            (Class::Invalid, false, false, true)
+        }
+        ErrorCode::CursorStale => (Class::Conflict, false, false, true),
+        _ => (Class::Terminal, false, false, true),
+    };
+    let action = if waitable {
+        Action::Wait
+    } else {
+        Action::Inspect
+    };
+    Some(Guidance {
+        class,
+        retryable,
+        waitable,
+        safe_to_continue,
+        state: None,
+        reason: message.to_owned(),
+        run_id: None,
+        deployment_id: None,
+        generation: None,
+        repository_id: None,
+        options: vec![RecoveryOption {
+            id: if waitable {
+                "wait-or-continue"
+            } else {
+                "inspect-and-decide"
+            }
+            .into(),
+            action,
+            operation: None,
+            effect: if waitable {
+                "Wait with a caller-supplied deadline or continue independent work."
+            } else {
+                "Inspect the bounded diagnostic and choose the next operation."
+            }
+            .into(),
+            target: None,
+            cost: Some(
+                if waitable {
+                    "bounded by your deadline"
+                } else {
+                    "immediate"
+                }
+                .into(),
+            ),
+            risk: Some("none".into()),
+            prerequisites: vec![],
+            independent_work_safe: safe_to_continue,
+            user_action_required: matches!(class, Class::External),
+        }],
+        field_errors: vec![],
+        example: None,
+    })
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
@@ -481,6 +560,36 @@ where
         .map_err(|error| {
             ProtocolError::new(ErrorCode::ParamsInvalid, "operation parameters are invalid")
                 .with_detail(error.to_string())
+                .with_recovery(recovery::Guidance {
+                    class: recovery::Class::Invalid,
+                    retryable: false,
+                    waitable: false,
+                    safe_to_continue: true,
+                    state: Some("invalid_parameters".into()),
+                    reason: "Correct the named parameter fields and submit the operation again."
+                        .into(),
+                    run_id: None,
+                    deployment_id: None,
+                    generation: None,
+                    repository_id: None,
+                    options: vec![recovery::RecoveryOption {
+                        id: "correct-parameters".into(),
+                        action: recovery::Action::Continue,
+                        operation: None,
+                        effect: "Resubmit with the required fields and types.".into(),
+                        target: None,
+                        cost: Some("immediate".into()),
+                        risk: Some("none".into()),
+                        prerequisites: vec!["read the operation schema".into()],
+                        independent_work_safe: true,
+                        user_action_required: false,
+                    }],
+                    field_errors: vec![recovery::FieldError {
+                        field: "params".into(),
+                        message: error.to_string(),
+                    }],
+                    example: Some(Value::Object(Map::new())),
+                })
         })
 }
 
@@ -976,12 +1085,39 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "test.start",
-        "Start or supersede one governed validation run.",
+        "Attach to or replace one governed validation run.",
         DESTRUCTIVE_REPOSITORY_ADMIN,
         Protocol["test start"],
         ["test_start"],
         params::StartTest,
         results::TestStarted
+    ),
+    operation!(
+        "test.admission.status",
+        "Explain whether governed test admission is open or draining.",
+        READ_SERVER_ADMIN,
+        Protocol["test admission-status"],
+        ["test_admission_status"],
+        params::TestAdmissionStatus,
+        results::TestAdmissionStatus
+    ),
+    operation!(
+        "test.admission.wait",
+        "Wait until governed test admission reopens or a deadline expires.",
+        READ_SERVER_ADMIN,
+        Protocol["test admission-wait"],
+        ["test_admission_wait"],
+        params::TestAdmissionWait,
+        results::TestAdmissionStatus
+    ),
+    operation!(
+        "test.wait",
+        "Wait for one governed validation run to reach a terminal state.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["test wait"],
+        ["test_wait"],
+        params::TestWait,
+        results::TestWaitResult
     ),
     operation!(
         "test.retry",
@@ -1270,6 +1406,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["deployment_status"],
         params::DeploymentReference,
         results::DeploymentStatus
+    ),
+    operation!(
+        "deployment.wait",
+        "Wait for a deployment state or source transition.",
+        READ_DEPLOYMENT_VIEWER,
+        Protocol["deployment wait"],
+        ["deployment_wait"],
+        params::DeploymentWait,
+        results::DeploymentWaitResult
     ),
     operation!(
         "deployment.logs",
@@ -2321,9 +2466,45 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 158);
-        assert_eq!(tools.len(), 129);
-        assert_eq!(cli_routes.len(), 123);
+        assert_eq!(OPERATIONS.len(), 162);
+        assert_eq!(tools.len(), 133);
+        assert_eq!(cli_routes.len(), 127);
+    }
+
+    #[test]
+    fn recovery_guidance_round_trips_and_is_bounded() {
+        let error = ProtocolError::new(ErrorCode::TestsDraining, "tests are draining")
+            .with_recovery(recovery::Guidance {
+                class: recovery::Class::Transient,
+                retryable: false,
+                waitable: true,
+                safe_to_continue: true,
+                state: Some("draining".into()),
+                reason: "wait for admission to reopen".into(),
+                run_id: None,
+                deployment_id: None,
+                generation: None,
+                repository_id: None,
+                options: vec![recovery::RecoveryOption {
+                    id: "wait".into(),
+                    action: recovery::Action::Wait,
+                    operation: Some("test.admission.wait".into()),
+                    effect: "wait".into(),
+                    target: None,
+                    cost: Some("bounded".into()),
+                    risk: Some("none".into()),
+                    prerequisites: vec![],
+                    independent_work_safe: true,
+                    user_action_required: false,
+                }],
+                field_errors: vec![],
+                example: None,
+            });
+        let response = ResponseEnvelope::failure("abc", error);
+        let encoded = encode_response(&response);
+        let text = String::from_utf8(encoded).unwrap();
+        assert!(text.contains("test.admission.wait"));
+        assert!(text.contains("safe_to_continue"));
     }
 
     #[test]

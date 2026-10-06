@@ -674,10 +674,32 @@ pub struct TestStarted {
     pub origin_run_id: Option<String>,
     pub requested_tier: crate::params::ValidationTier,
     pub readiness_eligible: bool,
+    #[serde(default)]
+    pub attached: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_run_id: Option<String>,
     pub unit: String,
     pub summary_ref: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestAdmissionStatus {
+    pub state: String,
+    pub reason: Option<String>,
+    pub created_at: Option<String>,
+    pub lease_live: bool,
+    pub active_count: u32,
+    pub active_runs: Vec<String>,
+    pub safe_to_continue: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestWaitResult {
+    pub completed: bool,
+    pub timed_out: bool,
+    pub status: TestSummary,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1561,6 +1583,10 @@ pub struct DeploymentReadiness {
     pub expected_components: Vec<String>,
     pub missing_components: Vec<String>,
     pub pending_apply: Option<bool>,
+    #[serde(default)]
+    pub source_state: String,
+    #[serde(default)]
+    pub next_actions: Vec<crate::recovery::RecoveryOption>,
     pub blockers: Vec<DeploymentBlocker>,
 }
 
@@ -1578,6 +1604,10 @@ pub struct DeploymentStatus {
     pub previous_generation: Option<u32>,
     pub domain: Option<String>,
     pub route_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_state: Option<String>,
     pub route_component: Option<String>,
     pub public: bool,
     pub ttl_expires_at: Option<String>,
@@ -1592,6 +1622,14 @@ pub struct DeploymentStatus {
     pub rolled_back_to: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readiness: Option<DeploymentReadiness>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeploymentWaitResult {
+    pub completed: bool,
+    pub timed_out: bool,
+    pub status: DeploymentStatus,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

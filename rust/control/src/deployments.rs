@@ -506,6 +506,27 @@ impl Deployments {
                 let fingerprint = deployment_fingerprint(target, &snapshot);
                 let applied = self.store.get(&target.deployment_id)?;
                 readiness.pending_apply = applied.map(|row| row.spec_fingerprint != fingerprint);
+                readiness.source_state = match readiness.pending_apply {
+                    Some(false) => "current".into(),
+                    Some(true) => "changed_since_apply".into(),
+                    None => "unknown".into(),
+                };
+                if readiness.pending_apply == Some(true) {
+                    readiness.next_actions = vec![devcoordinator2_api::recovery::RecoveryOption {
+                        id: "apply-current-source".into(),
+                        action: devcoordinator2_api::recovery::Action::Retry,
+                        operation: Some("deployment.apply".into()),
+                        effect: "Apply the current worktree source as a new generation.".into(),
+                        target: Some(target.deployment_id.clone()),
+                        cost: Some("runs the declared build and convergence checks".into()),
+                        risk: Some(
+                            "replaces the routed generation only after health succeeds".into(),
+                        ),
+                        prerequisites: vec!["deployment preflight is clear".into()],
+                        independent_work_safe: true,
+                        user_action_required: false,
+                    }];
+                }
             }
             Err(_) => readiness
                 .blockers
@@ -668,8 +689,57 @@ impl Deployments {
         let prerequisites = self.prerequisites(&target);
         if !prerequisites.ready {
             let code = prerequisites.blockers[0].code;
+            let first = &prerequisites.blockers[0];
+            let mut guidance = devcoordinator2_api::recovery::Guidance {
+                class: devcoordinator2_api::recovery::Class::External,
+                retryable: false,
+                waitable: false,
+                safe_to_continue: true,
+                state: Some("preflight_blocked".into()),
+                reason: first.message.clone(),
+                run_id: None,
+                deployment_id: Some(target.deployment_id.clone()),
+                generation: None,
+                repository_id: Some(target.repository_id.clone()),
+                options: vec![devcoordinator2_api::recovery::RecoveryOption {
+                    id: "inspect-preflight".into(),
+                    action: devcoordinator2_api::recovery::Action::Inspect,
+                    operation: Some("deployment.preflight".into()),
+                    effect: "Inspect all declared prerequisites before retrying apply.".into(),
+                    target: Some(target.deployment_id.clone()),
+                    cost: Some("immediate".into()),
+                    risk: Some("none".into()),
+                    prerequisites: vec![],
+                    independent_work_safe: true,
+                    user_action_required: false,
+                }],
+                field_errors: vec![],
+                example: None,
+            };
+            if first.code == ErrorCode::DockerNetworkUnavailable {
+                guidance.options.push(devcoordinator2_api::recovery::RecoveryOption {
+                    id: "repair-docker-network".into(), action: devcoordinator2_api::recovery::Action::Repair,
+                    operation: None, effect: "Repair the host Docker bridge through the authorized host-maintenance path, then rerun preflight.".into(), target: None, cost: Some("host maintenance".into()), risk: Some("may affect unrelated containers".into()), prerequisites: vec!["administrator or host operator access".into()], independent_work_safe: true, user_action_required: true,
+                });
+            }
+            guidance
+                .options
+                .push(devcoordinator2_api::recovery::RecoveryOption {
+                    id: "retry-apply".into(),
+                    action: devcoordinator2_api::recovery::Action::Retry,
+                    operation: Some("deployment.apply".into()),
+                    effect: "Retry apply after every listed prerequisite is clear.".into(),
+                    target: Some(target.deployment_id.clone()),
+                    cost: Some("runs the declared build and convergence".into()),
+                    risk: Some("none while preflight is clear".into()),
+                    prerequisites: vec!["deployment.preflight ready=true".into()],
+                    independent_work_safe: true,
+                    user_action_required: false,
+                });
+            guidance.retryable = true;
             return Err(ProtocolError::new(code, "deployment prerequisites are not satisfied; no runtime resources were changed")
-                .with_detail(serde_json::json!({"blockers":prerequisites.blockers.iter().take(3).collect::<Vec<_>>(),"additional_blockers":prerequisites.blockers.len().saturating_sub(3),"inspect":"deployment preflight"}).to_string()));
+                .with_detail(serde_json::json!({"blockers":prerequisites.blockers.iter().take(3).collect::<Vec<_>>(),"additional_blockers":prerequisites.blockers.len().saturating_sub(3),"inspect":"deployment preflight"}).to_string())
+                .with_recovery(guidance));
         }
         let fingerprint = deployment_fingerprint(&target, &snapshot);
         let domain = DeploymentStore::effective_domain(
@@ -4199,8 +4269,16 @@ impl Deployments {
             health: None,
             current_generation: row.current_generation,
             previous_generation: row.previous_generation,
-            domain: (!domain.is_empty()).then_some(domain),
+            domain: (!domain.is_empty()).then_some(domain.clone()),
             route_port,
+            preview_url: (!domain.is_empty()).then(|| {
+                if self.config.base_domain.is_empty() {
+                    format!("https://{domain}")
+                } else {
+                    format!("https://{domain}.{}", self.config.base_domain)
+                }
+            }),
+            verification_state: Some("not_run".into()),
             route_component: resolved
                 .specification
                 .route_component()
@@ -4222,6 +4300,8 @@ impl Deployments {
                 expected_components,
                 missing_components,
                 pending_apply: None,
+                source_state: "unknown".into(),
+                next_actions: Vec::new(),
                 blockers,
             }),
         })
