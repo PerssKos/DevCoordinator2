@@ -258,7 +258,7 @@ ratio, CSS zoom and visual-viewport scale are not substitutes for browser zoom.
 
 ## Continuation Rules
 
-Every state containing an activating click, press, check, uncheck, or selection
+Every state containing an activating click, press, check, uncheck, selection, or file upload
 declares `continuation`.
 
 - `in-page`: the anchor must be visible in the user's current viewport, focus
@@ -274,6 +274,38 @@ declares `continuation`.
 - `triggerActionIndex` identifies the action immediately before which the
   verifier records the user's current scroll position. It defaults to the last
   action.
+
+## File Selection
+
+A target state can exercise a real native file input with:
+
+```json
+{"action":"setInputFiles","selector":"input[type=file]","value":"tests/fixtures/measurements.xlsx"}
+```
+
+Declare `repoRoot` explicitly. `value` is exactly one slash-separated path
+relative to that root, at most 1,024 characters. Absolute paths, backslashes,
+empty/dot/traversal segments, `.git` or `.devcoordinator` segments, symlinks in
+any component, missing files, directories, special files, arrays and inline
+payload objects are rejected. An empty regular file is valid for testing an
+application's empty-upload error. The file limit is 16 MiB.
+
+The verifier reads the bounded regular file without following links and passes
+its basename and bytes to Playwright. Common file types, including XLSX and CSV,
+receive their MIME type; other extensions use `application/octet-stream`.
+Hidden native inputs behind custom upload controls are supported. No arbitrary
+browser code is accepted. File selection is an activating action
+and requires `continuation`; use `waitFor` for the application's parsed result.
+Authentication-profile actions do not support file uploads.
+
+A digest of the fixture path and contents enters the state's review fingerprint.
+The path itself is not retained in that evidence. The file is checked
+again immediately before upload, and a changed fixture fails instead of using
+stale planning evidence. Reports contain neither the declared path nor the
+bytes. Action-derived screenshot masks cover the path and basename; callers
+still declare masks for any sensitive file content rendered by the application,
+as they do for other fixture data. Existing permissions and safe-target rules
+apply to uploading files and to any downstream application effects.
 
 ## Conditional Control Ownership
 

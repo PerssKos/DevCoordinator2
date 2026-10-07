@@ -1008,13 +1008,13 @@ function normalizeActionList(value, name, { allowEmpty = false } = {}) {
       throw new Error(`${name}[${actionIndex}] must be an object`);
     }
     const kind = action.action;
-    if (!["click", "dblclick", "hover", "focus", "fill", "check", "uncheck", "press", "selectOption"].includes(kind)) {
+    if (!["click", "dblclick", "hover", "focus", "fill", "check", "uncheck", "press", "selectOption", "setInputFiles"].includes(kind)) {
       throw new Error(`Unsupported declarative action: ${kind}`);
     }
     if (typeof action.selector !== "string" || !action.selector.trim()) {
       throw new Error(`${name}[${actionIndex}].selector must be non-empty`);
     }
-    if (["fill", "press", "selectOption"].includes(kind) && action.value === undefined) {
+    if (["fill", "press", "selectOption", "setInputFiles"].includes(kind) && action.value === undefined) {
       throw new Error(`Declarative ${kind} action requires value`);
     }
     if (["fill", "press"].includes(kind) && typeof action.value !== "string") {
@@ -1026,6 +1026,7 @@ function normalizeActionList(value, name, { allowEmpty = false } = {}) {
     if (Array.isArray(action.value) && !action.value.every((item) => typeof item === "string")) {
       throw new Error("Declarative selectOption array values must all be strings");
     }
+    if (kind === "setInputFiles") validateUploadFixturePath(action.value);
     const timeoutMs = action.timeoutMs === undefined ? 5000 : Number(action.timeoutMs);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
       throw new Error("Declarative action timeoutMs must be a non-negative number");
@@ -1133,6 +1134,9 @@ function normalizeAuthProfiles(value) {
       throw new Error(`authProfiles[${index}].url must be non-empty`);
     }
     const actions = normalizeActionList(profile.actions, `authProfiles[${index}].actions`);
+    if (actions.some((action) => action.action === "setInputFiles")) {
+      throw new Error("setInputFiles is supported only in target states, not authentication profiles");
+    }
     if (actions.some((action) => action.ownerJourney || action.ownerState)) {
       throw new Error(`authProfiles[${index}].actions cannot declare conditional ownership`);
     }
@@ -2080,6 +2084,51 @@ function resolveRepositoryRoot(value) {
   }
 }
 
+// Upload values are private fixture paths, never report or screenshot content.
+const MAX_UPLOAD_FIXTURE_BYTES = 16 * 1024 * 1024;
+function validateUploadFixturePath(value) {
+  if (typeof value !== "string" || !value || value.length > 1024 ||
+      value.includes("\\") || /[\x00-\x1f]/.test(value) || path.isAbsolute(value) ||
+      value.split("/").some((part) => !part || [".", "..", ".git", ".devcoordinator"].includes(part))) {
+    throw new Error("setInputFiles value must be one repository-relative fixture path without traversal");
+  }
+}
+
+function readUploadFixture(repoRoot, value) {
+  validateUploadFixturePath(value);
+  const repo = resolveRepositoryRoot(repoRoot);
+  if (repo.error) throw new Error("setInputFiles requires a canonical repoRoot");
+  const absolute = path.resolve(repo.root, value);
+  let descriptor;
+  try {
+    if (!pathIsWithin(absolute, repo.root) || pathHasSymlinkComponent(absolute)) throw new Error();
+    descriptor = fs.openSync(absolute, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const before = fs.fstatSync(descriptor);
+    if (!before.isFile() || before.size > MAX_UPLOAD_FIXTURE_BYTES) throw new Error();
+    const bytes = Buffer.alloc(before.size + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (!count) break;
+      offset += count;
+    }
+    const after = fs.fstatSync(descriptor);
+    const current = fs.lstatSync(absolute);
+    if (offset !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
+        before.ino !== current.ino || before.dev !== current.dev || pathHasSymlinkComponent(absolute) ||
+        fs.realpathSync.native(absolute) !== absolute) throw new Error();
+    const buffer = bytes.subarray(0, offset);
+    const mimeType = ({ ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".csv": "text/csv", ".txt": "text/plain", ".json": "application/json", ".pdf": "application/pdf",
+      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" })[path.extname(value).toLowerCase()] || "application/octet-stream";
+    return { payload: { name: path.basename(value), mimeType, buffer }, sha256: sha256(stableJson({ path: value, contentSha256: sha256(buffer) })) };
+  } catch {
+    throw new Error("setInputFiles fixture must be an unchanged regular file within repoRoot, without symlinks, at most 16 MiB");
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
 function collectReviewInputFiles(repoRoot, declaredInputs) {
   const files = new Map();
   const inputs = [];
@@ -2174,7 +2223,7 @@ function journeyContractErrors(target) {
   }
   const actions = target.verificationState?.actions || [];
   const activating = actions.some((action) =>
-    ["click", "dblclick", "press", "check", "uncheck", "selectOption"].includes(action.action) &&
+    ["click", "dblclick", "press", "check", "uncheck", "selectOption", "setInputFiles"].includes(action.action) &&
     (!action.ownerState || action.ownerState === target.stateName)
   );
   if (activating && !target.continuation) {
@@ -2204,6 +2253,12 @@ function prepareTargetContracts(targets, config) {
         }
       }
     }
+    const uploadFixtureDigests = {};
+    for (const [index, action] of (target.verificationState?.actions || []).entries()) {
+      if (action.action !== "setInputFiles") continue;
+      try { uploadFixtureDigests[index] = readUploadFixture(repo.root, action.value).sha256; }
+      catch (error) { contractErrors.push(error.message); }
+    }
     const intentContract = {
       ...(target.expectedHttpStatus === undefined ? {} : { expectedHttpStatus: target.expectedHttpStatus }),
       journeys: target.journeys || [],
@@ -2214,7 +2269,8 @@ function prepareTargetContracts(targets, config) {
       theme: target.theme || null,
       stateName: target.stateName || "base",
       continuation: target.continuation || null,
-      actions: (target.verificationState?.actions || []).map((action) => ({
+      actions: (target.verificationState?.actions || []).map((action, index) => ({
+        ...(action.action === "setInputFiles" ? { fixtureSha256: uploadFixtureDigests[index] || null } : {}),
         action: action.action,
         selector: action.selector,
         timeoutMs: action.timeoutMs,
@@ -2233,6 +2289,7 @@ function prepareTargetContracts(targets, config) {
       reviewEvidence,
       intentFingerprint: sha256(stableJson(intentContract)),
       repositoryRoot: repo.root,
+      uploadFixtureDigests,
     };
   });
   const authNames = new Set(config.authProfiles.map((profile) => profile.name));
@@ -2328,7 +2385,7 @@ async function applyInteractionState(page, state, target = null) {
       }
       if (index === triggerActionIndex) {
         armed = armWaitFor(page, state.waitFor || {});
-        await locator.scrollIntoViewIfNeeded(options);
+        if (action.action !== "setInputFiles" || controlVisible) await locator.scrollIntoViewIfNeeded(options);
         beforeContinuation = await page.evaluate(() => ({
           scrollX: window.scrollX,
           scrollY: window.scrollY,
@@ -2345,6 +2402,11 @@ async function applyInteractionState(page, state, target = null) {
       else if (action.action === "uncheck") await locator.uncheck(options);
       else if (action.action === "press") await locator.press(action.value, options);
       else if (action.action === "selectOption") await locator.selectOption(action.value, options);
+      else if (action.action === "setInputFiles") {
+        const fixture = readUploadFixture(target?.repositoryRoot, action.value);
+        if (fixture.sha256 !== target?.uploadFixtureDigests?.[index]) throw new Error("Upload fixture changed after planning");
+        await locator.setInputFiles(fixture.payload, options);
+      }
       actionTimings.push({
         index,
         action: action.action,
@@ -4724,6 +4786,10 @@ function pngDimensions(buffer) {
 function screenshotActionValues(target) {
   const values = [];
   for (const action of target.verificationState?.actions || []) {
+    if (action.action === "setInputFiles" && typeof action.value === "string") {
+      values.push(action.value, path.basename(action.value));
+      continue;
+    }
     if (action.action !== "fill" || typeof action.value !== "string" || !action.value) continue;
     if (action.value.trim()) values.push(action.value);
   }

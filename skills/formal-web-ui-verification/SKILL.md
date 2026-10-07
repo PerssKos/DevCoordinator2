@@ -316,7 +316,14 @@ candidate preliminary or blocked.
      useful responsive evidence, but it is not equivalent to device emulation.
    - Declare transient states under a target's `states` list. Each state runs in
      a fresh browser context after an ordered set of bounded `click`, `hover`,
-     `focus`, `fill`, `check`, `uncheck`, `press`, or `selectOption` actions.
+     `focus`, `fill`, `check`, `uncheck`, `press`, `selectOption`, or `setInputFiles` actions.
+     `setInputFiles` selects one regular fixture file of at most 16 MiB through
+     the real file input. Its `value` is a repository-relative path resolved
+     against explicit `repoRoot`; traversal, symlinks, arrays and inline
+     payloads are rejected. It requires the usual continuation checkpoint.
+     The browser receives only the basename and file bytes; reports omit the
+     path and bytes. File contents enter the review fingerprint as a digest,
+     and changes after planning fail the action. See the linked contract.
      Action failures fail the target-coverage gate; arbitrary injected JavaScript
      is deliberately unsupported. Values used by actions are omitted from the
      public report.

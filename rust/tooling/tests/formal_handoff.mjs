@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile, symlink, truncate } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -23,12 +24,21 @@ const variants = new Map([
   ['/overflow', html.replace('body{margin:0', 'body{width:2000px;margin:0')],
   ['/offscreen', html.replace('main{padding:20px;grid-column:2;min-width:0}', 'main{padding:20px;margin-top:1000px}')],
 ]);
+const uploadedRequests = [];
+let uploadMutation = null;
+const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
 const server = createServer((request, response) => {
   const pathname = new URL(request.url, 'http://fixture').pathname;
+  if (pathname === '/upload' && uploadMutation) { uploadMutation(); uploadMutation = null; }
+  if (pathname === '/uploaded') {
+    const chunks = []; request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => { uploadedRequests.push({ name: request.headers['x-upload-name'], type: request.headers['x-upload-type'], content: Buffer.concat(chunks).toString(), sha256: createHash('sha256').update(Buffer.concat(chunks)).digest('hex') }); response.writeHead(200); response.end('saved'); });
+    return;
+  }
   const status = Number(pathname.match(/^\/http-(403|404|503)(?:-overflow)?$/)?.[1] ?? 200);
   const csp = pathname === '/capture-csp' || pathname === '/capture-child' ? { 'content-security-policy': "default-src 'self';style-src 'nonce-fixture'" } : {};
   response.writeHead(status, { 'content-type': 'text/html', 'x-ui-source-revision': revision, ...csp });
-  response.end(pathname === '/capture-child' ? '<!doctype html><style nonce="fixture">body{background:white}input{color:#de1d48;background:white;border:1px solid #222;width:280px}</style><input value="SYNTHETIC_CHILD_INPUT">' : pathname.startsWith('/capture') ? captureHtml : pathname.endsWith('-overflow') ? variants.get('/overflow') : variants.get(pathname) ?? html);
+  response.end(pathname === '/upload-hidden' ? uploadHtml.replace('type="file" id="upload"', 'type="file" id="upload" hidden').replace('event.target.focus()', "document.querySelector('#label').focus()") : pathname === '/upload' ? uploadHtml : pathname === '/capture-child' ? '<!doctype html><style nonce="fixture">body{background:white}input{color:#de1d48;background:white;border:1px solid #222;width:280px}</style><input value="SYNTHETIC_CHILD_INPUT">' : pathname.startsWith('/capture') ? captureHtml : pathname.endsWith('-overflow') ? variants.get('/overflow') : variants.get(pathname) ?? html);
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -142,9 +152,85 @@ async function verify(name, config, check, setupError = null) {
     results.push({ name, passed: true, exitCode });
   } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
 }
+async function uploadFixtures() {
+  const repository = join(scratch, 'upload-repository');
+  await mkdir(join(repository, 'fixtures'), { recursive: true });
+  await writeFile(join(repository, 'ui.html'), uploadHtml);
+  const fixtureName = 'PRIVATE_FIXTURE_NAME.csv';
+  const fixtureValue = 'time,current\n0,UPLOAD_PRIVATE_SOURCE_VALUE\n';
+  const fixture = `fixtures/${fixtureName}`;
+  await writeFile(join(repository, fixture), fixtureValue);
+  const uploaded = full('/upload'); uploaded.repoRoot = repository;
+  const uploadTarget = uploaded.targets[0];
+  uploadTarget.reviewInputs = [{ path: 'ui.html', kind: 'ui-code' }];
+  uploadTarget.includeBase = false;
+  uploadTarget.states = [{ name: 'uploaded', actions: [{ action: 'setInputFiles', selector: '#upload', value: fixture }], waitFor: { selector: '#upload-result[data-ready=true]' }, continuation: { kind: 'in-page', anchor: '#upload-result', focusWithin: '#primary' } }];
+  uploaded.requiredCoverage[0].state = 'uploaded'; uploaded.fixtureDataShapes[0].state = 'uploaded'; uploaded.fixtureDataShapes[0].conditionalDom.push('#upload-result[data-ready=true]');
+  let originalFingerprint;
+  const verifyPrivacy = async directory => {
+    for (const name of ['report.json', 'report.md', 'journey-evidence.json', 'review-queue.json', 'formal-receipt.json', 'stdout.json']) {
+      const text = await readFile(join(directory, name), 'utf8');
+      for (const privateValue of [fixtureName, fixtureValue.trim(), fixture]) assert(!text.includes(privateValue), `${name} leaked upload data`);
+    }
+  };
+  await verify('upload-real-file', uploaded, async ({ receipt, report, directory }) => {
+    assert.equal(receipt.formal.result, 'passed');
+    assert.deepEqual(uploadedRequests.at(-1), { name: fixtureName, type: 'text/csv', content: fixtureValue, sha256: createHash('sha256').update(fixtureValue).digest('hex') });
+    originalFingerprint = report.pages[0].target.intentFingerprint;
+    assert(originalFingerprint, 'Upload input must bind the review fingerprint');
+    await verifyPrivacy(directory);
+  });
+  const renamed = structuredClone(uploaded); renamed.targets[0].states[0].actions[0].value = 'fixtures/renamed.csv';
+  await writeFile(join(repository, 'fixtures/renamed.csv'), fixtureValue);
+  await verify('upload-renamed-fixture-fingerprint', renamed, ({ receipt, report }) => { assert.equal(receipt.formal.result, 'passed'); assert.notEqual(report.pages[0].target.intentFingerprint, originalFingerprint); });
+  const binary = Buffer.from([0x50, 0x4b, 3, 4, 0, 0xff, 0x80, 0x0a]);
+  await writeFile(join(repository, 'fixtures/measurements.xlsx'), binary);
+  const excel = structuredClone(uploaded); excel.targets[0].states[0].actions[0].value = 'fixtures/measurements.xlsx';
+  await verify('upload-xlsx-binary-mime', excel, ({ receipt }) => { assert.equal(receipt.formal.result, 'passed'); assert.equal(uploadedRequests.at(-1).type, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); assert.equal(uploadedRequests.at(-1).sha256, createHash('sha256').update(binary).digest('hex')); });
+  const hidden = structuredClone(uploaded); hidden.targets[0].url += '-hidden'; hidden.fixtureDataShapes[0].route = '/upload-hidden';
+  await verify('upload-hidden-native-input', hidden, ({ receipt }) => { assert.equal(receipt.formal.result, 'passed'); assert.equal(uploadedRequests.at(-1).content, fixtureValue); });
+  await writeFile(join(repository, fixture), `${fixtureValue}1,3\n`);
+  await verify('upload-changed-file', uploaded, async ({ receipt, report, directory }) => {
+    assert.equal(receipt.formal.result, 'passed');
+    assert.notEqual(report.pages[0].target.intentFingerprint, originalFingerprint);
+    assert.equal(uploadedRequests.at(-1).content, `${fixtureValue}1,3\n`);
+    await verifyPrivacy(directory);
+  });
+  await writeFile(join(repository, 'fixtures/empty.csv'), '');
+  const empty = structuredClone(uploaded); empty.targets[0].states[0].actions[0].value = 'fixtures/empty.csv';
+  await verify('upload-empty-file', empty, ({ receipt }) => { assert.equal(receipt.formal.result, 'passed'); assert.equal(uploadedRequests.at(-1).content, ''); });
+  for (const [name, value] of [['absolute', join(repository, fixture)], ['traversal', '../outside.csv'], ['dot-segment', 'fixtures/../ui.html'], ['array', [fixture]], ['object', { name: fixtureName, buffer: fixtureValue }], ['empty-path', ''], ['backslash', 'fixtures\\example.csv'], ['private-state', '.devcoordinator/secret.csv']]) {
+    const invalid = structuredClone(uploaded); invalid.targets[0].states[0].actions[0].value = value;
+    const count = uploadedRequests.length;
+    await verify(`upload-invalid-${name}`, invalid, null, /setInputFiles value must be one repository-relative fixture path/);
+    assert.equal(uploadedRequests.length, count);
+  }
+  execFileSync('mkfifo', [join(repository, 'fixtures/pipe.csv')]);
+  await symlink(join(repository, fixture), join(repository, 'fixtures/link.csv'));
+  await symlink(join(repository, 'fixtures'), join(repository, 'linked-fixtures'));
+  await writeFile(join(repository, 'fixtures/oversized.csv'), ''); await truncate(join(repository, 'fixtures/oversized.csv'), 16 * 1024 * 1024 + 1);
+  for (const [name, value] of [['special-file', 'fixtures/pipe.csv'], ['symlink', 'fixtures/link.csv'], ['symlink-directory', `linked-fixtures/${fixtureName}`], ['missing', 'fixtures/absent.csv'], ['directory', 'fixtures'], ['oversized', 'fixtures/oversized.csv']]) {
+    const invalid = structuredClone(uploaded); invalid.targets[0].states[0].actions[0].value = value;
+    const count = uploadedRequests.length;
+    await verify(`upload-rejected-${name}`, invalid, ({ receipt, report }) => { assert.equal(receipt.formal.result, 'incomplete'); assert.equal(report.pages[0].outcome, 'journey_contract_error'); assert.match(report.pages[0].skipReason, /unchanged regular file/); });
+    assert.equal(uploadedRequests.length, count);
+  }
+  const beforeMutation = uploadedRequests.length;
+  uploadMutation = () => writeFileSync(join(repository, fixture), 'changed after planning');
+  await verify('upload-changed-after-planning', uploaded, async ({ receipt, report, directory }) => { assert.equal(receipt.formal.result, 'failed'); assert.equal(uploadedRequests.length, beforeMutation); assert(report.pages[0].actionTimings.some(action => action.action === 'setInputFiles' && action.outcome === 'failed')); await verifyPrivacy(directory); });
+  const authUpload = structuredClone(uploaded); authUpload.authProfiles = [{ name: 'login', url: target.url, actions: [{ action: 'setInputFiles', selector: '#upload', value: fixture }] }];
+  await verify('upload-not-authentication-action', authUpload, null, /supported only in target states/);
+  const absentRoot = structuredClone(uploaded); delete absentRoot.repoRoot;
+  await verify('upload-requires-root', absentRoot, ({ receipt, report }) => { assert.equal(receipt.formal.result, 'incomplete'); assert.match(report.pages[0].skipReason, /canonical repoRoot/); });
+  const noContinuation = structuredClone(uploaded); delete noContinuation.targets[0].states[0].continuation;
+  await verify('upload-requires-continuation', noContinuation, ({ receipt, report }) => { assert.equal(receipt.formal.result, 'incomplete'); assert.match(report.pages[0].skipReason, /continuation/); });
+  const failedAction = structuredClone(uploaded); failedAction.targets[0].states[0].actions[0].selector = '#label';
+  await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
+}
 try {
-  await capturePrivacy();
-  if (!process.argv.includes('--capture-only')) {
+  if (!process.argv.includes('--capture-only')) await uploadFixtures();
+  if (!process.argv.includes('--upload-only')) await capturePrivacy();
+  if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) {
   await Promise.all([
     verify('formal-receipt', base, ({ exitCode, receipt }) => {
       assert.equal(exitCode, 0); assert(receipt.formal, 'The verifier must emit its measured formal receipt');
