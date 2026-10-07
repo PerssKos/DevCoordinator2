@@ -217,6 +217,15 @@ pub struct ActivityReceipt {
     pub active: Vec<Value>,
 }
 
+#[derive(Clone, Debug)]
+pub struct AdmissionSnapshot {
+    pub draining: bool,
+    pub reason: Option<String>,
+    pub created_at: Option<String>,
+    pub lease_live: bool,
+    pub active_runs: Vec<String>,
+}
+
 impl ActivityReceipt {
     pub fn active_tests(&self) -> Option<Vec<ActiveTest>> {
         self.active
@@ -708,6 +717,34 @@ pub fn read_activity(
     }
 }
 
+pub fn snapshot(runtime_dir: impl AsRef<Path>) -> Result<AdmissionSnapshot, AdmissionError> {
+    let runtime = RuntimeDirectory::open(runtime_dir.as_ref(), false)
+        .map_err(|_| AdmissionError::ActivityUnavailable)?;
+    let drain = read_json(&runtime, DRAIN_FILE);
+    let lease_live = drain.as_ref().is_some_and(lease_is_live);
+    let active_runs = read_activity_at(&runtime)
+        .and_then(|receipt| receipt.active_tests())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|run| run.run_id)
+        .collect();
+    Ok(AdmissionSnapshot {
+        draining: lease_live,
+        reason: drain
+            .as_ref()
+            .filter(|document| lease_is_live(document))
+            .map(drain_reason),
+        created_at: drain
+            .as_ref()
+            .filter(|document| lease_is_live(document))
+            .and_then(|document| document.get("created_at"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        lease_live,
+        active_runs,
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn notify_runtime_mutation(_runtime_dir: &Path) {}
 
@@ -814,6 +851,40 @@ pub async fn wait_for_zero_activity(runtime_dir: impl AsRef<Path>) -> Result<(),
     }
 }
 
+/// Wait for the live cutover lease to disappear. This uses the same atomic
+/// runtime-directory watcher as activity draining; a deadline belongs to the
+/// caller and never turns a timeout into a successful state transition.
+#[cfg(target_os = "linux")]
+pub async fn wait_for_admission_open(runtime_dir: impl AsRef<Path>) -> Result<(), AdmissionError> {
+    let runtime = RuntimeDirectory::open(runtime_dir.as_ref(), false)?;
+    let events = DirectoryEvents::new(&runtime)?;
+    loop {
+        let draining =
+            read_json(&runtime, DRAIN_FILE).is_some_and(|document| lease_is_live(&document));
+        if !draining {
+            return Ok(());
+        }
+        events.wait().await?;
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn wait_for_admission_open(runtime_dir: impl AsRef<Path>) -> Result<(), AdmissionError> {
+    let runtime = RuntimeDirectory::open(runtime_dir.as_ref(), false)?;
+    let notifier = runtime_notifier(&runtime.path);
+    loop {
+        let notified = notifier.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let draining =
+            read_json(&runtime, DRAIN_FILE).is_some_and(|document| lease_is_live(&document));
+        if !draining {
+            return Ok(());
+        }
+        notified.await;
+    }
+}
+
 /// Portable same-process fallback for platforms where the daemon is not
 /// deployed. Every mutation notifies registered waiters; there is no timer.
 #[cfg(not(target_os = "linux"))]
@@ -868,6 +939,21 @@ mod tests {
         assert!(activity(temporary.path()).active.is_empty());
         end_drain(&lease).unwrap();
         drop(admission.start_guard().unwrap());
+    }
+
+    #[test]
+    fn snapshot_explains_open_and_draining_admission() {
+        let temporary = tempdir().unwrap();
+        let admission = TestAdmission::new(temporary.path()).unwrap();
+        admission.reset().unwrap();
+        let open = snapshot(temporary.path()).unwrap();
+        assert!(!open.draining);
+        let lease = begin_drain(temporary.path(), "coordinator Rust cutover").unwrap();
+        let draining = snapshot(temporary.path()).unwrap();
+        assert!(draining.draining);
+        assert_eq!(draining.reason.as_deref(), Some("coordinator Rust cutover"));
+        assert!(draining.lease_live);
+        end_drain(&lease).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

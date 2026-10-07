@@ -9262,9 +9262,16 @@
           }
         ]
       },
-      "description": "Start or supersede one governed validation run.",
+      "description": "Attach to or replace one governed validation run.",
       "inputSchema": {
         "$defs": {
+          "StartMode": {
+            "enum": [
+              "attach",
+              "replace"
+            ],
+            "type": "string"
+          },
           "ValidationTier": {
             "enum": [
               "development",
@@ -9293,6 +9300,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "mode": {
+            "$ref": "#/$defs/StartMode",
+            "default": "attach"
           },
           "path": {
             "minLength": 1,
@@ -9329,6 +9340,13 @@
         {
           "inputSchema": {
             "$defs": {
+              "StartMode": {
+                "enum": [
+                  "attach",
+                  "replace"
+                ],
+                "type": "string"
+              },
               "ValidationTier": {
                 "enum": [
                   "development",
@@ -9357,6 +9375,10 @@
                   "type": "string"
                 },
                 "type": "array"
+              },
+              "mode": {
+                "$ref": "#/$defs/StartMode",
+                "default": "attach"
               },
               "path": {
                 "minLength": 1,
@@ -9427,6 +9449,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "attached": {
+            "default": false,
+            "type": "boolean"
+          },
           "origin_run_id": {
             "type": [
               "string",
@@ -9501,6 +9527,1573 @@
       "policy": {
         "effect": "destructive",
         "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test admission-status"
+          }
+        ]
+      },
+      "description": "Explain whether governed test admission is open or draining.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "TestAdmissionStatus",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "TestAdmissionStatus",
+            "type": "object"
+          },
+          "name": "test_admission_status",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.admission.status",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "active_runs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_live": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "safe_to_continue": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "lease_live",
+          "active_count",
+          "active_runs",
+          "safe_to_continue"
+        ],
+        "title": "TestAdmissionStatus",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test admission-wait"
+          }
+        ]
+      },
+      "description": "Wait until governed test admission reopens or a deadline expires.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deadline_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "deadline_at"
+        ],
+        "title": "TestAdmissionWait",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deadline_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deadline_at"
+            ],
+            "title": "TestAdmissionWait",
+            "type": "object"
+          },
+          "name": "test_admission_wait",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.admission.wait",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "active_runs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_live": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "safe_to_continue": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "lease_live",
+          "active_count",
+          "active_runs",
+          "safe_to_continue"
+        ],
+        "title": "TestAdmissionStatus",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test wait"
+          }
+        ]
+      },
+      "description": "Wait for one governed validation run to reach a terminal state.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deadline_at": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "deadline_at"
+        ],
+        "title": "TestWait",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deadline_at": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "deadline_at"
+            ],
+            "title": "TestWait",
+            "type": "object"
+          },
+          "name": "test_wait",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.wait",
+      "outputSchema": {
+        "$defs": {
+          "AlarmCapability": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm_namespace": {
+                "type": "string"
+              },
+              "capability_revision": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "lease_expires_at": {
+                "description": "Absolute UTC lease expiry in Unix milliseconds.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "alarm_namespace",
+              "capability_revision",
+              "lease_expires_at"
+            ],
+            "type": "object"
+          },
+          "ArtifactReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Capacity": {
+            "additionalProperties": false,
+            "properties": {
+              "active": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "effective_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_adjustment": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CapacityAdjustment"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "learned_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "paused": {
+                "type": "boolean"
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "learned_capacity",
+              "effective_capacity",
+              "active",
+              "waiting",
+              "paused"
+            ],
+            "type": "object"
+          },
+          "CapacityAdjustment": {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "cap": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "epoch_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "event_id": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "new_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "p95_cpu_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "p95_memory_percent": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "previous_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "saturation_fraction": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "event_id",
+              "at",
+              "actor",
+              "reason",
+              "previous_capacity",
+              "new_capacity"
+            ],
+            "type": "object"
+          },
+          "CasePhaseReport": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/$defs/ExecutionLogStreamSummary"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "phase",
+              "status",
+              "duration_ms",
+              "streams"
+            ],
+            "type": "object"
+          },
+          "CaseProjection": {
+            "additionalProperties": false,
+            "properties": {
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "id": {
+                "type": "string"
+              },
+              "phases": {
+                "items": {
+                  "$ref": "#/$defs/CasePhaseReport"
+                },
+                "type": "array"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/$defs/ExecutionLogStreamSummary"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "id",
+              "status",
+              "exit",
+              "duration_ms",
+              "streams"
+            ],
+            "type": "object"
+          },
+          "CheckPhase": {
+            "enum": [
+              "setup",
+              "build",
+              "fixture",
+              "case",
+              "cleanup",
+              "qualification",
+              "check"
+            ],
+            "type": "string"
+          },
+          "CheckProjection": {
+            "additionalProperties": false,
+            "properties": {
+              "artifacts": {
+                "items": {
+                  "$ref": "#/$defs/ArtifactReceipt"
+                },
+                "type": "array"
+              },
+              "artifacts_truncated": {
+                "type": "boolean"
+              },
+              "case_count": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cases": {
+                "items": {
+                  "$ref": "#/$defs/CaseProjection"
+                },
+                "type": "array"
+              },
+              "cases_truncated": {
+                "type": "boolean"
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "duration_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "execution": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase",
+                "default": "check"
+              },
+              "phase_durations": {
+                "items": {
+                  "$ref": "#/$defs/PhaseDuration"
+                },
+                "type": "array"
+              },
+              "resource_waiting": {
+                "default": false,
+                "type": "boolean"
+              },
+              "retained_artifacts": {
+                "items": {
+                  "$ref": "#/$defs/RetainedArtifactReceipt"
+                },
+                "type": "array"
+              },
+              "retained_artifacts_truncated": {
+                "type": "boolean"
+              },
+              "role": {
+                "$ref": "#/$defs/CheckRole"
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "streams": {
+                "items": {
+                  "$ref": "#/$defs/ExecutionLogStreamSummary"
+                },
+                "type": "array"
+              },
+              "tier": {
+                "$ref": "#/$defs/ValidationTier"
+              }
+            },
+            "required": [
+              "name",
+              "tier",
+              "role",
+              "status",
+              "exit",
+              "streams",
+              "case_count",
+              "artifacts",
+              "artifacts_truncated",
+              "retained_artifacts",
+              "retained_artifacts_truncated",
+              "cases",
+              "cases_truncated"
+            ],
+            "type": "object"
+          },
+          "CheckRole": {
+            "enum": [
+              "work",
+              "preflight"
+            ],
+            "type": "string"
+          },
+          "DiagnosticExit": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "DiagnosticValue": {
+            "additionalProperties": false,
+            "properties": {
+              "byte_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "preview": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "redacted": {
+                "type": "boolean"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              },
+              "type": {
+                "$ref": "#/$defs/DiagnosticValueType"
+              }
+            },
+            "required": [
+              "type",
+              "sha256",
+              "byte_count",
+              "truncated",
+              "redacted"
+            ],
+            "type": "object"
+          },
+          "DiagnosticValueType": {
+            "enum": [
+              "null",
+              "boolean",
+              "number",
+              "string",
+              "json"
+            ],
+            "type": "string"
+          },
+          "ExecutionCapacity": {
+            "additionalProperties": false,
+            "properties": {
+              "capacity_wait_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "effective_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "learned_capacity": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "capacity_wait_count"
+            ],
+            "type": "object"
+          },
+          "ExecutionLogStreamSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "first_write_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "last_write_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lines": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "log_ref": {
+                "$ref": "#/$defs/LogReference"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "log_ref",
+              "bytes",
+              "lines",
+              "sha256",
+              "complete"
+            ],
+            "type": "object"
+          },
+          "ExecutionProgress": {
+            "additionalProperties": false,
+            "properties": {
+              "admitted": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "admitted_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "capacity_wait_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "executing": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "finished_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "process_duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queued_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "started_at_epoch_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "waiting": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "waiting",
+              "admitted",
+              "executing",
+              "finished",
+              "queued_at_epoch_ms",
+              "capacity_wait_ms",
+              "process_duration_ms"
+            ],
+            "type": "object"
+          },
+          "FailureIndexEntry": {
+            "additionalProperties": false,
+            "properties": {
+              "actual": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DiagnosticValue"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "error_category": {
+                "type": "string"
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "expected": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DiagnosticValue"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "fingerprint": {
+                "type": "string"
+              },
+              "log_refs": {
+                "items": {
+                  "$ref": "#/$defs/LogReference"
+                },
+                "type": "array"
+              },
+              "occurrences": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "origin": {
+                "type": "string"
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SourceLocation"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "termination_reason": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TerminationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "status",
+              "exit",
+              "error_category",
+              "fingerprint",
+              "occurrences",
+              "log_refs",
+              "origin"
+            ],
+            "type": "object"
+          },
+          "LeafStatus": {
+            "enum": [
+              "pending",
+              "running",
+              "reused",
+              "passed",
+              "failed",
+              "timed_out",
+              "invalidated",
+              "not_meaningful",
+              "cancelled",
+              "unsafe"
+            ],
+            "type": "string"
+          },
+          "LogCatalogReference": {
+            "additionalProperties": false,
+            "properties": {
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "run_id"
+            ],
+            "type": "object"
+          },
+          "LogPhase": {
+            "enum": [
+              "executor",
+              "check",
+              "discovery",
+              "case",
+              "fixture",
+              "cleanup"
+            ],
+            "type": "string"
+          },
+          "LogReference": {
+            "additionalProperties": false,
+            "properties": {
+              "case": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "check": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/$defs/LogPhase"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "stream": {
+                "$ref": "#/$defs/LogStream"
+              }
+            },
+            "required": [
+              "run_id",
+              "phase",
+              "stream"
+            ],
+            "type": "object"
+          },
+          "LogStream": {
+            "enum": [
+              "stdout",
+              "stderr"
+            ],
+            "type": "string"
+          },
+          "PhaseDuration": {
+            "additionalProperties": false,
+            "properties": {
+              "checks": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "duration_seconds": {
+                "format": "double",
+                "type": "number"
+              },
+              "elapsed_seconds": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/$defs/CheckPhase"
+              }
+            },
+            "required": [
+              "phase",
+              "duration_seconds",
+              "checks"
+            ],
+            "type": "object"
+          },
+          "ProofKind": {
+            "enum": [
+              "complete",
+              "selected",
+              "retry"
+            ],
+            "type": "string"
+          },
+          "RetainedArtifactReceipt": {
+            "additionalProperties": false,
+            "properties": {
+              "files": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "size": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "size",
+              "files",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "RunTerminationReason": {
+            "enum": [
+              "operator_cancelled",
+              "memory_pressure",
+              "superseded",
+              "timed_out",
+              "interrupted"
+            ],
+            "type": "string"
+          },
+          "SourceLocation": {
+            "additionalProperties": false,
+            "properties": {
+              "column": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "file",
+              "line"
+            ],
+            "type": "object"
+          },
+          "TerminationReason": {
+            "enum": [
+              "deadline_exceeded",
+              "user_cancelled",
+              "superseded",
+              "run_cancelled",
+              "daemon_interrupted",
+              "unsafe_stop"
+            ],
+            "type": "string"
+          },
+          "TestReportIssue": {
+            "enum": [
+              "missing",
+              "invalid",
+              "unreadable",
+              "identity_mismatch",
+              "incomplete"
+            ],
+            "type": "string"
+          },
+          "TestStatus": {
+            "enum": [
+              "running",
+              "passed",
+              "failed",
+              "timed-out",
+              "cancelled",
+              "interrupted",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "TestSummary": {
+            "additionalProperties": false,
+            "properties": {
+              "caller_uid": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "capacity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Capacity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "capacity_wait_count": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "case_selection": {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              "check_report_ref": {
+                "type": "string"
+              },
+              "check_summary": {
+                "additionalProperties": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "checks": {
+                "items": {
+                  "$ref": "#/$defs/CheckProjection"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "checks_truncated": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "client": {
+                "type": "string"
+              },
+              "duration_seconds": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "execution_capacity": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ExecutionCapacity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "execution_uid": {
+                "format": "uint32",
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "failure_index": {
+                "items": {
+                  "$ref": "#/$defs/FailureIndexEntry"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "failure_index_truncated": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "log_catalog_ref": {
+                "$ref": "#/$defs/LogCatalogReference"
+              },
+              "origin_run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase_durations": {
+                "items": {
+                  "$ref": "#/$defs/PhaseDuration"
+                },
+                "type": "array"
+              },
+              "proof": {
+                "$ref": "#/$defs/ProofKind"
+              },
+              "readiness_eligible": {
+                "type": "boolean"
+              },
+              "report_issue": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TestReportIssue"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "requested_tier": {
+                "$ref": "#/$defs/ValidationTier"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "schema_version": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "selection": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "source_changed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/$defs/TestStatus"
+              },
+              "stderr_bytes_observed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_bytes_observed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "targets": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "termination_reason": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunTerminationReason"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "test": {
+                "type": "string"
+              },
+              "work": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkAttribution"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "schema_version",
+              "run_id",
+              "test",
+              "status",
+              "started_at",
+              "stdout_bytes_observed",
+              "stderr_bytes_observed",
+              "caller_uid",
+              "client",
+              "proof",
+              "selection",
+              "requested_tier",
+              "readiness_eligible",
+              "check_report_ref",
+              "log_catalog_ref"
+            ],
+            "type": "object"
+          },
+          "ValidationTier": {
+            "enum": [
+              "development",
+              "pre-merge",
+              "release"
+            ],
+            "type": "string"
+          },
+          "WorkAttribution": {
+            "additionalProperties": false,
+            "properties": {
+              "context": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkContext"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WorkDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/WorkSource"
+              }
+            },
+            "required": [
+              "source"
+            ],
+            "type": "object"
+          },
+          "WorkContext": {
+            "additionalProperties": false,
+            "properties": {
+              "alarm": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AlarmCapability"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "experiment_ref": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "native_project_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "operation_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "thread_id": {
+                "maxLength": 256,
+                "minLength": 1,
+                "type": "string"
+              },
+              "turn_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "version": {
+                "format": "uint8",
+                "maximum": 1,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "workstream_id": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "version",
+              "native_project_id",
+              "thread_id"
+            ],
+            "type": "object"
+          },
+          "WorkDiagnostic": {
+            "enum": [
+              "work_context_invalid",
+              "work_context_too_large",
+              "work_context_session_conflict"
+            ],
+            "type": "string"
+          },
+          "WorkSource": {
+            "enum": [
+              "environment",
+              "request"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/$defs/TestSummary"
+          },
+          "timed_out": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "completed",
+          "timed_out",
+          "status"
+        ],
+        "title": "TestWaitResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
         "role": "administrator",
         "scope": "repository"
       }
@@ -9622,6 +11215,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "attached": {
+            "default": false,
+            "type": "boolean"
+          },
           "origin_run_id": {
             "type": [
               "string",
@@ -21909,8 +23506,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -22237,6 +23836,19 @@
       "name": "deployment.status",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -22482,6 +24094,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -22490,6 +24109,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -22541,8 +24164,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -22562,6 +24187,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22625,6 +24309,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -22704,6 +24394,12 @@
               "boolean",
               "null"
             ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -22717,6 +24413,733 @@
           "observed_only"
         ],
         "title": "DeploymentStatus",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "deployment"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "deployment wait"
+          }
+        ]
+      },
+      "description": "Wait for a deployment state or source transition.",
+      "inputSchema": {
+        "$defs": {
+          "DeploymentWaitState": {
+            "enum": [
+              "applied",
+              "ready",
+              "source_current",
+              "route_acknowledged"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deadline_at": {
+            "type": "string"
+          },
+          "deployment_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/$defs/DeploymentWaitState"
+          }
+        },
+        "required": [
+          "deadline_at",
+          "state"
+        ],
+        "title": "DeploymentWait",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "DeploymentWaitState": {
+                "enum": [
+                  "applied",
+                  "ready",
+                  "source_current",
+                  "route_acknowledged"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "deadline_at": {
+                "type": "string"
+              },
+              "deployment_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "path": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "$ref": "#/$defs/DeploymentWaitState"
+              }
+            },
+            "required": [
+              "deadline_at",
+              "state"
+            ],
+            "title": "DeploymentWait",
+            "type": "object"
+          },
+          "name": "deployment_wait",
+          "transform": "identity"
+        }
+      ],
+      "name": "deployment.wait",
+      "outputSchema": {
+        "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "CompletedService": {
+            "additionalProperties": false,
+            "properties": {
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "image_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "recorded_at": {
+                "type": "string"
+              },
+              "service": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "service",
+              "generation",
+              "container_id",
+              "exit_code",
+              "recorded_at"
+            ],
+            "type": "object"
+          },
+          "Component": {
+            "additionalProperties": false,
+            "properties": {
+              "binding": {
+                "$ref": "#/$defs/ComponentBinding"
+              },
+              "completed_services": {
+                "items": {
+                  "$ref": "#/$defs/CompletedService"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "health": {
+                "type": "string"
+              },
+              "independent_control": {
+                "type": "boolean"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lease_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "owned": {
+                "type": "boolean"
+              },
+              "port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "restarts": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "services": {
+                "items": {
+                  "$ref": "#/$defs/ComposeService"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "type",
+              "state",
+              "health",
+              "binding",
+              "owned",
+              "independent_control"
+            ],
+            "type": "object"
+          },
+          "ComponentBinding": {
+            "additionalProperties": false,
+            "properties": {
+              "identity": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "ComposeService": {
+            "additionalProperties": false,
+            "properties": {
+              "containers": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "desired_state": {
+                "type": "string"
+              },
+              "independent": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "role",
+              "state",
+              "desired_state",
+              "containers",
+              "independent"
+            ],
+            "type": "object"
+          },
+          "DeploymentBlocker": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ErrorCode"
+              },
+              "component": {
+                "type": "string"
+              },
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "component",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          },
+          "DeploymentReadiness": {
+            "additionalProperties": false,
+            "properties": {
+              "blockers": {
+                "items": {
+                  "$ref": "#/$defs/DeploymentBlocker"
+                },
+                "type": "array"
+              },
+              "expected_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "missing_components": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
+              "pending_apply": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "required": [
+              "ready",
+              "expected_components",
+              "missing_components",
+              "blockers"
+            ],
+            "type": "object"
+          },
+          "DeploymentSource": {
+            "enum": [
+              "worktree",
+              "checkout",
+              "observed"
+            ],
+            "type": "string"
+          },
+          "DeploymentStatus": {
+            "additionalProperties": false,
+            "properties": {
+              "components": {
+                "items": {
+                  "$ref": "#/$defs/Component"
+                },
+                "type": "array"
+              },
+              "current_generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "deployment_id": {
+                "type": "string"
+              },
+              "domain": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "health": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "log_dir": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_project": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observation_source": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observed_only": {
+                "type": "boolean"
+              },
+              "preview_url": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previous_generation": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "public": {
+                "type": "boolean"
+              },
+              "readiness": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DeploymentReadiness"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "repository_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rolled_back_from": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "rolled_back_to": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "route_component": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "route_port": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/$defs/DeploymentSource"
+              },
+              "state": {
+                "type": "string"
+              },
+              "ttl_expires_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unchanged": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "verification_state": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "deployment_id",
+              "repository_id",
+              "name",
+              "source",
+              "state",
+              "public",
+              "components",
+              "observed_only"
+            ],
+            "type": "object"
+          },
+          "ErrorCode": {
+            "enum": [
+              "protocol_invalid",
+              "protocol_unsupported",
+              "request_too_large",
+              "operation_unknown",
+              "params_invalid",
+              "repository_not_found",
+              "repository_archived",
+              "repository_archive_blocked",
+              "repository_config_invalid",
+              "authorization_required",
+              "configuration_conflict",
+              "configuration_invalid",
+              "configuration_restart_required",
+              "worktree_busy",
+              "test_not_found",
+              "test_log_unavailable",
+              "log_not_found",
+              "log_expired",
+              "cursor_stale",
+              "structured_evidence_invalid",
+              "test_evidence_expired",
+              "test_evidence_not_found",
+              "test_evidence_tampered",
+              "test_artifact_expired",
+              "test_artifact_not_found",
+              "test_artifact_tampered",
+              "test_start_failed",
+              "tests_draining",
+              "unit_stop_failed",
+              "deployment_not_found",
+              "busy",
+              "wait_deadline_reached",
+              "deployment_apply_failed",
+              "deployment_action_failed",
+              "docker_network_unavailable",
+              "route_lease_conflict",
+              "observed_only",
+              "rollback_unavailable",
+              "permission_denied",
+              "user_not_found",
+              "task_not_found",
+              "release_not_found",
+              "decision_not_found",
+              "glossary_not_found",
+              "glossary_conflict",
+              "storage_not_found",
+              "storage_conflict",
+              "storage_blocked",
+              "storage_unavailable",
+              "storage_action_failed",
+              "internal_error",
+              "daemon_unavailable"
+            ],
+            "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/$defs/DeploymentStatus"
+          },
+          "timed_out": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "completed",
+          "timed_out",
+          "status"
+        ],
+        "title": "DeploymentWaitResult",
         "type": "object"
       },
       "policy": {
@@ -23021,6 +25444,19 @@
       "name": "deployment.apply",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -23266,6 +25702,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -23274,6 +25717,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -23325,8 +25772,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -23346,6 +25795,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -23409,6 +25917,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -23486,6 +26000,12 @@
           "unchanged": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -23589,6 +26109,19 @@
       "name": "deployment.rollback",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -23834,6 +26367,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -23842,6 +26382,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -23893,8 +26437,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -23914,6 +26460,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -23977,6 +26582,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -24054,6 +26665,12 @@
           "unchanged": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -24171,6 +26788,19 @@
       "name": "deployment.start",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -24416,6 +27046,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -24424,6 +27061,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -24475,8 +27116,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -24496,6 +27139,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -24559,6 +27261,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -24636,6 +27344,12 @@
           "unchanged": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -24753,6 +27467,19 @@
       "name": "deployment.stop",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -24998,6 +27725,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -25006,6 +27740,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -25057,8 +27795,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -25078,6 +27818,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -25141,6 +27940,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -25218,6 +28023,12 @@
           "unchanged": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -25335,6 +28146,19 @@
       "name": "deployment.restart",
       "outputSchema": {
         "$defs": {
+          "Action": {
+            "enum": [
+              "wait",
+              "inspect",
+              "retry",
+              "continue",
+              "repair",
+              "replace",
+              "ask_user",
+              "stop"
+            ],
+            "type": "string"
+          },
           "CompletedService": {
             "additionalProperties": false,
             "properties": {
@@ -25580,6 +28404,13 @@
                 },
                 "type": "array"
               },
+              "next_actions": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/RecoveryOption"
+                },
+                "type": "array"
+              },
               "pending_apply": {
                 "type": [
                   "boolean",
@@ -25588,6 +28419,10 @@
               },
               "ready": {
                 "type": "boolean"
+              },
+              "source_state": {
+                "default": "",
+                "type": "string"
               }
             },
             "required": [
@@ -25639,8 +28474,10 @@
               "unit_stop_failed",
               "deployment_not_found",
               "busy",
+              "wait_deadline_reached",
               "deployment_apply_failed",
               "deployment_action_failed",
+              "docker_network_unavailable",
               "route_lease_conflict",
               "observed_only",
               "rollback_unavailable",
@@ -25660,6 +28497,65 @@
               "daemon_unavailable"
             ],
             "type": "string"
+          },
+          "RecoveryOption": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "$ref": "#/$defs/Action"
+              },
+              "cost": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "effect": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "independent_work_safe": {
+                "type": "boolean"
+              },
+              "operation": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prerequisites": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "risk": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "user_action_required": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "action",
+              "effect",
+              "prerequisites",
+              "independent_work_safe",
+              "user_action_required"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -25723,6 +28619,12 @@
           },
           "observed_only": {
             "type": "boolean"
+          },
+          "preview_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "previous_generation": {
             "format": "uint32",
@@ -25800,6 +28702,12 @@
           "unchanged": {
             "type": [
               "boolean",
+              "null"
+            ]
+          },
+          "verification_state": {
+            "type": [
+              "string",
               "null"
             ]
           }

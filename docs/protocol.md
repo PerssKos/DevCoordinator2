@@ -92,6 +92,15 @@ Failure:
 }
 ```
 
+Failures may include an optional `error.recovery` object. It is a bounded,
+typed description of the current state and safe choices: `class`,
+`retryable`, `waitable`, `safe_to_continue`, related identities, and ordered
+`options` with an action, operation, effect, cost, risk and prerequisites.
+Clients choose among those options; the Coordinator does not silently retry
+or queue a refused operation. `params_invalid` additionally returns bounded
+`field_errors` and an example shape. `wait_deadline_reached` reports the last
+observed state and never means that the requested transition succeeded.
+
 ## Error codes
 
 Stable snake_case, terminal (no retry/queue semantics):
@@ -105,6 +114,7 @@ Stable snake_case, terminal (no retry/queue semantics):
 | `params_invalid` | parameters fail the generated operation schema |
 | `cursor_stale` | event/log cursor is older than retained history or ahead of its journal |
 | `busy` | bounded wait or mutation admission is full |
+| `wait_deadline_reached` | a typed wait reached its caller-supplied deadline without success |
 | `repository_not_found` | path is not inside a registered/registerable Git repository |
 | `repository_config_invalid` | `.devcoordinator.toml` fails validation |
 | `repository_archived` | repository is historical; response names its active replacement when present |

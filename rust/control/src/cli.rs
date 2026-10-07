@@ -388,6 +388,12 @@ struct RequiredLogSelector {
 #[derive(Debug, Subcommand)]
 enum TestCommand {
     Start(TestStartArgs),
+    AdmissionStatus,
+    AdmissionWait {
+        #[arg(long)]
+        deadline_at: String,
+    },
+    Wait(TestWaitArgs),
     Retry(TestRetryArgs),
     Status(PathArg),
     History {
@@ -441,6 +447,34 @@ struct TestStartArgs {
     cases: Vec<String>,
     #[arg(long, value_enum, default_value_t = ValidationTierArg::Release)]
     tier: ValidationTierArg,
+    #[arg(long, value_enum, default_value_t = StartModeArg::Attach)]
+    mode: StartModeArg,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum StartModeArg {
+    Attach,
+    Replace,
+}
+
+impl StartModeArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Attach => "attach",
+            Self::Replace => "replace",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct TestWaitArgs {
+    #[command(flatten)]
+    path: PathArg,
+    #[arg(long)]
+    run_id: String,
+    #[arg(long)]
+    deadline_at: String,
 }
 
 #[derive(Debug, Args)]
@@ -749,6 +783,7 @@ enum DeploymentCommand {
     Apply(DeploymentApplyArgs),
     Preflight(DeploymentReferenceArgs),
     Status(DeploymentReferenceArgs),
+    Wait(DeploymentWaitArgs),
     Rollback(DeploymentReferenceArgs),
     Start(DeploymentControlArgs),
     Stop(DeploymentControlArgs),
@@ -785,6 +820,36 @@ struct DeploymentReferenceArgs {
 }
 
 #[derive(Debug, Args)]
+struct DeploymentWaitArgs {
+    #[command(flatten)]
+    selector: DeploymentSelector,
+    #[arg(long, value_enum)]
+    state: DeploymentWaitStateArg,
+    #[arg(long)]
+    deadline_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+enum DeploymentWaitStateArg {
+    Applied,
+    Ready,
+    SourceCurrent,
+    RouteAcknowledged,
+}
+
+impl DeploymentWaitStateArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::Ready => "ready",
+            Self::SourceCurrent => "source_current",
+            Self::RouteAcknowledged => "route_acknowledged",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 struct DeploymentApplyArgs {
     #[command(flatten)]
     selector: DeploymentSelector,
@@ -807,7 +872,7 @@ struct DeploymentLogsArgs {
     #[command(flatten)]
     selector: DeploymentSelector,
     #[arg(long)]
-    component: Option<String>,
+    component: String,
     #[arg(long, default_value_t = 200)]
     tail_lines: u16,
 }
@@ -1036,8 +1101,20 @@ enum EventCommand {
     Wait {
         #[arg(long)]
         cursor: Option<u64>,
-        #[arg(long = "filter", required = true)]
+        #[arg(long = "filter")]
         filters: Vec<String>,
+        #[arg(long, default_value = "cli")]
+        filter_id: String,
+        #[arg(long = "category", action = clap::ArgAction::Append)]
+        categories: Vec<String>,
+        #[arg(long = "kind", action = clap::ArgAction::Append)]
+        kinds: Vec<String>,
+        #[arg(long = "repository-id", action = clap::ArgAction::Append)]
+        repository_ids: Vec<String>,
+        #[arg(long = "deployment-id", action = clap::ArgAction::Append)]
+        deployment_ids: Vec<String>,
+        #[arg(long)]
+        deadline_at: Option<String>,
         #[arg(long, default_value_t = 100)]
         limit: u16,
     },
@@ -1519,8 +1596,20 @@ impl TestCommand {
                     "tier".to_owned(),
                     Value::String(args.tier.as_str().to_owned()),
                 );
+                params.insert(
+                    "mode".to_owned(),
+                    Value::String(args.mode.as_str().to_owned()),
+                );
                 remote("test.start", Value::Object(params))
             }
+            Self::AdmissionStatus => remote("test.admission.status", json!({})),
+            Self::AdmissionWait { deadline_at } => {
+                remote("test.admission.wait", json!({"deadline_at": deadline_at}))
+            }
+            Self::Wait(args) => remote(
+                "test.wait",
+                json!({"path": args.path.absolute()?, "run_id": args.run_id, "deadline_at": args.deadline_at}),
+            ),
             Self::Retry(args) => {
                 let mut params = Map::new();
                 params.insert("path".to_owned(), Value::String(args.path.absolute()?));
@@ -1906,6 +1995,12 @@ impl DeploymentCommand {
             Self::Status(args) => {
                 remote("deployment.status", Value::Object(args.selector.params()?))
             }
+            Self::Wait(args) => {
+                let mut params = args.selector.params()?;
+                params.insert("state".into(), Value::String(args.state.as_str().into()));
+                params.insert("deadline_at".into(), Value::String(args.deadline_at));
+                remote("deployment.wait", Value::Object(params))
+            }
             Self::Rollback(args) => remote(
                 "deployment.rollback",
                 Value::Object(args.selector.params()?),
@@ -1915,11 +2010,8 @@ impl DeploymentCommand {
             Self::Restart(args) => deployment_control("deployment.restart", args),
             Self::Logs(args) => {
                 require_range("--tail-lines", args.tail_lines, 1, 5_000)?;
-                let component = args
-                    .component
-                    .ok_or_else(|| invalid("deployment logs requires --component"))?;
                 let mut params = args.selector.params()?;
-                params.insert("component".to_owned(), Value::String(component));
+                params.insert("component".to_owned(), Value::String(args.component));
                 params.insert("tail_lines".to_owned(), json!(args.tail_lines));
                 remote("deployment.logs", Value::Object(params))
             }
@@ -2064,16 +2156,48 @@ impl EventCommand {
             Self::Wait {
                 cursor,
                 filters,
+                filter_id,
+                categories,
+                kinds,
+                repository_ids,
+                deployment_ids,
+                deadline_at,
                 limit,
             } => {
                 require_range("--limit", u32::from(limit), 1, 100)?;
-                let filters = filters
+                let mut filters = filters
                     .into_iter()
                     .map(|filter| {
                         serde_json::from_str::<devcoordinator2_api::params::EventFilter>(&filter)
                             .map_err(|error| invalid(format!("--filter is invalid JSON: {error}")))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if filters.is_empty()
+                    && (!categories.is_empty()
+                        || !kinds.is_empty()
+                        || !repository_ids.is_empty()
+                        || !deployment_ids.is_empty()
+                        || deadline_at.is_some())
+                {
+                    filters.push(
+                        serde_json::from_value(json!({
+                            "filter_id": filter_id,
+                            "categories": categories,
+                            "kinds": kinds,
+                            "repository_ids": repository_ids,
+                            "deployment_ids": deployment_ids,
+                            "deadline_at": deadline_at,
+                        }))
+                        .map_err(|error| {
+                            invalid(format!("structured event filter is invalid: {error}"))
+                        })?,
+                    );
+                }
+                if filters.is_empty() {
+                    return Err(invalid(
+                        "provide --filter JSON or structured event filter flags",
+                    ));
+                }
                 remote(
                     "event.wait",
                     serde_json::to_value(devcoordinator2_api::params::EventWait {
@@ -2574,6 +2698,28 @@ fn render_response_to(
                 if !error.detail.is_empty() {
                     writeln!(output, "detail: {}", error.detail)?;
                 }
+                if let Some(recovery) = &error.recovery {
+                    writeln!(
+                        output,
+                        "recovery: class={:?} retryable={} waitable={} safe_to_continue={}",
+                        recovery.class,
+                        recovery.retryable,
+                        recovery.waitable,
+                        recovery.safe_to_continue
+                    )?;
+                    if let Some(state) = &recovery.state {
+                        writeln!(output, "state: {state}")?;
+                    }
+                    writeln!(output, "reason: {}", recovery.reason)?;
+                    for option in recovery.options.iter().take(6) {
+                        let operation = option.operation.as_deref().unwrap_or("manual action");
+                        writeln!(
+                            output,
+                            "option {}: {} via {}",
+                            option.id, option.effect, operation
+                        )?;
+                    }
+                }
                 Ok(())
             }
         },
@@ -2614,6 +2760,55 @@ fn render_human_success(
                 write_pretty_value(output, &Value::Object(remainder))?;
             }
             return Ok(());
+        }
+    }
+    if matches!(
+        operation,
+        Some("deployment.apply" | "deployment.status" | "deployment.wait")
+    ) && let Some(object) = data.as_object()
+        && object.get("preview_url").is_some()
+    {
+        writeln!(
+            output,
+            "preview: {}",
+            object
+                .get("preview_url")
+                .and_then(Value::as_str)
+                .unwrap_or("unavailable")
+        )?;
+        writeln!(
+            output,
+            "generation: {}",
+            object
+                .get("current_generation")
+                .map(Value::to_string)
+                .unwrap_or_else(|| "unknown".into())
+        )?;
+        writeln!(
+            output,
+            "runtime: {}",
+            object
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        )?;
+        if let Some(readiness) = object.get("readiness").and_then(Value::as_object) {
+            writeln!(
+                output,
+                "source: {}",
+                readiness
+                    .get("source_state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            )?;
+            writeln!(
+                output,
+                "verification: {}",
+                object
+                    .get("verification_state")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not_run")
+            )?;
         }
     }
     let label = operation.unwrap_or("success");
@@ -3061,6 +3256,28 @@ mod tests {
                 "test.retry",
             ),
             (&["test", "status", "/tmp/repo"], "test.status"),
+            (&["test", "admission-status"], "test.admission.status"),
+            (
+                &[
+                    "test",
+                    "admission-wait",
+                    "--deadline-at",
+                    "2026-10-06T16:00:00Z",
+                ],
+                "test.admission.wait",
+            ),
+            (
+                &[
+                    "test",
+                    "wait",
+                    "/tmp/repo",
+                    "--run-id",
+                    "t20260101T000000Z-abc123",
+                    "--deadline-at",
+                    "2026-10-06T16:00:00Z",
+                ],
+                "test.wait",
+            ),
             (
                 &[
                     "test",
@@ -3355,6 +3572,20 @@ mod tests {
                     "d1",
                 ],
                 "deployment.rollback",
+            ),
+            (
+                &[
+                    "deployment",
+                    "wait",
+                    "/tmp/repo",
+                    "--deployment-id",
+                    "d1",
+                    "--state",
+                    "ready",
+                    "--deadline-at",
+                    "2026-10-06T16:00:00Z",
+                ],
+                "deployment.wait",
             ),
             (
                 &["deployment", "start", "/tmp/repo", "--deployment-id", "d1"],
@@ -3880,7 +4111,6 @@ mod tests {
     #[test]
     fn invalid_mutual_combinations_and_bounds_fail_before_transport() {
         for args in [
-            vec!["deployment", "logs", "/tmp/repo", "--deployment-id", "d1"],
             vec!["deployment", "set-domain", "--deployment-id", "d1"],
             vec![
                 "deployment",

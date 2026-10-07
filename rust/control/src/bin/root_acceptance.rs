@@ -1793,7 +1793,7 @@ fn case_supersession_latest_start_wins(world: &mut World) -> Result<(), String> 
         .ok_or_else(|| "first start omitted run_id".to_owned())?
         .to_owned();
     world.wait_file("active-log-ready", Duration::from_secs(20))?;
-    let second = world.call("test.start", json!({"path": world.repo}))?;
+    let second = world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?;
     let second_data = data(&second)?;
     let second_id = second_data["run_id"]
         .as_str()
@@ -3580,7 +3580,7 @@ fn case_governed_graph_runs_all_ready_checks_and_collects_safe_failures(
         &[],
     )?);
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
     wait_fifo_signals(&mut started_files, Duration::from_secs(30))?;
     for file in &mut release_files {
         file.write_all(b"1").map_err(|error| error.to_string())?;
@@ -3629,7 +3629,7 @@ fn case_static_cases_have_isolated_catalogued_streams(world: &mut World) -> Resu
     config.push_str(&command_json(&fixture_command(world, &["case-streams"]))?);
     config.push('\n');
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
     let final_status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
     ensure!(final_status["status"] == "passed", "static cases failed");
     let cases = final_status
@@ -3699,7 +3699,7 @@ fn case_event_completed_setup_stays_alive_for_dependent_check(
         &[artifact],
     )?);
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
     let final_status = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
     ensure!(
         final_status["status"] == "passed",
@@ -3757,7 +3757,7 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
         &[],
     )?);
     world.write_config(&config)?;
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
     let failed = world.wait_status(&["failed"], Duration::from_secs(120))?;
     let origin = failed["run_id"]
         .as_str()
@@ -3804,7 +3804,7 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
         selected["selection"] == json!(["verify"]),
         "selection drifted"
     );
-    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    data(&world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?)?;
     let complete = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
     ensure!(complete["status"] == "passed", "complete run failed");
     ensure!(complete["proof"] == "complete", "complete proof drifted");

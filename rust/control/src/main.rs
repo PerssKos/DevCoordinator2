@@ -431,6 +431,7 @@ async fn run_daemon(config: &Config) -> ExitCode {
                             let expired = plane.expire_previews();
                             if let Err(error) = plane.deliver_review_reminders() { tracing::error!(code=%error.code, "review reminders unavailable"); }
                             if let Err(error) = plane.reconcile_routes() { tracing::error!(code=%error.code, "route reconciliation incomplete"); }
+                            if let Err(error) = plane.refresh_agent_capabilities() { tracing::error!(code=%error.code, "agent capability refresh unavailable"); }
                             expired
                         }).await {
                             Ok(Ok(_)) => {}

@@ -261,3 +261,7 @@ contains the latest value-free model/effort catalog and expiry for each harness.
 `agent_routing_history` retains every saved revision. Repository rows inherit
 missing roles from the global row; stale capability reports remain visible but
 cannot authorize a new spawn target.
+
+Automatic Codex and Antigravity discovery updates this same latest catalog;
+the database does not retain raw CLI output or source configuration. A failed
+refresh leaves the prior value in place and the existing expiry marks it stale.

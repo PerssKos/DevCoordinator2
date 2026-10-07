@@ -32,6 +32,7 @@ stripping one pair of surrounding quotes.
 | `DEVCOORDINATOR2_BUGS_DIR` | `/var/lib/devcoordinator2-bugs` | independent open-bug store; world-writable so any local account reports bugs (DC2-2026-08-24-OPEN-LOCAL-ACCESS) |
 | `DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE` | (unset) | absolute private schema-1 JSON file authorizing exact repository-ID/relative-path Compose interpolation files |
 | `DEVCOORDINATOR2_CODEX_USAGE_SOURCES_FILE` | (unset) | absolute root-only schema-1 JSON file listing the same-owner Codex collectors that may contribute combined repository analytics |
+| `DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE` | (unset) | absolute root-only schema-1 JSON file listing same-owner harness executables used for model and effort discovery |
 
 Edge configuration lives in `/etc/devcoordinator2/edge.env` (`docs/edge.md`).
 
@@ -143,6 +144,44 @@ The daemon holds an exclusive lifetime lease beside its Unix socket before
 opening the database or recovering jobs. Duplicate startup preserves a live
 listener. Missing owned sockets are recovered through directory events without
 cancelling accepted operations; foreign replacement sockets/files are preserved.
+
+## Harness capability sources
+
+The capability source policy is a root-owned mode-0600 regular non-symlink
+file. It lets the daemon read model catalogs from the same-owner harness CLI
+without asking an agent to submit a report. Each harness is configured at most
+once; the first valid source is used and sources are never unioned.
+
+```json
+{
+  "schema": 1,
+  "sources": [
+    {
+      "harness": "codex",
+      "uid": 1000,
+      "executable": "/home/developer/.local/bin/codex",
+      "codex_home": "/home/developer/.codex"
+    },
+    {
+      "harness": "antigravity",
+      "uid": 1000,
+      "executable": "/home/developer/.local/bin/agy",
+      "home": "/home/developer"
+    }
+  ]
+}
+```
+
+Codex discovery runs `debug models` and reads visible model entries and their
+supported reasoning levels. Antigravity discovery runs `models` and accepts
+only bounded lines with a valid model slug and an explicit effort suffix or
+thinking label. The daemon clears the environment, sets the configured user's
+`HOME`, uses the existing bounded subprocess timeout and output capture, and
+never returns source paths, account identities, raw output, or errors.
+
+Missing sources and failed refreshes preserve the last valid catalog. A first
+read attempts a bounded refresh when no catalog exists; stale data remains
+visible while the daemon's existing maintenance loop retries it.
 
 ## Codex usage sources
 

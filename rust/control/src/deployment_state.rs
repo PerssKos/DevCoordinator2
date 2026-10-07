@@ -1337,6 +1337,8 @@ impl DeploymentStore {
                     previous_generation: None,
                     domain,
                     route_port,
+                    preview_url: None,
+                    verification_state: None,
                     route_component,
                     public,
                     ttl_expires_at: None,

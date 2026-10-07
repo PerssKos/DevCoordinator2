@@ -330,6 +330,34 @@ pub struct StartTest {
     pub cases: std::collections::BTreeMap<String, Vec<String>>,
     #[serde(default = "release_tier")]
     pub tier: ValidationTier,
+    #[serde(default)]
+    pub mode: StartMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartMode {
+    #[default]
+    Attach,
+    Replace,
+}
+
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestAdmissionStatus {}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestAdmissionWait {
+    pub deadline_at: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestWait {
+    pub path: String,
+    pub run_id: String,
+    pub deadline_at: String,
 }
 
 fn release_tier() -> ValidationTier {
@@ -755,6 +783,25 @@ macro_rules! deployment_params {
 }
 
 deployment_params!(DeploymentReference {});
+deployment_params!(DeploymentWait {
+    pub deadline_at: String,
+    pub state: DeploymentWaitState,
+});
+
+#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentWaitState {
+    Applied,
+    Ready,
+    SourceCurrent,
+    RouteAcknowledged,
+}
+
+impl Default for DeploymentWaitState {
+    fn default() -> Self {
+        Self::Ready
+    }
+}
 deployment_params!(DeploymentApply {
     #[serde(default)]
     pub candidate: Option<DeploymentCandidateSource>,

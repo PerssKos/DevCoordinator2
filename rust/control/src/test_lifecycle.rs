@@ -22,7 +22,7 @@ use devcoordinator2_api::results::{
     ProofKind as ApiProofKind, StopTest, TestList, TestListRow, TestStarted, TestStatus,
     TestSummary,
 };
-use devcoordinator2_api::{ErrorCode, ProtocolError};
+use devcoordinator2_api::{ErrorCode, ProtocolError, recovery};
 use devcoordinator2_executor_protocol::{
     CheckPlan, CheckReport, ExecutionPlan, ExecutionReport, LeafStatus, ProofKind, RunStatus,
     Schema2, ValidationTier,
@@ -568,6 +568,7 @@ impl TestLifecycle {
             &params.targets,
             &params.cases,
             caller,
+            params.mode,
         )
     }
 
@@ -581,6 +582,7 @@ impl TestLifecycle {
             &[],
             &BTreeMap::new(),
             caller,
+            devcoordinator2_api::params::StartMode::Replace,
         )
     }
 
@@ -595,6 +597,7 @@ impl TestLifecycle {
         requested_targets: &[String],
         requested_cases: &BTreeMap<String, Vec<String>>,
         caller: &Caller,
+        mode: devcoordinator2_api::params::StartMode,
     ) -> Result<TestStarted, ProtocolError> {
         if caller.uid == 0 {
             return Err(ProtocolError::new(
@@ -611,6 +614,20 @@ impl TestLifecycle {
             ));
         }
         let worktree = PathBuf::from(&registered.worktree_path);
+        if mode == devcoordinator2_api::params::StartMode::Attach {
+            // Admission is checked before attachment so an upgrade drain
+            // cannot be bypassed by an already-running equivalent test.
+            let admission = self
+                .inner
+                .admission
+                .start_guard_for(&registered.worktree_id)
+                .map_err(admission_error)?;
+            let active = self.active_started(&registered.worktree_id, test_name)?;
+            drop(admission);
+            if let Some(active) = active {
+                return Ok(active);
+            }
+        }
         let restored = retry
             .map(|(run_id, _)| self.inner.store.find_evidence(&worktree, run_id))
             .transpose()
@@ -1119,6 +1136,7 @@ impl TestLifecycle {
                     requested_tier: api_tier(requested_tier),
                     readiness_eligible: proof == ProofKind::Complete
                         && requested_tier == ValidationTier::Release,
+                    attached: false,
                     superseded_run_id,
                     unit,
                     summary_ref: "summary.json".into(),
@@ -1144,6 +1162,126 @@ impl TestLifecycle {
                 Err(error)
             }
         }
+    }
+
+    pub fn admission_status(
+        &self,
+    ) -> Result<devcoordinator2_api::results::TestAdmissionStatus, ProtocolError> {
+        let snapshot = crate::test_admission::snapshot(self.inner.admission.runtime_dir())
+            .map_err(admission_error)?;
+        Ok(devcoordinator2_api::results::TestAdmissionStatus {
+            state: if snapshot.draining {
+                "draining"
+            } else {
+                "open"
+            }
+            .into(),
+            reason: snapshot.reason,
+            created_at: snapshot.created_at,
+            lease_live: snapshot.lease_live,
+            active_count: snapshot.active_runs.len() as u32,
+            active_runs: snapshot.active_runs,
+            safe_to_continue: true,
+        })
+    }
+
+    pub fn admission_runtime_dir(&self) -> PathBuf {
+        self.inner.admission.runtime_dir().to_path_buf()
+    }
+
+    fn active_started(
+        &self,
+        worktree_id: &str,
+        requested_test: Option<&str>,
+    ) -> Result<Option<TestStarted>, ProtocolError> {
+        let active = self
+            .inner
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(worktree_id)
+            .cloned();
+        let Some(handle) = active else {
+            return Ok(None);
+        };
+        if let Some(requested) = requested_test
+            && requested != handle.test
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::WorktreeBusy,
+                "this worktree already has a different governed test running",
+            )
+            .with_recovery(recovery::Guidance {
+                class: recovery::Class::Conflict,
+                retryable: false,
+                waitable: true,
+                safe_to_continue: true,
+                state: Some("running".into()),
+                reason: "A different test owns this worktree's current run slot.".into(),
+                run_id: Some(handle.run_id.clone()),
+                deployment_id: None,
+                generation: None,
+                repository_id: Some(handle.repository_id.clone()),
+                options: vec![
+                    recovery::RecoveryOption {
+                        id: "attach".into(),
+                        action: recovery::Action::Continue,
+                        operation: Some("test.status".into()),
+                        effect: "Inspect or continue the existing run.".into(),
+                        target: Some(handle.run_id.clone()),
+                        cost: Some("immediate".into()),
+                        risk: Some("none".into()),
+                        prerequisites: vec![],
+                        independent_work_safe: true,
+                        user_action_required: false,
+                    },
+                    recovery::RecoveryOption {
+                        id: "wait".into(),
+                        action: recovery::Action::Wait,
+                        operation: Some("test.wait".into()),
+                        effect: "Wait for the existing run to finish.".into(),
+                        target: Some(handle.run_id.clone()),
+                        cost: Some("bounded by your deadline".into()),
+                        risk: Some("none".into()),
+                        prerequisites: vec![],
+                        independent_work_safe: true,
+                        user_action_required: false,
+                    },
+                    recovery::RecoveryOption {
+                        id: "replace".into(),
+                        action: recovery::Action::Replace,
+                        operation: Some("test.start".into()),
+                        effect: "Stop and replace the existing run.".into(),
+                        target: Some(handle.run_id.clone()),
+                        cost: Some("discards its remaining execution".into()),
+                        risk: Some("loses unfinished validation progress".into()),
+                        prerequisites: vec!["set mode=replace".into()],
+                        independent_work_safe: false,
+                        user_action_required: false,
+                    },
+                ],
+                field_errors: vec![],
+                example: None,
+            }));
+        }
+        Ok(Some(TestStarted {
+            targets: handle.targets.clone(),
+            run_id: handle.run_id.clone(),
+            repository_id: handle.repository_id.clone(),
+            worktree_id: handle.worktree_id.clone(),
+            test: handle.test.clone(),
+            status: TestStatus::Running,
+            proof: api_proof(handle.proof),
+            selection: handle.selection.clone(),
+            origin_run_id: handle.origin_run_id.clone(),
+            requested_tier: api_tier(handle.requested_tier),
+            readiness_eligible: handle.proof == ProofKind::Complete
+                && handle.requested_tier == ValidationTier::Release,
+            attached: true,
+            superseded_run_id: None,
+            unit: handle.unit.clone(),
+            summary_ref: "summary.json".into(),
+        }))
     }
 
     pub fn status(&self, path: &str, caller: &Caller) -> Result<TestSummary, ProtocolError> {
@@ -2953,12 +3091,32 @@ fn lower_hex(bytes: &[u8]) -> String {
 }
 
 fn admission_error(error: AdmissionError) -> ProtocolError {
-    let code = if matches!(error, AdmissionError::TestsDraining { .. }) {
+    let code = if matches!(&error, AdmissionError::TestsDraining { .. }) {
         ErrorCode::TestsDraining
     } else {
         ErrorCode::TestStartFailed
     };
-    ProtocolError::new(code, error.to_string())
+    let mut result = ProtocolError::new(code, error.to_string());
+    if let AdmissionError::TestsDraining { reason } = error {
+        let mut guidance = recovery::Guidance::transient(reason.clone(), "draining");
+        guidance.reason =
+            format!("{reason}; new tests are refused until the Coordinator reopens admission");
+        guidance.options = vec![recovery::RecoveryOption {
+            id: "wait-for-admission".into(),
+            action: recovery::Action::Wait,
+            operation: Some("test.admission.wait".into()),
+            effect: "Wait for the cutover lease to finish, then decide whether to start again."
+                .into(),
+            target: None,
+            cost: Some("bounded by the supplied deadline".into()),
+            risk: Some("none".into()),
+            prerequisites: vec!["provide an RFC 3339 deadline_at".into()],
+            independent_work_safe: true,
+            user_action_required: false,
+        }];
+        result = result.with_recovery(guidance);
+    }
+    result
 }
 
 fn postgres_for_check<'a>(

@@ -5,6 +5,7 @@ pub mod agent_routing;
 pub mod alerts;
 pub mod artifact_materialize;
 pub mod bugs;
+pub mod capability_discovery;
 pub mod capacity;
 pub mod check_event;
 pub mod cli;

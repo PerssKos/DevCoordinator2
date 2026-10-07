@@ -473,3 +473,9 @@ role's action, model, effort, inheritance source, and stale-target state. Save
 uses a revision check and rereads the persisted profile. The generated
 ownership and spawn instruction is available through the shared protocol for
 harnesses; the Console does not launch agents itself.
+
+Capability availability is shown once for the selected harness. Rows set to
+Never spawn do not repeat an unavailable or stale catalog warning. Model and
+effort selectors contain only exact pairs from the latest valid provider
+catalog; stale saved targets remain visible for recovery but cannot be saved as
+new targets.
