@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use devcoordinator2_api::agent_routing::{Capabilities, Pair};
 use devcoordinator2_api::ClientKind;
+use devcoordinator2_api::agent_routing::{Capabilities, Pair};
 use serde_json::Value;
 
 use crate::config::{self, AgentCapabilitySource, Config};
@@ -71,12 +71,18 @@ fn sources(config: &Config, harness: ClientKind) -> Result<Vec<AgentCapabilitySo
     Ok(matched)
 }
 
-fn run_source(source: &AgentCapabilitySource, harness: ClientKind) -> Result<crate::usage::ProbeOutput, String> {
+fn run_source(
+    source: &AgentCapabilitySource,
+    harness: ClientKind,
+) -> Result<crate::usage::ProbeOutput, String> {
     if !source.executable.is_absolute() || !source.executable.is_file() {
         return Err("source_unavailable".to_owned());
     }
     let user = user_record(source.uid).map_err(|_| "source_unavailable".to_owned())?;
-    let home = source.home.as_deref().unwrap_or_else(|| Path::new(&user.home));
+    let home = source
+        .home
+        .as_deref()
+        .unwrap_or_else(|| Path::new(&user.home));
     let effective = rustix::process::geteuid().as_raw();
     let mut command = if effective == 0 && source.uid != 0 {
         let setpriv = ["/usr/bin/setpriv", "/bin/setpriv"]
@@ -120,7 +126,11 @@ fn run_source(source: &AgentCapabilitySource, harness: ClientKind) -> Result<cra
     if let (ClientKind::Codex, Some(codex_home)) = (harness, source.codex_home.as_ref()) {
         command.env("CODEX_HOME", codex_home);
     }
-    run_probe_with_limit(command, Instant::now() + DISCOVERY_TIMEOUT, CAPABILITY_OUTPUT_BYTES)
+    run_probe_with_limit(
+        command,
+        Instant::now() + DISCOVERY_TIMEOUT,
+        CAPABILITY_OUTPUT_BYTES,
+    )
 }
 
 fn parse_codex(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), String> {
@@ -145,9 +155,10 @@ fn parse_codex(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), St
         else {
             continue;
         };
-        for effort in levels.iter().filter_map(|level| {
-            level.get("effort").and_then(Value::as_str)
-        }) {
+        for effort in levels
+            .iter()
+            .filter_map(|level| level.get("effort").and_then(Value::as_str))
+        {
             model_ids.push(slug.to_owned());
             efforts.push(effort.to_owned());
             pairs.push(Pair {
@@ -177,7 +188,12 @@ fn parse_antigravity(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair
             .into_iter()
             .find(|candidate| slug.ends_with(&format!("-{candidate}")))
             .map(str::to_owned)
-            .or_else(|| label.to_ascii_lowercase().contains("thinking").then(|| "thinking".to_owned()));
+            .or_else(|| {
+                label
+                    .to_ascii_lowercase()
+                    .contains("thinking")
+                    .then(|| "thinking".to_owned())
+            });
         let Some(effort) = effort else {
             continue;
         };
@@ -196,8 +212,16 @@ fn normalize(
     efforts: Vec<String>,
     pairs: Vec<Pair>,
 ) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), String> {
-    let models: Vec<_> = models.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
-    let efforts: Vec<_> = efforts.into_iter().collect::<BTreeSet<_>>().into_iter().collect();
+    let models: Vec<_> = models
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let efforts: Vec<_> = efforts
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let pairs: Vec<_> = pairs
         .into_iter()
         .map(|pair| (pair.model, pair.effort))
@@ -214,7 +238,7 @@ fn normalize(
 fn valid_slug(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 160
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+        })
 }

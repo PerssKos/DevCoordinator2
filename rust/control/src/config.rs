@@ -397,7 +397,11 @@ pub fn read_agent_capability_sources() -> Result<Vec<AgentCapabilitySource>, Con
     let path = std::env::var("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE")
         .ok()
         .filter(|value| !value.is_empty())
-        .or_else(|| file_values.get("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE").cloned())
+        .or_else(|| {
+            file_values
+                .get("DEVCOORDINATOR2_AGENT_CAPABILITY_SOURCES_FILE")
+                .cloned()
+        })
         .map(PathBuf::from);
     let Some(path) = path else {
         return Ok(Vec::new());
@@ -432,7 +436,8 @@ pub fn read_agent_capability_sources() -> Result<Vec<AgentCapabilitySource>, Con
                 "Codex capability sources require codex_home".into(),
             ));
         }
-        let home = source.home
+        let home = source
+            .home
             .map(|path| validate_absolute_policy_path("home", path))
             .transpose()?;
         sources.push(AgentCapabilitySource {
