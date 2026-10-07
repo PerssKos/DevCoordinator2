@@ -880,6 +880,10 @@ pub struct PlanReference {
     pub path: Option<String>,
     #[serde(default)]
     pub repository_id: Option<String>,
+    #[serde(default)]
+    pub offset: u32,
+    #[serde(default)]
+    pub expected_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

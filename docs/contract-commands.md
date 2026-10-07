@@ -657,7 +657,7 @@ jargon — the register rule lives in the agent instructions).
   display_name, open_tasks, loc_done, loc_total, current_release: {name,
   kind, status} | null, preview_requested, elaboration_request_count}]}` — the plan picker; for public
   identities filtered to repositories with a viewable deployment.
-- `plan.overview {path | repository_id}` → `{repository_id, display_name,
+- `plan.overview {path | repository_id, offset?, expected_revision?}` → `{repository_id, display_name,
   archived, merged_into_repository_id,
   releases: [{release_id, name, kind (preview|release), status
   (planned|requested|delivered|dropped), seq, note, requested_at,
@@ -667,12 +667,21 @@ jargon — the register rule lives in the agent instructions).
   elaboration_needed}], tasks_truncated, elaboration_requests: [{task_id,
   title, outcome (bounded excerpt), status, kind, requested_at}],
   preview_requested: [{release_id, name, requested_at, note}], decisions:
-  {unsummarized_count, summary_due}}`. One bounded call for the Console
-  Gantt and agents; dropped tasks/releases are excluded (full row via
+  {unsummarized_count, summary_due}, revision, next_offset}`. Each page is
+  bounded by its serialized byte size. Continue with `offset: next_offset`
+  and `expected_revision: revision` until `next_offset` is null, appending
+  each page's `releases`, `tasks`, `elaboration_requests` and
+  `preview_requested` arrays before interpreting the complete plan.
+  The Console does this automatically. A `cursor_stale` result means the
+  plan changed; discard the partial result and restart at offset zero.
+  Small plans need only one call. Dropped tasks/releases are excluded (full row via
   `task.history`); aggregates count leaf tasks (a parent is a summary row);
   when the cap (500) cuts, every unfinished task is kept and
   `tasks_truncated` is true. `elaboration_requests` is independent of that
   cap, so a completed task's request cannot disappear with older chart rows.
+  CLI callers use `plan overview <path> --offset <next_offset>
+  --expected-revision <revision>` for continuation pages. Pagination does
+  not change aggregate totals or the existing selection of chart rows.
 - `task.create {path|repository_id, title, kind
   (goal|stub|improvement|user_feedback), outcome?, parent_task_id?,
   release_id?, estimated_loc?, impact?, unblock_condition?, verification?,

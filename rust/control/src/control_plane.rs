@@ -1357,7 +1357,11 @@ impl ControlPlane {
             "plan.overview" => {
                 let params: params::PlanReference = decode(params)?;
                 if params.path.is_none() && params.repository_id.is_none() {
-                    return encode(self.plan.overview(None)?);
+                    return encode(self.plan.overview_page(
+                        None,
+                        params.offset,
+                        params.expected_revision.as_deref(),
+                    )?);
                 }
                 let repository = self.resolve_repository(
                     params.path.as_deref(),
@@ -1365,7 +1369,11 @@ impl ControlPlane {
                     caller,
                     true,
                 )?;
-                encode(self.plan.overview(Some(&repository.repository_id))?)
+                encode(self.plan.overview_page(
+                    Some(&repository.repository_id),
+                    params.offset,
+                    params.expected_revision.as_deref(),
+                )?)
             }
             "completion.check" => {
                 let params: params::CompletionCheck = decode(params)?;
@@ -2513,6 +2521,7 @@ mod tests {
         for base_domain in ["example.test", ""] {
             verify_composed_dispatch(base_domain);
         }
+        verify_large_plan_pages();
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         let mut configuration = config(temporary.path());
@@ -2521,6 +2530,241 @@ mod tests {
             .err()
             .expect("an invalid configured ticket origin must still be rejected");
         assert_eq!(error.code, ErrorCode::ParamsInvalid);
+    }
+
+    fn verify_large_plan_pages() {
+        use devcoordinator2_api::params::{ReleaseKind, ReleaseStatus};
+        use devcoordinator2_api::results::{
+            DecisionState, ElaborationRequest, PlanDetail, PlanRelease, PlanTask, PreviewRequest,
+        };
+        use devcoordinator2_api::{ResponseEnvelope, encode_response};
+        use sha2::{Digest, Sha256};
+
+        let temporary = tempdir().expect("tempdir");
+        let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
+        let repository_id = "r1111111111111111";
+        let mut expected = PlanDetail {
+            repository_id: repository_id.into(),
+            display_name: "Большой план".into(),
+            archived: false,
+            merged_into_repository_id: None,
+            releases: Vec::new(),
+            tasks: Vec::new(),
+            tasks_truncated: true,
+            elaboration_requests: Vec::new(),
+            preview_requested: Vec::new(),
+            decisions: DecisionState {
+                unsummarized_count: 0,
+                summary_due: false,
+            },
+            revision: String::new(),
+            next_offset: None,
+        };
+        for seq in 1..=160 {
+            let release_id = format!("v{seq:016x}");
+            let name = format!("Выпуск {seq}");
+            let note = Some("🧭".repeat(490));
+            expected.releases.push(PlanRelease {
+                release_id: release_id.clone(),
+                name: name.clone(),
+                kind: ReleaseKind::Preview,
+                status: ReleaseStatus::Requested,
+                seq,
+                note: note.clone(),
+                requested_at: Some("t".into()),
+                delivered_at: None,
+                url: None,
+                port: None,
+                tasks_total: if seq == 1 { 559 } else { 0 },
+                tasks_done: 0,
+                loc_total: if seq == 1 { 559 * 120 } else { 0 },
+                loc_done: 0,
+            });
+            expected.preview_requested.push(PreviewRequest {
+                release_id,
+                name,
+                requested_at: "t".into(),
+                note,
+            });
+        }
+        for seq in 1..=560 {
+            let task_id = format!("p{seq:016x}");
+            let title = format!("Задача {seq} {}", "界".repeat(90));
+            expected.tasks.push(PlanTask {
+                task_id: task_id.clone(),
+                parent_task_id: (seq != 1).then(|| "p0000000000000001".into()),
+                release_id: Some("v0000000000000001".into()),
+                seq,
+                position: seq,
+                title: title.clone(),
+                impact: Some("Влияние \"\\\n".repeat(10)),
+                status: TaskStatus::Planned,
+                kind: TaskKind::Goal,
+                estimated_loc: Some(120),
+                elaboration_needed: seq <= 120,
+            });
+            if seq <= 120 {
+                expected.elaboration_requests.push(ElaborationRequest {
+                    task_id,
+                    title,
+                    outcome: "Результат ".repeat(180),
+                    status: TaskStatus::Planned,
+                    kind: TaskKind::Goal,
+                    requested_at: None,
+                });
+            }
+        }
+        let fixture = expected.clone();
+        database.transaction(move |transaction| {
+            transaction.execute("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES(?1,'/repo',?2,'t',1000,'t')", rusqlite::params![fixture.repository_id, fixture.display_name])?;
+            transaction.execute("INSERT INTO worktrees VALUES('w1111111111111111',?1,'/repo','t','t')", [&fixture.repository_id])?;
+            for release in fixture.releases {
+                transaction.execute("INSERT INTO releases(release_id,repository_id,seq,name,kind,status,note,requested_at,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,'preview','requested',?5,'t','t','uid:1000','t')", rusqlite::params![release.release_id, fixture.repository_id, release.seq, release.name, release.note])?;
+            }
+            for task in fixture.tasks {
+                transaction.execute("INSERT INTO tasks(task_id,repository_id,parent_task_id,release_id,seq,position,title,outcome,impact,kind,status,estimated_loc,elaboration_needed,created_at,created_by,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'goal','planned',120,?10,'t','uid:1000','t')", rusqlite::params![task.task_id, fixture.repository_id, task.parent_task_id, task.release_id, task.seq, task.position, task.title, "Результат ".repeat(180), task.impact, task.elaboration_needed])?;
+            }
+            Ok(())
+        }).expect("large multilingual persisted plan");
+        let plane = ControlPlane::with_adapters(
+            config(temporary.path()),
+            database.clone(),
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+        )
+        .expect("control plane");
+        expected.revision = Sha256::digest(serde_json::to_vec(&expected).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let oversized = ResponseEnvelope::success("unpaged", &expected).unwrap();
+        assert!(
+            serde_json::to_vec(&oversized).unwrap().len() > devcoordinator2_api::MAX_RESPONSE_BYTES
+        );
+        let original_failure: serde_json::Value =
+            serde_json::from_slice(&encode_response(&oversized)).unwrap();
+        assert_eq!(
+            original_failure["error"]["message"],
+            "response exceeded size cap"
+        );
+
+        let mut merged = expected.clone();
+        merged.releases.clear();
+        merged.tasks.clear();
+        merged.elaboration_requests.clear();
+        merged.preview_requested.clear();
+        let mut offset = 0;
+        let mut pages = 0;
+        let mut first_next = None;
+        loop {
+            let value = plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "offset": offset, "expected_revision": (offset != 0).then_some(&expected.revision)}), &local()).expect("page dispatch");
+            let encoded = encode_response(&ResponseEnvelope::success("plan-page", &value).unwrap());
+            assert!(encoded.len() <= devcoordinator2_api::MAX_RESPONSE_BYTES);
+            let envelope: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(
+                envelope["ok"], true,
+                "every actual wire response must succeed"
+            );
+            let page: PlanDetail = serde_json::from_value(value).unwrap();
+            assert_eq!(page.revision, expected.revision);
+            assert_eq!(page.repository_id, expected.repository_id);
+            assert_eq!(page.display_name, expected.display_name);
+            assert_eq!(page.archived, expected.archived);
+            assert_eq!(
+                page.merged_into_repository_id,
+                expected.merged_into_repository_id
+            );
+            assert_eq!(page.tasks_truncated, expected.tasks_truncated);
+            assert_eq!(page.decisions, expected.decisions);
+            let count = page.releases.len()
+                + page.tasks.len()
+                + page.elaboration_requests.len()
+                + page.preview_requested.len();
+            assert!(count > 0, "continuations must make progress");
+            merged.releases.extend(page.releases);
+            merged.tasks.extend(page.tasks);
+            merged
+                .elaboration_requests
+                .extend(page.elaboration_requests);
+            merged.preview_requested.extend(page.preview_requested);
+            pages += 1;
+            if pages == 1 {
+                first_next = page.next_offset;
+            }
+            match page.next_offset {
+                Some(next) => {
+                    assert_eq!(next, offset + count as u32);
+                    offset = next;
+                }
+                None => break,
+            }
+            assert!(pages < 30, "finite traversal");
+        }
+        assert!(
+            pages >= 5,
+            "all four large collections span bounded responses"
+        );
+        assert_eq!(
+            merged, expected,
+            "paging preserves every projected field, parent and aggregate"
+        );
+        let total = expected.releases.len()
+            + expected.tasks.len()
+            + expected.elaboration_requests.len()
+            + expected.preview_requested.len();
+        for params in [
+            serde_json::json!({"repository_id": repository_id, "offset": 1}),
+            serde_json::json!({"repository_id": repository_id, "offset": total, "expected_revision": expected.revision}),
+            serde_json::json!({"repository_id": repository_id, "offset": u32::MAX, "expected_revision": expected.revision}),
+            serde_json::json!({"offset": 1, "expected_revision": expected.revision}),
+        ] {
+            assert_eq!(
+                plane
+                    .execute("plan.overview", params, &local())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ParamsInvalid
+            );
+        }
+        plane
+            .execute(
+                "task.update",
+                serde_json::json!({"task_id": "p0000000000000001", "title": "Изменённая задача"}),
+                &local(),
+            )
+            .expect("real persisted mutation");
+        for offset in [0, first_next.unwrap()] {
+            assert_eq!(plane.execute("plan.overview", serde_json::json!({"repository_id": repository_id, "offset": offset, "expected_revision": expected.revision}), &local()).unwrap_err().code, ErrorCode::CursorStale);
+        }
+        let fresh = plane
+            .execute(
+                "plan.overview",
+                serde_json::json!({"repository_id": repository_id}),
+                &local(),
+            )
+            .expect("restart after stale cursor");
+        assert_ne!(fresh["revision"], expected.revision);
+        database
+            .transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE releases SET note=?1 WHERE release_id='v0000000000000001'",
+                    ["x".repeat(192 * 1024)],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let no_progress = plane
+            .execute(
+                "plan.overview",
+                serde_json::json!({"repository_id": repository_id}),
+                &local(),
+            )
+            .unwrap_err();
+        assert_eq!(no_progress.code, ErrorCode::InternalError);
+        assert_eq!(
+            no_progress.message,
+            "a plan record exceeds the response page budget"
+        );
     }
 
     fn verify_composed_dispatch(base_domain: &str) {
@@ -2636,6 +2880,11 @@ mod tests {
             serde_json::json!(TaskKind::Goal)
         );
         assert_eq!(overview["tasks"][0]["estimated_loc"], 120);
+        assert!(
+            overview["next_offset"].is_null(),
+            "small plans need only one page"
+        );
+        assert_eq!(overview["revision"].as_str().unwrap().len(), 64);
 
         let invalid_start = plane
             .execute("test.start", serde_json::json!({"path":"/repo"}), &local())

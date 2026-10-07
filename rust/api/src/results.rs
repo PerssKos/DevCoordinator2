@@ -2030,6 +2030,8 @@ pub struct PlanDetail {
     pub elaboration_requests: Vec<ElaborationRequest>,
     pub preview_requested: Vec<PreviewRequest>,
     pub decisions: DecisionState,
+    pub revision: String,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

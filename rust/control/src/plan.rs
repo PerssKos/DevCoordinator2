@@ -16,7 +16,8 @@ use devcoordinator2_api::results::{
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::OptionalExtension;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::database::{Database, DatabaseError};
 use crate::ids;
@@ -24,6 +25,8 @@ use crate::ids;
 const SUMMARY_DUE_THRESHOLD: u32 = 25;
 const HISTORY_EVENT_CAP: u32 = 200;
 const OVERVIEW_TASK_CAP: usize = 500;
+// Leave room for the protocol envelope and caller-specific response metadata.
+const OVERVIEW_PAGE_BYTES: usize = 192 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeliveryEvidence {
@@ -294,9 +297,27 @@ impl PlanService {
     }
 
     pub fn overview(&self, repository_id: Option<&str>) -> Result<PlanOverview, ProtocolError> {
+        self.overview_page(repository_id, 0, None)
+    }
+
+    pub fn overview_page(
+        &self,
+        repository_id: Option<&str>,
+        offset: u32,
+        expected_revision: Option<&str>,
+    ) -> Result<PlanOverview, ProtocolError> {
         match repository_id {
-            Some(repository_id) => self.plan_detail(repository_id).map(PlanOverview::Detail),
-            None => self.plan_collection().map(PlanOverview::Collection),
+            Some(repository_id) => {
+                page_plan_detail(self.plan_detail(repository_id)?, offset, expected_revision)
+                    .map(PlanOverview::Detail)
+            }
+            None if offset == 0 && expected_revision.is_none() => {
+                self.plan_collection().map(PlanOverview::Collection)
+            }
+            None => Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "plan pagination requires a repository",
+            )),
         }
     }
 
@@ -493,6 +514,8 @@ impl PlanService {
                 unsummarized_count,
                 summary_due: unsummarized_count >= SUMMARY_DUE_THRESHOLD,
             },
+            revision: String::new(),
+            next_offset: None,
         })
     }
 
@@ -1856,6 +1879,114 @@ impl PlanService {
             })
             .map_err(database_or_domain)
     }
+}
+
+fn page_plan_detail(
+    mut detail: PlanDetail,
+    offset: u32,
+    expected_revision: Option<&str>,
+) -> Result<PlanDetail, ProtocolError> {
+    if offset != 0 && expected_revision.is_none() {
+        return Err(ProtocolError::new(
+            ErrorCode::ParamsInvalid,
+            "a plan continuation requires its expected revision",
+        ));
+    }
+    // Hash the complete projected plan with constant pagination fields. Every
+    // page has the same revision, and any changed projected content rejects an
+    // old continuation rather than mixing plans in the caller's task tree.
+    let encoded = serde_json::to_vec(&detail).expect("plan detail is serializable");
+    detail.revision = Sha256::digest(&encoded)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if expected_revision.is_some_and(|revision| revision != detail.revision) {
+        return Err(ProtocolError::new(
+            ErrorCode::CursorStale,
+            "the plan changed; load its first page again",
+        ));
+    }
+    let releases = std::mem::take(&mut detail.releases);
+    let tasks = std::mem::take(&mut detail.tasks);
+    let elaboration_requests = std::mem::take(&mut detail.elaboration_requests);
+    let preview_requested = std::mem::take(&mut detail.preview_requested);
+    let total = releases.len() + tasks.len() + elaboration_requests.len() + preview_requested.len();
+    let total = u32::try_from(total).map_err(|_| {
+        ProtocolError::new(
+            ErrorCode::InternalError,
+            "the plan has too many records to page",
+        )
+    })?;
+    if offset > total || (offset != 0 && offset == total) {
+        return Err(ProtocolError::new(
+            ErrorCode::ParamsInvalid,
+            "the plan offset is outside its records",
+        ));
+    }
+    // Reserve the longest cursor representation before adding any records.
+    detail.next_offset = Some(u32::MAX);
+    let mut bytes = serde_json::to_vec(&detail)
+        .expect("plan detail is serializable")
+        .len();
+    let mut skip = offset as usize;
+    let mut loaded = 0;
+    let _complete =
+        append_plan_page(
+            releases,
+            &mut detail.releases,
+            &mut skip,
+            &mut bytes,
+            &mut loaded,
+        ) && append_plan_page(tasks, &mut detail.tasks, &mut skip, &mut bytes, &mut loaded)
+            && append_plan_page(
+                elaboration_requests,
+                &mut detail.elaboration_requests,
+                &mut skip,
+                &mut bytes,
+                &mut loaded,
+            )
+            && append_plan_page(
+                preview_requested,
+                &mut detail.preview_requested,
+                &mut skip,
+                &mut bytes,
+                &mut loaded,
+            );
+    if bytes > OVERVIEW_PAGE_BYTES || (loaded == 0 && offset < total) {
+        return Err(ProtocolError::new(
+            ErrorCode::InternalError,
+            "a plan record exceeds the response page budget",
+        ));
+    }
+    let next_offset = offset + loaded;
+    detail.next_offset = (next_offset < total).then_some(next_offset);
+    Ok(detail)
+}
+
+fn append_plan_page<T: Serialize>(
+    records: Vec<T>,
+    page: &mut Vec<T>,
+    skip: &mut usize,
+    bytes: &mut usize,
+    loaded: &mut u32,
+) -> bool {
+    if *skip >= records.len() {
+        *skip -= records.len();
+        return true;
+    }
+    for record in records.into_iter().skip(std::mem::take(skip)) {
+        let added = serde_json::to_vec(&record)
+            .expect("plan record is serializable")
+            .len()
+            + usize::from(!page.is_empty());
+        if added > OVERVIEW_PAGE_BYTES.saturating_sub(*bytes) {
+            return false;
+        }
+        *bytes += added;
+        *loaded += 1;
+        page.push(record);
+    }
+    true
 }
 
 fn decision_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Decision> {

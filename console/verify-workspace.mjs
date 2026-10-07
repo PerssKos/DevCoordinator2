@@ -6,7 +6,7 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   const verify = (name, condition, detail = '') => check(`workspace ${theme} ${viewport.width}: ${name}`, condition, detail);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  daemon.setScenario({ ...scenario, workspaceLongList: true });
+  daemon.setScenario({ ...scenario, workspaceLongList: true, planPaged: true });
   await page.goto(`${baseUrl}#/plan/${repositoryId}`);
   await page.waitForSelector('.plan-context');
   verify('direct plan links select the same repository', await page.locator('#workspace-heading').innerText() === 'repo-one');
@@ -22,6 +22,46 @@ export async function verifyWorkspace({ page, daemon, check, scenario, baseUrl, 
   verify('all aspects have real repository-scoped links', await page.locator('#workspace-aspects a').evaluateAll((links) => links.map((link) => [link.textContent, link.getAttribute('href')])).then((links) => JSON.stringify(links) === JSON.stringify(expectedAspects)));
   verify('plan and progress are one destination with four views', await page.locator('#workspace-work-views a').allTextContents().then((labels) => labels.join() === 'Plan,Progress,Usage,Performance'));
   verify('Plan uses one repository index and does not wait for Tests', daemon.calls.filter(call => call.operation === 'plan.overview' && !call.params.repository_id).length === 1 && !daemon.calls.some(call => call.operation === 'test.list'));
+  const pages = daemon.calls.filter(call => call.operation === 'plan.overview' && call.params.repository_id);
+  verify('Plan loads every page of the same revision', pages.length > 1 && pages.slice(1).every(call => call.params.offset > 0 && /^[a-f0-9]{64}$/.test(call.params.expected_revision)));
+  verify('tasks on later pages remain available', await page.locator('[data-task-row="p1111111111111106"]').count() === 1);
+  await page.locator('.plan-task-select[data-select-task="p1111111111111106"]').click();
+  verify('a task from a later page can be selected', await page.locator('[data-task-row="p1111111111111106"]').evaluate(row => row.classList.contains('selected')));
+  verify('expanded selected-task text stays within its column', await page.locator('.plan-selection').evaluate(tray => {
+    if (tray.classList.contains('collapsed')) return true;
+    const heading = tray.querySelector('.plan-selection-heading');
+    const bounds = heading.getBoundingClientRect();
+    return [...heading.children].filter(child => child.getBoundingClientRect().width > 0)
+      .every(child => { const box = child.getBoundingClientRect(); return box.left >= bounds.left - 1 && box.right <= bounds.right + 1; });
+  }));
+  const planEndpoint = '**/api/v2/plan.overview';
+  let staleOnce = false;
+  await page.route(planEndpoint, (route) => {
+    if (route.request().postDataJSON().offset && !staleOnce) {
+      staleOnce = true;
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'cursor_stale', message: 'Fixture plan edited during loading' } }) });
+    }
+    return route.continue();
+  });
+  await page.reload();
+  await page.locator('.plan-context').waitFor();
+  verify('a changed plan restarts loading without mixing pages', staleOnce && await page.locator('[data-task-row="p1111111111111106"]').count() === 1);
+  await page.unroute(planEndpoint);
+  let failedPage = false;
+  await page.route(planEndpoint, (route) => {
+    if (route.request().postDataJSON().offset) {
+      failedPage = true;
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ ok: false, error: { code: 'unavailable', message: 'Fixture continuation unavailable' } }) });
+    }
+    return route.continue();
+  });
+  await page.reload();
+  await page.getByText('Fixture continuation unavailable', { exact: false }).waitFor();
+  verify('a failed later page never renders a partial plan', failedPage && await page.locator('.plan-context').count() === 0);
+  await page.unroute(planEndpoint);
+  await page.reload();
+  await page.locator('.plan-context').waitFor();
+  verify('reload recovers the complete plan after a page failure', await page.locator('[data-task-row="p1111111111111106"]').count() === 1);
   if (viewport.width > 760) {
     verify('sidebar starts wide enough for ordinary repository names', (await page.locator('#repository-sidebar').boundingBox()).width >= 280);
     const resize = page.locator('#repository-resize');

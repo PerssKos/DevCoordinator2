@@ -393,6 +393,7 @@ const fixtures = (scenario) => {
 
 const SCENARIOS = {
   populated: { identity: 'owner@example.test', admin: true },
+  planPaged: { identity: 'owner@example.test', admin: true, planPaged: true, targetedOnly: true },
   artifactFiles: { identity: 'owner@example.test', admin: true, artifactFiles: true, targetedOnly: true },
   empty: { identity: 'owner@example.test', admin: true, empty: true },
   error: { identity: 'owner@example.test', admin: true, error: true },
@@ -727,7 +728,25 @@ async function startFakeDaemon(dir) {
         result.repositories = result.repositories.map((record) => ({ ...record, presentation: repositoryPresentations.get(record.repository_id) || null }));
         return reply({ ok: true, data: result });
       }
-      if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
+      if (cmd === 'plan.overview') {
+        const result = planOverview();
+        if (scenario.planPaged) {
+          const fields = ['releases', 'tasks', 'elaboration_requests', 'preview_requested'];
+          // The snapshot stays stable across page requests, including a preview request.
+          result.preview_requested.forEach((request) => { request.requested_at = '2026-08-30T12:00:00Z'; });
+          const revision = crypto.createHash('sha256').update(JSON.stringify(result)).digest('hex');
+          if (req.params.offset && req.params.expected_revision !== revision) {
+            return reply({ ok: false, error: { code: 'cursor_stale', message: 'Plan changed during loading' } });
+          }
+          const rows = fields.flatMap((field) => result[field].map((row) => [field, row]));
+          const offset = req.params.offset || 0;
+          for (const field of fields) result[field] = [];
+          for (const [field, row] of rows.slice(offset, offset + 5)) result[field].push(row);
+          result.revision = revision;
+          result.next_offset = offset + 5 < rows.length ? offset + 5 : null;
+        }
+        return reply({ ok: true, data: result });
+      }
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {

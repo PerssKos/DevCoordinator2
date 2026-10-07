@@ -1661,7 +1661,7 @@ pub static OPERATIONS: &[OperationDefinition] = &[
     ),
     operation!(
         "plan.overview",
-        "Show releases and the active completion plan.",
+        "Show releases and the active completion plan in byte-bounded pages; append all collection arrays using next_offset and revision until next_offset is null.",
         READ_REPOSITORY_VIEWER,
         Protocol["plan overview"],
         ["plan_overview"],

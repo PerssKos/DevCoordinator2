@@ -289,6 +289,36 @@ async function api(operation, params = {}, abortable = true) {
   }
   return body.data;
 }
+async function planOverview(repositoryId) {
+  // Assemble one revision before rendering so page boundaries cannot orphan
+  // tasks or mix the old hierarchy with edits made during the read.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = await api('plan.overview', { repository_id: repositoryId });
+      let previousOffset = 0;
+      while (result.next_offset != null) {
+        const offset = result.next_offset;
+        if (!Number.isSafeInteger(offset) || offset <= previousOffset || !result.revision) {
+          throw new ApiError('bad_response', 'Plan pagination did not advance');
+        }
+        const page = await api('plan.overview', {
+          repository_id: repositoryId, offset, expected_revision: result.revision,
+        });
+        if (page.repository_id !== result.repository_id || page.revision !== result.revision) {
+          throw new ApiError('cursor_stale', 'Plan changed during loading');
+        }
+        for (const field of ['releases', 'tasks', 'elaboration_requests', 'preview_requested']) {
+          result[field].push(...page[field]);
+        }
+        previousOffset = offset;
+        result.next_offset = page.next_offset;
+      }
+      return result;
+    } catch (error) {
+      if (error.code !== 'cursor_stale' || attempt >= 1) throw error;
+    }
+  }
+}
 async function metricHistory(kind, id, metric, rangeKey) {
   const r = RANGES[rangeKey] || RANGES['24h'];
   return api('health.history', { subject_kind: kind, subject_id: id, metric, minutes: r.minutes, points: r.points });
@@ -4087,7 +4117,7 @@ const viewPlan = guard(async (repoId) => {
   }
   main.innerHTML = `<div class="plan-loading">${pageHeading('Plan', '#/plan')}${skeleton(6)}</div>`;
   const [model, projectList] = await Promise.all([
-    api('plan.overview', { repository_id: repoId }),
+    planOverview(repoId),
     workspace.active ? {} : api('plan.overview', {}),
   ]);
   const projects = [...(projectList.repositories || []), {

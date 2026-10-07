@@ -1211,6 +1211,10 @@ enum PlanCommand {
         path: PathArg,
         #[arg(long = "all")]
         all_repositories: bool,
+        #[arg(long, default_value_t = 0, conflicts_with = "all_repositories")]
+        offset: u32,
+        #[arg(long, conflicts_with = "all_repositories")]
+        expected_revision: Option<String>,
     },
 }
 
@@ -2323,11 +2327,20 @@ impl PlanCommand {
             Self::Overview {
                 path,
                 all_repositories,
+                offset,
+                expected_revision,
             } => {
                 if all_repositories {
                     remote("plan.overview", json!({}))
                 } else {
-                    remote("plan.overview", path_params(&path)?)
+                    let mut params = path_params(&path)?;
+                    if offset != 0 {
+                        params["offset"] = json!(offset);
+                    }
+                    if let Some(revision) = expected_revision {
+                        params["expected_revision"] = json!(revision);
+                    }
+                    remote("plan.overview", params)
                 }
             }
         }
@@ -3731,6 +3744,18 @@ mod tests {
                 "repository.unarchive",
             ),
             (&["plan", "overview", "/tmp/repo"], "plan.overview"),
+            (
+                &[
+                    "plan",
+                    "overview",
+                    "/tmp/repo",
+                    "--offset",
+                    "50",
+                    "--expected-revision",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ],
+                "plan.overview",
+            ),
             (
                 &[
                     "deployment",

@@ -34627,11 +34627,24 @@
           }
         ]
       },
-      "description": "Show releases and the active completion plan.",
+      "description": "Show releases and the active completion plan in byte-bounded pages; append all collection arrays using next_offset and revision until next_offset is null.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "expected_revision": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "path": {
             "default": null,
             "type": [
@@ -34657,6 +34670,19 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "expected_revision": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "path": {
                 "default": null,
                 "type": [
@@ -34793,6 +34819,14 @@
                   "null"
                 ]
               },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "preview_requested": {
                 "items": {
                   "$ref": "#/$defs/PreviewRequest"
@@ -34806,6 +34840,9 @@
                 "type": "array"
               },
               "repository_id": {
+                "type": "string"
+              },
+              "revision": {
                 "type": "string"
               },
               "tasks": {
@@ -34827,7 +34864,8 @@
               "tasks_truncated",
               "elaboration_requests",
               "preview_requested",
-              "decisions"
+              "decisions",
+              "revision"
             ],
             "type": "object"
           },
