@@ -3482,7 +3482,16 @@ fn case_postgres_removed_on_supersession_and_recovery(world: &mut World) -> Resu
         docker_ids("run", &first_id)?.len() == 1,
         "first PostgreSQL fixture did not start"
     );
-    let second = world.call("test.start", json!({"path": world.repo}))?;
+    let attached = world.call("test.start", json!({"path": world.repo}))?;
+    ensure!(
+        data(&attached)?["run_id"] == first_id && data(&attached)?["attached"] == true,
+        "equivalent PostgreSQL test did not attach to the existing run"
+    );
+    ensure!(
+        docker_ids("run", &first_id)?.len() == 1,
+        "attaching changed the active PostgreSQL fixture"
+    );
+    let second = world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?;
     let second_id = data(&second)?["run_id"]
         .as_str()
         .ok_or_else(|| "second start omitted run_id".to_owned())?
