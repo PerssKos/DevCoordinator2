@@ -96,10 +96,9 @@ impl AgentRoutingService {
                 .last_discovery_attempt_ms
                 .lock()
                 .map_err(|_| invalid("agent capability discovery state unavailable"))?;
-            if attempts
-                .get(&key)
-                .is_some_and(|attempt| now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS)
-            {
+            if attempts.get(&key).is_some_and(|attempt| {
+                now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS
+            }) {
                 drop(guard);
                 return Ok(latest);
             }
@@ -123,11 +122,7 @@ impl AgentRoutingService {
             .map_err(db_error)
     }
 
-    pub fn refresh_capabilities(
-        &self,
-        config: &Config,
-        now_ms: u64,
-    ) -> Result<(), ProtocolError> {
+    pub fn refresh_capabilities(&self, config: &Config, now_ms: u64) -> Result<(), ProtocolError> {
         let _guard = self
             .discovery_lock
             .lock()
@@ -137,9 +132,9 @@ impl AgentRoutingService {
                 .database
                 .call(move |c| read_capability(c, harness, now_ms))
                 .map_err(db_error)?;
-            let due = current
-                .reported_at_ms
-                .is_none_or(|reported| now_ms.saturating_sub(reported) >= DISCOVERY_REFRESH_INTERVAL_MS);
+            let due = current.reported_at_ms.is_none_or(|reported| {
+                now_ms.saturating_sub(reported) >= DISCOVERY_REFRESH_INTERVAL_MS
+            });
             if !due {
                 continue;
             }
@@ -149,7 +144,9 @@ impl AgentRoutingService {
                 .lock()
                 .map_err(|_| invalid("agent capability discovery state unavailable"))?
                 .get(&key)
-                .is_some_and(|attempt| now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS);
+                .is_some_and(|attempt| {
+                    now_ms.saturating_sub(*attempt) < DISCOVERY_REFRESH_INTERVAL_MS
+                });
             if attempted_recently {
                 continue;
             }
