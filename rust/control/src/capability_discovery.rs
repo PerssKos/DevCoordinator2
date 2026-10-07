@@ -15,6 +15,7 @@ use crate::usage::{run_probe_with_limit, user_record};
 const DEFAULT_EXPIRY_MS: u64 = 24 * 60 * 60 * 1000;
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 const CAPABILITY_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+type ModelCatalog = (Vec<String>, Vec<String>, Vec<Pair>);
 
 pub(crate) fn discover(
     config: &Config,
@@ -133,7 +134,7 @@ fn run_source(
     )
 }
 
-fn parse_codex(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), String> {
+fn parse_codex(bytes: &[u8]) -> Result<ModelCatalog, String> {
     let document: Value = serde_json::from_slice(bytes).map_err(|_| "catalog_invalid")?;
     let models = document
         .get("models")
@@ -170,7 +171,7 @@ fn parse_codex(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), St
     normalize(model_ids, efforts, pairs)
 }
 
-fn parse_antigravity(bytes: &[u8]) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), String> {
+fn parse_antigravity(bytes: &[u8]) -> Result<ModelCatalog, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "catalog_invalid")?;
     let mut models = Vec::new();
     let mut efforts = Vec::new();
@@ -211,7 +212,7 @@ fn normalize(
     models: Vec<String>,
     efforts: Vec<String>,
     pairs: Vec<Pair>,
-) -> Result<(Vec<String>, Vec<String>, Vec<Pair>), String> {
+) -> Result<ModelCatalog, String> {
     let models: Vec<_> = models
         .into_iter()
         .collect::<BTreeSet<_>>()
