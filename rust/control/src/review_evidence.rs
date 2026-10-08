@@ -191,12 +191,20 @@ impl ReviewService {
                     let (worktree, run_id) = reference.reference.split_once('/').ok_or_else(|| invalid("Run reference must be worktree_id/run_id"))?;
                     let path = connection.query_row("SELECT worktree_path FROM worktrees WHERE repository_id=?1 AND worktree_id=?2", rusqlite::params![repository_id,worktree], |row| row.get::<_, String>(0)).optional()?
                         .ok_or_else(|| invalid("Run worktree belongs to another repository"))?;
-                    let history = TestRunStore.read_history(std::path::Path::new(&path)).map_err(|_| invalid("Run history unavailable"))?;
-                    let run = history.iter().find(|run| run.run_id == run_id).ok_or_else(|| invalid("Run evidence unavailable"))?;
+                    let run = TestRunStore
+                        .find_history(std::path::Path::new(&path), run_id)
+                        .map_err(|error| {
+                            invalid("Run history unavailable").with_detail(error.to_string())
+                        })?
+                        .ok_or_else(|| invalid("Run evidence unavailable"))?;
                     check_time(purpose, run.finished_at.as_deref().and_then(unix_ms))?;
                     if matches!(purpose, EvidenceUse::Result { .. }) && run.status != TestStatus::Passed { return Err(invalid("Result run must pass").into()); }
-                    let metadata = TestRunStore.read_evidence(std::path::Path::new(&path)).map_err(|_| invalid("Run input evidence unavailable"))?;
-                    let Some(metadata) = metadata.into_iter().find(|metadata| metadata.run_id == run_id) else { return Ok(None); };
+                    let Some(metadata) = TestRunStore
+                        .find_evidence(std::path::Path::new(&path), run_id)
+                        .map_err(|error| {
+                            invalid("Run input evidence unavailable").with_detail(error.to_string())
+                        })?
+                    else { return Ok(None); };
                     if metadata.test != run.test || (matches!(purpose, EvidenceUse::Result { .. }) && metadata.status != devcoordinator2_executor_protocol::RunStatus::Passed) {
                         return Err(invalid("Run history and retained input evidence disagree").into());
                     }

@@ -561,6 +561,16 @@ pub struct EvidenceReference {
     pub path: String,
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
     pub run_id: String,
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub offset: u32,
+    #[serde(default = "default_evidence_limit")]
+    #[schemars(range(min = 1, max = 32))]
+    pub limit: u8,
+}
+
+fn default_evidence_limit() -> u8 {
+    10
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

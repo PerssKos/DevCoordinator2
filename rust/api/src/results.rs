@@ -1334,6 +1334,7 @@ pub struct EvidenceGet {
     pub issues: Vec<EvidenceIssue>,
     pub issues_truncated: bool,
     pub image_count: u32,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

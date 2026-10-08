@@ -86,6 +86,17 @@ impl TestEvidenceService {
         validate_run_id(&params.run_id)?;
         let resolved = self.resolve(Path::new(&params.path), caller)?;
         let loaded = self.load(&resolved.worktree, &params.run_id)?;
+        if params.limit == 0 || params.limit > 32 {
+            return Err(invalid_argument("'limit' must be in the range 1..=32"));
+        }
+        let total = loaded.bundles.len();
+        let offset = usize::try_from(params.offset).unwrap_or(usize::MAX);
+        if offset > total {
+            return Err(invalid_argument("'offset' is beyond the retained evidence"));
+        }
+        let end = offset.saturating_add(usize::from(params.limit)).min(total);
+        let next_offset = (end < total).then_some(end as u32);
+        let bundles = loaded.bundles[offset..end].to_vec();
         let feedback = self.feedback_for_run(
             &resolved.repository_id,
             &resolved.worktree_id,
@@ -97,11 +108,12 @@ impl TestEvidenceService {
             worktree_id: resolved.worktree_id,
             run_id: params.run_id,
             status: availability(&loaded.bundles),
-            bundles: loaded.bundles,
+            bundles,
             feedback,
             issues_truncated: loaded.issues.len() >= 64,
             image_count: bounded_u32(loaded.images.len()),
             issues: loaded.issues,
+            next_offset,
         })
     }
 
@@ -203,6 +215,7 @@ impl TestEvidenceService {
                 bundles: loaded.bundles,
                 feedback,
                 issues: loaded.issues,
+                next_offset: None,
             };
             found = Some(devcoordinator2_api::results::EvidenceLookup { context, evidence });
         }
@@ -2785,10 +2798,59 @@ mod tests {
                 EvidenceReference {
                     path: world.repo.display().to_string(),
                     run_id: RUN_ID.to_owned(),
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn evidence_get_pages_large_runs_with_a_bounded_response() {
+        let world = world();
+        let second = world
+            .evidence
+            .join("formal-runs/0000000000000000000000000000000000000000000000000000000000000000");
+        fs::create_dir_all(second.join("screenshots")).unwrap();
+        fs::copy(
+            world.evidence.join(MANIFEST_NAME),
+            second.join(MANIFEST_NAME),
+        )
+        .unwrap();
+        fs::copy(
+            &world.screenshot,
+            second.join("screenshots/cell-1-desktop-viewport.png"),
+        )
+        .unwrap();
+        let first = world
+            .service
+            .get(
+                EvidenceReference {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.into(),
+                    offset: 0,
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(first.bundles.len(), 1);
+        assert_eq!(first.next_offset, Some(1));
+        let second_page = world
+            .service
+            .get(
+                EvidenceReference {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.into(),
+                    offset: first.next_offset.unwrap(),
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(second_page.bundles.len(), 1);
+        assert_eq!(second_page.next_offset, None);
     }
 
     fn image_id(result: &EvidenceGet) -> String {
@@ -3417,6 +3479,8 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
                 EvidenceReference {
                     path: world.repo.display().to_string(),
                     run_id: "t20260902T020304Z-fedcba".to_owned(),
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )

@@ -455,7 +455,7 @@ impl TestRunStore {
         let Some(test) = self.open_test(worktree)? else {
             return Ok(Vec::new());
         };
-        let Some(document) = read_json::<EvidenceDocument>(&test, EVIDENCE_FILE)? else {
+        let Some(document) = read_evidence_document(&test)? else {
             return Ok(Vec::new());
         };
         if document.runs.len() > EVIDENCE_CAP
@@ -480,11 +480,94 @@ impl TestRunStore {
         run_id: &str,
     ) -> Result<Option<RetryEvidence>, TestStateError> {
         validate_run_id(run_id)?;
-        Ok(self
-            .read_evidence(worktree)?
-            .into_iter()
-            .rev()
-            .find(|run| run.run_id == run_id))
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(None);
+        };
+        let Some(value) = read_json::<serde_json::Value>(&test, EVIDENCE_FILE)? else {
+            return Ok(None);
+        };
+        let Some(runs) = value.get("runs").and_then(serde_json::Value::as_array) else {
+            return Err(TestStateError::Invalid(
+                "test evidence runs must be an array".into(),
+            ));
+        };
+        for value in runs.iter().rev() {
+            let Some(candidate_id) = value.get("run_id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if candidate_id != run_id {
+                continue;
+            }
+            let mut candidate = value.clone();
+            if let Some(checks) = candidate
+                .get_mut("checks")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for check in checks {
+                    if let Some(object) = check.as_object_mut()
+                        && !object.contains_key("exit")
+                        && let Some(exit_code) = object.remove("exit_code")
+                    {
+                        object.insert(
+                            "exit".into(),
+                            serde_json::json!({"code": exit_code, "signal": null}),
+                        );
+                    }
+                }
+            }
+            let run: RetryEvidence = serde_json::from_value(candidate).map_err(|error| {
+                TestStateError::Json(format!(
+                    "retained input for run {run_id} is invalid: {error}"
+                ))
+            })?;
+            if run.status == RunStatus::Running
+                || run.readiness_eligible
+                    != (run.proof == ProofKind::Complete
+                        && run.requested_tier == ValidationTier::Release)
+            {
+                return Err(TestStateError::Invalid(format!(
+                    "retained input for run {run_id} failed validation"
+                )));
+            }
+            return Ok(Some(run));
+        }
+        Ok(None)
+    }
+
+    /// Resolve one history row without allowing an unrelated stale row to
+    /// hide the exact run requested by a review or retry operation.
+    pub fn find_history(
+        &self,
+        worktree: &Path,
+        run_id: &str,
+    ) -> Result<Option<TestHistoryEntry>, TestStateError> {
+        validate_run_id(run_id)?;
+        let Some(test) = self.open_test(worktree)? else {
+            return Ok(None);
+        };
+        let Some(value) = read_json::<serde_json::Value>(&test, HISTORY_FILE)? else {
+            return Ok(None);
+        };
+        let Some(runs) = value.get("runs").and_then(serde_json::Value::as_array) else {
+            return Err(TestStateError::Invalid(
+                "test history runs must be an array".into(),
+            ));
+        };
+        for value in runs.iter().rev() {
+            if value.get("run_id").and_then(serde_json::Value::as_str) != Some(run_id) {
+                continue;
+            }
+            let run: TestHistoryEntry = serde_json::from_value(value.clone()).map_err(|error| {
+                TestStateError::Json(format!("history for run {run_id} is invalid: {error}"))
+            })?;
+            if !is_terminal(&run.status) {
+                return Err(TestStateError::Invalid(format!(
+                    "history for run {run_id} is not terminal"
+                )));
+            }
+            return Ok(Some(run));
+        }
+        Ok(None)
     }
 
     pub fn record_evidence(
@@ -580,6 +663,57 @@ impl TestRunStore {
     fn open_test(&self, worktree: &Path) -> Result<Option<File>, TestStateError> {
         let root = open_worktree(worktree)?;
         open_chain(&root, &[".devcoordinator", "test"])
+    }
+}
+
+/// Decode retained retry evidence written by pre-schema-2 executors.
+///
+/// Older receipts represented a check's process result as an integer
+/// `exit_code`; schema 2 stores the same value in the structured `exit`
+/// object. Keep accepting that historical form so a terminal run remains
+/// retryable after the daemon is upgraded, while still applying the strict
+/// schema and unknown-field checks to every other field.
+fn read_evidence_document(parent: &File) -> Result<Option<EvidenceDocument>, TestStateError> {
+    match read_json::<EvidenceDocument>(parent, EVIDENCE_FILE) {
+        Ok(document) => Ok(document),
+        Err(TestStateError::Json(_)) => {
+            let Some(mut value) = read_json::<serde_json::Value>(parent, EVIDENCE_FILE)? else {
+                return Ok(None);
+            };
+            let Some(runs) = value
+                .get_mut("runs")
+                .and_then(serde_json::Value::as_array_mut)
+            else {
+                return Err(TestStateError::Json(
+                    "evidence runs must be an array".into(),
+                ));
+            };
+            for run in runs {
+                let Some(checks) = run
+                    .get_mut("checks")
+                    .and_then(serde_json::Value::as_array_mut)
+                else {
+                    continue;
+                };
+                for check in checks {
+                    let Some(object) = check.as_object_mut() else {
+                        continue;
+                    };
+                    if !object.contains_key("exit")
+                        && let Some(exit_code) = object.remove("exit_code")
+                    {
+                        object.insert(
+                            "exit".into(),
+                            serde_json::json!({"code": exit_code, "signal": null}),
+                        );
+                    }
+                }
+            }
+            serde_json::from_value(value)
+                .map(Some)
+                .map_err(|error| TestStateError::Json(error.to_string()))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -1194,6 +1328,49 @@ mod tests {
         store.record_history(&root, &terminal, uid, gid).unwrap();
         store.record_history(&root, &terminal, uid, gid).unwrap();
         assert_eq!(store.read_history(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_retry_evidence_exit_code_remains_readable() {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
+        let store = TestRunStore;
+        store
+            .prepare(&root, "t20260904T000000Z-aabbcc", uid, gid)
+            .unwrap();
+        let payload = serde_json::json!({
+            "schema": 2,
+            "runs": [{
+                "run_id": "t20260904T000000Z-aabbcc",
+                "test": "all",
+                "proof": "complete",
+                "status": "failed",
+                "source_digest": "a".repeat(64),
+                "config_digest": "b".repeat(64),
+                "requested_tier": "release",
+                "readiness_eligible": true,
+                "selection": [],
+                "checks": [{
+                    "name": "unit",
+                    "status": "failed",
+                    "duration_seconds": 1.0,
+                    "exit_code": 17,
+                    "artifacts": [],
+                    "streams": []
+                }]
+            }]
+        });
+        std::fs::write(
+            root.join(".devcoordinator/test/evidence.json"),
+            serde_json::to_vec(&payload).unwrap(),
+        )
+        .unwrap();
+        let evidence = store.read_evidence(&root).unwrap();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].checks[0].exit.code, Some(17));
+        assert_eq!(evidence[0].checks[0].exit.signal, None);
     }
 
     #[test]
