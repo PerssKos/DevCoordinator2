@@ -952,6 +952,41 @@ async function main() {
     return;
   }
 
+  if (process.env.CONSOLE_VERIFY_USAGE_ONLY) {
+    try {
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
+      await page.click('[data-usage-worktree-scope-toggle]');
+      check('usage-only: all registered worktrees are checked', await page.locator('[data-usage-worktree-id]:checked').count() === 3);
+      await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-worktree-unavailable');
+      check('usage-only: subset sends registered ids and hides unproven totals', await page.locator('.usage-metrics').count() === 0 && daemon.calls.some((call) => call.operation === 'usage.repository' && call.params.worktree_ids?.length === 2));
+      await page.click('[data-usage-worktree-scope-toggle]');
+      await page.locator('[data-usage-worktree-all]').check();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: consolidated selection restores repository totals', await page.locator('.usage-metrics').count() === 1 && !await page.locator('.usage-worktree-unavailable').count());
+      await page.click('[data-usage-worktree-scope-toggle]');
+      await page.locator('[data-usage-worktree-all]').uncheck();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-worktree-unavailable');
+      check('usage-only: empty selection is an explicit unavailable state', /No worktrees selected/.test(await page.locator('.usage-worktree-unavailable').innerText()));
+      await context.close();
+    } catch (error) { check('usage-only journey', false, error.message); }
+    await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    await browser.close(); await edge.close(); await daemon.close();
+    return;
+  }
+
   if (process.env.CONSOLE_VERIFY_CACHE_ONLY) {
     try {
       for (const viewport of [{ width: 1110, height: 876 }, { width: 390, height: 844 }]) {

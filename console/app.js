@@ -3096,12 +3096,15 @@ function usageWorktreeScope(repositoryId, repositoryList, repositoryName) {
     selectedIds = worktrees.map((worktree) => worktree.worktree_id);
     state.usageWorktreeSelection.set(repositoryId, selectedIds);
     state.usageWorktreeAllSelection.set(repositoryId, true);
+  } else if (state.usageWorktreeAllSelection.get(repositoryId)) {
+    selectedIds = worktrees.map((worktree) => worktree.worktree_id);
+    state.usageWorktreeSelection.set(repositoryId, selectedIds);
   } else {
     const valid = new Set(worktrees.map((worktree) => worktree.worktree_id));
     selectedIds = selectedIds.filter((id) => valid.has(id));
     state.usageWorktreeAllSelection.set(repositoryId, selectedIds.length === worktrees.length);
   }
-  return { worktrees, selectedIds, allSelected: selectedIds.length === worktrees.length, unavailable: selectedIds.length > 0 && selectedIds.length < worktrees.length };
+  return { worktrees, selectedIds, allSelected: selectedIds.length === worktrees.length, empty: selectedIds.length === 0, unavailable: selectedIds.length < worktrees.length };
 }
 
 function usageWorktreeRequest(repositoryId) {
@@ -3145,6 +3148,7 @@ function bindUsageWorktreeScope(root, repositoryId, scope) {
 }
 
 function usageWorktreeUnavailable(scope) {
+  if (scope?.empty) return '<section class="usage-worktree-unavailable" role="status"><strong>No worktrees selected</strong><p>Select a worktree to view its usage.</p></section>';
   if (!scope?.unavailable) return '';
   return '<section class="usage-worktree-unavailable" role="status"><strong>Worktree-specific usage unavailable</strong><p>Codex currently records this repository at its common Git root, so separate totals for the selected worktrees cannot be proven. Select all worktrees to view the consolidated repository total.</p></section>';
 }
@@ -3522,8 +3526,8 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const scope = usageWorktreeScope(repositoryId, repositoryList, canonicalName);
   if (scope && data.worktree_scope) {
     const reported = new Map((data.worktree_scope.worktrees || []).map((row) => [row.worktree_id, row]));
-    scope.worktrees = scope.worktrees.map((row) => ({ ...row, ...(reported.get(row.worktree_id) || {}) }));
-    scope.unavailable = Boolean(data.worktree_scope.selected_worktree_ids && !data.worktree_scope.attribution_available);
+    scope.worktrees = scope.worktrees.map((row) => ({ ...row, available: reported.get(row.worktree_id)?.available }));
+    scope.unavailable = scope.empty || Boolean(data.worktree_scope.selected_worktree_ids && !data.worktree_scope.attribution_available);
   }
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
