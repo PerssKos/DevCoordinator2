@@ -917,7 +917,12 @@ impl CodexUsage {
             failures,
             self.config.codex_usage_sources.len(),
         );
-        if let Some(selection) = selection {
+        if let Some(mut selection) = selection {
+            if selection.scope.selected_worktree_ids.is_some()
+                && reports.len() < self.config.codex_usage_sources.len()
+            {
+                selection.scope.attribution_available = false;
+            }
             report.worktree_scope = Some(selection.scope);
         }
         if !progress.is_empty() {
@@ -1168,7 +1173,8 @@ impl CodexUsage {
                 worktrees: scope_rows,
                 selected_worktree_ids: requested.map(|ids| ids.to_vec()),
                 include_unassigned,
-                attribution_available: requested.is_none() || !unavailable,
+                attribution_available: requested.is_none()
+                    || (!self.config.codex_usage_sources.is_empty() && !unavailable),
             },
             include_unassigned,
             source_keys,
