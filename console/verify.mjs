@@ -979,6 +979,10 @@ async function main() {
       await page.click('[data-usage-worktree-apply]');
       await page.waitForSelector('.usage-worktree-unavailable');
       check('usage-only: empty selection is an explicit unavailable state', /No worktrees selected/.test(await page.locator('.usage-worktree-unavailable').innerText()));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.reload();
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: narrow phase chart also fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
       await context.close();
     } catch (error) { check('usage-only journey', false, error.message); }
     await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
