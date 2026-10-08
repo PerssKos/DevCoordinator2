@@ -275,7 +275,8 @@ impl TestRunStore {
         let Some(root) = open_worktree_for_read(worktree)? else {
             return Ok(None);
         };
-        let Some(current) = open_chain(&root, &[".devcoordinator", "test", "current"])? else {
+        let Some(current) = open_chain_for_read(&root, &[".devcoordinator", "test", "current"])?
+        else {
             return Ok(None);
         };
         let summary = match read_json::<TestSummary>(&current, SUMMARY_FILE) {
@@ -949,6 +950,24 @@ fn open_chain(root: &File, names: &[&str]) -> Result<Option<File>, TestStateErro
     Ok(Some(directory))
 }
 
+/// Read-only summary lookups must tolerate a retained checkout being replaced
+/// by a file or symlink at any path component. The registration may outlive
+/// that checkout, and one malformed entry must not make a global test listing
+/// fail for every other worktree. Mutating paths continue to use `open_chain`
+/// so they retain the concrete filesystem error.
+fn open_chain_for_read(root: &File, names: &[&str]) -> Result<Option<File>, TestStateError> {
+    let mut directory = root
+        .try_clone()
+        .map_err(|error| filesystem("duplicate directory descriptor", error))?;
+    for name in names {
+        let Some(child) = open_child_for_read(&directory, name)? else {
+            return Ok(None);
+        };
+        directory = child;
+    }
+    Ok(Some(directory))
+}
+
 fn open_child(parent: &File, name: &str) -> Result<Option<File>, TestStateError> {
     validate_atom(name)?;
     match unix_fs::openat(
@@ -959,6 +978,22 @@ fn open_child(parent: &File, name: &str) -> Result<Option<File>, TestStateError>
     ) {
         Ok(descriptor) => Ok(Some(File::from(descriptor))),
         Err(rustix::io::Errno::NOENT) => Ok(None),
+        Err(error) => Err(errno("open governed-test directory", error)),
+    }
+}
+
+fn open_child_for_read(parent: &File, name: &str) -> Result<Option<File>, TestStateError> {
+    validate_atom(name)?;
+    match unix_fs::openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => Ok(Some(File::from(descriptor))),
+        Err(rustix::io::Errno::NOENT)
+        | Err(rustix::io::Errno::NOTDIR)
+        | Err(rustix::io::Errno::LOOP) => Ok(None),
         Err(error) => Err(errno("open governed-test directory", error)),
     }
 }
@@ -1283,6 +1318,34 @@ mod tests {
         let missing_root = temporary.path().join("removed-worktree");
         assert_eq!(
             TestRunStore.read_current_summary(&missing_root).unwrap(),
+            None
+        );
+
+        let nested_file_root = temporary.path().join("nested-file-worktree");
+        std::fs::create_dir(&nested_file_root).unwrap();
+        std::fs::write(
+            nested_file_root.join(".devcoordinator"),
+            "stale scratch entry",
+        )
+        .unwrap();
+        assert_eq!(
+            TestRunStore
+                .read_current_summary(&nested_file_root)
+                .unwrap(),
+            None
+        );
+
+        let nested_link_root = temporary.path().join("nested-link-worktree");
+        std::fs::create_dir(&nested_link_root).unwrap();
+        symlink(
+            temporary.path().join("missing-target"),
+            nested_link_root.join(".devcoordinator"),
+        )
+        .unwrap();
+        assert_eq!(
+            TestRunStore
+                .read_current_summary(&nested_link_root)
+                .unwrap(),
             None
         );
     }
