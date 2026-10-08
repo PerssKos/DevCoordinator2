@@ -987,3 +987,12 @@ final result: blocked
 - Screenshots do not prove persistence, authorization, or assistive-technology behavior; those are covered by the rendered interaction suite and remain distinct from this visual comparison.
 
 **final result: passed**
+
+
+# Usage worktree scope first-version handoff — 2026-10-08
+
+final result: blocked
+
+The selected Usage worktree-scope direction is implemented in the Console and has a focused rendered journey. The current evidence covers the anchored checkbox scope control, consolidated selection, partial selection, empty selection, and canonical `codex` grouping; the formal browser receipt, manual screenshot receipt, Product Design audit, and live source-identity verification remain outstanding for this new surface.
+
+The remaining blocker is delivery of the CodexMulti producer build containing schema 9 worktree attribution. Until that build is installed and exercised through the Coordinator collector, per-worktree totals remain explicitly unavailable while consolidated historical totals remain valid.
