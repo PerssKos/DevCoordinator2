@@ -3834,6 +3834,10 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         .as_u64()
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "API port is missing".to_owned())?;
+    let api_unit = api["binding"]["identity"]
+        .as_str()
+        .ok_or_else(|| "API unit is missing".to_owned())?
+        .to_owned();
     let body = http_get_json(api_port)?;
     let cache_port = component(&status, "cache")?["port"]
         .as_u64()
@@ -3875,6 +3879,27 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
             .as_str()
             .is_some_and(|value| !value.is_empty()),
         "route checksum is missing"
+    );
+    // Simulate a host restart that lost the managed process while preserving
+    // the committed generation, desired-running intent and stable lease.
+    run_status("systemctl", &["stop", &api_unit])?;
+    world.stop_daemon(true)?;
+    world.start_daemon(None, None, None)?;
+    let recovered = data(&world.call(
+        "deployment.status",
+        json!({"deployment_id": deployment_id}),
+    )?)?
+    .clone();
+    ensure!(
+        recovered["current_generation"] == 1
+            && component(&recovered, "api")?["binding"]["identity"] == api_unit
+            && component(&recovered, "api")?["port"] == json!(api_port)
+            && recovered["readiness"]["ready"] == true,
+        "daemon restart did not recover the committed routed process"
+    );
+    ensure!(
+        http_get_json(api_port)?["version"] == "v1",
+        "recovered routed process did not serve the original generation"
     );
     let database_url = deployment_database_url(world, &deployment_id, 1)?;
     command_stdout(
