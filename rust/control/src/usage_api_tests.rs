@@ -209,6 +209,8 @@ fn initial_repository_detail_uses_the_bounded_fast_projection() {
             wait_for_refresh: false,
             repository_id: "project-alpha".into(),
             range: UsageRange::Hours24,
+            worktree_ids: None,
+            include_unassigned: true,
         })
         .unwrap();
     service.usage.wait_for_refresh(Some("project-alpha"));
@@ -217,12 +219,53 @@ fn initial_repository_detail_uses_the_bounded_fast_projection() {
             wait_for_refresh: false,
             repository_id: "project-alpha".into(),
             range: UsageRange::Hours24,
+            worktree_ids: None,
+            include_unassigned: true,
         })
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(report.totals.total_tokens, Some(120));
     assert_eq!(report.coverage.database_schemas, vec![99]);
     server.join().unwrap();
+}
+
+#[test]
+fn usage_worktree_filter_rejects_unknown_registered_id_before_source_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("collector");
+    let (_, now) = super::super::tests::source_database(&home, 5);
+    let config = super::super::tests::config(dir.path(), home);
+    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let usage = CodexUsage::with_probe(
+        config,
+        db.clone(),
+        Arc::new(FixedClock(
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
+        )),
+        Arc::new(DetailProbe),
+    );
+    let service = UsageService {
+        registry: Registry::new(db),
+        usage,
+    };
+    let error = service
+        .repository(UsageRepositoryParams {
+            wait_for_refresh: false,
+            repository_id: "project-alpha".into(),
+            range: UsageRange::Hours24,
+            worktree_ids: Some(vec!["w-does-not-exist".into()]),
+            include_unassigned: true,
+        })
+        .expect_err("unknown worktree ids must be denied");
+    assert_eq!(error.code, ErrorCode::ParamsInvalid);
 }
 
 #[test]
@@ -250,6 +293,8 @@ fn api_exact_windows_validate_and_unsupported_or_failed_sources_fall_back() {
             None,
             Projection::PerformanceFast,
             &[],
+            None,
+            Some(true),
         )
         .unwrap();
     assert_eq!(report.tokens["total_tokens"], 100);
@@ -266,6 +311,8 @@ fn api_exact_windows_validate_and_unsupported_or_failed_sources_fall_back() {
             None,
             Projection::PerformanceFast,
             &[],
+            None,
+            Some(true),
         )
         .unwrap();
     assert_eq!(source_report.tokens["total_tokens"], 100);
@@ -276,7 +323,7 @@ fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
     let mut value = response(Some(&"b".repeat(64)), 10, 20);
     let summary: Summary = serde_json::from_value(value.clone()).unwrap();
     validate(&summary, Some(&"b".repeat(64)), 10, 20).unwrap();
-    let report = summary.source_report(None, 1);
+    let report = summary.source_report(None, 1, None, true);
     assert_eq!(report.tokens["total_tokens"], 120);
     assert_eq!(report.tokens["input_tokens_details.cached_tokens"], 80);
     assert_eq!(report.tokens["output_tokens_details.reasoning_tokens"], 5);
@@ -294,7 +341,7 @@ fn api_contract_preserves_subsets_cost_basis_and_optional_metadata() {
     validate(&priced, Some(&"b".repeat(64)), 10, 20).unwrap();
     assert_eq!(
         priced
-            .source_report(None, 1)
+            .source_report(None, 1, None, true)
             .supplied_cost
             .unwrap()
             .estimated_usd_micros,
@@ -331,6 +378,8 @@ fn slow_api_is_cancelled_within_the_shared_read_budget() {
     let result = CollectorApi::default().summary(
         &source,
         None,
+        None,
+        true,
         10,
         20,
         Instant::now() + Duration::from_millis(100),
