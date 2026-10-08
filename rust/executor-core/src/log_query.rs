@@ -463,6 +463,7 @@ fn prune_logs_internal(
         }
         Err(_) => return Err(LogQueryError::Unavailable),
     }
+    let _maintenance_guard = RetentionLock { _file: maintenance };
     let now_ms = epoch_ms();
     let protected_runs = protected_runs()?;
     let policy = RetentionPolicy {
@@ -620,6 +621,14 @@ pub struct RetentionRunInfo {
 
 pub struct RetentionLock {
     _file: File,
+}
+
+impl Drop for RetentionLock {
+    fn drop(&mut self) {
+        // A child forked before exec can still hold this open-file description,
+        // even with CLOEXEC. Closing our descriptor alone would keep the lock.
+        let _ = unix_fs::flock(&self._file, FlockOperation::Unlock);
+    }
 }
 
 /// Used by protection writes so they cannot acknowledge a pin during removal.
@@ -3382,7 +3391,10 @@ fn read_json<T: for<'de> Deserialize<'de>>(
 fn run_is_locked(run_dir: &File) -> Result<bool, LogQueryError> {
     let lock = open_file(run_dir, "active.lock")?;
     match unix_fs::flock(&lock, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(false),
+        Ok(()) => {
+            drop(RetentionLock { _file: lock });
+            Ok(false)
+        }
         Err(error)
             if error == rustix::io::Errno::AGAIN || error == rustix::io::Errno::WOULDBLOCK =>
         {
@@ -3396,7 +3408,7 @@ fn lock_and_revalidate_victim(
     runs: &File,
     location: &RetentionLocation,
     active_run_id: Option<&str>,
-) -> Result<Option<File>, LogQueryError> {
+) -> Result<Option<RetentionLock>, LogQueryError> {
     if active_run_id == Some(location.run_id.as_str()) {
         return Ok(None);
     }
@@ -3417,11 +3429,12 @@ fn lock_and_revalidate_victim(
         }
         Err(_) => return Err(LogQueryError::Unavailable),
     }
+    let guard = RetentionLock { _file: lock };
     let leaf = required_store_entry(open_leaf_components(&run, &location.components[1..]))?;
     if file_identity(&leaf)? != location.leaf_identity {
         return Err(LogQueryError::StoreMalformed);
     }
-    Ok(Some(lock))
+    Ok(Some(guard))
 }
 
 fn file_identity(file: &File) -> Result<(u64, u64), LogQueryError> {
@@ -4595,6 +4608,52 @@ mod tests {
                 .0,
             );
         }
+        let inventory = scan_store(&root, None, None).expect("completed inventory");
+        let run = &inventory.runs[0];
+        let leaf = &run.leaves[0];
+        let location = RetentionLocation {
+            run_id: run.metadata.run_id.clone(),
+            components: leaf.relative_components.clone(),
+            run_identity: run.directory_identity,
+            leaf_identity: leaf.directory_identity,
+        };
+        let guard = lock_and_revalidate_victim(&inventory.runs_dir, &location, None)
+            .expect("victim lease")
+            .expect("inactive victim");
+        let inherited = guard._file.try_clone().expect("inherited victim lease");
+        assert!(
+            lock_and_revalidate_victim(&inventory.runs_dir, &location, None)
+                .expect("active victim probe")
+                .is_none()
+        );
+        drop(guard);
+        let replacement = lock_and_revalidate_victim(&inventory.runs_dir, &location, None)
+            .expect("released victim lease")
+            .expect("inherited descriptor must not keep a finished guard active");
+        drop(inherited);
+        assert!(
+            lock_and_revalidate_victim(&inventory.runs_dir, &location, None)
+                .expect("replacement guard probe")
+                .is_none()
+        );
+        drop(replacement);
+        // A fork inherits an open-file description even with CLOEXEC until
+        // exec. Cloning the descriptor reproduces that ownership without a
+        // timing-dependent child process or a retry of the cleanup operation.
+        let protection = lock_retention(&root).expect("protection lease");
+        let inherited = protection._file.try_clone().expect("inherited protection");
+        assert!(matches!(
+            lock_retention(&root),
+            Err(LogQueryError::MaintenanceBusy)
+        ));
+        drop(protection);
+        let replacement = lock_retention(&root).expect("released protection lease");
+        drop(inherited);
+        assert!(matches!(
+            lock_retention(&root),
+            Err(LogQueryError::MaintenanceBusy)
+        ));
+        drop(replacement);
         let (active_run, active_lease) =
             create_run(&root, 14, "case-1", b"active\n", now - 100_000, true);
         let result = prune_logs(
