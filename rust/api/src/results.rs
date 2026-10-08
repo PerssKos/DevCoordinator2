@@ -1115,9 +1115,21 @@ pub struct CapacityAdjustment {
     pub epoch_seconds: Option<f64>,
 }
 
+/// Aggregate admission facts only; never exposes resource paths or owners.
+#[derive(Clone, Debug, Default, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkStabilityCapacity {
+    pub active_readers: u32,
+    pub active_writers: u32,
+    pub waiting_readers: u32,
+    pub waiting_writers: u32,
+}
+
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Capacity {
+    #[serde(default)]
+    pub network_stability: NetworkStabilityCapacity,
     pub learned_capacity: u32,
     pub effective_capacity: u32,
     pub cap: Option<u32>,

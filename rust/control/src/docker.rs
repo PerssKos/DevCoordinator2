@@ -56,6 +56,8 @@ pub enum DockerError {
     Timeout { operation: String },
     #[error("docker {operation} cancelled")]
     Cancelled { operation: String },
+    #[error("network stability admission {0}")]
+    Admission(&'static str),
     #[error("{0}")]
     Command(String),
     #[error("{0}")]
@@ -75,7 +77,7 @@ impl DockerError {
             Self::Spawn { .. } => DockerErrorKind::SpawnFailed,
             Self::Timeout { .. } => DockerErrorKind::TimedOut,
             Self::Cancelled { .. } => DockerErrorKind::Cancelled,
-            Self::Command(_) => DockerErrorKind::CommandFailed,
+            Self::Admission(_) | Self::Command(_) => DockerErrorKind::CommandFailed,
             Self::NetworkUnavailable(_) => DockerErrorKind::NetworkUnavailable,
             Self::InvalidOutput(_) => DockerErrorKind::InvalidOutput,
             Self::InvalidTarget(_) => DockerErrorKind::InvalidTarget,
@@ -600,9 +602,20 @@ impl Drop for LogFollower {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DockerCli {
     executable: PathBuf,
+    network: Option<crate::capacity::NetworkAdmission>,
+}
+
+impl fmt::Debug for DockerCli {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DockerCli")
+            .field("executable", &self.executable)
+            .field("network_admission", &self.network.is_some())
+            .finish()
+    }
 }
 
 impl Default for DockerCli {
@@ -615,13 +628,23 @@ impl DockerCli {
     pub fn system() -> Self {
         Self {
             executable: PathBuf::from("/usr/bin/docker"),
+            network: None,
         }
     }
 
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            network: None,
         }
+    }
+
+    pub(crate) fn with_network_capacity(
+        mut self,
+        capacity: crate::capacity::CapacityBroker,
+    ) -> Self {
+        self.network = Some(capacity.network_admission());
+        self
     }
 
     pub fn executable(&self) -> &Path {
@@ -661,6 +684,7 @@ fn spawn_log_process(
 }
 
 pub struct RunDetachedRequest {
+    pub cancellation: Option<Arc<AtomicBool>>,
     pub name: String,
     pub image: String,
     pub label_context: ManagedLabelContext,
@@ -1072,9 +1096,12 @@ pub trait DockerControl: Send + Sync {
             .map(|(name, value)| (OsString::from(name), OsString::from(value)))
             .collect();
         let output = match self.invoke(
-            DockerInvocation::new(argv, DEFAULT_DOCKER_TIMEOUT)?.with_environment(environment),
+            DockerInvocation::new(argv, DEFAULT_DOCKER_TIMEOUT)?
+                .with_environment(environment)
+                .with_cancellation(request.cancellation.clone()),
         ) {
             Ok(output) => output,
+            Err(error @ DockerError::Admission(_)) => return Err(error),
             Err(error) => {
                 let cleanup = self.cleanup_failed_run_container(&request.name);
                 return Err(DockerError::Command(format!(
@@ -1125,6 +1152,7 @@ pub trait DockerControl: Send + Sync {
     /// remove only that container. The Docker stderr remains private; callers
     /// receive only a bounded cleanup outcome.
     fn cleanup_failed_run_container(&self, name: &str) -> String {
+        let _cleanup = crate::capacity::NativeCleanupScope::enter();
         let invocation = match DockerInvocation::new(
             vec![
                 "ps".into(),
@@ -1486,6 +1514,7 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
+        let _cleanup = crate::capacity::NativeCleanupScope::enter();
         let mut argv = vec!["rm".into(), "--force".into()];
         if delete_volumes {
             argv.push("--volumes".into());
@@ -2040,8 +2069,107 @@ pub trait DockerControl: Send + Sync {
     }
 }
 
+/// Native mutations share the existing broker with browser execution windows.
+/// Unknown commands are conservative writers; inspection/SQL remain readers.
+fn docker_changes_network(args: &[OsString]) -> bool {
+    let Some(command) = args.first().and_then(|value| value.to_str()) else {
+        return true;
+    };
+    match command {
+        "version" | "info" | "ps" | "inspect" | "logs" | "port" | "stats" | "wait" | "exec"
+        | "images" | "pull" => false,
+        "image" | "volume" => !matches!(
+            args.get(1).and_then(|value| value.to_str()),
+            Some("inspect" | "ls" | "rm" | "prune" | "pull")
+        ),
+        "container" => !matches!(
+            args.get(1).and_then(|value| value.to_str()),
+            Some("inspect" | "ls" | "logs" | "port" | "stats" | "wait" | "exec")
+        ),
+        "system"
+            if matches!(
+                args.get(1).and_then(|arg| arg.to_str()),
+                Some("df" | "info" | "events")
+            ) =>
+        {
+            false
+        }
+        "network" => !matches!(
+            args.get(1).and_then(|value| value.to_str()),
+            Some("inspect" | "ls")
+        ),
+        "builder" | "buildx" => !matches!(
+            args.get(1).and_then(|value| value.to_str()),
+            Some("prune" | "du" | "ls" | "inspect")
+        ),
+        "compose" => {
+            let mut values = args.iter().skip(1);
+            while let Some(value) = values.next() {
+                match value.to_str() {
+                    Some(
+                        "--project-name"
+                        | "--file"
+                        | "--env-file"
+                        | "--project-directory"
+                        | "-p"
+                        | "-f",
+                    ) => {
+                        if values.next().is_none() {
+                            return true;
+                        }
+                    }
+                    Some(
+                        "config" | "ps" | "logs" | "images" | "port" | "version" | "ls" | "exec"
+                        | "pull",
+                    ) => return false,
+                    // Includes up --build, run, start/stop/restart, rm and down.
+                    _ => return true,
+                }
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 impl DockerControl for DockerCli {
-    fn invoke(&self, invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
+    fn invoke(&self, mut invocation: DockerInvocation) -> Result<DockerOutput, DockerError> {
+        let context = crate::capacity::native_fixture_context();
+        if invocation.cancellation.is_none() {
+            invocation.cancellation = context.as_ref().map(|context| context.cancelled.clone());
+        }
+        // Native fixtures use their accepted run's ceiling; independent host
+        // operations have a separate bounded admission ceiling. Actual Docker
+        // execution retains its original timeout, starting only after admission.
+        let deadline = context.map_or_else(
+            || Instant::now() + Duration::from_secs(900),
+            |context| context.deadline,
+        );
+        let _network = if docker_changes_network(&invocation.args) {
+            self.network
+                .as_ref()
+                .map(|network| {
+                    network
+                        .reserve(invocation.cancellation.as_deref(), deadline)
+                        .map_err(|error| {
+                            DockerError::Admission(match error {
+                                crate::capacity::NetworkAdmissionError::Cancelled => {
+                                    "cancelled before execution"
+                                }
+                                crate::capacity::NetworkAdmissionError::TimedOut => {
+                                    "deadline elapsed before execution"
+                                }
+                                crate::capacity::NetworkAdmissionError::Unavailable => {
+                                    "unavailable before execution"
+                                }
+                            })
+                        })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        // Keep the guard through child-group timeout/cancellation and reaping.
         execute_process(&self.executable, invocation)
     }
 
@@ -2748,6 +2876,7 @@ mod tests {
         let fake = FakeDocker::new(vec![output(0, format!("{}\n", "a".repeat(64)), "")]);
         let container = fake
             .run_detached(&RunDetachedRequest {
+                cancellation: None,
                 name: "fixture".into(),
                 image: "postgres:16-alpine".into(),
                 label_context: labels(),
@@ -2796,6 +2925,7 @@ mod tests {
         ]);
         let error = fake
             .run_detached(&RunDetachedRequest {
+                cancellation: None,
                 name: "fixture".into(),
                 image: "postgres:16-alpine".into(),
                 label_context: labels(),
@@ -2837,6 +2967,7 @@ mod tests {
         ]);
         let error = fake
             .run_detached(&RunDetachedRequest {
+                cancellation: None,
                 name: "fixture".into(),
                 image: "postgres:16-alpine".into(),
                 label_context: labels(),
@@ -3189,6 +3320,37 @@ mod tests {
 
     #[test]
     fn cancellation_stops_the_owned_command_group_and_preserves_output() {
+        // Must-catch every managed mutation family; precision keeps inspection,
+        // SQL and image pulls runnable beside protected browser bodies.
+        for args in [
+            vec!["run"],
+            vec!["start"],
+            vec!["stop"],
+            vec!["rm"],
+            vec!["network", "create"],
+            vec!["network", "rm"],
+            vec!["container", "rm"],
+            vec!["compose", "-f", "x.yml", "up"],
+            vec!["compose", "--project-name", "p", "down"],
+            vec!["unknown"],
+        ] {
+            assert!(docker_changes_network(
+                &args.iter().map(OsString::from).collect::<Vec<_>>()
+            ));
+        }
+        for args in [
+            vec!["ps"],
+            vec!["exec", "container", "psql"],
+            vec!["pull", "image"],
+            vec!["system", "df"],
+            vec!["network", "inspect", "bridge"],
+            vec!["compose", "-f", "x.yml", "config"],
+            vec!["compose", "--project-name", "p", "exec", "db", "psql"],
+        ] {
+            assert!(!docker_changes_network(
+                &args.iter().map(OsString::from).collect::<Vec<_>>()
+            ));
+        }
         let temporary = tempdir().expect("tempdir");
         let executable = temporary.path().join("docker");
         std::fs::write(

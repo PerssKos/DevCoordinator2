@@ -2405,6 +2405,12 @@ fn process_request(
     };
     let diagnostics_dir = leaf_log_directory(log_dir, &log_selector).join("diagnostics");
     let evidence_dir = leaf_log_directory(log_dir, &log_selector).join("evidence");
+    // Authenticated native fixture RPC retains this exact phase budget in the
+    // daemon, pausing it only for broker network admission. The accepted run's
+    // systemd ceiling and cancellation still cover the proxy itself.
+    let native_fixture = plan.fixture_program.as_ref().is_some_and(|program| {
+        command.first() == Some(program) && command.get(1).is_some_and(|arg| arg == "fixture")
+    });
     ProcessRequest {
         progress,
         run_id: plan.run_id.clone(),
@@ -2419,7 +2425,11 @@ fn process_request(
         evidence_dir,
         log_lease,
         log_selector,
-        timeout_seconds: check.timeout_seconds,
+        timeout_seconds: if native_fixture {
+            None
+        } else {
+            check.timeout_seconds
+        },
         completion,
         capture_manifest,
     }

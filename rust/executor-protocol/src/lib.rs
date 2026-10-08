@@ -101,6 +101,8 @@ pub enum ResourceKind {
     Port,
     Directory,
     SourceSnapshot,
+    /// Shared only while a declared browser body is alive; native mutations are exclusive.
+    Network,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -118,7 +120,17 @@ pub struct ResourceClaim {
     pub access: ResourceAccess,
 }
 
+/// A separate reservation identity keeps native fixture setup and teardown outside
+/// the browser execution window. Check names cannot contain '/'.
+pub fn network_execution_resource_id(check: &str) -> String {
+    format!("{check}/network-execution")
+}
+
 impl ResourceClaim {
+    pub fn is_network_stability(&self) -> bool {
+        self.kind == ResourceKind::Network
+    }
+
     pub fn conflicts(&self, other: &Self) -> bool {
         self.kind == other.kind
             && !(self.access == ResourceAccess::Shared && other.access == ResourceAccess::Shared)
@@ -924,6 +936,13 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
     }
     let mut resources = BTreeSet::new();
     for resource in &check.resources {
+        if resource.kind == ResourceKind::Network
+            && (resource.id != "host" || resource.access != ResourceAccess::Shared)
+        {
+            return Err(ContractError::new(
+                "network stability requires id=host and shared access; mutations are owned by the coordinator",
+            ));
+        }
         if resource.kind == ResourceKind::Directory {
             validate_relative_path("resource directory", &resource.id)?;
         } else {
@@ -2435,6 +2454,19 @@ mod tests {
 
     #[test]
     fn overlapping_outputs_require_real_ordering_or_exclusive_ownership() {
+        let mut browser = check("browser", ValidationTier::Development);
+        browser.resources = vec![ResourceClaim {
+            kind: ResourceKind::Network,
+            id: "host".into(),
+            access: ResourceAccess::Shared,
+        }];
+        plan(vec![browser.clone()]).validate().unwrap();
+        browser.resources[0].id = "other".into();
+        assert!(plan(vec![browser.clone()]).validate().is_err());
+        browser.resources[0].id = "host".into();
+        browser.resources[0].access = ResourceAccess::Exclusive;
+        assert!(plan(vec![browser]).validate().is_err());
+
         let mut first = check("first", ValidationTier::Development);
         let mut second = check("second", ValidationTier::Development);
         first.produces = vec!["build/result".into()];

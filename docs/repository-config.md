@@ -116,6 +116,31 @@ before execution. Every leaf receives an isolated
 `DEVCOORDINATOR_DIAGNOSTICS_DIR`, a dedicated inherited structured-diagnostic
 descriptor, and its exact run/check/case identity.
 
+Browser checks that need stable host networking declare
+`resources = [{kind="network", id="host", access="shared"}]`. This resource is
+reserved after native fixture preparation and ordinary process admission, only
+for each actual check/case body. A live event service keeps it until its process
+is stopped and reaped; fixture teardown runs after release. Native Docker
+commands that can change host links reserve the same resource exclusively
+through the existing fair broker, including deployment, storage, health removal,
+test setup, pool expiry and cleanup. Inspection, SQL and image pulls remain
+independent. Configuration cannot request an exclusive network claim or another
+network identity. A protected body must not itself request network mutations.
+
+Network admission does not spend the Docker execution timeout. Native fixture
+RPC retains its original phase execution budget (120 seconds for generated
+shared phases), excluding only its own measured native broker wait. The accepted
+run ceiling, cancellation and RPC disconnect still bound the whole operation.
+Other native operations have a separate 900-second admission ceiling and retain
+their original execution timeout. An admission failure is identified separately
+from a Docker execution timeout. Native mutation guards survive run removal
+until the actual command and its cancellation cleanup finish. Capacity reports
+include aggregate `network_stability` active/waiting reader and writer counts,
+without resource or run identities. This protects managed commands through this
+Coordinator instance; unrelated Docker clients and OS network changes are not
+covered.
+
+
 `diagnostic_sources` optionally declares structured reports written below the
 leaf-specific `DEVCOORDINATOR_DIAGNOSTICS_DIR`. A declaration contains exactly
 `format` and `path`; formats are `junit`, `playwright-json`, and `rust-json`.

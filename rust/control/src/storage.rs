@@ -98,7 +98,11 @@ impl StorageService {
         capacity: CapacityBroker,
         events: EventService,
     ) -> Self {
-        let backend = Arc::new(native::HostBackend::new(config.clone(), database.clone()));
+        let backend = Arc::new(native::HostBackend::with_docker(
+            config.clone(),
+            database.clone(),
+            Arc::new(crate::docker::DockerCli::default().with_network_capacity(capacity.clone())),
+        ));
         Self::with_backend(config, database, clock, capacity, events, backend)
     }
 

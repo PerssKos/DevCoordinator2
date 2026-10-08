@@ -1132,37 +1132,61 @@ async fn cancellation_interrupts_resource_wait_before_cache_or_process_execution
             })
         }
     }
-    let provider = Arc::new(WaitingProvider {
-        entered: tokio::sync::Notify::new(),
-        inner: LocalPermitProvider::unbounded(),
-    });
-    let repository = cache_repository("resource-cancel");
-    let mut check = cached_build();
-    check.resources = vec![ResourceClaim {
-        kind: ResourceKind::Directory,
-        id: ".devcoordinator/build".into(),
-        access: ResourceAccess::Exclusive,
-    }];
-    let cancellation = Cancellation::default();
-    let executor = Executor::new(
-        plan(&repository, "run-resource-cancel", vec![check]),
-        provider.clone(),
-        cancellation.clone(),
-    )
-    .unwrap();
-    let running = tokio::spawn(executor.run());
-    tokio::time::timeout(Duration::from_secs(3), provider.entered.notified())
-        .await
+    for kind in [ResourceKind::Directory, ResourceKind::Network] {
+        let provider = Arc::new(WaitingProvider {
+            entered: tokio::sync::Notify::new(),
+            inner: LocalPermitProvider::new(1).unwrap(),
+        });
+        let repository = cache_repository("resource-cancel");
+        let mut check = cached_build();
+        check.resources = vec![ResourceClaim {
+            kind,
+            id: if kind == ResourceKind::Network {
+                "host"
+            } else {
+                ".devcoordinator/build"
+            }
+            .into(),
+            access: if kind == ResourceKind::Network {
+                ResourceAccess::Shared
+            } else {
+                ResourceAccess::Exclusive
+            },
+        }];
+        let cancellation = Cancellation::default();
+        let executor = Executor::new(
+            plan(&repository, "run-resource-cancel", vec![check]),
+            provider.clone(),
+            cancellation.clone(),
+        )
         .unwrap();
-    cancellation.cancel();
-    let report = tokio::time::timeout(Duration::from_secs(3), running)
+        let running = tokio::spawn(executor.run());
+        tokio::time::timeout(Duration::from_secs(3), provider.entered.notified())
+            .await
+            .unwrap();
+        cancellation.cancel();
+        let report = tokio::time::timeout(Duration::from_secs(3), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.checks[0].status, LeafStatus::Cancelled);
+        assert!(!report.checks[0].resource_waiting);
+        assert!(!repository.root.join(".devcoordinator/build-count").exists());
+        // Cancellation also releases a process permit acquired before a body-only
+        // network wait, including at capacity one.
+        let permit = tokio::time::timeout(
+            Duration::from_secs(1),
+            provider.inner.acquire(PermitRequest {
+                run_id: "after-cancel".into(),
+                leaf_id: "probe".into(),
+            }),
+        )
         .await
         .unwrap()
-        .unwrap()
         .unwrap();
-    assert_eq!(report.checks[0].status, LeafStatus::Cancelled);
-    assert!(!report.checks[0].resource_waiting);
-    assert!(!repository.root.join(".devcoordinator/build-count").exists());
+        drop(permit);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1940,6 +1940,7 @@ fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Res
 fn case_selected_database_templates_are_reused_without_sharing_writes(
     world: &mut World,
 ) -> Result<(), String> {
+    data(&world.call("test.capacity.set", json!({"cap":1}))?)?;
     world.write_owned("seed.sql","CREATE TABLE seeded (id integer PRIMARY KEY); INSERT INTO seeded SELECT generate_series(1,4096);\n")?;
     let command = command_json(&fixture_command(world, &["postgres-isolated-case"]))?;
     world.write_config(&format!(r#"schema=2
@@ -1954,6 +1955,7 @@ init_sql=["seed.sql"]
 init_sql=["deliberately-absent.sql"]
 [[test.database.check]]
 name="database-cases"
+resources=[{{kind="network",id="host",access="shared"}}]
 tier="release"
 phase="case"
 timeout_seconds=45
@@ -2501,6 +2503,390 @@ command=["/usr/bin/true"]
             ),
         "composed phase timings disappeared at completion"
     );
+    network_stability_browser_and_fixture(world)?;
+    Ok(())
+}
+
+fn network_capacity_wait(
+    world: &World,
+    expected: impl Fn(&Value) -> bool,
+) -> Result<Value, String> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let response = world.call("test.capacity.get", json!({}))?;
+        let network = data(&response)?["network_stability"].clone();
+        if expected(&network) {
+            return Ok(network);
+        }
+        ensure!(
+            Instant::now() < deadline,
+            format!("network admission condition not observed: {network}")
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn network_stability_browser_and_fixture(world: &mut World) -> Result<(), String> {
+    use std::os::unix::net::UnixListener;
+    private_fixture_network(world)?;
+    let modules = std::env::var_os("FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ci/playwright/node_modules")
+        });
+    ensure!(
+        modules.join("playwright/index.mjs").is_file(),
+        "network acceptance requires the existing Playwright dependency"
+    );
+    world.write_owned(
+        "network-observer.mjs",
+        include_str!("../../tests/fixtures/network-observer.mjs"),
+    )?;
+    world.write_owned("seed.sql", "CREATE TABLE seeded(id int PRIMARY KEY); INSERT INTO seeded SELECT generate_series(1,4096);")?;
+    world.write_owned("slow.sql", "SELECT pg_sleep(30);")?;
+    let mut listeners = std::collections::BTreeMap::new();
+    let mut configuration = "schema=2\n[test.observers]\ntimeout_seconds=120\n".to_owned();
+    for (name, completion) in [("browser-service", "event"), ("browser-reader", "process")] {
+        let gate = world.base.join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&gate).map_err(|e| e.to_string())?;
+        chown_path(&gate, world.harness.caller_uid, world.harness.caller_gid)?;
+        let command = command_json(&[
+            "/usr/bin/node".into(),
+            "network-observer.mjs".into(),
+            gate.to_string_lossy().into_owned(),
+            modules.to_string_lossy().into_owned(),
+            completion.into(),
+        ])?;
+        configuration.push_str(&format!(
+            r#"
+[[test.observers.check]]
+name="{name}"
+tier="development"
+resources=[{{kind="network",id="host",access="shared"}}]
+completion="{completion}"
+timeout_seconds=90
+command={command}
+"#
+        ));
+        if completion == "process" {
+            configuration.push_str("requires=[\"browser-service\"]\n");
+        }
+        listeners.insert(name, listener);
+    }
+    let consumer_gate = world.base.join("service-consumer.sock");
+    let consumer_listener = UnixListener::bind(&consumer_gate).map_err(|e| e.to_string())?;
+    chown_path(
+        &consumer_gate,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    let consumer = command_json(&["/usr/bin/node".into(), "-e".into(),
+        "const s=require('node:net').connect(process.argv[1],()=>s.write('ready'));s.once('data',()=>s.destroy());".into(),
+        consumer_gate.to_string_lossy().into_owned()])?;
+    configuration.push_str(&format!("\n[[test.observers.check]]\nname='service-consumer'\ntier='development'\nrequires=['browser-reader']\ntimeout_seconds=30\ncommand={consumer}\n"));
+    let (sql_listener, sql_gate) = database_case_gate(world)?;
+    let sql = command_json(&fixture_command(
+        world,
+        &[
+            "postgres-query-gate",
+            "SELECT 42",
+            sql_gate.to_str().ok_or("invalid SQL gate")?,
+        ],
+    ))?;
+    let warm = command_json(&fixture_command(world, &["postgres-isolated-case"]))?;
+    configuration.push_str(&format!(
+        r#"
+[test.writer]
+timeout_seconds=120
+[test.writer.postgres]
+image="postgres:16-alpine"
+database="app_test"
+user="app"
+[[test.writer.check]]
+name="query"
+tier="development"
+timeout_seconds=30
+command={sql}
+[test.warm]
+timeout_seconds=120
+[test.warm.postgres]
+image="postgres:16-alpine"
+cases_only=true
+[test.warm.postgres.templates.seed]
+init_sql=["seed.sql"]
+[[test.warm.check]]
+name="sql"
+tier="development"
+timeout_seconds=30
+case_command={warm}
+cases=[{{id="one",args=[],postgres="seed"}}]
+[test.coldcancel]
+timeout_seconds=120
+[test.coldcancel.postgres]
+image="postgres:16-alpine"
+database="app_test"
+user="app"
+cases_only=true
+[test.coldcancel.postgres.templates.slow]
+init_sql=["slow.sql"]
+[[test.coldcancel.check]]
+name="cancel"
+tier="development"
+timeout_seconds=60
+case_command={warm}
+cases=[{{id="one",args=[],postgres="slow"}}]
+"#
+    ));
+    configuration.push_str(
+        &configuration[configuration.find("[test.coldcancel]").unwrap()..]
+            .replace("coldcancel", "colddeadline")
+            .replace("timeout_seconds=60", "timeout_seconds=5"),
+    );
+    world.write_config(&configuration)?;
+    world.git(&["add", "."])?;
+    world.git(&[
+        "commit",
+        "-qm",
+        "network stability browser and fixture acceptance",
+    ])?;
+    let mut others = Vec::new();
+    for name in ["network-writer", "network-sql", "network-cancelled"] {
+        let other = world.base.join(name);
+        fs::create_dir(&other).map_err(|e| e.to_string())?;
+        chown_path(&other, world.harness.caller_uid, world.harness.caller_gid)?;
+        world.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            other.to_str().ok_or("invalid worktree")?,
+            "HEAD",
+        ])?;
+        others.push(other);
+    }
+    // Warm template exists before readers, so concurrent SQL needs no mutation.
+    data(&world.call("test.start", json!({"path":others[1],"test":"warm"}))?)?;
+    ensure!(
+        world.wait_status_for(&others[1], &["passed", "failed"], Duration::from_secs(90))?["status"]
+            == "passed",
+        "template precondition failed"
+    );
+    for profile in ["coldcancel", "colddeadline"] {
+        let prior_templates = docker_ids("instance", &world.unit_prefix)?;
+        data(&world.call("test.start", json!({"path":others[2],"test":profile}))?)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let creating = loop {
+            let current = docker_ids("instance", &world.unit_prefix)?;
+            if let Some(id) = current.into_iter().find(|id| !prior_templates.contains(id)) {
+                // The template cannot enter its shared slot until this initialization
+                // query finishes. Observe actual SQL before cancelling the caller.
+                let active = docker_exec(
+                    &id,
+                    &[
+                        "sh",
+                        "-c",
+                        "psql -U \"$POSTGRES_USER\" -d postgres -Atc \"SELECT count(*) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(30)%' AND pid <> pg_backend_pid() AND state='active'\"",
+                    ],
+                );
+                if active.is_ok_and(|value| value == "1") {
+                    break id;
+                }
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "unregistered template did not reach initialization SQL"
+            );
+            thread::sleep(Duration::from_millis(50));
+        };
+        if profile == "coldcancel" {
+            data(&world.call("test.stop", json!({"path":others[2]}))?)?;
+        }
+        let expected = if profile == "coldcancel" {
+            "cancelled"
+        } else {
+            "failed"
+        };
+        let terminal = world.wait_status_for(
+            &others[2],
+            &["cancelled", "failed"],
+            Duration::from_secs(30),
+        )?;
+        ensure!(
+            terminal["status"] == expected,
+            "cold template cancellation or work deadline failed"
+        );
+        ensure!(
+            !docker_ids("instance", &world.unit_prefix)?.contains(&creating),
+            "cancelled unregistered template leaked its exact container"
+        );
+        world
+            .measurements
+            .insert(format!("network_{profile}_exact_cleanup"), 1);
+    }
+    // Owned orphan is created before the protected window, then removed through
+    // the real health API while both browser readers are active.
+    let instance_label = format!("devcoordinator2.instance={}", world.unit_prefix);
+    let network = world
+        .isolated_docker_network
+        .as_deref()
+        .ok_or("private network missing")?;
+    let orphan = command_stdout(
+        "docker",
+        &[
+            "run",
+            "--detach",
+            "--pull",
+            "never",
+            "--network",
+            network,
+            "--label",
+            &instance_label,
+            "--label",
+            "devcoordinator2.purpose=test",
+            "--entrypoint",
+            "sleep",
+            "postgres:16-alpine",
+            "300",
+        ],
+    )?
+    .trim()
+    .to_owned();
+    data(&world.call("test.start", json!({"path":world.repo,"test":"observers"}))?)?;
+    let mut service = await_database_case(&listeners["browser-service"])?;
+    let mut reader = await_database_case(&listeners["browser-reader"])?;
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 2 && v["active_writers"] == 0
+    })?;
+    let submitted = world.call("test.start", json!({"path":others[0],"test":"writer"}))?;
+    let run = data(&submitted)?["run_id"]
+        .as_str()
+        .ok_or("writer run missing")?
+        .to_owned();
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 2 && v["waiting_writers"] == 1 && v["active_writers"] == 0
+    })?;
+    ensure!(
+        docker_ids("run", &run)?.is_empty(),
+        "fixture mutated before reader release"
+    );
+    let cancelled = world.call("test.start", json!({"path":others[2],"test":"writer"}))?;
+    let cancelled_run = data(&cancelled)?["run_id"]
+        .as_str()
+        .ok_or("cancelled run missing")?
+        .to_owned();
+    network_capacity_wait(world, |v| v["waiting_writers"] == 2)?;
+    data(&world.call("test.stop", json!({"path":others[2]}))?)?;
+    ensure!(
+        world.wait_status_for(
+            &others[2],
+            &["cancelled", "failed"],
+            Duration::from_secs(20)
+        )?["status"]
+            == "cancelled",
+        "queued fixture cancellation did not finish"
+    );
+    ensure!(
+        docker_ids("run", &cancelled_run)?.is_empty(),
+        "cancelled admission spawned Docker"
+    );
+    network_capacity_wait(world, |v| v["waiting_writers"] == 1)?;
+    world
+        .measurements
+        .insert("network_cancelled_queued_writer_no_container".into(), 1);
+    let harness = world.harness.clone();
+    let socket = world.socket.clone();
+    let removed_id = orphan.clone();
+    let health_remove = thread::spawn(move || {
+        call_as(
+            &harness.executable,
+            harness.caller_uid,
+            harness.caller_gid,
+            &socket,
+            request(
+                "health.container_remove",
+                json!({"container_id":removed_id}),
+                "other",
+                None,
+            ),
+        )
+    });
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 2 && v["waiting_writers"] == 2
+    })?;
+    ensure!(
+        docker_ids("instance", &world.unit_prefix)?.contains(&orphan),
+        "health removed container inside protected window"
+    );
+    // A real warmed SQL fixture remains runnable while the writer waits.
+    data(&world.call("test.start", json!({"path":others[1],"test":"warm"}))?)?;
+    ensure!(
+        world.wait_status_for(&others[1], &["passed", "failed"], Duration::from_secs(30))?["status"]
+            == "passed",
+        "warm SQL was blocked by unrelated network wait"
+    );
+    reader.write_all(b"1").map_err(|e| e.to_string())?;
+    let mut consumer = await_database_case(&consumer_listener)?;
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 1 && v["waiting_writers"] == 2
+    })?;
+    ensure!(
+        docker_ids("run", &run)?.is_empty(),
+        "event readiness released its live service guard"
+    );
+    service.write_all(b"1").map_err(|e| e.to_string())?;
+    service
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let mut service_checked = [0u8; 4];
+    service
+        .read_exact(&mut service_checked)
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        &service_checked == b"done",
+        "event browser did not verify its pending documents"
+    );
+    consumer.write_all(b"1").map_err(|e| e.to_string())?;
+    ensure!(
+        world.wait_status(&["passed", "failed"], Duration::from_secs(30))?["status"] == "passed",
+        "protected browser observer failed"
+    );
+    let removal = health_remove
+        .join()
+        .map_err(|_| "health removal panicked")??;
+    ensure!(
+        data(&removal)?["removed"] == true,
+        "health container removal failed"
+    );
+    ensure!(
+        !docker_ids("instance", &world.unit_prefix)?.contains(&orphan),
+        "health removal left its owned container"
+    );
+    let mut sql = await_database_case(&sql_listener)?;
+    ensure!(
+        docker_ids("run", &run)?.len() == 1,
+        "queued fixture did not start after readers ended"
+    );
+    sql.write_all(b"1").map_err(|e| e.to_string())?;
+    let done = world.wait_status_for(&others[0], &["passed", "failed"], Duration::from_secs(30))?;
+    ensure!(
+        done["status"] == "passed"
+            && done["checks"].as_array().is_some_and(|checks| checks
+                .iter()
+                .any(|check| check["phase"] == "cleanup" && check["status"] == "passed")),
+        "fixture query or cleanup failed"
+    );
+    ensure!(
+        docker_ids("run", &run)?.is_empty(),
+        "fixture cleanup left a container"
+    );
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 0 && v["active_writers"] == 0 && v["waiting_writers"] == 0
+    })?;
+    world
+        .measurements
+        .insert("network_protected_browser_pages".into(), 6);
+    world
+        .measurements
+        .insert("network_queued_writer_and_warm_sql".into(), 1);
     Ok(())
 }
 
@@ -3944,7 +4330,7 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     Ok(())
 }
 
-fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<(), String> {
+fn private_fixture_network(world: &mut World) -> Result<(), String> {
     // Keep this acceptance independent of the shared default Docker bridge.
     // The feature-gated daemon uses only this marker-bound fixture network.
     let network = format!("{}-network", world.unit_prefix);
@@ -3966,6 +4352,11 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     world.isolated_docker_network = Some(network);
     world.stop_daemon(false)?;
     world.start_daemon(None, None, None)?;
+    Ok(())
+}
+
+fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<(), String> {
+    private_fixture_network(world)?;
     setup_web(world, "v1", true)?;
     let applied = world.call(
         "deployment.apply",

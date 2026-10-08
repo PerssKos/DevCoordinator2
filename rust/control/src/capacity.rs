@@ -1,11 +1,12 @@
 //! Fair, peer-authenticated host-wide capacity for governed test leaves.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant};
 
 use devcoordinator2_api::results::{Capacity, CapacityAdjustment};
 use devcoordinator2_api::{ErrorCode, ProtocolError};
@@ -97,6 +98,127 @@ pub trait FixtureHandler: Send + Sync {
     fn execute(&self, node: &str, cancelled: Arc<AtomicBool>) -> Result<(), String>;
 }
 
+#[derive(Clone)]
+struct RegisteredFixture {
+    handler: Arc<dyn FixtureHandler>,
+    deadline: Instant,
+    budgets: BTreeMap<String, Option<Duration>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct AdmissionTime {
+    elapsed: Duration,
+    since: Option<Instant>,
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeFixtureContext {
+    pub cancelled: Arc<AtomicBool>,
+    pub deadline: Instant,
+    admission: watch::Sender<AdmissionTime>,
+    cleanup: bool,
+}
+
+thread_local! {
+    static NATIVE_FIXTURE: RefCell<Option<NativeFixtureContext>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn native_fixture_context() -> Option<NativeFixtureContext> {
+    NATIVE_FIXTURE.with(|scope| scope.borrow().clone())
+}
+
+struct FixtureScope;
+impl FixtureScope {
+    fn enter(context: NativeFixtureContext) -> Self {
+        NATIVE_FIXTURE.with(|scope| {
+            assert!(scope.borrow().is_none());
+            *scope.borrow_mut() = Some(context);
+        });
+        Self
+    }
+}
+impl Drop for FixtureScope {
+    fn drop(&mut self) {
+        NATIVE_FIXTURE.with(|scope| *scope.borrow_mut() = None);
+    }
+}
+
+// Exact-target cleanup is not cancelled with the caller that created the
+// resource. It retains the same broker and bounded Docker execution, with its
+// own bounded admission ceiling. Nested cleanup cannot reset that ceiling.
+pub(crate) struct NativeCleanupScope(Option<NativeFixtureContext>);
+impl NativeCleanupScope {
+    pub(crate) fn enter() -> Self {
+        NATIVE_FIXTURE.with(|scope| {
+            let previous = scope.borrow().clone();
+            match previous {
+                Some(mut context) if !context.cleanup => {
+                    let original = context.clone();
+                    context.cancelled = Arc::new(AtomicBool::new(false));
+                    context.deadline = Instant::now() + Duration::from_secs(900);
+                    context.cleanup = true;
+                    *scope.borrow_mut() = Some(context);
+                    Self(Some(original))
+                }
+                _ => Self(None),
+            }
+        })
+    }
+}
+impl Drop for NativeCleanupScope {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() {
+            NATIVE_FIXTURE.with(|scope| *scope.borrow_mut() = Some(previous));
+        }
+    }
+}
+
+struct AdmissionWait(Option<watch::Sender<AdmissionTime>>);
+impl AdmissionWait {
+    fn enter() -> Self {
+        let sender = native_fixture_context().map(|context| context.admission);
+        if let Some(sender) = &sender {
+            sender.send_modify(|state| {
+                assert!(state.since.is_none());
+                state.since = Some(Instant::now());
+            });
+        }
+        Self(sender)
+    }
+}
+impl Drop for AdmissionWait {
+    fn drop(&mut self) {
+        if let Some(sender) = &self.0 {
+            sender.send_modify(|state| {
+                if let Some(since) = state.since.take() {
+                    state.elapsed += since.elapsed();
+                }
+            });
+        }
+    }
+}
+
+// Only the private handler's own broker wait pauses this budget. Other threads,
+// SQL, filesystem work and Docker execution continue to consume their budget.
+async fn fixture_budget(
+    budget: Option<Duration>,
+    deadline: Instant,
+    mut admission: watch::Receiver<AdmissionTime>,
+) {
+    let started = Instant::now();
+    loop {
+        let state = *admission.borrow_and_update();
+        let until = match (budget, state.since) {
+            (Some(budget), None) => deadline.min(started + budget + state.elapsed),
+            _ => deadline,
+        };
+        tokio::select! {
+            _ = tokio::time::sleep_until(until.into()) => return,
+            changed = admission.changed() => if changed.is_err() { tokio::time::sleep_until(deadline.into()).await; return; },
+        }
+    }
+}
+
 struct FixtureCancellation(Arc<AtomicBool>);
 
 impl Drop for FixtureCancellation {
@@ -148,12 +270,13 @@ struct Inner {
     socket_path: PathBuf,
     state: Mutex<State>,
     notify: Notify,
+    resource_wake: Condvar,
     clock: Arc<dyn Clock>,
     monotonic: Arc<dyn MonotonicClock>,
     random: Arc<dyn RandomSource>,
     metrics: Mutex<Box<dyn Metrics>>,
     memory_pressure_handler: Mutex<Option<MemoryPressureHandler>>,
-    fixture_handlers: Mutex<BTreeMap<String, Arc<dyn FixtureHandler>>>,
+    fixture_handlers: Mutex<BTreeMap<String, RegisteredFixture>>,
     sample_interval: Duration,
     min_epoch_seconds: f64,
 }
@@ -216,7 +339,9 @@ struct ActivePermit {
 
 #[derive(Debug)]
 struct Reservation {
-    run_id: String,
+    // Native Docker operations survive test unregistration and own their guard
+    // until the exact child (including timeout/cancellation cleanup) is joined.
+    run_id: Option<String>,
     claims: Vec<ResourceClaim>,
     granted: bool,
 }
@@ -230,8 +355,136 @@ impl Drop for ReservationOwner {
         if let Ok(mut state) = self.broker.state() {
             state.reservations.remove(&self.id);
         }
+        self.broker.inner.resource_wake.notify_all();
         self.broker.inner.notify.notify_waiters();
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct NetworkAdmission {
+    inner: Weak<Inner>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum NetworkAdmissionError {
+    Cancelled,
+    TimedOut,
+    Unavailable,
+}
+
+pub(crate) struct NetworkMutationGuard {
+    _owner: ReservationOwner,
+}
+
+impl NetworkAdmission {
+    /// Uses the existing reservation table and fairness order. The condition
+    /// variable is a blocking adapter for native Docker calls, not another queue.
+    pub(crate) fn reserve(
+        &self,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<NetworkMutationGuard, NetworkAdmissionError> {
+        let mut waiting = None;
+        let broker = CapacityBroker {
+            inner: self
+                .inner
+                .upgrade()
+                .ok_or(NetworkAdmissionError::Unavailable)?,
+        };
+        let mut state = broker
+            .state()
+            .map_err(|_| NetworkAdmissionError::Unavailable)?;
+        if state.stopping {
+            return Err(NetworkAdmissionError::Unavailable);
+        }
+        let id = state.next_pending_id;
+        state.next_pending_id = id.wrapping_add(1).max(1);
+        state.reservations.insert(
+            id,
+            Reservation {
+                run_id: None,
+                claims: vec![ResourceClaim {
+                    kind: devcoordinator2_executor_protocol::ResourceKind::Network,
+                    id: "host".into(),
+                    access: devcoordinator2_executor_protocol::ResourceAccess::Exclusive,
+                }],
+                granted: false,
+            },
+        );
+        drop(state);
+        let owner = ReservationOwner {
+            broker: broker.clone(),
+            id,
+        };
+        let mut state = broker
+            .state()
+            .map_err(|_| NetworkAdmissionError::Unavailable)?;
+        loop {
+            let failure = if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                Some(NetworkAdmissionError::Cancelled)
+            } else if Instant::now() >= deadline {
+                Some(NetworkAdmissionError::TimedOut)
+            } else if state.stopping {
+                Some(NetworkAdmissionError::Unavailable)
+            } else {
+                None
+            };
+            if let Some(error) = failure {
+                drop(state);
+                return Err(error);
+            }
+            match grant_reservation(&mut state, id) {
+                Ok(true) => {
+                    drop(state);
+                    return Ok(NetworkMutationGuard { _owner: owner });
+                }
+                Err(_) => {
+                    drop(state);
+                    return Err(NetworkAdmissionError::Unavailable);
+                }
+                Ok(false) => {
+                    waiting.get_or_insert_with(AdmissionWait::enter);
+                }
+            }
+            // Existing Docker cancellation is an AtomicBool, without a wake
+            // handle. Bound only its observation latency; resource releases and
+            // shutdown wake this same wait immediately.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let wait = if cancelled.is_some() {
+                remaining.min(Duration::from_millis(100))
+            } else {
+                remaining
+            };
+            state = match broker.inner.resource_wake.wait_timeout(state, wait) {
+                Ok((state, _)) => state,
+                Err(error) => {
+                    drop(error.into_inner());
+                    return Err(NetworkAdmissionError::Unavailable);
+                }
+            };
+        }
+    }
+}
+
+fn grant_reservation(state: &mut State, id: u64) -> Result<bool, ProtocolError> {
+    let requested = state.reservations.get(&id).ok_or_else(|| {
+        ProtocolError::new(ErrorCode::PermissionDenied, "resource reservation ended")
+    })?;
+    if requested.granted {
+        return Ok(true);
+    }
+    let conflict = state.reservations.iter().any(|(other_id, other)| {
+        *other_id != id
+            && (other.granted || *other_id < id)
+            && requested
+                .claims
+                .iter()
+                .any(|left| other.claims.iter().any(|right| left.conflicts(right)))
+    });
+    if !conflict {
+        state.reservations.get_mut(&id).unwrap().granted = true;
+    }
+    Ok(!conflict)
 }
 
 /// Holds exact connection ownership across every I/O error and task cancellation.
@@ -402,6 +655,7 @@ impl CapacityBroker {
                 socket_path,
                 state: Mutex::new(State::new(learned, cap)),
                 notify: Notify::new(),
+                resource_wake: Condvar::new(),
                 clock,
                 monotonic,
                 random,
@@ -412,6 +666,12 @@ impl CapacityBroker {
                 min_epoch_seconds,
             }),
         })
+    }
+
+    pub(crate) fn network_admission(&self) -> NetworkAdmission {
+        NetworkAdmission {
+            inner: Arc::downgrade(&self.inner),
+        }
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -437,6 +697,8 @@ impl CapacityBroker {
         &self,
         run_id: &str,
         handler: Arc<dyn FixtureHandler>,
+        deadline: Instant,
+        budgets: BTreeMap<String, Option<Duration>>,
     ) -> Result<(), ProtocolError> {
         let state = self.state()?;
         if !state.registered_runs.contains_key(run_id) {
@@ -449,7 +711,14 @@ impl CapacityBroker {
             .fixture_handlers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(run_id.to_owned(), handler);
+            .insert(
+                run_id.to_owned(),
+                RegisteredFixture {
+                    handler,
+                    deadline,
+                    budgets,
+                },
+            );
         Ok(())
     }
 
@@ -482,7 +751,7 @@ impl CapacityBroker {
             state.resources.remove(run_id);
             state
                 .reservations
-                .retain(|_, reservation| reservation.run_id != run_id);
+                .retain(|_, reservation| reservation.run_id.as_deref() != Some(run_id));
             if let Some(queue) = state.queues.remove(run_id) {
                 for pending_id in queue {
                     if let Some(pending) = state.pending.get_mut(&pending_id) {
@@ -500,13 +769,31 @@ impl CapacityBroker {
         if let Some(adjustment) = adjustment {
             self.persist_adjustment(learned, cap, &adjustment)?;
         }
+        self.inner.resource_wake.notify_all();
         self.inner.notify.notify_waiters();
         Ok(())
     }
 
     pub fn snapshot(&self) -> Result<Capacity, ProtocolError> {
-        let (learned_capacity, effective_capacity, cap, active, waiting, paused) = {
+        let (learned_capacity, effective_capacity, cap, active, waiting, paused, network_stability) = {
             let state = self.state()?;
+            let mut network = devcoordinator2_api::results::NetworkStabilityCapacity::default();
+            for reservation in state.reservations.values() {
+                for claim in &reservation.claims {
+                    if claim.kind == devcoordinator2_executor_protocol::ResourceKind::Network
+                        && claim.id == "host"
+                    {
+                        use devcoordinator2_executor_protocol::ResourceAccess;
+                        let count = match (reservation.granted, claim.access) {
+                            (true, ResourceAccess::Shared) => &mut network.active_readers,
+                            (true, ResourceAccess::Exclusive) => &mut network.active_writers,
+                            (false, ResourceAccess::Shared) => &mut network.waiting_readers,
+                            (false, ResourceAccess::Exclusive) => &mut network.waiting_writers,
+                        };
+                        *count = count.saturating_add(1);
+                    }
+                }
+            }
             (
                 state.learned,
                 state.effective(),
@@ -514,6 +801,7 @@ impl CapacityBroker {
                 saturating_u32(state.active.len()),
                 saturating_u32(state.waiting()),
                 state.paused,
+                network,
             )
         };
         let last_adjustment = self
@@ -545,6 +833,7 @@ impl CapacityBroker {
             })
             .map_err(database_error)?;
         Ok(Capacity {
+            network_stability,
             learned_capacity,
             effective_capacity,
             cap,
@@ -808,13 +1097,30 @@ impl CapacityBroker {
             };
             let cancelled = Arc::new(AtomicBool::new(false));
             let _cancellation_guard = FixtureCancellation(cancelled.clone());
-            let worker_cancelled = cancelled.clone();
+            let (admission, observed_admission) = watch::channel(AdmissionTime::default());
+            let context = NativeFixtureContext {
+                cancelled: cancelled.clone(),
+                deadline: handler.deadline,
+                admission,
+                cleanup: false,
+            };
+            let key = request.leaf_id.split('/').next().unwrap_or_default();
+            let Some(budget) = handler.budgets.get(key).copied() else {
+                send_denied(&mut stream, "fixture node budget is unavailable").await;
+                return Ok(());
+            };
             let mut worker = tokio::task::spawn_blocking(move || {
-                handler.execute(&request.leaf_id, worker_cancelled)
+                let _scope = FixtureScope::enter(context.clone());
+                handler.handler.execute(&request.leaf_id, context.cancelled)
             });
             let mut disconnected = [0u8];
             let result = tokio::select! {
                 result = &mut worker => result,
+                _ = fixture_budget(budget, handler.deadline, observed_admission) => {
+                    cancelled.store(true, Ordering::Release);
+                    let _ = worker.await;
+                    Ok(Err("native fixture execution deadline elapsed".into()))
+                }
                 _ = stream.read(&mut disconnected) => {
                     cancelled.store(true, Ordering::Release);
                     let _ = worker.await;
@@ -917,7 +1223,7 @@ impl CapacityBroker {
         state.reservations.insert(
             id,
             Reservation {
-                run_id: run.into(),
+                run_id: Some(run.into()),
                 claims,
                 granted: false,
             },
@@ -926,25 +1232,7 @@ impl CapacityBroker {
     }
 
     fn try_reservation(&self, id: u64) -> Result<bool, ProtocolError> {
-        let mut state = self.state()?;
-        let requested = state.reservations.get(&id).ok_or_else(|| {
-            ProtocolError::new(ErrorCode::PermissionDenied, "resource reservation ended")
-        })?;
-        if requested.granted {
-            return Ok(true);
-        }
-        let conflict = state.reservations.iter().any(|(other_id, other)| {
-            *other_id != id
-                && (other.granted || *other_id < id)
-                && requested
-                    .claims
-                    .iter()
-                    .any(|left| other.claims.iter().any(|right| left.conflicts(right)))
-        });
-        if !conflict {
-            state.reservations.get_mut(&id).unwrap().granted = true;
-        }
-        Ok(!conflict)
+        grant_reservation(&mut *self.state()?, id)
     }
 
     fn enqueue(&self, run_id: &str, leaf_id: &str, uid: u32) -> Result<u64, ProtocolError> {
@@ -1072,6 +1360,7 @@ impl CapacityBroker {
             state.reservations.clear();
             state.resources.clear();
         }
+        self.inner.resource_wake.notify_all();
         self.inner.notify.notify_waiters();
     }
 
@@ -1676,7 +1965,12 @@ mod tests {
         let handler = Arc::new(Handler(AtomicU64::new(0)));
         broker.register_run("run-fixture", uid).unwrap();
         broker
-            .register_fixture_handler("run-fixture", handler.clone())
+            .register_fixture_handler(
+                "run-fixture",
+                handler.clone(),
+                Instant::now() + Duration::from_secs(5),
+                BTreeMap::from([("database-setup".into(), Some(Duration::from_secs(1)))]),
+            )
             .unwrap();
         assert_eq!(call(&broker, "database-setup").await["status"], "denied");
         let _permit = broker
@@ -1691,13 +1985,161 @@ mod tests {
             .register_run("run-fixture", uid.saturating_add(1))
             .unwrap();
         broker
-            .register_fixture_handler("run-fixture", handler.clone())
+            .register_fixture_handler(
+                "run-fixture",
+                handler.clone(),
+                Instant::now() + Duration::from_secs(5),
+                BTreeMap::from([("database-setup".into(), Some(Duration::from_secs(1)))]),
+            )
             .unwrap();
         broker
             .enqueue("run-fixture", "database-setup", uid.saturating_add(1))
             .unwrap();
         assert_eq!(call(&broker, "database-setup").await["status"], "denied");
         assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+
+        // The real private RPC pauses only this handler's native broker wait.
+        // Its ordinary work retains a deadline even with a live client socket.
+        struct BudgetHandler {
+            docker: crate::docker::DockerCli,
+            hang: bool,
+        }
+        impl FixtureHandler for BudgetHandler {
+            fn execute(&self, _: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
+                use crate::docker::{DockerControl, DockerInvocation};
+                if self.hang {
+                    while !cancelled.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    return Err("cancelled work".into());
+                }
+                self.docker
+                    .invoke(
+                        DockerInvocation::new(vec!["run".into()], Duration::from_millis(50))
+                            .unwrap(),
+                    )
+                    .map(|_| ())
+                    .map_err(|_| "native mutation failed".into())
+            }
+        }
+        broker.unregister_run("run-fixture").unwrap();
+        broker.register_run("run-fixture", uid).unwrap();
+        broker
+            .enqueue("run-fixture", "database-setup", uid)
+            .unwrap();
+        let executable = temporary.path().join("docker");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let docker =
+            crate::docker::DockerCli::new(executable).with_network_capacity(broker.clone());
+        for hang in [false, true] {
+            broker
+                .register_fixture_handler(
+                    "run-fixture",
+                    Arc::new(BudgetHandler {
+                        docker: docker.clone(),
+                        hang,
+                    }),
+                    Instant::now() + Duration::from_secs(3),
+                    BTreeMap::from([("database-setup".into(), Some(Duration::from_millis(80)))]),
+                )
+                .unwrap();
+            broker.register_run("protected", uid).unwrap();
+            broker
+                .register_resources(
+                    "protected",
+                    BTreeMap::from([(
+                        "browser".into(),
+                        vec![ResourceClaim {
+                            kind: devcoordinator2_executor_protocol::ResourceKind::Network,
+                            id: "host".into(),
+                            access: devcoordinator2_executor_protocol::ResourceAccess::Shared,
+                        }],
+                    )]),
+                )
+                .unwrap();
+            let reader = broker
+                .queue_reservation("protected", "browser", uid)
+                .unwrap();
+            assert!(broker.try_reservation(reader).unwrap());
+            let caller = {
+                let broker = broker.clone();
+                tokio::spawn(async move { call(&broker, "database-setup").await })
+            };
+            if !hang {
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while broker.snapshot().unwrap().network_stability.waiting_writers != 1 {
+                    assert!(Instant::now() < deadline);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                assert!(
+                    !caller.is_finished(),
+                    "network wait consumed native execution budget"
+                );
+                broker.unregister_run("protected").unwrap();
+                assert_eq!(
+                    caller.await.unwrap()["ok"],
+                    true,
+                    "quick Docker execution retained its own timeout"
+                );
+            } else {
+                // A different thread's waiter cannot pause the hanging handler.
+                let admission = broker.network_admission();
+                let other = std::thread::spawn(move || {
+                    admission.reserve(None, Instant::now() + Duration::from_secs(2))
+                });
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), caller)
+                        .await
+                        .unwrap()
+                        .unwrap()["ok"],
+                    false
+                );
+                broker.unregister_run("protected").unwrap();
+                drop(other.join().unwrap().unwrap());
+            }
+        }
+
+        // Failed detached runs reconcile by exact name even when their caller
+        // has already cancelled. Exercise the real Docker adapter/process path,
+        // not FakeDocker (which bypasses inherited native cancellation).
+        struct CleanupHandler(crate::docker::DockerCli);
+        impl FixtureHandler for CleanupHandler {
+            fn execute(&self, _: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
+                use crate::docker::DockerControl;
+                cancelled.store(true, Ordering::Release);
+                let outcome = self.0.cleanup_failed_run_container("fixture");
+                if outcome == "removed:1" {
+                    Ok(())
+                } else {
+                    Err(outcome)
+                }
+            }
+        }
+        let cleanup = temporary.path().join("cleanup-docker");
+        std::fs::write(&cleanup, format!("#!/bin/sh\ncase \"$1\" in\nps) printf '{}\\tfixture\\n';;\nrm) printf cleaned > \"$0.removed\";;\n*) exit 2;;\nesac\n", "a".repeat(64))).unwrap();
+        std::fs::set_permissions(&cleanup, std::fs::Permissions::from_mode(0o755)).unwrap();
+        broker
+            .register_fixture_handler(
+                "run-fixture",
+                Arc::new(CleanupHandler(
+                    crate::docker::DockerCli::new(cleanup.clone())
+                        .with_network_capacity(broker.clone()),
+                )),
+                Instant::now() + Duration::from_secs(3),
+                BTreeMap::from([("database-setup".into(), Some(Duration::from_secs(1)))]),
+            )
+            .unwrap();
+        assert_eq!(call(&broker, "database-setup").await["ok"], true);
+        assert_eq!(
+            std::fs::read(cleanup.with_extension("removed")).unwrap_or_default(),
+            b"cleaned"
+        );
+        assert_eq!(
+            broker.snapshot().unwrap().network_stability.active_writers,
+            0
+        );
     }
 
     #[test]
@@ -1828,7 +2270,73 @@ mod tests {
         assert!(!broker.try_reservation(later).unwrap());
         broker.unregister_run("writer").unwrap();
         assert!(broker.try_reservation(later).unwrap());
+        // Native mutation ownership survives unregister_run until its actual
+        // command returns. Cancellation, deadline, and shutdown retire waiters.
+        let claim = vec![ResourceClaim {
+            kind: ResourceKind::Network,
+            id: "host".into(),
+            access: ResourceAccess::Shared,
+        }];
+        broker.register_run("network-reader", 1000).unwrap();
+        broker
+            .register_resources("network-reader", BTreeMap::from([("body".into(), claim)]))
+            .unwrap();
+        let reader = broker
+            .queue_reservation("network-reader", "body", 1000)
+            .unwrap();
+        assert!(broker.try_reservation(reader).unwrap());
+        let wait_for_writer = || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while broker.snapshot().unwrap().network_stability.waiting_writers != 1 {
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let admission = broker.network_admission();
+        let waiting = std::thread::spawn(move || {
+            admission.reserve(Some(&flag), Instant::now() + Duration::from_secs(2))
+        });
+        wait_for_writer();
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            waiting.join().unwrap(),
+            Err(NetworkAdmissionError::Cancelled)
+        ));
+        assert_eq!(
+            broker.snapshot().unwrap().network_stability.waiting_writers,
+            0
+        );
+        assert!(matches!(
+            broker
+                .network_admission()
+                .reserve(None, Instant::now() + Duration::from_millis(10)),
+            Err(NetworkAdmissionError::TimedOut)
+        ));
+        let admission = broker.network_admission();
+        let waiting = std::thread::spawn(move || {
+            admission.reserve(None, Instant::now() + Duration::from_secs(2))
+        });
+        wait_for_writer();
+        broker.unregister_run("network-reader").unwrap();
+        let owned = waiting.join().unwrap().unwrap();
+        broker.unregister_run("later-reader").unwrap();
+        assert_eq!(
+            broker.snapshot().unwrap().network_stability.active_writers,
+            1
+        );
+        let admission = broker.network_admission();
+        let waiting = std::thread::spawn(move || {
+            admission.reserve(None, Instant::now() + Duration::from_secs(2))
+        });
+        wait_for_writer();
         broker.stop();
+        assert!(matches!(
+            waiting.join().unwrap(),
+            Err(NetworkAdmissionError::Unavailable)
+        ));
+        drop(owned);
         assert!(broker.state().unwrap().reservations.is_empty());
     }
 

@@ -60,11 +60,14 @@ struct CheckPermitProvider {
     run: String,
     check: String,
     reservation: OnceCell<Arc<ResourceReservation>>,
+    check_resources: bool,
+    network_stability: bool,
 }
 
 struct ProcessReservation {
     _process: AcquiredPermit,
     _reservation: Arc<ResourceReservation>,
+    _network: Option<ResourceReservation>,
 }
 impl CapacityPermit for ProcessReservation {}
 
@@ -79,10 +82,16 @@ impl PermitProvider for CheckPermitProvider {
             let reservation = self
                 .reservation
                 .get_or_try_init(|| async {
-                    self.inner
-                        .reserve(&self.run, &self.check)
-                        .await
-                        .map(Arc::new)
+                    if self.check_resources {
+                        self.inner
+                            .reserve(&self.run, &self.check)
+                            .await
+                            .map(Arc::new)
+                    } else {
+                        Ok(Arc::new(ResourceReservation {
+                            _guard: Box::new(NoReservation),
+                        }))
+                    }
                 })
                 .await?
                 .clone();
@@ -98,19 +107,47 @@ impl PermitProvider for CheckPermitProvider {
             let reservation = self
                 .reservation
                 .get_or_try_init(|| async {
-                    self.inner
-                        .reserve(&self.run, &self.check)
-                        .await
-                        .map(Arc::new)
+                    if self.check_resources {
+                        self.inner
+                            .reserve(&self.run, &self.check)
+                            .await
+                            .map(Arc::new)
+                    } else {
+                        Ok(Arc::new(ResourceReservation {
+                            _guard: Box::new(NoReservation),
+                        }))
+                    }
                 })
                 .await?
                 .clone();
+            let body = request.leaf_id == self.check
+                || request
+                    .leaf_id
+                    .starts_with(&format!("{}/case/", self.check));
+            // A fixture writer already owns its process permit before it asks
+            // for exclusive network access. Never hold a reader while waiting
+            // for that permit: at capacity one this would deadlock.
             let process = self.inner.acquire(request).await?;
+            let network = if self.network_stability && body {
+                Some(
+                    self.inner
+                        .reserve(
+                            &self.run,
+                            &devcoordinator2_executor_protocol::network_execution_resource_id(
+                                &self.check,
+                            ),
+                        )
+                        .await?,
+                )
+            } else {
+                None
+            };
             Ok(AcquiredPermit {
                 observation: process.observation,
                 _guard: Box::new(ProcessReservation {
                     _process: process,
                     _reservation: reservation,
+                    _network: network,
                 }),
             })
         })
@@ -130,6 +167,14 @@ pub(crate) fn for_check(
         run: run.into(),
         check: check.name.clone(),
         reservation: OnceCell::new(),
+        check_resources: check
+            .resources
+            .iter()
+            .any(|claim| !claim.is_network_stability()),
+        network_stability: check
+            .resources
+            .iter()
+            .any(|claim| claim.is_network_stability()),
     })
 }
 

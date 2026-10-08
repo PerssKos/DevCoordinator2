@@ -725,6 +725,7 @@ impl DatabasePool {
         let container = self
             .docker
             .run_detached(&RunDetachedRequest {
+                cancellation: Some(cancelled.clone()),
                 name: format!(
                     "devcoordinator2-test-{}-postgres-{scope}",
                     run_id.trim_start_matches('t')
@@ -1033,6 +1034,7 @@ impl DatabasePool {
         let container = self
             .docker
             .run_detached(&RunDetachedRequest {
+                cancellation: Some(cancelled.clone()),
                 name: format!(
                     "devcoordinator2-template-{}-{}",
                     &fingerprint[..16],

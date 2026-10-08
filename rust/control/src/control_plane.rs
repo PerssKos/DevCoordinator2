@@ -273,12 +273,14 @@ impl ControlPlane {
         let access = Access::new(&config, database.clone(), publisher)?;
         let events = EventService::new(database.clone())?;
         let registry = Registry::with_archive_blockers(database.clone(), ActiveTestArchiveBlocker);
+        let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         let deployments = Deployments::with_clock(
             config.clone(),
             database.clone(),
             registry.clone(),
             Arc::clone(&clock),
-        );
+        )
+        .with_network_capacity(capacity.clone());
         let servers = ServerService::new(database.clone());
         let evidence = Arc::new(SqliteDeploymentEvidence::new(
             database.clone(),
@@ -302,7 +304,6 @@ impl ControlPlane {
         };
         let incidents =
             crate::incidents::IncidentService::new(database.clone(), Arc::clone(&clock));
-        let capacity = CapacityBroker::new(database.clone(), config.capacity_socket_path())?;
         let storage = crate::storage::StorageService::new(
             config.clone(),
             database.clone(),
@@ -310,10 +311,12 @@ impl ControlPlane {
             capacity.clone(),
             events.clone(),
         );
-        let health = HealthService::with_clock(
+        let health = HealthService::with_adapters(
             config.clone(),
             database.clone(),
             registry.clone(),
+            Arc::new(crate::docker::DockerCli::default().with_network_capacity(capacity.clone())),
+            Arc::new(crate::systemd::SystemdCli::default()),
             Arc::clone(&clock),
         );
         let usage = UsageService::with_clock(

@@ -225,6 +225,7 @@ impl TestLifecycle {
         logs: TestLogService,
         clock: Arc<dyn Clock>,
     ) -> Result<Self, ProtocolError> {
+        let docker = Arc::new(DockerCli::default().with_network_capacity(capacity.clone()));
         Self::with_adapters(
             config,
             database,
@@ -232,7 +233,7 @@ impl TestLifecycle {
             capacity,
             logs,
             Arc::new(SystemdCli::default()),
-            Arc::new(DockerCli::default()),
+            docker,
             Arc::new(HostTestCommand),
             TestRunStore,
             clock,
@@ -960,20 +961,30 @@ impl TestLifecycle {
                 error.to_string(),
             ));
         }
-        let resources = plan
-            .checks
-            .iter()
-            .filter(|check| !check.resources.is_empty())
-            .map(|check| {
-                let mut claims = check.resources.clone();
-                for claim in &mut claims {
+        let mut resources = BTreeMap::new();
+        for check in &plan.checks {
+            let mut check_claims = Vec::new();
+            let mut execution_claims = Vec::new();
+            for mut claim in check.resources.iter().cloned() {
+                if claim.is_network_stability() {
+                    execution_claims.push(claim);
+                } else {
                     if claim.kind == devcoordinator2_executor_protocol::ResourceKind::Directory {
                         claim.id = worktree.join(&claim.id).to_string_lossy().into_owned();
                     }
+                    check_claims.push(claim);
                 }
-                (check.name.clone(), claims)
-            })
-            .collect();
+            }
+            if !check_claims.is_empty() {
+                resources.insert(check.name.clone(), check_claims);
+            }
+            if !execution_claims.is_empty() {
+                resources.insert(
+                    devcoordinator2_executor_protocol::network_execution_resource_id(&check.name),
+                    execution_claims,
+                );
+            }
+        }
         if let Err(error) = self.inner.capacity.register_resources(&run_id, resources) {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(error);
@@ -1027,11 +1038,21 @@ impl TestLifecycle {
             execution_gid,
             shared_fixtures,
         ));
-        if let Err(error) = self
-            .inner
-            .capacity
-            .register_fixture_handler(&run_id, fixtures.clone())
-        {
+        if let Err(error) = self.inner.capacity.register_fixture_handler(
+            &run_id,
+            fixtures.clone(),
+            std::time::Instant::now()
+                + std::time::Duration::from_secs(specification.timeout_seconds),
+            plan.checks
+                .iter()
+                .map(|check| {
+                    (
+                        check.name.clone(),
+                        check.timeout_seconds.map(std::time::Duration::from_secs),
+                    )
+                })
+                .collect(),
+        ) {
             self.rollback_accepted_start(&worktree, &run_id, &containers);
             return Err(error);
         }

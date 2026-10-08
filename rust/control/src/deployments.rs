@@ -144,6 +144,14 @@ impl Drop for BusyGuard {
 }
 
 impl Deployments {
+    pub(crate) fn with_network_capacity(
+        mut self,
+        capacity: crate::capacity::CapacityBroker,
+    ) -> Self {
+        self.docker = Arc::new(DockerCli::default().with_network_capacity(capacity));
+        self
+    }
+
     pub fn new(config: Config, database: Database, registry: Registry) -> Self {
         Self::with_clock(config, database, registry, Arc::new(HostClock))
     }
