@@ -23,6 +23,21 @@ fn response(repository: Option<&str>, start: u64, end: u64) -> Value {
         "account":"private-account-must-not-escape","extraPrivate":"private-payload-must-not-escape"
     }})
 }
+
+#[derive(Clone, Copy)]
+struct DetailProbe;
+
+impl RepositoryProbe for DetailProbe {
+    fn probe(
+        &self,
+        _source: &CodexUsageSource,
+        _repository: &Path,
+        _now_ms: u64,
+    ) -> Result<(String, u32, u32), String> {
+        Ok(("b".repeat(64), 5, 1))
+    }
+}
+
 fn peer(
     path: &Path,
     home: &Path,
@@ -145,6 +160,68 @@ fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
     // A new producer database schema is acceptable only through its stable API;
     // the fallback's explicit SQLite schema gate is unchanged.
     assert_eq!(first.repositories[0].coverage.database_schemas, vec![99]);
+    server.join().unwrap();
+}
+
+#[test]
+fn initial_repository_detail_uses_the_bounded_fast_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("collector");
+    let (_, now) = super::super::tests::source_database(&home, 5);
+    let mut config = super::super::tests::config(dir.path(), home.clone());
+    let socket = dir.path().join("api.sock");
+    config.codex_usage_sources[0].api_socket = Some(socket.clone());
+    let uid = config.codex_usage_sources[0].uid;
+    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
+    let key = "b".repeat(64);
+    db.transaction(move |tx| {
+        tx.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,5,1,'t')",
+            rusqlite::params![uid, key],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let usage = CodexUsage::with_probe(
+        config,
+        db.clone(),
+        Arc::new(FixedClock(
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
+        )),
+        Arc::new(DetailProbe),
+    );
+    let service = UsageService {
+        registry: Registry::new(db),
+        usage,
+    };
+    let (server, calls) = peer(&socket, &home, 1, |_| {});
+    assert!(
+        service.usage.config.codex_usage_sources[0]
+            .api_socket
+            .is_some()
+    );
+    let _initial = service
+        .repository(UsageRepositoryParams {
+            wait_for_refresh: false,
+            repository_id: "project-alpha".into(),
+            range: UsageRange::Hours24,
+        })
+        .unwrap();
+    service.usage.wait_for_refresh(Some("project-alpha"));
+    let report = service
+        .repository(UsageRepositoryParams {
+            wait_for_refresh: false,
+            repository_id: "project-alpha".into(),
+            range: UsageRange::Hours24,
+        })
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(report.totals.total_tokens, Some(120));
+    assert_eq!(report.coverage.database_schemas, vec![99]);
     server.join().unwrap();
 }
 

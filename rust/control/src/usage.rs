@@ -257,7 +257,17 @@ impl UsageService {
             .ok_or_else(|| {
                 ProtocolError::new(ErrorCode::RepositoryNotFound, "no registered repository")
             })?;
-        let mut report = self.usage.repository(&repository, params.range.clone())?;
+        // The first detail paint must share the bounded/indexed projection used
+        // by the collection. The token/cost projection remains the explicit
+        // follow-up behind wait_for_refresh, so a large collector cannot make
+        // an otherwise usable detail page start with a red refresh failure.
+        let mut report = if params.wait_for_refresh {
+            self.usage
+                .repository_tokens(&repository, params.range.clone())?
+        } else {
+            self.usage
+                .repository_fast(&repository, params.range.clone())?
+        };
         if !params.wait_for_refresh
             && self
                 .usage
@@ -272,15 +282,12 @@ impl UsageService {
                 .is_some_and(|s| s.updated_at_ms.is_none() && s.refreshing)
         {
             self.usage.wait_for_refresh(Some(&repository.repository_id));
-            report = self.usage.repository(&repository, params.range.clone())?;
+            report = self
+                .usage
+                .repository_fast(&repository, params.range.clone())?;
         }
         self.attach_outcome_titles(&mut report)?;
         if params.wait_for_refresh {
-            // Start the cost-capable projection before waiting; the initial
-            // fast snapshot and the complete snapshot use separate keys.
-            let _ = self
-                .usage
-                .repository_tokens(&repository, params.range.clone())?;
             self.usage.wait_for_refresh(Some(&repository.repository_id));
             let mut report = self.usage.repository_tokens(&repository, params.range)?;
             self.attach_outcome_titles(&mut report)?;
