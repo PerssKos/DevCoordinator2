@@ -2005,9 +2005,9 @@ mod tests {
             hang: bool,
         }
         impl FixtureHandler for BudgetHandler {
-            fn execute(&self, _: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
+            fn execute(&self, node: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
                 use crate::docker::{DockerControl, DockerInvocation};
-                if self.hang {
+                if self.hang || node == "deadline-probe" {
                     while !cancelled.load(Ordering::Acquire) {
                         std::thread::sleep(Duration::from_millis(1));
                     }
@@ -2041,7 +2041,10 @@ mod tests {
                         hang,
                     }),
                     Instant::now() + Duration::from_secs(3),
-                    BTreeMap::from([("database-setup".into(), Some(Duration::from_millis(80)))]),
+                    BTreeMap::from([
+                        ("database-setup".into(), Some(Duration::from_millis(80))),
+                        ("deadline-probe".into(), Some(Duration::from_millis(80))),
+                    ]),
                 )
                 .unwrap();
             broker.register_run("protected", uid).unwrap();
@@ -2072,7 +2075,19 @@ mod tests {
                     assert!(Instant::now() < deadline);
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(150)).await;
+                // Observe another real RPC exhaust the same execution budget.
+                // It starts after the writer queued and performs no admission
+                // wait, so its completed failure proves the budget boundary was
+                // crossed while the first operation remained protected.
+                broker
+                    .enqueue("run-fixture", "deadline-probe", uid)
+                    .unwrap();
+                let probe =
+                    tokio::time::timeout(Duration::from_secs(1), call(&broker, "deadline-probe"))
+                        .await
+                        .unwrap();
+                assert_eq!(probe["status"], "completed");
+                assert_eq!(probe["ok"], false);
                 assert!(
                     !caller.is_finished(),
                     "network wait consumed native execution budget"
