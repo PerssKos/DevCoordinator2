@@ -3317,6 +3317,13 @@ command=["/usr/bin/true"]
     ))?;
     world.git(&["add", "."])?;
     world.git(&["commit", "-qm", "cross-focused-run artifact reuse fixture"])?;
+    let evidence_path = world
+        .harness
+        .work_root
+        .join("focused-build-reuse-receipts.json");
+    let mut attempts = Vec::new();
+    let mut previous_run_id = None;
+    let original_input_sha256 = sha256_hex(source.as_bytes());
     for (index, targets, expected_count) in [
         (0, vec!["build", "other"], 1),
         (1, vec!["build"], 1),
@@ -3328,12 +3335,71 @@ command=["/usr/bin/true"]
                 format!("{source}unsigned added(unsigned x){{return x+1;}}\n"),
             )?;
         }
+        let input_sha256 =
+            sha256_hex(&fs::read(world.repo.join("input.c")).map_err(|e| e.to_string())?);
+        ensure!(
+            (input_sha256 != original_input_sha256) == (index == 2),
+            "fixture input did not change at the intended attempt"
+        );
         let start = Instant::now();
-        data(&world.call("test.start", json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development"}))?)?;
+        let response = world.call("test.start", json!({"path":world.repo,"targets":targets,"checks":["build/consumer"],"tier":"development","mode":"replace"}))?;
+        let started = data(&response)?;
+        attempts.push(json!({
+            "attempt": index,
+            "input_sha256": input_sha256,
+            "started": {
+                "run_id": started["run_id"],
+                "status": started["status"],
+                "attached": started["attached"],
+                "superseded_run_id": started["superseded_run_id"],
+            },
+        }));
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
+        let run_id = started["run_id"].as_str().ok_or("start omitted run_id")?;
+        ensure!(
+            started["attached"] == false && previous_run_id.as_deref() != Some(run_id),
+            "intentional new build run attached to its predecessor"
+        );
         let status = world.wait_status(&["passed", "failed"], Duration::from_secs(30))?;
+        attempts[index]["terminal"] = json!({"run_id":status["run_id"],"status":status["status"]});
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
+        ensure!(
+            status["run_id"] == run_id,
+            "terminal evidence belongs to a different build run"
+        );
         ensure!(
             status["status"] == "passed",
             "focused build/consumer run failed"
+        );
+        previous_run_id = Some(run_id.to_owned());
+        let report: Value = serde_json::from_slice(
+            &fs::read(
+                world
+                    .repo
+                    .join(".devcoordinator/test/current/check-report.json"),
+            )
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure!(
+            report["run_id"] == run_id,
+            "build report belongs to a different run"
+        );
+        let reported_input = report["checks"]
+            .as_array()
+            .and_then(|checks| {
+                checks
+                    .iter()
+                    .find(|check| check["display_name"] == "build / producer")
+            })
+            .and_then(|check| check["cache_inputs"].as_array())
+            .and_then(|inputs| inputs.iter().find(|input| input["path"] == "input.c"))
+            .ok_or("producer input receipt missing")?;
+        attempts[index]["reported_input_sha256"] = reported_input["sha256"].clone();
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
+        ensure!(
+            reported_input["sha256"] == input_sha256,
+            "producer used a stale input receipt"
         );
         let check = status["checks"]
             .as_array()
@@ -3343,12 +3409,15 @@ command=["/usr/bin/true"]
                     .find(|check| check["display_name"] == "build / producer")
             })
             .ok_or("producer evidence missing")?;
+        let count = fs::read_to_string(world.repo.join(".devcoordinator/build-count"))
+            .map_err(|e| e.to_string())?;
+        attempts[index]["producer_status"] = check["status"].clone();
+        attempts[index]["build_count"] = json!(count.trim());
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
         ensure!(
             check["status"] == if index == 1 { "reused" } else { "passed" },
             "focused build reuse status did not match its inputs"
         );
-        let count = fs::read_to_string(world.repo.join(".devcoordinator/build-count"))
-            .map_err(|e| e.to_string())?;
         ensure!(
             count.trim() == expected_count.to_string(),
             "focused run executed or skipped an incorrect number of builds"
