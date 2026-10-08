@@ -1,5 +1,6 @@
 //! Deployment resolution, truthful status, observed control, and route changes.
 mod recovery;
+mod routing_recovery;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
@@ -3828,22 +3829,44 @@ impl Deployments {
         let ids = self
             .database
             .call(|connection| {
-                let mut statement = connection
-                    .prepare("SELECT deployment_id FROM domain_routes WHERE port IS NOT NULL")?;
+                let mut statement =
+                    connection.prepare("SELECT deployment_id FROM domain_routes")?;
                 Ok(statement
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
+        let mut deferred = false;
+        let mut changed = false;
         for id in ids {
             let Ok(_busy) = self.acquire_busy(&id) else {
                 continue;
             };
-            if let Err(error) = self.validate_or_withdraw_route(&id) {
-                tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+            match routing_recovery::restore_route(self, &id) {
+                Ok(routing_recovery::Recovery::Restored) => changed = true,
+                Ok(routing_recovery::Recovery::Deferred) => {
+                    deferred = true;
+                    continue;
+                }
+                Ok(routing_recovery::Recovery::NotApplicable) => {}
+                Err(error) => {
+                    tracing::warn!(code=%error.code, deployment_id=%id, "route recovery incomplete");
+                    deferred = true;
+                    continue;
+                }
+            }
+            match self.validate_or_withdraw_route(&id) {
+                Ok(true) => {}
+                Ok(false) => changed = true,
+                Err(error) => {
+                    tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+                    deferred = true;
+                }
             }
         }
-        self.routes.publish_current()?;
+        if changed && !deferred {
+            self.routes.publish_current()?;
+        }
         Ok(())
     }
 

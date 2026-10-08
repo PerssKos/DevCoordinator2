@@ -376,6 +376,124 @@ fn healthy_process_without_its_route_is_not_ready() {
 }
 
 #[test]
+fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let initial = fixture.route();
+    let unit = first.components[0].binding.identity.clone().unwrap();
+    fixture.systemd.states.lock().unwrap().remove(&unit);
+    fixture
+        .world
+        .database
+        .transaction({
+            let id = first.deployment_id.clone();
+            move |connection| crate::ports::withdraw_conflict(connection, &id, "api")
+        })
+        .unwrap();
+    fixture.deployments.reconcile_routes().unwrap();
+    let recovered = fixture.status(&first.deployment_id);
+    assert_eq!(recovered.current_generation, first.current_generation);
+    assert_eq!(recovered.route_port, first.route_port);
+    assert_eq!(
+        recovered.components[0].binding.identity.as_deref(),
+        Some(unit.as_str())
+    );
+    assert_eq!(
+        fixture.route()["routes"][0]["lease_id"],
+        initial["routes"][0]["lease_id"]
+    );
+    assert!(
+        fixture
+            .systemd
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|action| action == &format!("start:{unit}"))
+    );
+}
+
+#[test]
+fn reconcile_does_not_restart_stopped_or_repair_a_mismatched_route_lease() {
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    fixture
+        .deployments
+        .control(
+            "stop",
+            None,
+            None,
+            Some(&first.deployment_id),
+            None,
+            &fixture.caller,
+        )
+        .unwrap();
+    let starts = fixture
+        .systemd
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|action| action.starts_with("start:"))
+        .count();
+    fixture.deployments.reconcile_routes().unwrap();
+    assert_eq!(
+        fixture
+            .systemd
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|action| action.starts_with("start:"))
+            .count(),
+        starts
+    );
+
+    let fixture = RouteWorld::new("checkout");
+    let first = fixture.apply().unwrap();
+    let mismatch_starts = fixture
+        .systemd
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|action| action.starts_with("start:"))
+        .count();
+    fixture
+        .world
+        .database
+        .transaction({
+            let id = first.deployment_id.clone();
+            move |connection| {
+                connection.execute(
+                    "UPDATE domain_routes SET lease_id='foreign-lease' WHERE deployment_id=?1",
+                    [&id],
+                )?;
+                Ok(())
+            }
+        })
+        .unwrap();
+    fixture
+        .systemd
+        .states
+        .lock()
+        .unwrap()
+        .remove(&first.components[0].binding.identity.clone().unwrap());
+    fixture.deployments.reconcile_routes().unwrap();
+    assert_eq!(
+        fixture
+            .systemd
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|action| action.starts_with("start:"))
+            .count(),
+        mismatch_starts
+    );
+}
+
+#[test]
 fn first_publication_failure_can_retry_without_a_previous_generation() {
     let fixture = RouteWorld::new("checkout");
     let route_path = fixture.deployments.config.routes_path();
