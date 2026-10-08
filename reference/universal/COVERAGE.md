@@ -19,7 +19,7 @@ decisions, and execution evidence remain in their authoritative services.
 | 9 (497–699) | `modules/ui-design-gate.md`, `modules/user-interface.md` | Journey-led destinations; exactly three design alternatives; approval/autonomy; mockup-backed fidelity audit; compact contextual controls; row preservation; no engineering commentary; purposeful text; minimal surfaces; all rendered interactions; glossary and content-first states |
 | 10 (700–753) | `modules/corrections.md` | Confirmed mistakes versus changed intent; original-surface diagnosis; existing outcomes and standing corrections; batched prevention/fix; applicability and provenance; durable discoverability; no writable legacy ledgers |
 | 11 (754–796) | `modules/preservation.md` | Storage placement/capacity; hot versus bulk work; exact cleanup with preservation; canonical sources; verified remote baseline; dirty work; running services; recoverable data; isolated tests; domain ownership |
-| 12 (797–827) | `modules/communication.md` | User goals and observable results; meaningful choices; behavior-based evidence; proportional explanation; preliminary access; truthful gaps and completion |
+| 12 (797–827) | `modules/communication.md` | User goals and observable results; minimum Result / Meaning / Next step explanation contract; meaningful choices; behavior-based evidence; proportional explanation; preliminary access; truthful gaps and completion |
 | 13 (828–893) | `modules/performance-review.md` | Daily continuity; original specification; per-task attributable resources; no double counts or invented allocations; evidenced causes; scoped improvements; reviewed dependency repair; optional gaps; user report and durable references |
 
 ## Approved revisions reviewed manually

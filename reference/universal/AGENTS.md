@@ -153,5 +153,8 @@ earlier model messages or reload unchanged instructions.
   and direct sentences. Describe user-visible results rather than internal
   milestones or workflow state, and explain any necessary technical term in
   the same sentence. State what is complete, what happens next, and any
-  blocker plainly. Before sending, rewrite dense or bureaucratic wording into
-  clear everyday language without losing material technical facts.
+  blocker plainly. Follow the communication module’s minimum explanation
+  contract: state the user-facing result, its meaning and verification status,
+  and the next action or unblock condition before naming internal statuses,
+  identifiers, or test details. Before sending, rewrite dense or bureaucratic
+  wording into clear everyday language without losing material technical facts.
