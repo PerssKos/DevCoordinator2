@@ -1180,9 +1180,10 @@ impl CodexUsage {
                 worktrees: scope_rows,
                 selected_worktree_ids: requested.map(|ids| ids.to_vec()),
                 include_unassigned,
-                attribution_available: self.config.codex_usage_sources.iter().any(|source| {
-                    !unavailable_sources.contains(&source.uid) && requested.is_some()
-                }),
+                attribution_available: requested.is_none()
+                    || self.config.codex_usage_sources.iter().any(|source| {
+                        !unavailable_sources.contains(&source.uid)
+                    }),
             },
             include_unassigned,
             source_keys,
