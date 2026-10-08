@@ -14889,6 +14889,19 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 32,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "path": {
             "minLength": 1,
             "type": "string"
@@ -14912,6 +14925,19 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": false,
             "properties": {
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "path": {
                 "minLength": 1,
                 "type": "string"
@@ -15849,6 +15875,14 @@
           },
           "issues_truncated": {
             "type": "boolean"
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "repository_id": {
             "type": "string"
@@ -17963,6 +17997,14 @@
               },
               "issues_truncated": {
                 "type": "boolean"
+              },
+              "next_offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "repository_id": {
                 "type": "string"
