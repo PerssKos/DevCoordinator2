@@ -1,6 +1,8 @@
 # Repository Configuration: `.devcoordinator.toml`
 
-One small reviewed file at the repository root. Configuration is canonical
+One reviewed regular, non-symlink file at the repository root, at most 512 KiB
+(524,288 bytes). Larger files are rejected before parsing; the reader remains
+bounded if the file grows during reading. Configuration is canonical
 for commands and component meaning; the coordinator database is canonical
 for live assignments, identities, state, users, grants, and observations.
 

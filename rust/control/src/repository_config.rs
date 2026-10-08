@@ -19,7 +19,7 @@ use thiserror::Error;
 use toml::{Table, Value};
 
 pub const CONFIG_NAME: &str = ".devcoordinator.toml";
-pub const MAX_CONFIG_BYTES: u64 = 262_144;
+pub const MAX_CONFIG_BYTES: u64 = 524_288;
 pub const TIMEOUT_MIN: u64 = 1;
 pub const TIMEOUT_MAX: u64 = 21_600;
 pub const TIMEOUT_DEFAULT: u64 = 600;
@@ -3076,20 +3076,36 @@ tcp = "127.0.0.1:25"
     fn configuration_file_itself_is_bounded_regular_and_nofollow() {
         let temporary = tempdir().expect("tempdir");
         let outside = temporary.path().join("outside.toml");
-        std::fs::write(&outside, "schema=2").unwrap();
+        let valid = "schema=2\n[test.unit]\n[[test.unit.check]]\nname='main'\ntier='release'\ncommand=['true']\n";
+        std::fs::write(&outside, valid).unwrap();
         symlink(&outside, temporary.path().join(CONFIG_NAME)).unwrap();
-        assert!(load_test_spec(temporary.path(), None).is_err());
+        assert!(
+            load_test_spec(temporary.path(), None)
+                .unwrap_err()
+                .message
+                .contains("cannot read")
+        );
         std::fs::remove_file(temporary.path().join(CONFIG_NAME)).unwrap();
+        for bytes in [262_145, MAX_CONFIG_BYTES as usize] {
+            let mut padded = format!("{valid}#");
+            padded.push_str(&"x".repeat(bytes - padded.len()));
+            assert_eq!(padded.len(), bytes);
+            write(temporary.path(), &padded);
+            assert!(load_test_spec(temporary.path(), None).is_ok());
+        }
         std::fs::write(
             temporary.path().join(CONFIG_NAME),
-            vec![b'x'; MAX_CONFIG_BYTES as usize + 1],
+            format!(
+                "{}x",
+                std::fs::read_to_string(temporary.path().join(CONFIG_NAME)).unwrap()
+            ),
         )
         .unwrap();
         assert!(
             load_test_spec(temporary.path(), None)
                 .unwrap_err()
                 .message
-                .contains("exceeds")
+                .contains("exceeds 524288 bytes")
         );
     }
 }

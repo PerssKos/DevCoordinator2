@@ -96,6 +96,46 @@ command = ["true"]
     assert_eq!(value["tests"], serde_json::json!(["unit"]));
     assert_eq!(value["deployments"], serde_json::json!([]));
 
+    let valid_config =
+        std::fs::read_to_string(temporary.path().join(".devcoordinator.toml")).unwrap();
+    for (bytes, accepted) in [(262_145, true), (524_288, true), (524_289, false)] {
+        let mut padded = format!("{valid_config}\n#");
+        padded.push_str(&"x".repeat(bytes - padded.len()));
+        assert_eq!(padded.len(), bytes);
+        std::fs::write(temporary.path().join(".devcoordinator.toml"), padded).unwrap();
+        let result = Command::new(binary)
+            .arg("--validate-repository-config")
+            .arg(temporary.path())
+            .output()
+            .expect("bounded configuration probe");
+        assert_eq!(
+            result.status.success(),
+            accepted,
+            "{bytes} bytes: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        if accepted {
+            let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+            assert_eq!(value["tests"], serde_json::json!(["unit"]));
+        } else {
+            assert!(String::from_utf8_lossy(&result.stderr).contains("exceeds 524288 bytes"));
+        }
+    }
+
+    // A valid target must still be refused when the configuration is a symlink.
+    let target = temporary.path().join("valid.toml");
+    std::fs::write(&target, &valid_config).unwrap();
+    std::fs::remove_file(temporary.path().join(".devcoordinator.toml")).unwrap();
+    std::os::unix::fs::symlink(&target, temporary.path().join(".devcoordinator.toml")).unwrap();
+    let symlink = Command::new(binary)
+        .arg("--validate-repository-config")
+        .arg(temporary.path())
+        .output()
+        .expect("symlink configuration probe");
+    assert!(!symlink.status.success());
+    assert!(String::from_utf8_lossy(&symlink.stderr).contains("cannot read .devcoordinator.toml"));
+    std::fs::remove_file(temporary.path().join(".devcoordinator.toml")).unwrap();
+
     std::fs::write(
         temporary.path().join(".devcoordinator.toml"),
         "schema = 1\n[test.unit]\ncommand = ['true']\n",
