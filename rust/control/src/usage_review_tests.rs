@@ -315,6 +315,51 @@ fn outcome_reader_matches_canonical_conformance_cases() {
 }
 
 #[test]
+fn worktree_selection_keeps_owner_deduplication_and_component_totals() {
+    let case = json!({
+        "operations": [
+            {"id":"a","start":1000,"duration":100,"outcome":"outcome-a","snapshot":true,"tokens":100},
+            {"id":"b","start":1100,"duration":100,"outcome":"outcome-b","snapshot":true,"tokens":200},
+            {"id":"historical","start":1200,"duration":100,"snapshot":false,"tokens":50}
+        ],
+        "covered":{"owner":"a","start":1030,"count":100}
+    });
+    let connection = fixture(&case);
+    connection.execute_batch(
+        "ALTER TABLE repository_attributions ADD COLUMN worktree_id TEXT;
+         UPDATE repository_attributions SET worktree_id='worktree-a' WHERE operation_id='a';
+         UPDATE repository_attributions SET worktree_id='worktree-b' WHERE operation_id IN ('b','covered');
+         ALTER TABLE token_observations ADD COLUMN repository_bucket TEXT DEFAULT 'repository';
+         CREATE INDEX token_observations_repository_total_observed_idx ON token_observations(repository_bucket,observed_at_ms) WHERE category_path='total_tokens' AND measurement_provenance='provider_reported';"
+    ).unwrap();
+    assert!(has_worktree_attribution(&connection).unwrap());
+    for (selected, unassigned, expected) in [
+        (None, true, 350),
+        (Some(vec!["worktree-a".to_owned()]), false, 100),
+        (Some(vec!["worktree-a".to_owned(), "worktree-b".to_owned()]), false, 300),
+        (Some(Vec::new()), true, 50),
+        (Some(Vec::new()), false, 0),
+    ] {
+        let mut facts = performance::read(&connection, &["repository".into()], 1000, 2000)
+            .unwrap().unwrap();
+        filter_worktree_facts(
+            &connection, &["repository".into()], &mut facts, selected.as_deref(), unassigned,
+        ).unwrap();
+        for category in ["total_tokens", "input_tokens", "input_tokens_details.cached_tokens"] {
+            assert_eq!(
+                facts.tokens.iter().filter(|token| token.category == category)
+                    .filter_map(|token| token.value).sum::<u64>(),
+                expected,
+                "{selected:?} / unassigned={unassigned} / {category}"
+            );
+        }
+        let (report, _) = review_aggregate::display(&connection, facts, None, 1000, 2000).unwrap();
+        assert_eq!(report.tokens.get("total_tokens").copied().unwrap_or(0), expected);
+        assert_eq!(report.activities.values().sum::<u64>(), expected);
+    }
+}
+
+#[test]
 fn outcome_time_unions_are_recomputed_across_collectors() {
     let fixtures: Value =
         serde_json::from_str(include_str!("../tests/fixtures/outcomes-v1.json")).unwrap();
@@ -663,7 +708,7 @@ fn review_resolves_mapping_titles_and_frozen_outcome_pages_without_dashboard_war
             .sum::<u64>(),
         165
     );
-    live.execute("UPDATE _sqlx_migrations SET version=9", [])
+    live.execute("UPDATE _sqlx_migrations SET version=10", [])
         .unwrap();
     let unsupported = environment.service.prepare(params, START + WEEK).unwrap();
     assert_eq!(unsupported.usage.outcomes.coverage, "unavailable");

@@ -130,6 +130,7 @@ pub(crate) struct WorktreeSelection {
     scope: UsageWorktreeScope,
     include_unassigned: bool,
     source_keys: BTreeMap<u32, Option<Vec<String>>>,
+    unavailable_sources: BTreeSet<u32>,
 }
 
 pub trait RepositoryProbe: Send + Sync + 'static {
@@ -283,6 +284,7 @@ impl UsageService {
             params.worktree_ids.as_deref(),
             params.include_unassigned,
             self.usage.now_ms()?,
+            None,
         )?;
         // The first detail paint must share the bounded/indexed projection used
         // by the collection. The token/cost projection remains the explicit
@@ -296,6 +298,8 @@ impl UsageService {
                 .repository_fast_with_selection(&repository, params.range.clone(), selection.clone())?
         };
         if !params.wait_for_refresh
+            && params.worktree_ids.is_none()
+            && params.include_unassigned
             && self
                 .usage
                 .config
@@ -791,6 +795,19 @@ impl CodexUsage {
         let usage = self.clone();
         let repository = repository.clone();
         Ok(self.cache.get(key, empty, move || {
+            // Identity mapping belongs to this existing background loader,
+            // never the Console request. One shared budget bounds every path.
+            let selection = selection
+                .map(|selection| {
+                    usage.resolve_worktree_selection(
+                        &repository,
+                        selection.scope.selected_worktree_ids.as_deref(),
+                        selection.include_unassigned,
+                        now_ms,
+                        Some(Instant::now() + Duration::from_secs(5)),
+                    )
+                })
+                .transpose()?;
             usage.repository_window(
                 &repository,
                 range,
@@ -850,8 +867,7 @@ impl CodexUsage {
                 continue;
             }
             if let Some(selection) = &selection
-                && selection.scope.selected_worktree_ids.is_some()
-                && selection.scope.attribution_available == false
+                && selection.unavailable_sources.contains(&source.uid)
             {
                 increment(&mut failures, "worktree_mapping_unavailable");
                 continue;
@@ -918,11 +934,7 @@ impl CodexUsage {
             self.config.codex_usage_sources.len(),
         );
         if let Some(mut selection) = selection {
-            if selection.scope.selected_worktree_ids.is_some()
-                && reports.len() < self.config.codex_usage_sources.len()
-            {
-                selection.scope.attribution_available = false;
-            }
+            selection.scope.attribution_available = reports.iter().any(|(_, source)| source.database_schema >= 9);
             report.worktree_scope = Some(selection.scope);
         }
         if !progress.is_empty() {
@@ -1041,6 +1053,7 @@ impl CodexUsage {
         requested: Option<&[String]>,
         include_unassigned: bool,
         now_ms: u64,
+        deadline: Option<Instant>,
     ) -> Result<WorktreeSelection, ProtocolError> {
         let repository_id = repository.repository_id.clone();
         let rows = self
@@ -1085,7 +1098,7 @@ impl CodexUsage {
         });
         for (worktree_id, path) in paths_to_probe.into_iter().flatten() {
             for source in &self.config.codex_usage_sources {
-                let key = self.cached_worktree_key(source, path, now_ms)?;
+                let key = self.cached_worktree_key(source, path, now_ms, deadline)?;
                 source_keys_by_worktree
                     .entry(worktree_id.clone())
                     .or_default()
@@ -1104,12 +1117,6 @@ impl CodexUsage {
                 (id.clone(), basename)
             })
             .collect::<BTreeMap<_, _>>();
-        let mut duplicate_labels = BTreeSet::new();
-        for label in labels.values() {
-            if !duplicate_labels.insert(label.clone()) {
-                break;
-            }
-        }
         if labels.values().collect::<BTreeSet<_>>().len() != labels.len() {
             for (id, path) in &rows {
                 let base = labels.get(id).cloned().unwrap_or_else(|| "repository".into());
@@ -1145,7 +1152,7 @@ impl CodexUsage {
                 .collect::<Vec<_>>()
         });
         let mut source_keys = BTreeMap::new();
-        let mut unavailable = false;
+        let mut unavailable_sources = BTreeSet::new();
         for source in &self.config.codex_usage_sources {
             let keys = selected_paths.as_ref().map(|paths| {
                 let mut keys = Vec::with_capacity(paths.len());
@@ -1161,7 +1168,7 @@ impl CodexUsage {
                         .and_then(Option::clone)
                     {
                         Some(key) => keys.push(key),
-                        None => unavailable = true,
+                        None => { unavailable_sources.insert(source.uid); },
                     }
                 }
                 keys
@@ -1173,11 +1180,13 @@ impl CodexUsage {
                 worktrees: scope_rows,
                 selected_worktree_ids: requested.map(|ids| ids.to_vec()),
                 include_unassigned,
-                attribution_available: requested.is_none()
-                    || (!self.config.codex_usage_sources.is_empty() && !unavailable),
+                attribution_available: self.config.codex_usage_sources.iter().any(|source| {
+                    !unavailable_sources.contains(&source.uid) && requested.is_some()
+                }),
             },
             include_unassigned,
             source_keys,
+            unavailable_sources,
         })
     }
 
@@ -1186,6 +1195,7 @@ impl CodexUsage {
         source: &CodexUsageSource,
         path: &Path,
         now_ms: u64,
+        deadline: Option<Instant>,
     ) -> Result<Option<String>, ProtocolError> {
         let cache_key = (source.uid, path.to_path_buf());
         if let Ok(cache) = self.worktree_keys.lock()
@@ -1194,9 +1204,12 @@ impl CodexUsage {
         {
             return Ok(key.clone());
         }
+        let Some(deadline) = deadline.filter(|deadline| *deadline > Instant::now()) else {
+            return Ok(None);
+        };
         let resolved = self
             .probe
-            .probe_worktree(source, path, now_ms, Instant::now() + SOURCE_TIMEOUT)
+            .probe_worktree(source, path, now_ms, deadline)
             .ok()
             .and_then(|(_, schema, taxonomy, key)| {
                 (schema >= 9 && taxonomy == SUPPORTED_TAXONOMY)
@@ -1204,7 +1217,9 @@ impl CodexUsage {
                     .flatten()
             })
             .filter(|key| valid_repository_key(key));
-        if let Ok(mut cache) = self.worktree_keys.lock() {
+        // A shared-budget expiry does not permanently mark remaining paths
+        // unavailable; successful earlier probes stay cached for the retry.
+        if Instant::now() < deadline && let Ok(mut cache) = self.worktree_keys.lock() {
             cache.insert(cache_key, (Instant::now() + Duration::from_secs(300), resolved.clone()));
             while cache.len() > 256 {
                 if let Some(oldest) = cache
