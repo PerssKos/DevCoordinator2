@@ -1257,6 +1257,12 @@ impl CodexUsage {
                 deadline.min(Instant::now() + collector_api::API_BUDGET),
             )
         {
+            if filtered
+                && (summary.report.database_schema_version < 9
+                    || summary.report.worktree_coverage.is_none())
+            {
+                return Err("worktree_attribution_unavailable".into());
+            }
             return Ok(summary.source_report(
                 Some(repository_key),
                 bucket_count,
