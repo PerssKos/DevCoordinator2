@@ -107,7 +107,11 @@ impl DeploymentGit for GitCli {
             dirty: !status.status.success() || status.stdout_truncated || !status.stdout.is_empty(),
             source_digest: crate::test_command::TestCommand::source_digest(
                 &crate::test_command::HostTestCommand,
-                &crate::test_lifecycle::default_executor_path(),
+                &crate::test_lifecycle::default_executor_path().map_err(|_| {
+                    DeploymentGitError::Command(
+                        "cannot resolve the deployment source-digest executor".into(),
+                    )
+                })?,
                 worktree,
                 caller_uid,
                 caller_gid,

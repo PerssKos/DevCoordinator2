@@ -239,7 +239,7 @@ impl TestLifecycle {
             clock,
             Arc::new(HostMonotonicClock::default()),
             Arc::new(HostRandom),
-            default_executor_path(),
+            default_executor_path()?,
         )
     }
 
@@ -3044,17 +3044,21 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-pub(crate) fn default_executor_path() -> PathBuf {
+pub(crate) fn default_executor_path() -> Result<PathBuf, ProtocolError> {
     #[cfg(feature = "root-acceptance")]
     if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
-        return PathBuf::from(path);
+        return Ok(PathBuf::from(path));
     }
+    let executable = std::env::current_exe().map_err(|_| {
+        ProtocolError::new(
+            ErrorCode::InternalError,
+            "cannot resolve the running daemon's executor directory",
+        )
+    })?;
     // Unit tests may use an isolated Cargo target directory. Resolve candidates
     // from that test executable, never from another checkout or installed daemon.
     #[cfg(test)]
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(profile) = executable.parent().and_then(Path::parent)
-    {
+    if let Some(profile) = executable.parent().and_then(Path::parent) {
         let release = profile
             .parent()
             .map(|target| target.join("release/devcoordinator2-executor"));
@@ -3063,13 +3067,22 @@ pub(crate) fn default_executor_path() -> PathBuf {
             .chain(std::iter::once(profile.join("devcoordinator2-executor")))
         {
             if candidate.is_file() {
-                return candidate;
+                return Ok(candidate);
             }
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("target/release/devcoordinator2-executor")
+    // Installation verifies the daemon and executor in one versioned release.
+    // A missing sibling must fail the existing executor-availability check;
+    // another checkout's target directory is not a compatible fallback.
+    executable
+        .parent()
+        .map(|directory| directory.join("devcoordinator2-executor"))
+        .ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "running daemon has no executor directory",
+            )
+        })
 }
 
 fn client_name(caller: &Caller) -> String {

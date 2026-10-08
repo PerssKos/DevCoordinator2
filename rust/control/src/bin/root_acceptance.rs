@@ -202,6 +202,16 @@ impl World {
         admin_emails: Option<&str>,
         base_domain: Option<&str>,
     ) -> Result<(), String> {
+        self.start_daemon_with_executor(edge_uid, admin_emails, base_domain, true)
+    }
+
+    fn start_daemon_with_executor(
+        &mut self,
+        edge_uid: Option<u32>,
+        admin_emails: Option<&str>,
+        base_domain: Option<&str>,
+        explicit_executor: bool,
+    ) -> Result<(), String> {
         if self.daemon.is_some() {
             return Err("isolated daemon is already running".to_owned());
         }
@@ -225,7 +235,6 @@ impl World {
             .env("HOME", "/root")
             .env("RUST_BACKTRACE", "1")
             .env("DEVCOORDINATOR2_SOCKET", &self.socket)
-            .env("DEVCOORDINATOR2_ROOT_EXECUTOR", &self.harness.executor)
             .env("DEVCOORDINATOR2_STATE_DIR", &self.state)
             .env("DEVCOORDINATOR2_BUGS_DIR", self.base.join("bugs"))
             .env("DEVCOORDINATOR2_UNIT_PREFIX", &self.unit_prefix)
@@ -234,6 +243,9 @@ impl World {
             .env("DEVCOORDINATOR2_INSTANCE_ENV", "/nonexistent")
             .env("DEVCOORDINATOR2_PORT_RANGE", &self.harness.port_range)
             .env("DEVCOORDINATOR2_COMPOSE_ENV_ALLOWLIST_FILE", &self.policy);
+        if explicit_executor {
+            command.env("DEVCOORDINATOR2_ROOT_EXECUTOR", &self.harness.executor);
+        }
         if let Some(uid) = edge_uid {
             command.env("DEVCOORDINATOR2_EDGE_UID", uid.to_string());
         }
@@ -4396,6 +4408,40 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
     let after = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
     ensure!(after["status"] == "passed", "post-drain start failed");
+
+    // Exercise the installed layout through the actual daemon, without the
+    // root-suite override that normally selects the candidate executor.
+    world.stop_daemon(false)?;
+    let installed = world
+        .base
+        .join("target/coordinator-releases/installer-fixture/release");
+    fs::create_dir_all(&installed).map_err(|error| error.to_string())?;
+    let daemon = installed.join("devcoordinator2");
+    fs::copy(&world.harness.daemon, &daemon).map_err(|error| error.to_string())?;
+    fs::set_permissions(&daemon, fs::Permissions::from_mode(0o755))
+        .map_err(|error| error.to_string())?;
+    world.harness.daemon = daemon;
+    let mut config = unit_config(&fixture_command(world, &["exit", "0"]), None)?;
+    config.push_str("resources = [{kind = 'network', id = 'host', access = 'shared'}]\n");
+    world.write_config(&config)?;
+    world.start_daemon_with_executor(None, None, None, false)?;
+    let missing = world.call("test.start", json!({"path": world.repo}))?;
+    ensure!(
+        error_code(&missing) == Some("test_start_failed"),
+        "a versioned daemon without its executor sibling used an unrelated executor"
+    );
+    world.stop_daemon(false)?;
+    let executor = installed.join("devcoordinator2-executor");
+    fs::copy(&world.harness.executor, &executor).map_err(|error| error.to_string())?;
+    fs::set_permissions(&executor, fs::Permissions::from_mode(0o755))
+        .map_err(|error| error.to_string())?;
+    world.start_daemon_with_executor(None, None, None, false)?;
+    data(&world.call("test.start", json!({"path": world.repo}))?)?;
+    let installed_run = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+    ensure!(
+        installed_run["status"] == "passed",
+        "the versioned executor sibling did not complete a governed network-claim check"
+    );
     Ok(())
 }
 
