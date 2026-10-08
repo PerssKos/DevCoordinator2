@@ -25,6 +25,7 @@ use crate::systemd::SystemdControl;
 
 pub const SAMPLE_SECONDS: u32 = 15;
 pub const STORAGE_SECONDS: u32 = 300;
+const STORAGE_START_DELAY_SECONDS: u64 = 1;
 
 // Directory and Docker storage probes walk user-controlled trees and can be
 // much more expensive than the health request that consumes their result.
@@ -107,6 +108,45 @@ struct StorageScanState {
     deployment_cursor: usize,
     container_sizes: BTreeMap<String, u64>,
     shared: DockerStorage,
+}
+
+/// Scheduling state for the host-wide health storage probe. A refresh request
+/// is intentionally coalesced with the next periodic slot: callers need the
+/// next truthful observation, but an event burst must not start back-to-back
+/// filesystem walks while the previous one has just completed.
+#[derive(Clone, Copy)]
+struct StorageSchedule {
+    next_due: tokio::time::Instant,
+    last_completed: Option<tokio::time::Instant>,
+}
+
+impl StorageSchedule {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            next_due: now + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS),
+            last_completed: None,
+        }
+    }
+
+    fn due(&self, now: tokio::time::Instant) -> bool {
+        now >= self.next_due
+    }
+
+    fn request(&mut self, now: tokio::time::Instant) {
+        let earliest = self.last_completed.map_or(now, |completed| {
+            completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS))
+        });
+        if now >= earliest {
+            self.next_due = self
+                .next_due
+                .min(now + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS));
+        }
+    }
+
+    fn completed(&mut self, now: tokio::time::Instant) {
+        self.last_completed = Some(now);
+        self.next_due = now + StdDuration::from_secs(u64::from(STORAGE_SECONDS));
+    }
 }
 
 #[derive(Clone)]
@@ -795,7 +835,7 @@ impl MetricSampler {
 
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) {
         let mut next_sample = tokio::time::Instant::now();
-        let mut next_storage = tokio::time::Instant::now();
+        let mut storage_schedule = StorageSchedule::new(tokio::time::Instant::now());
         let mut storage_task: Option<JoinHandle<Result<(), ProtocolError>>> = None;
         loop {
             if *shutdown.borrow() {
@@ -808,13 +848,12 @@ impl MetricSampler {
                 next_sample =
                     tokio::time::Instant::now() + StdDuration::from_secs(u64::from(SAMPLE_SECONDS));
             }
-            if storage_task.is_none()
-                && (now >= next_storage || self.inner.storage_requested.load(Ordering::SeqCst))
-            {
+            if self.inner.storage_requested.load(Ordering::Acquire) {
+                storage_schedule.request(now);
+            }
+            if storage_task.is_none() && storage_schedule.due(now) {
                 let sampler = self.clone();
                 storage_task = Some(tokio::task::spawn_blocking(move || sampler.storage_tick()));
-                next_storage = tokio::time::Instant::now()
-                    + StdDuration::from_secs(u64::from(STORAGE_SECONDS));
             }
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -829,6 +868,7 @@ impl MetricSampler {
                         .await
                 }, if storage_task.is_some() => {
                     storage_task = None;
+                    storage_schedule.completed(tokio::time::Instant::now());
                     if let Ok(Err(error)) = completed {
                         warn!(%error, "storage sampler failed");
                     }
@@ -1392,6 +1432,7 @@ mod tests {
     struct FakeSource {
         cpu: AtomicU64,
         request_during_scan: Mutex<Option<MetricSampler>>,
+        scans: AtomicU64,
     }
     impl MetricSource for FakeSource {
         fn host_cpu_ticks(&self) -> (u64, u64) {
@@ -1433,6 +1474,10 @@ mod tests {
             Some(10)
         }
         fn container_sizes(&self, _: StdDuration) -> BTreeMap<String, u64> {
+            self.scans.fetch_add(1, Ordering::SeqCst);
+            if let Some(sampler) = self.request_during_scan.lock().unwrap().take() {
+                sampler.request_storage();
+            }
             BTreeMap::new()
         }
         fn docker_shared_sizes(&self, _: StdDuration) -> DockerStorage {
@@ -1477,6 +1522,7 @@ mod tests {
         let source = Arc::new(FakeSource {
             cpu: AtomicU64::new(10),
             request_during_scan: Mutex::new(None),
+            scans: AtomicU64::new(0),
         });
         let sampler = MetricSampler::with_adapters(
             config,
@@ -1546,5 +1592,58 @@ mod tests {
         assert!(sampler.inner.storage_requested.load(Ordering::SeqCst));
         sampler.storage_tick().unwrap();
         assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn storage_schedule_delays_start_and_coalesces_refreshes() {
+        let start = tokio::time::Instant::now();
+        let mut schedule = StorageSchedule::new(start);
+        assert!(!schedule.due(start));
+        assert!(!schedule.due(start + StdDuration::from_millis(999)));
+        assert!(schedule.due(start + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS)));
+
+        let completed = start + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS);
+        schedule.completed(completed);
+        schedule.request(completed + StdDuration::from_millis(100));
+        assert!(!schedule.due(completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS) - 1)));
+        assert!(schedule.due(completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS))));
+        // A slow scan must retain the full gap after it finishes, even when
+        // its execution exceeds the ordinary periodic interval.
+        let late_completion = completed + StdDuration::from_secs(900);
+        schedule.completed(late_completion);
+        schedule.request(late_completion);
+        assert!(!schedule.due(late_completion));
+        assert!(schedule.due(late_completion + StdDuration::from_secs(u64::from(STORAGE_SECONDS))));
+    }
+
+    #[tokio::test]
+    async fn storage_service_coalesces_a_request_received_during_observation() {
+        let (_temporary, sampler, source) = storage_fixture();
+        *source.request_during_scan.lock().unwrap() = Some(sampler.clone());
+        let (shutdown, receiver) = watch::channel(false);
+        let service_sampler = sampler.clone();
+        let service = tokio::spawn(async move { service_sampler.serve(receiver).await });
+        tokio::time::sleep(StdDuration::from_millis(250)).await;
+        let startup_scans = source.scans.load(Ordering::SeqCst);
+        tokio::time::sleep(StdDuration::from_millis(1500)).await;
+        let completed_scans = source.scans.load(Ordering::SeqCst);
+        let request_retained = sampler.inner.storage_requested.load(Ordering::SeqCst);
+        shutdown.send(true).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(5), service)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            startup_scans, 0,
+            "storage probes must leave startup responsive"
+        );
+        assert_eq!(
+            completed_scans, 1,
+            "an event during a scan must not chain another scan"
+        );
+        assert!(
+            request_retained,
+            "the next scheduled observation must retain the refresh request"
+        );
     }
 }
