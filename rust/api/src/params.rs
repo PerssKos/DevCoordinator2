@@ -1141,6 +1141,17 @@ pub struct UsageRepository {
     pub repository_id: String,
     #[serde(default = "default_usage_range")]
     pub range: UsageRange,
+    /// Registered Coordinator worktree ids to include. `None` keeps the
+    /// consolidated repository view; an empty list selects only unassigned
+    /// historical work when `include_unassigned` is true.
+    #[serde(default)]
+    pub worktree_ids: Option<Vec<String>>,
+    #[serde(default = "default_include_unassigned")]
+    pub include_unassigned: bool,
+}
+
+fn default_include_unassigned() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

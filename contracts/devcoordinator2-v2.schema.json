@@ -46920,6 +46920,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "include_unassigned": {
+            "default": true,
+            "type": "boolean"
+          },
           "range": {
             "$ref": "#/$defs/UsageRange",
             "default": "24h"
@@ -46930,6 +46934,17 @@
           "wait_for_refresh": {
             "default": false,
             "type": "boolean"
+          },
+          "worktree_ids": {
+            "default": null,
+            "description": "Registered Coordinator worktree ids to include. `None` keeps the\nconsolidated repository view; an empty list selects only unassigned\nhistorical work when `include_unassigned` is true.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
@@ -47764,6 +47779,58 @@
               "operations"
             ],
             "type": "object"
+          },
+          "UsageWorktree": {
+            "additionalProperties": false,
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "label": {
+                "type": "string"
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "worktree_id",
+              "label",
+              "available"
+            ],
+            "type": "object"
+          },
+          "UsageWorktreeScope": {
+            "additionalProperties": false,
+            "properties": {
+              "attribution_available": {
+                "type": "boolean"
+              },
+              "include_unassigned": {
+                "type": "boolean"
+              },
+              "selected_worktree_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "worktrees": {
+                "items": {
+                  "$ref": "#/$defs/UsageWorktree"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "worktrees",
+              "include_unassigned",
+              "attribution_available"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -47821,6 +47888,16 @@
           },
           "totals": {
             "$ref": "#/$defs/UsageTotals"
+          },
+          "worktree_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageWorktreeScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
