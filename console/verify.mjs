@@ -973,7 +973,7 @@ async function main() {
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
             if (cacheState === 'loading' && route === 'progress/' + REPO) check('cache cold Progress leaves token evidence blank', await page.locator('[data-progress-evidence="tokens"] > strong').textContent() === '—');
-            const details = route === 'progress/' + REPO ? '.progress-exact' : route === 'usage/' + REPO ? '.usage-provenance' : null;
+            const details = route === 'progress/' + REPO ? '.progress-exact' : null;
             if (cacheState === 'stale' && details) await page.locator(details + ' summary').click();
             if (waitRequest) {
               const received = await waitRequest;
@@ -1173,7 +1173,9 @@ async function main() {
         if (scenarioName === 'populated' && view === `#/usage/${REPO}`) {
           check(`${label}: repository and primary usage trend lead the page`, /Codex Usage/.test(metrics.text) && /repo-one/.test(metrics.text) && await page.locator('[data-ui-region="usage-primary-trend"] svg').count() === 1);
           check(`${label}: usage never exposes collector or captured-content identities`, !/agent-private|request-private|\/home\//.test(metrics.text));
-          check(`${label}: usage provides exact chart values`, await page.locator('.usage-exact table').count() === 1);
+          check(`${label}: usage omits the redundant completeness/provenance block`,
+            await page.locator('.usage-provenance').count() === 0
+            && await page.locator('.usage-exact').count() === 0);
         }
         if (scenarioName === 'populated' && view === `#/progress/${REPO}`) {
           check(`${label}: progress leads with the release forecast and daily progress`,
@@ -1972,10 +1974,17 @@ async function main() {
     await page.locator('[data-usage-model-ledger]').count() === 1
     && await page.locator('.usage-model-row').count() >= 2
     && await page.locator('[data-usage-model-detail]').count() === 1);
+  check('usage: model names retain readable width in the ledger',
+    await page.locator('.usage-model-name strong').evaluateAll((names) => names.every((name) => name.getBoundingClientRect().width >= 48)));
   await page.locator('.usage-model-row').nth(1).click();
+  const modelDetailBox = await page.locator('[data-usage-model-detail]').boundingBox();
+  const usageViewport = await page.evaluate(() => ({ height: window.innerHeight, width: window.innerWidth }));
   check('interaction: selecting a model updates its token and cost detail',
     await page.locator('.usage-model-row').nth(1).getAttribute('aria-pressed') === 'true'
-    && (await page.locator('[data-usage-model-detail]').innerText()).includes('Total tokens'));
+    && (await page.locator('[data-usage-model-detail]').innerText()).includes('Total tokens')
+    && modelDetailBox && modelDetailBox.y >= 0 && modelDetailBox.y + modelDetailBox.height <= usageViewport.height
+    && modelDetailBox.x >= 0 && modelDetailBox.x + modelDetailBox.width <= usageViewport.width,
+    JSON.stringify({ modelDetailBox, usageViewport }));
   await page.locator('.usage-phase-chart rect').first().hover();
   check('interaction: hovering a phase bar shows token and cost details',
     await page.locator('[data-usage-chart-tooltip]:visible').count() === 1
@@ -1989,12 +1998,14 @@ async function main() {
     await page.locator('.usage-rail').count() === 3
     && /not added together/.test(await page.innerText('.usage-lower')));
   const usageContextText = await page.innerText('.usage-context');
-  check('usage: missing-data status stays concise before the chart',
-    /Some usage may be missing/.test(usageContextText)
-    && /data from 3 of 4 configured Codex environments/.test(usageContextText)
+  check('usage: completeness status is available from the labelled hint without taking page space',
+    !/Some usage may be missing/.test(usageContextText)
+    && !/data from 3 of 4 configured Codex environments/.test(usageContextText)
     && !/separately configured local Codex setup with its own usage history/.test(usageContextText)
     && !/excluded, never counted as zero/.test(usageContextText)
     && await page.locator('.usage-coverage-popover[hidden]').count() === 1
+    && await page.locator('.usage-coverage-indicator.warn').count() === 1
+    && await page.locator('.usage-coverage-hint-toggle').getAttribute('aria-label')
     && await page.locator('.usage-coverage-note').count() === 0
     && !/\bcollectors?\b|Partial coverage|measured values only|configured histories/.test(usageContextText));
   const usageHintToggle = page.locator('[data-usage-coverage-hint-toggle]');
@@ -2031,18 +2042,9 @@ async function main() {
   check('interaction: the 7d range re-reads the selected repository and restores focus',
     daemon.calls.some((c) => c.operation === 'usage.repository' && c.params.repository_id === REPO && c.params.range === '7d')
     && await page.locator('[data-codex-range="7d"]:focus').count() === 1);
-  await page.click('.usage-provenance summary');
-  check('interaction: coverage and provenance expands in place',
-    await page.locator('.usage-provenance[open]').count() === 1);
-  check('interaction: exact bucket values are available without hover',
-    await page.locator('.usage-provenance[open] .usage-exact tbody tr').count() > 0);
-  const completenessText = await page.innerText('.usage-provenance');
-  check('usage: expanded details explain completeness and bucket status without collector jargon',
-    /Data completeness/.test(completenessText)
-    && /Counting method/.test(completenessText)
-    && /Data status/.test(completenessText)
-    && /Measured with gaps/.test(completenessText)
-    && !/\bcollectors?\b|Partial coverage/.test(completenessText));
+  check('usage: redundant completeness/provenance block is removed',
+    await page.locator('.usage-provenance').count() === 0
+    && await page.locator('.usage-exact').count() === 0);
 
   for (const [scenarioName, scenario, expected, explanation] of [
     ['complete', SCENARIOS.usageComplete, 'All 4 environments included', 'Every configured environment supplied measurable data for this repository and period.'],
@@ -2052,11 +2054,10 @@ async function main() {
     daemon.setScenario(scenario);
     await page.reload();
     await page.waitForSelector('[data-usage-coverage-hint-toggle]');
-    await page.waitForFunction((expectedText) =>
-      (document.querySelector('.usage-context')?.innerText || '').includes(expectedText), expected);
+    await page.waitForFunction(() => document.querySelector('.usage-coverage-indicator'));
     const contextText = await page.innerText('.usage-context');
     check(`usage: ${scenarioName} state keeps its explanation hidden by default`,
-      contextText.includes(expected) && !contextText.includes(explanation)
+      !contextText.includes(expected) && !contextText.includes(explanation)
       && await page.locator('.usage-coverage-popover[hidden]').count() === 1
       && !/\bcollectors?\b|Partial coverage|Complete coverage|measured values only|configured histories/.test(contextText),
       contextText.slice(0, 240));
