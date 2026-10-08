@@ -1302,6 +1302,9 @@ impl CodexUsage {
             if !SUPPORTED_DATABASE_SCHEMAS.contains(&schema) || taxonomy != SUPPORTED_TAXONOMY {
                 return Err("schema_unsupported".into());
             }
+            if filtered && schema < 9 {
+                return Err("worktree_attribution_unavailable".into());
+            }
             if filtered && !has_worktree_attribution(&connection)? {
                 return Err("worktree_attribution_unavailable".into());
             }
