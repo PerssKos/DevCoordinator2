@@ -1264,7 +1264,7 @@ impl CodexUsage {
                 return Err("worktree_attribution_unavailable".into());
             }
             return Ok(summary.source_report(
-                Some(repository_key),
+                None,
                 bucket_count,
                 worktree_keys.and_then(Option::as_deref),
                 include_unassigned,
