@@ -962,6 +962,7 @@ async function main() {
       await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
       await page.waitForSelector('.usage-phase-chart');
       check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
+      check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
       await page.click('[data-usage-worktree-scope-toggle]');
       check('usage-only: all registered worktrees are checked', await page.locator('[data-usage-worktree-id]:checked').count() === 3);
       await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();
