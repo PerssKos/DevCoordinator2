@@ -3836,7 +3836,6 @@ impl Deployments {
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
-        let mut deferred = false;
         let mut changed = false;
         for id in ids {
             let Ok(_busy) = self.acquire_busy(&id) else {
@@ -3844,14 +3843,10 @@ impl Deployments {
             };
             match routing_recovery::restore_route(self, &id) {
                 Ok(routing_recovery::Recovery::Restored) => changed = true,
-                Ok(routing_recovery::Recovery::Deferred) => {
-                    deferred = true;
-                    continue;
-                }
+                Ok(routing_recovery::Recovery::Deferred) => continue,
                 Ok(routing_recovery::Recovery::NotApplicable) => {}
                 Err(error) => {
                     tracing::warn!(code=%error.code, deployment_id=%id, "route recovery incomplete");
-                    deferred = true;
                     continue;
                 }
             }
@@ -3860,11 +3855,12 @@ impl Deployments {
                 Ok(false) => changed = true,
                 Err(error) => {
                     tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
-                    deferred = true;
                 }
             }
         }
-        if changed && !deferred {
+        // A deferred deployment keeps its prior route, but it must not hide a
+        // confirmed change for another deployment (or a successful recovery).
+        if changed {
             self.routes.publish_current()?;
         }
         Ok(())

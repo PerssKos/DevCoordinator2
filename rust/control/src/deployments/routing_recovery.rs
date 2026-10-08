@@ -130,10 +130,7 @@ pub(crate) fn restore_route(
         .systemd
         .process_state(&identity)
         .map_err(systemd_error)?;
-    if matches!(
-        state.active_state.as_str(),
-        "active" | "activating" | "deactivating"
-    ) {
+    if matches!(state.active_state.as_str(), "activating" | "deactivating") {
         return Ok(Recovery::Deferred);
     }
     let port = match route_port {
@@ -165,17 +162,24 @@ pub(crate) fn restore_route(
             move |connection| {
                 connection
                     .query_row(
-                        "SELECT lease_id FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0 AND port=?3",
+                        "SELECT lease_id FROM port_assignments WHERE deployment_id=?1 AND component=?2 AND generation=0 AND port=?3 AND lease_id IS NOT NULL",
                         rusqlite::params![id, component, port],
                         |row| row.get::<_, String>(0),
                     )
                     .optional()
-                    .map(|value| value.filter(|lease| route_lease.as_deref().is_none_or(|expected| expected == lease)))
                     .map_err(DatabaseError::from)
             }
         })
         .map_err(database_error)?;
-    if lease_matches.is_none() {
+    let Some(stable_lease) = lease_matches else {
+        return Ok(Recovery::NotApplicable);
+    };
+    if route_port.is_some() && route_lease.as_deref() != Some(stable_lease.as_str()) {
+        return Ok(Recovery::NotApplicable);
+    }
+    if route_port.is_some() && state.active_state == "active" {
+        // The normal validator will prove the existing listener and health;
+        // avoid rewriting a healthy route or restarting its unit.
         return Ok(Recovery::NotApplicable);
     }
     if !deployments.port_availability.bindable(port)
@@ -214,19 +218,26 @@ pub(crate) fn restore_route(
     if !working_directory.starts_with(&generation_path) {
         return Ok(Recovery::NotApplicable);
     }
-    deployments
-        .systemd
-        .start_persistent(&PersistentUnitSpec {
-            unit: identity.clone(),
-            slice_name: deployment_slice(&deployments.config.deploy_unit_prefix(), deployment_id),
-            uid: row.created_by_uid,
-            gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
-            working_directory,
-            environment_file,
-            command: saved.command.iter().map(OsString::from).collect(),
-            log_path,
-        })
-        .map_err(|error| apply_runtime_error("saved routed process failed to restart", error))?;
+    if state.active_state != "active" {
+        deployments
+            .systemd
+            .start_persistent(&PersistentUnitSpec {
+                unit: identity.clone(),
+                slice_name: deployment_slice(
+                    &deployments.config.deploy_unit_prefix(),
+                    deployment_id,
+                ),
+                uid: row.created_by_uid,
+                gid: primary_gid(row.created_by_uid).map_err(systemd_error)?,
+                working_directory,
+                environment_file,
+                command: saved.command.iter().map(OsString::from).collect(),
+                log_path,
+            })
+            .map_err(|error| {
+                apply_runtime_error("saved routed process failed to restart", error)
+            })?;
+    }
     let mut ports =
         crate::ports::assigned(&deployments.database, deployment_id, 0).map_err(runtime_error)?;
     ports.insert(component_name.clone(), port);

@@ -379,6 +379,27 @@ fn healthy_process_without_its_route_is_not_ready() {
 fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
     let fixture = RouteWorld::new("checkout");
     let first = fixture.apply().unwrap();
+    let starts_before_reconcile = fixture
+        .systemd
+        .actions
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|action| action.starts_with("start:"))
+        .count();
+    fixture.deployments.reconcile_routes().unwrap();
+    assert_eq!(
+        fixture
+            .systemd
+            .actions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|action| action.starts_with("start:"))
+            .count(),
+        starts_before_reconcile,
+        "healthy same-generation unit was restarted",
+    );
     let initial = fixture.route();
     let unit = first.components[0].binding.identity.clone().unwrap();
     fixture.systemd.states.lock().unwrap().remove(&unit);
