@@ -554,7 +554,22 @@ replaces the defaults; resource/marker arrays are not concatenated.
   invalid syntax fails the cell without navigating it.
 - Passive listeners attach to the actual cell page before navigation. Matched
   requests retain alias, method/resource-type enums, numeric response status,
-  event sequence and relative time only. Unmatched resources are counted by type.
+  event sequence and relative time only. Matched `request-failed` events also
+  retain `failureCode`: an exact allowlisted Chromium `net::ERR_*` value without
+  the `net::` prefix, or `unknown`. Only these codes are retained:
+  `ERR_ABORTED`, `ERR_FAILED`, `ERR_CONNECTION_CLOSED`, `ERR_CONNECTION_RESET`,
+  `ERR_CONNECTION_REFUSED`, `ERR_CONNECTION_ABORTED`, `ERR_CONNECTION_TIMED_OUT`,
+  `ERR_TIMED_OUT`, `ERR_INTERNET_DISCONNECTED`, `ERR_NAME_NOT_RESOLVED`,
+  `ERR_NETWORK_CHANGED`, `ERR_ADDRESS_UNREACHABLE`, `ERR_EMPTY_RESPONSE`,
+  `ERR_INVALID_RESPONSE`, `ERR_INVALID_HTTP_RESPONSE`, `ERR_CONTENT_LENGTH_MISMATCH`,
+  `ERR_INCOMPLETE_CHUNKED_ENCODING`, `ERR_HTTP2_PROTOCOL_ERROR`,
+  `ERR_HTTP2_SERVER_REFUSED_STREAM`, `ERR_QUIC_PROTOCOL_ERROR`, `ERR_SSL_PROTOCOL_ERROR`,
+  `ERR_CERT_DATE_INVALID`, `ERR_CERT_AUTHORITY_INVALID`, `ERR_CERT_COMMON_NAME_INVALID`,
+  `ERR_BLOCKED_BY_CLIENT`, `ERR_BLOCKED_BY_RESPONSE`, `ERR_INSUFFICIENT_RESOURCES`,
+  `ERR_HTTP_RESPONSE_CODE_FAILURE`, `ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH`.
+  Unknown codes, missing values, surrounding prose and values containing URLs
+  become `unknown`; raw error text is never retained. Completed requests never
+  carry `failureCode`. Unmatched resources are counted by type only.
   Page errors retain a fixed error-name class, never a message/stack. No bodies,
   headers, cookies, storage, console text, raw resource URLs or control/DOM values
   enter diagnostics. Caller aliases must not contain sensitive facts. Public

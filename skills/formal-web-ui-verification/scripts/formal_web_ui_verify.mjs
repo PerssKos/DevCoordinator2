@@ -4916,6 +4916,25 @@ function diagnosticErrorKind(error) {
     ? error.name : "Error";
 }
 
+const diagnosticNetworkFailureCodes = new Set([
+  "ERR_ABORTED", "ERR_FAILED", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_RESET",
+  "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_ABORTED", "ERR_CONNECTION_TIMED_OUT",
+  "ERR_TIMED_OUT", "ERR_INTERNET_DISCONNECTED", "ERR_NAME_NOT_RESOLVED",
+  "ERR_NETWORK_CHANGED", "ERR_ADDRESS_UNREACHABLE", "ERR_EMPTY_RESPONSE",
+  "ERR_INVALID_RESPONSE", "ERR_INVALID_HTTP_RESPONSE", "ERR_CONTENT_LENGTH_MISMATCH",
+  "ERR_INCOMPLETE_CHUNKED_ENCODING", "ERR_HTTP2_PROTOCOL_ERROR",
+  "ERR_HTTP2_SERVER_REFUSED_STREAM", "ERR_QUIC_PROTOCOL_ERROR", "ERR_SSL_PROTOCOL_ERROR",
+  "ERR_CERT_DATE_INVALID", "ERR_CERT_AUTHORITY_INVALID", "ERR_CERT_COMMON_NAME_INVALID",
+  "ERR_BLOCKED_BY_CLIENT", "ERR_BLOCKED_BY_RESPONSE", "ERR_INSUFFICIENT_RESOURCES",
+  "ERR_HTTP_RESPONSE_CODE_FAILURE", "ERR_RESPONSE_HEADERS_MULTIPLE_CONTENT_LENGTH",
+]);
+
+function diagnosticNetworkFailureCode(errorText) {
+  if (typeof errorText !== "string" || !errorText.startsWith("net::")) return "unknown";
+  const code = errorText.slice(5);
+  return diagnosticNetworkFailureCodes.has(code) ? code : "unknown";
+}
+
 function startInitialReadinessDiagnostics(page, target) {
   const settings = target.initialReadinessDiagnostics;
   if (!settings?.enabled) return null;
@@ -4960,7 +4979,8 @@ function startInitialReadinessDiagnostics(page, target) {
     if (!value) return;
     pending.delete(request);
     inflight[value.resource] = Math.max(0, inflight[value.resource] - 1);
-    record({ event: failed ? "request-failed" : "request-finished", ...value });
+    record({ event: failed ? "request-failed" : "request-finished", ...value,
+      ...(failed ? { failureCode: diagnosticNetworkFailureCode(request.failure()?.errorText) } : {}) });
   };
   const handlers = {
     request: requestStarted,
@@ -7232,7 +7252,7 @@ async function main() {
   process.exit(exitCode);
 }
 
-export { captureEvidenceScreenshot, evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, screenshotActionValues, writeJourneyEvidenceArtifact };
+export { captureEvidenceScreenshot, diagnosticNetworkFailureCode, evaluateRequiredCoverage, executePlan, isLocalServerUrl, normalizeRequiredCoverage, pageVerifier, performanceThresholdStatus, screenshotActionValues, writeJourneyEvidenceArtifact };
 
 let isEntrypoint = false;
 if (process.argv[1]) {

@@ -84,6 +84,10 @@ struct HttpResponse {
 }
 
 impl HttpResponse {
+    fn disconnect() -> Self {
+        Self::status("", Vec::new())
+    }
+
     fn html(body: impl Into<Vec<u8>>) -> Self {
         Self {
             status: "200 OK",
@@ -214,6 +218,10 @@ fn serve_connection(mut stream: TcpStream, handler: &HttpHandler) {
         return;
     };
     let response = handler(request);
+    // A fixture may deliberately close the socket without an HTTP response.
+    if response.status.is_empty() {
+        return;
+    }
     if !response.delay.is_zero() {
         thread::sleep(response.delay);
     }
@@ -1073,6 +1081,31 @@ fn run_initial_readiness_diagnostics(
     work: &Path,
     timeout: Duration,
 ) -> Result<usize, String> {
+    // Browser failures cannot contain arbitrary caller-supplied prose in a real
+    // fixture. Exercise that privacy boundary in support of the socket journey.
+    let module = serde_json::to_string(&format!(
+        "file://{}",
+        root.join("skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs")
+            .display()
+    ))
+    .map_err(|error| error.to_string())?;
+    run_node_probe(
+        root,
+        &format!(
+            r#"
+import {{ diagnosticNetworkFailureCode }} from {module};
+for (const code of ['ERR_CONNECTION_RESET', 'ERR_ABORTED', 'ERR_EMPTY_RESPONSE']) {{
+  if (diagnosticNetworkFailureCode(`net::${{code}}`) !== code) process.exit(7);
+}}
+for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_CANARY',
+  'net::ERR_ABORTED https://user:PRIVATE_CANARY@private.test/token',
+  'PRIVATE_CANARY net::ERR_CONNECTION_RESET', 'net::ERR_ABORTED\nPRIVATE_CANARY']) {{
+  if (diagnosticNetworkFailureCode(value) !== 'unknown') process.exit(8);
+}}
+"#
+        ),
+        timeout,
+    )?;
     let mut failures = Vec::new();
     let mut image_hashes = BTreeMap::new();
     let mut count = 0usize;
@@ -1081,6 +1114,7 @@ fn run_initial_readiness_diagnostics(
         "pending",
         "http-error",
         "module-error",
+        "connection-close",
         "page-error",
         "normal",
         "delayed",
@@ -1111,7 +1145,7 @@ fn run_initial_readiness_diagnostics(
             if path == "/fixture.html" {
                 handler_count.fetch_add(1, Ordering::AcqRel);
                 let source = match mode {
-                    "module-error" | "page-error" => format!(
+                    "module-error" | "page-error" | "connection-close" => format!(
                         "<script type='module' src='/module/{secret}.mjs?token={secret}'></script>"
                     ),
                     "storm" | "limit-boundary" => format!(
@@ -1208,6 +1242,9 @@ fn run_initial_readiness_diagnostics(
                         .into_bytes(),
                     delay: Duration::ZERO,
                 };
+            }
+            if path.starts_with("/module/") && mode == "connection-close" {
+                return HttpResponse::disconnect();
             }
             HttpResponse::status(
                 if path == "/storm-finished" {
@@ -1372,6 +1409,21 @@ fn run_initial_readiness_diagnostics(
                     .get("events")
                     .and_then(Value::as_array)
                     .ok_or("missing events")?;
+                if events.iter().any(|event| {
+                    event.get("failureCode").is_some()
+                        && event.get("event") != Some(&json!("request-failed"))
+                }) {
+                    return Err("completed request was labelled as a network failure".into());
+                }
+                if mode == "connection-close"
+                    && !events.iter().any(|event| {
+                        event.get("event") == Some(&json!("request-failed"))
+                            && event.get("resource") == Some(&json!("module"))
+                            && event.get("failureCode") == Some(&json!("ERR_EMPTY_RESPONSE"))
+                    })
+                {
+                    return Err("real socket closure lost its safe network failure code".into());
+                }
                 if mode == "pending"
                     && diagnostic.pointer("/pendingResources/session") != Some(&json!(1))
                 {
