@@ -165,6 +165,7 @@ struct ComponentRecord {
     state: String,
     binding_kind: Option<String>,
     binding_identity: Option<String>,
+    finite_success: bool,
 }
 
 #[derive(Clone)]
@@ -1032,6 +1033,7 @@ impl MetricSampler {
                 severity: "critical".into(),
                 message: format!("component {id} is {}", component.state),
                 active: component.desired_state == "running"
+                    && !component.finite_success
                     && !matches!(component.state.as_str(), "running" | "completed"),
                 sustain_seconds: 120.0,
             });
@@ -1187,7 +1189,22 @@ fn query_components(
     connection: &rusqlite::Connection,
 ) -> Result<Vec<ComponentRecord>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT deployment_id,name,type,desired_state,state,binding_kind,binding_identity FROM components",
+        "SELECT c.deployment_id,c.name,c.type,c.desired_state,c.state,c.binding_kind,c.binding_identity,
+                EXISTS(
+                    SELECT 1 FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)
+                )
+                AND NOT EXISTS(
+                    SELECT 1 FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)
+                      AND cc.exit_code != 0
+                ) AS finite_success
+         FROM components c
+         JOIN deployments d ON d.deployment_id=c.deployment_id",
     )?;
     Ok(statement
         .query_map([], |row| {
@@ -1199,6 +1216,7 @@ fn query_components(
                 state: row.get(4)?,
                 binding_kind: row.get(5)?,
                 binding_identity: row.get(6)?,
+                finite_success: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
@@ -1556,23 +1574,29 @@ mod tests {
             c.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
                 INSERT INTO worktrees VALUES('w1','r1','/fixture','t','t');
                 INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f','{}','failed','t',1000,'fixture','t');")?;
-            for (name,desired,state) in [("bundle","running","completed"),("worker","running","failed"),("paused","stopped","stopped")] {
-                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,'external',0,'f',?2,?3,'none','t')",rusqlite::params![name,desired,state])?;
+            c.execute("UPDATE deployments SET current_generation=1 WHERE deployment_id='d1'", [])?;
+            for (name,kind,desired,state) in [("bundle","compose","running","failed"),("worker","external","running","failed"),("finite_failed","compose","running","failed"),("paused","external","stopped","stopped")] {
+                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,?2,0,'f',?3,?4,'none','t')",rusqlite::params![name,kind,desired,state])?;
             }
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','bundle','web-build',1,'b',0,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','finite_failed','web-build',1,'f',7,'t')", [])?;
             Ok(())
         }).unwrap();
         for _ in 0..10 {
             sampler.tick().unwrap();
         }
         let alerts = sampler.alerts().current().unwrap();
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].subject_id, "d1/worker");
+        let subjects = alerts
+            .iter()
+            .map(|alert| alert.subject_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(subjects, HashSet::from(["d1/worker", "d1/finite_failed"]));
         sampler
             .inner
             .database
             .call(|c| {
                 c.execute(
-                    "UPDATE components SET state='completed' WHERE name='worker'",
+                    "UPDATE components SET state='completed' WHERE name IN ('worker','finite_failed')",
                     [],
                 )?;
                 Ok(())
