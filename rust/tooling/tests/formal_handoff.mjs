@@ -15,7 +15,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const scratch = await mkdtemp(join(process.env.FORMAL_WEB_UI_HANDOFF_SCRATCH ?? process.env.TMPDIR ?? tmpdir(), 'formal-handoff-'));
 const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;color:#111;background:white;font:16px system-ui}main{padding:20px;grid-column:2;min-width:0}#editor{position:fixed;left:20px;top:120px;background:white;padding:12px;border:1px solid #555}#editor[hidden]{display:none}input{width:220px;max-width:100%;box-sizing:border-box}#editor-label{display:grid;gap:6px}button{min-height:32px}h1{font-size:24px}#layout{display:grid;grid-template-columns:0px minmax(0,1fr)}#nav{display:none}</style></head><body><div id="layout"><nav id="nav"></nav><main id="primary"><h1 id="heading">HDL workspace</h1><button id="label">Edit signal</button><form id="editor" role="dialog" data-ui-contextual-overlay="Inline declaration editor" hidden><h2 id="editor-heading">Edit signal</h2><label id="editor-label">Declaration<input id="declaration"></label><button type="button" id="cancel">Cancel</button></form></main></div><script>document.querySelector('#label').addEventListener('dblclick',()=>{document.querySelector('#editor').hidden=false;document.querySelector('#declaration').focus()});document.querySelector('#cancel').onclick=()=>{document.querySelector('#editor').hidden=true;document.querySelector('#label').focus()};</script></body></html>`;
 const revision = createHash('sha256').update(await readFile(fileURLToPath(import.meta.url))).digest('hex');
-const captureHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style nonce="fixture">body{margin:0;background:white;color:#008888;font:16px sans-serif;height:1302px}#private{position:absolute;left:12px;top:472px;width:366px;height:20px;color:#de1d48}input{color:#de1d48;border:1px solid #222;background:white}#declaration{position:absolute;left:12px;top:584px;width:340px;height:40px}#public{position:absolute;left:12px;top:500px}#shadow{position:absolute;left:12px;top:700px}iframe{position:absolute;left:12px;top:790px;width:340px;height:80px}#checkpoint{position:absolute;left:12px;top:1090px;width:300px;height:44px}</style></head><body><div id="private">SYNTHETIC_PRIVATE_ID</div><div id="public">Public action must remain readable</div><input id="declaration" value="SYNTHETIC_INPUT"><div id="shadow"></div><iframe title="Isolated fixture" src="/capture-child"></iframe><p id="checkpoint" tabindex="-1">Validation needs attention</p></body></html>`;
+const captureHtml = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style nonce="fixture">body{margin:0;background:white;color:#008888;font:16px sans-serif;height:1302px}#private{position:absolute;left:12px;top:472px;width:366px;height:20px;color:#de1d48}input{color:#de1d48;border:1px solid #222;background:white}#declaration{position:absolute;left:12px;top:584px;width:340px;height:40px}#public{position:absolute;left:12px;top:524px}#echo{position:absolute;left:12px;top:1000px;width:300px;height:20px;color:#de1d48}#shadow{position:absolute;left:12px;top:700px}iframe{position:absolute;left:12px;top:790px;width:340px;height:80px}#closed-choice{position:relative;width:366px;margin:450px 0 0 12px}#closed-choice>summary{display:flex}#closed-choice .options{position:absolute;left:0;top:50px;width:366px}#closed-choice .options button{display:flex;flex-direction:column;width:100%;border:0;padding:0;color:#de1d48}#closed-choice .options span{height:20px}#checkpoint{position:absolute;left:12px;top:1090px;width:300px;height:44px}</style></head><body><div id="private">SYNTHETIC_PRIVATE_ID</div><details id="closed-choice"><summary>Cabinet</summary><div class="options"><button><span>SYNTHETIC_ECHO_ID</span><span>SYNTHETIC_ECHO_ID</span></button><button><span>SYNTHETIC_ECHO_ID</span><span>SYNTHETIC_ECHO_ID</span></button><button><span>SYNTHETIC_ECHO_ID</span><span>SYNTHETIC_ECHO_ID</span></button></div></details><div id="public">Public action must remain readable</div><input id="declaration" value="SYNTHETIC_INPUT"><div id="shadow"></div><iframe title="Isolated fixture" src="/capture-child"></iframe><div id="echo">SYNTHETIC_ECHO_ID</div><p id="checkpoint" tabindex="-1">Validation needs attention</p></body></html>`;
 const variants = new Map([
   ['/grid-reserved', html.replace('grid-template-columns:0px', 'grid-template-columns:200px')],
   ['/character-wrap', html.replace('h1{font-size:24px}', 'h1{font-size:24px;width:1px;overflow-wrap:anywhere}')],
@@ -82,24 +82,53 @@ async function capturePrivacy() {
           window.scrollTo({ top: scrolled ? 552 : 0, behavior: 'instant' });
         }, scrolled);
         const settings = { screenshotDir: join(scratch, name), screenshotMasks: [] };
-        const captureTarget = { name, screenshotMasks: [{ selector: '#private', reason: 'synthetic identity' }] };
+        const captureTarget = { name, screenshotMasks: [{ selector: '#private', reason: 'synthetic identity' }], verificationState: { actions: [{ action: 'fill', selector: '#declaration', value: 'SYNTHETIC_ECHO_ID' }] } };
         const state = async () => ({ main: await page.evaluate(() => ({ scroll: { x: scrollX, y: scrollY }, focus: document.activeElement?.id, color: getComputedStyle(document.querySelector('#declaration')).color, sheets: document.adoptedStyleSheets.length, shadowSheets: document.querySelector('#shadow').shadowRoot.adoptedStyleSheets.length })), children: await Promise.all(page.frames().filter(frame => frame !== page.mainFrame()).map(frame => frame.evaluate(() => ({ color: getComputedStyle(document.querySelector('input')).color, sheets: document.adoptedStyleSheets.length })))) });
         const original = await state();
+        const privateAreas = await page.locator('#private, #echo').evaluateAll(elements => elements.map(element => {
+          const box = element.getBoundingClientRect();
+          return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height };
+        }));
         const failures = [];
         for (const kind of ['viewport', 'full-page']) {
           const shot = await captureEvidenceScreenshot(page, captureTarget, { name: phone ? 'phone' : 'desktop' }, settings, name, kind);
           const png = PNG.sync.read(await readFile(shot.path));
-          let protectedPixels = 0, maskPixels = 0, publicPixels = 0;
+          let protectedPixels = 0, maskPixels = 0, publicPixels = 0, misplacedMaskPixels = 0;
           for (let index = 0; index < png.data.length; index += 4) {
             const [red, green, blue] = png.data.subarray(index, index + 3);
             if (red > 150 && green < 80 && blue < 130) protectedPixels++;
-            if (red === 119 && green === 119 && blue === 119) maskPixels++;
+            if (red === 119 && green === 119 && blue === 119) {
+              maskPixels++;
+              const x = (index / 4) % png.width + (kind === 'viewport' ? original.main.scroll.x : 0);
+              const y = Math.floor(index / 4 / png.width) + (kind === 'viewport' ? original.main.scroll.y : 0);
+              if (!privateAreas.some(box => x >= Math.floor(box.x) && x < Math.ceil(box.x + box.width) && y >= Math.floor(box.y) && y < Math.ceil(box.y + box.height))) misplacedMaskPixels++;
+            }
             if (red < 60 && green > 90 && blue > 90) publicPixels++;
           }
           if (protectedPixels) failures.push(`${kind}: ${protectedPixels} protected text pixels`);
-          if (kind === 'full-page' && (maskPixels < 7000 || publicPixels < 100)) failures.push(`${kind}: mask or ordinary content missing`);
+          if (misplacedMaskPixels) failures.push(`${kind}: hidden choice creates ${misplacedMaskPixels} mask pixels outside rendered private regions`);
+          if (kind === 'full-page' && (maskPixels < 13000 || publicPixels < 100)) failures.push(`${kind}: mask or ordinary content missing`);
           try { assert.deepEqual(await state(), original); } catch { failures.push(`${kind}: screenshot changed page state`); }
         }
+        // The same option labels must still be private when the disclosure opens.
+        await page.locator('#closed-choice').evaluate(element => { element.open = true; });
+        const optionAreas = await page.locator('#closed-choice .options span').evaluateAll(elements => elements.map(element => {
+          const box = element.getBoundingClientRect();
+          return { x: box.x + scrollX, y: box.y + scrollY, width: box.width, height: box.height, visible: element.checkVisibility() };
+        }));
+        const openShot = await captureEvidenceScreenshot(page, captureTarget, { name: 'open-choice' }, settings, name, 'full-page');
+        const openPng = PNG.sync.read(await readFile(openShot.path));
+        if (optionAreas.length !== 6 || optionAreas.some(box => !box.visible || box.width <= 0 || box.height <= 0)) failures.push('open choices must actually render');
+        for (const box of optionAreas) {
+          const offset = (Math.floor(box.y + box.height / 2) * openPng.width + Math.floor(box.x + box.width / 2)) * 4;
+          if (!openPng.data.subarray(offset, offset + 3).every(channel => channel === 119)) failures.push('visible echoed option was not masked');
+        }
+        for (let index = 0; index < openPng.data.length; index += 4) {
+          const [red, green, blue] = openPng.data.subarray(index, index + 3);
+          if (red > 150 && green < 80 && blue < 130) { failures.push('open choice capture retained protected text'); break; }
+        }
+        await page.locator('#closed-choice').evaluate(element => { element.open = false; });
+        try { assert.deepEqual(await state(), original); } catch { failures.push('open choice screenshot changed page state'); }
         await page.locator('#declaration').evaluate(element => element.style.setProperty('color', '#de1d48', 'important'));
         try { await captureEvidenceScreenshot(page, captureTarget, { name: 'color-override' }, settings, name, 'full-page'); }
         catch { failures.push('transparent text fill must allow an unrelated color override'); }

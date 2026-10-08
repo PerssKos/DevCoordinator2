@@ -4808,7 +4808,9 @@ async function screenshotMasks(page, target, config, bounded = false) {
     masks.push(locator);
   }
   for (const value of screenshotActionValues(target)) {
-    masks.push(page.getByText(value, { exact: false }));
+    // Closed disclosures retain descendant boxes. Mask only rendered echoes;
+    // Playwright otherwise paints those hidden boxes over unrelated content.
+    masks.push(page.getByText(value, { exact: false }).filter({ visible: true }));
   }
   return masks;
 }
