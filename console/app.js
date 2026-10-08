@@ -75,6 +75,7 @@ const state = {
   agentRepositoryId: null,
   agentHarness: 'codex',
   usageWorktreeSelection: new Map(),
+  usageWorktreeAllSelection: new Map(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -3094,18 +3095,26 @@ function usageWorktreeScope(repositoryId, repositoryList, repositoryName) {
   if (!selectedIds) {
     selectedIds = worktrees.map((worktree) => worktree.worktree_id);
     state.usageWorktreeSelection.set(repositoryId, selectedIds);
+    state.usageWorktreeAllSelection.set(repositoryId, true);
   } else {
     const valid = new Set(worktrees.map((worktree) => worktree.worktree_id));
     selectedIds = selectedIds.filter((id) => valid.has(id));
+    state.usageWorktreeAllSelection.set(repositoryId, selectedIds.length === worktrees.length);
   }
   return { worktrees, selectedIds, allSelected: selectedIds.length === worktrees.length, unavailable: selectedIds.length > 0 && selectedIds.length < worktrees.length };
+}
+
+function usageWorktreeRequest(repositoryId) {
+  const selected = state.usageWorktreeSelection.get(repositoryId);
+  if (!selected || state.usageWorktreeAllSelection.get(repositoryId) !== false) return {};
+  return { worktree_ids: [...selected], include_unassigned: false };
 }
 
 function usageWorktreeScopeMarkup(scope) {
   if (!scope) return '';
   const selected = new Set(scope.selectedIds);
   const label = scope.allSelected ? 'All worktrees' : `${scope.selectedIds.length} worktree${scope.selectedIds.length === 1 ? '' : 's'} selected`;
-  return `<div class="usage-worktree-scope"><button type="button" class="usage-worktree-scope-toggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="usage-worktree-scope-popover" data-usage-worktree-scope-toggle>${esc(`Worktree scope · ${label}`)}</button><div class="usage-worktree-scope-popover" id="usage-worktree-scope-popover" role="dialog" aria-label="Worktree scope" tabindex="-1" hidden><strong>Worktree scope</strong><p>Select all checkouts for a consolidated repository total, or choose a subset. Separate totals are available only when Codex has worktree-level attribution.</p><div class="usage-worktree-scope-list"><label class="usage-worktree-option usage-worktree-all"><input type="checkbox" data-usage-worktree-all ${scope.allSelected ? 'checked' : ''}><span><strong>All worktrees</strong><small>${scope.worktrees.length} registered checkouts · consolidated repository total</small></span></label>${scope.worktrees.map((worktree) => `<label class="usage-worktree-option" title="${esc(worktree.worktree_path)}"><input type="checkbox" data-usage-worktree-id="${esc(worktree.worktree_id)}" ${selected.has(worktree.worktree_id) ? 'checked' : ''}><span><strong>${esc(worktree.label)}</strong><small>Separate total unavailable · ${esc(worktree.worktree_path)}</small></span></label>`).join('')}</div><div class="usage-worktree-scope-actions"><button type="button" class="btn btn-small" data-usage-worktree-clear>Clear</button><button type="button" class="btn btn-small btn-primary" data-usage-worktree-apply>Apply</button></div></div></div>`;
+  return `<div class="usage-worktree-scope"><button type="button" class="usage-worktree-scope-toggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="usage-worktree-scope-popover" data-usage-worktree-scope-toggle>${esc(`Worktree scope · ${label}`)}</button><div class="usage-worktree-scope-popover" id="usage-worktree-scope-popover" role="dialog" aria-label="Worktree scope" tabindex="-1" hidden><strong>Worktree scope</strong><p>Select all checkouts for a consolidated repository total, or choose a subset. Separate totals are available only when Codex has worktree-level attribution.</p><div class="usage-worktree-scope-list"><label class="usage-worktree-option usage-worktree-all"><input type="checkbox" data-usage-worktree-all ${scope.allSelected ? 'checked' : ''}><span><strong>All worktrees</strong><small>${scope.worktrees.length} registered checkouts · consolidated repository total</small></span></label>${scope.worktrees.map((worktree) => `<label class="usage-worktree-option" title="${esc(worktree.worktree_path)}"><input type="checkbox" data-usage-worktree-id="${esc(worktree.worktree_id)}" ${selected.has(worktree.worktree_id) ? 'checked' : ''}><span><strong>${esc(worktree.label)}</strong><small>${worktree.available === true ? 'Attributed total available' : 'Separate total unavailable'} · ${esc(worktree.worktree_path)}</small></span></label>`).join('')}</div><div class="usage-worktree-scope-actions"><button type="button" class="btn btn-small" data-usage-worktree-clear>Clear</button><button type="button" class="btn btn-small btn-primary" data-usage-worktree-apply>Apply</button></div></div></div>`;
 }
 
 function bindUsageWorktreeScope(root, repositoryId, scope) {
@@ -3131,7 +3140,7 @@ function bindUsageWorktreeScope(root, repositoryId, scope) {
   all.addEventListener('change', () => { draft = all.checked ? new Set(scope.worktrees.map((worktree) => worktree.worktree_id)) : new Set(); refreshChecks(); });
   popover.querySelectorAll('[data-usage-worktree-id]').forEach((input) => input.addEventListener('change', () => { if (input.checked) draft.add(input.dataset.usageWorktreeId); else draft.delete(input.dataset.usageWorktreeId); refreshChecks(); }));
   $('[data-usage-worktree-clear]', popover).addEventListener('click', () => { draft.clear(); refreshChecks(); });
-  $('[data-usage-worktree-apply]', popover).addEventListener('click', () => { state.usageWorktreeSelection.set(repositoryId, [...draft]); close(true); void viewCodexUsage(repositoryId); });
+  $('[data-usage-worktree-apply]', popover).addEventListener('click', () => { state.usageWorktreeSelection.set(repositoryId, [...draft]); state.usageWorktreeAllSelection.set(repositoryId, draft.size === scope.worktrees.length); close(true); void viewCodexUsage(repositoryId); });
   popover.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(true); } });
 }
 
@@ -3501,7 +3510,7 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const identity = usageViewIdentity();
   if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
   const [data, projectList, repositoryList] = await Promise.all([
-    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
+    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     workspace.active ? {} : api('plan.overview', {}),
     api('repository.list', {}),
   ]);
@@ -3511,6 +3520,11 @@ const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const canonicalProject = (projectList.repositories || []).find((row) => row.repository_id === repositoryId);
   const canonicalName = workspace.active ? (workspace.current()?.name || data.display_name) : (canonicalProject?.repository_source?.name || data.display_name);
   const scope = usageWorktreeScope(repositoryId, repositoryList, canonicalName);
+  if (scope && data.worktree_scope) {
+    const reported = new Map((data.worktree_scope.worktrees || []).map((row) => [row.worktree_id, row]));
+    scope.worktrees = scope.worktrees.map((row) => ({ ...row, ...(reported.get(row.worktree_id) || {}) }));
+    scope.unavailable = Boolean(data.worktree_scope.selected_worktree_ids && !data.worktree_scope.attribution_available);
+  }
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">

@@ -1974,7 +1974,8 @@ async function main() {
   check('usage: individual worktree selection stays truthful when producer attribution is unavailable',
     await page.locator('.usage-worktree-unavailable').count() === 1
     && await page.locator('.usage-metrics').count() === 0
-    && /common Git root/.test(await page.locator('.usage-worktree-unavailable').innerText()));
+    && /common Git root/.test(await page.locator('.usage-worktree-unavailable').innerText())
+    && daemon.calls.some((call) => call.operation === 'usage.repository' && call.params.worktree_ids?.length === 2 && call.params.include_unassigned === false));
   await page.click('[data-usage-worktree-scope-toggle]');
   await page.locator('[data-usage-worktree-all]').check();
   await page.click('[data-usage-worktree-apply]');

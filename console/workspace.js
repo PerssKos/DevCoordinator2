@@ -304,15 +304,17 @@ window.DevCoordinatorWorkspace = (() => {
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
         const registered = (repositoryList.value?.repositories || []).flatMap((record) => {
+          const planned = plans.value?.repositories?.find((row) => row.repository_id === record.repository_id);
+          const source = planned?.repository_source || record.repository_source;
           const worktrees = record.worktrees || [];
           return worktrees.map((worktree) => ({
             repository_id: record.repository_id,
             display_name: record.display_name,
-            repository_group_key: record.repository_id,
-            repository_group_name: record.repository_source?.name || record.display_name,
-            root_path: record.root_path,
+            repository_group_key: source?.key || record.repository_id,
+            repository_group_name: source?.name || record.display_name,
+            root_path: planned?.root_path || record.root_path,
             worktree_path: worktree.worktree_path,
-            repository_source: record.repository_source,
+            repository_source: source,
           }));
         });
         data = { repositories: [...(plans.value?.repositories || []), ...registered], registered, runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
