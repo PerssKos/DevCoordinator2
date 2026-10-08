@@ -74,6 +74,7 @@ const state = {
   agentScope: 'global',
   agentRepositoryId: null,
   agentHarness: 'codex',
+  usageWorktreeSelection: new Map(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -3074,6 +3075,71 @@ function usageRefreshContext(waiting) {
   };
 }
 
+function usageWorktreeLabel(worktree, rootPath, repositoryName) {
+  if (worktree.worktree_path === rootPath) return repositoryName || 'codex';
+  const relative = rootPath && worktree.worktree_path?.startsWith(`${rootPath}/`)
+    ? worktree.worktree_path.slice(rootPath.length + 1)
+    : worktree.worktree_path;
+  return String(relative || worktree.worktree_id).split('/').filter(Boolean).pop() || worktree.worktree_id;
+}
+
+function usageWorktreeScope(repositoryId, repositoryList, repositoryName) {
+  const repository = (repositoryList?.repositories || []).find((row) => row.repository_id === repositoryId);
+  const worktrees = (repository?.worktrees || []).map((worktree) => ({
+    ...worktree,
+    label: usageWorktreeLabel(worktree, repository.root_path, repositoryName),
+  }));
+  if (!worktrees.length) return null;
+  let selectedIds = state.usageWorktreeSelection.get(repositoryId);
+  if (!selectedIds) {
+    selectedIds = worktrees.map((worktree) => worktree.worktree_id);
+    state.usageWorktreeSelection.set(repositoryId, selectedIds);
+  } else {
+    const valid = new Set(worktrees.map((worktree) => worktree.worktree_id));
+    selectedIds = selectedIds.filter((id) => valid.has(id));
+  }
+  return { worktrees, selectedIds, allSelected: selectedIds.length === worktrees.length, unavailable: selectedIds.length > 0 && selectedIds.length < worktrees.length };
+}
+
+function usageWorktreeScopeMarkup(scope) {
+  if (!scope) return '';
+  const selected = new Set(scope.selectedIds);
+  const label = scope.allSelected ? 'All worktrees' : `${scope.selectedIds.length} worktree${scope.selectedIds.length === 1 ? '' : 's'} selected`;
+  return `<div class="usage-worktree-scope"><button type="button" class="usage-worktree-scope-toggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="usage-worktree-scope-popover" data-usage-worktree-scope-toggle>${esc(`Worktree scope · ${label}`)}</button><div class="usage-worktree-scope-popover" id="usage-worktree-scope-popover" role="dialog" aria-label="Worktree scope" tabindex="-1" hidden><strong>Worktree scope</strong><p>Select all checkouts for a consolidated repository total, or choose a subset. Separate totals are available only when Codex has worktree-level attribution.</p><div class="usage-worktree-scope-list"><label class="usage-worktree-option usage-worktree-all"><input type="checkbox" data-usage-worktree-all ${scope.allSelected ? 'checked' : ''}><span><strong>All worktrees</strong><small>${scope.worktrees.length} registered checkouts · consolidated repository total</small></span></label>${scope.worktrees.map((worktree) => `<label class="usage-worktree-option" title="${esc(worktree.worktree_path)}"><input type="checkbox" data-usage-worktree-id="${esc(worktree.worktree_id)}" ${selected.has(worktree.worktree_id) ? 'checked' : ''}><span><strong>${esc(worktree.label)}</strong><small>Separate total unavailable · ${esc(worktree.worktree_path)}</small></span></label>`).join('')}</div><div class="usage-worktree-scope-actions"><button type="button" class="btn btn-small" data-usage-worktree-clear>Clear</button><button type="button" class="btn btn-small btn-primary" data-usage-worktree-apply>Apply</button></div></div></div>`;
+}
+
+function bindUsageWorktreeScope(root, repositoryId, scope) {
+  if (!scope) return;
+  const control = $('.usage-worktree-scope', root);
+  const toggle = $('[data-usage-worktree-scope-toggle]', root);
+  const popover = $('.usage-worktree-scope-popover', root);
+  if (!control || !toggle || !popover) return;
+  let draft = new Set(scope.selectedIds);
+  const all = $('[data-usage-worktree-all]', popover);
+  const refreshChecks = () => {
+    all.checked = draft.size === scope.worktrees.length;
+    popover.querySelectorAll('[data-usage-worktree-id]').forEach((input) => { input.checked = draft.has(input.dataset.usageWorktreeId); });
+  };
+  const close = (restoreFocus = false) => {
+    if (popover.hidden) return;
+    popover.hidden = true; toggle.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true);
+    if (restoreFocus) toggle.focus();
+  };
+  const outside = (event) => { if (!control.contains(event.target)) close(false); };
+  const open = () => { draft = new Set(state.usageWorktreeSelection.get(repositoryId) || scope.selectedIds); refreshChecks(); popover.hidden = false; toggle.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); popover.focus({ preventScroll: true }); };
+  toggle.addEventListener('click', () => popover.hidden ? open() : close(true));
+  all.addEventListener('change', () => { draft = all.checked ? new Set(scope.worktrees.map((worktree) => worktree.worktree_id)) : new Set(); refreshChecks(); });
+  popover.querySelectorAll('[data-usage-worktree-id]').forEach((input) => input.addEventListener('change', () => { if (input.checked) draft.add(input.dataset.usageWorktreeId); else draft.delete(input.dataset.usageWorktreeId); refreshChecks(); }));
+  $('[data-usage-worktree-clear]', popover).addEventListener('click', () => { draft.clear(); refreshChecks(); });
+  $('[data-usage-worktree-apply]', popover).addEventListener('click', () => { state.usageWorktreeSelection.set(repositoryId, [...draft]); close(true); void viewCodexUsage(repositoryId); });
+  popover.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(true); } });
+}
+
+function usageWorktreeUnavailable(scope) {
+  if (!scope?.unavailable) return '';
+  return '<section class="usage-worktree-unavailable" role="status"><strong>Worktree-specific usage unavailable</strong><p>Codex currently records this repository at its common Git root, so separate totals for the selected worktrees cannot be proven. Select all worktrees to view the consolidated repository total.</p></section>';
+}
+
 const usageRefreshTimers = new Map();
 function continueUsageRefresh(coverages, refresh) {
   const identity = usageViewIdentity();
@@ -3434,24 +3500,30 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
 const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const identity = usageViewIdentity();
   if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
-  const [data, projectList] = await Promise.all([
+  const [data, projectList, repositoryList] = await Promise.all([
     api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     workspace.active ? {} : api('plan.overview', {}),
+    api('repository.list', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
   }];
+  const canonicalProject = (projectList.repositories || []).find((row) => row.repository_id === repositoryId);
+  const canonicalName = workspace.active ? (workspace.current()?.name || data.display_name) : (canonicalProject?.repository_source?.name || data.display_name);
+  const scope = usageWorktreeScope(repositoryId, repositoryList, canonicalName);
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
-    <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>
-    <div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
+    ${usageWorktreeUnavailable(scope)}
+    ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
+    ${scope?.unavailable ? '' : `<div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
     ${outcomeCostPulse(data)}
-    <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>
+    <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>`}
   </section>`;
   bindProjectPicker(main);
   bindCoverageHint(main);
+  bindUsageWorktreeScope(main, repositoryId, scope);
   bindUsageModelLedger(main, data);
   bindUsageChartTooltip(main);
   if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {

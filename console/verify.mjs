@@ -727,6 +727,7 @@ async function startFakeDaemon(dir) {
         return reply({ ok: true, data: result });
       }
       if (cmd === 'plan.overview') return reply({ ok: true, data: planOverview() });
+      if (cmd === 'repository.list') return reply({ ok: true, data: { repositories: [{ repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] }] } });
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
@@ -1959,6 +1960,28 @@ async function main() {
   // chart, keyboard-preserving range changes, and accessible exact values.
   await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
   await page.waitForSelector('.usage-phase-chart');
+  check('usage: worktree scope is grouped under the canonical repository',
+    await page.locator('[data-usage-worktree-scope-toggle]').count() === 1
+    && /All worktrees/.test(await page.locator('[data-usage-worktree-scope-toggle]').innerText()));
+  await page.click('[data-usage-worktree-scope-toggle]');
+  check('usage: worktree scope exposes an accessible checkbox popover',
+    await page.locator('.usage-worktree-scope-popover:not([hidden])').count() === 1
+    && await page.locator('[data-usage-worktree-id]').count() === 3
+    && await page.locator('[data-usage-worktree-all]').isChecked());
+  await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();
+  await page.click('[data-usage-worktree-apply]');
+  await page.waitForSelector('.usage-worktree-unavailable');
+  check('usage: individual worktree selection stays truthful when producer attribution is unavailable',
+    await page.locator('.usage-worktree-unavailable').count() === 1
+    && await page.locator('.usage-metrics').count() === 0
+    && /common Git root/.test(await page.locator('.usage-worktree-unavailable').innerText()));
+  await page.click('[data-usage-worktree-scope-toggle]');
+  await page.locator('[data-usage-worktree-all]').check();
+  await page.click('[data-usage-worktree-apply]');
+  await page.waitForSelector('.usage-phase-chart');
+  check('usage: consolidated worktree selection restores measured repository totals',
+    await page.locator('.usage-metrics').count() === 1
+    && await page.locator('.usage-worktree-unavailable').count() === 0);
   check('usage: the shared workspace offers real same-aspect repository links',
     await page.locator('#repository-list a[href="#/usage/r2"]').count() === 1 && await page.locator('[data-project-picker]').count() === 0);
   await chooseRepository(page, LONG);

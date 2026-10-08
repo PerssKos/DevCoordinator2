@@ -42,10 +42,20 @@ window.DevCoordinatorWorkspace = (() => {
         .filter((candidate) => candidate.repository_id !== row.repository_id && isPathInside(path, candidate.root_path))
         .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
     };
+    const registeredRootOwner = (row) => {
+      const path = row.worktree_path || row.root_path;
+      if (!path) return null;
+      return repositories
+        .filter((candidate) => candidate.repository_id !== row.repository_id
+          && row.repository_source?.key
+          && candidate.repository_source?.key === row.repository_source.key
+          && isPathInside(path, candidate.root_path))
+        .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
+    };
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
-      const owner = scratchOwner(row);
+      const owner = scratchOwner(row) || registeredRootOwner(row);
       const ownerSource = owner?.repository_source;
       records.set(row.repository_id, {
         ...previous, ...row,
