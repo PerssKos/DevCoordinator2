@@ -84,8 +84,17 @@ earlier model messages or reload unchanged instructions.
   only the reviewed repository and current authorized scope. Do not classify
   user waiting or intentional required release revalidation as waste.
 - Submit dependency-ready work concurrently, preserve ownership boundaries,
-  track every asynchronous operation, and verify completion. Prefer events;
-  if unavailable, use one service-owned bounded-backoff watcher. Do not add a competing scheduler.
+  track every asynchronous operation, and verify completion. Required running
+  or queued work remains part of the active task: wait instead of sending a
+  final response. Follow the execution module's completion-wait procedure
+  before yielding. Never promise automatic continuation without a confirmed
+  wait registration and, when needed, verified background-wake permission.
+- Temporary testing or Coordinator unavailability does not end authorized
+  development. Continue independent work, retain the missing verification,
+  then use the execution module's availability-wait procedure when no
+  independent work remains. Resume the deferred checks after recovery;
+  unverified changes are not complete. Preserve mandatory gates and never
+  bypass a refusal or create a competing scheduler.
 - Preserve canonical sources, valuable dirty work, shared services, credentials,
   and recoverable data. Mutate derived/install copies only by reviewed source
   workflows. Keep user-visible behavior real and verify the original affected
