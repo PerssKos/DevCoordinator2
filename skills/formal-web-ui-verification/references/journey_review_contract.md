@@ -576,7 +576,7 @@ replaces the defaults; resource/marker arrays are not concatenated.
   configuration describes aliases only, not the resource paths/marker selectors.
 - The per-cell object is bounded to 64 events and 16 KiB. Dropped counts are
   explicit. Pending matched requests and completed wait stages are recorded at
-  failure; marker evidence contains count/visibility and document ready state,
+  failure and successful readiness; failure marker evidence contains count/visibility and document ready state,
   not page text/HTML. These observations distinguish visible boundaries; they
   do not prove a root cause.
 - Initial navigation/readiness failure retains `navigation_error`, the original
@@ -599,7 +599,10 @@ replaces the defaults; resource/marker arrays are not concatenated.
   report and journey-evidence bundle. The failed cell does not become `checked`
   or enter the manual acceptance queue. No Console/API schema or public access
   change is involved. Independent safe cells and normal context cleanup continue.
-- Successful opted cells record a bounded ready/counter summary and retain normal
+- Successful opted cells retain the same bounded passive event timeline, pending
+  resource counts, unmatched resource-type counts and completed wait stages with
+  `status: "ready"`. This adds no DOM probes, diagnostic captures or waits and does
+  not infer a failure or cause from a slow successful load. They retain normal
   verification. Listeners are removed before later interactions. Opted cells
   neither read nor write development-cache evidence; subsequent invocations load
   a real fresh page. Absent/disabled diagnostics preserve the existing path.

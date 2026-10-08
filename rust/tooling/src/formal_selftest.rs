@@ -1117,6 +1117,7 @@ for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_
         "connection-close",
         "page-error",
         "normal",
+        "ready-storm",
         "delayed",
         "opt-out",
         "storm",
@@ -1148,8 +1149,9 @@ for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_
                     "module-error" | "page-error" | "connection-close" => format!(
                         "<script type='module' src='/module/{secret}.mjs?token={secret}'></script>"
                     ),
-                    "storm" | "limit-boundary" => format!(
-                        "<script>Promise.all(Array.from({{length:100}},()=>fetch('/session/{secret}'))).then(()=>fetch('/storm-finished'))</script>"
+                    "storm" | "limit-boundary" | "ready-storm" => format!(
+                        "<script>Promise.all(Array.from({{length:100}},()=>fetch('/session/{secret}'))).then(()=>fetch('/storm-finished')).then(()=>{{if({})document.querySelector('main').id='ready'}})</script>",
+                        mode == "ready-storm"
                     ),
                     _ => format!(
                         "<script>console.error('{secret}');fetch('/session/{secret}?token={secret}#private-{secret}',{{method:'POST',headers:{{'X-Probe':'{secret}'}},body:'{secret}'}}).then(response=>response.json()).then(()=>{{if({})document.querySelector('main').id='ready'}});fetch('/private/{secret}');{}</script>",
@@ -1257,10 +1259,10 @@ for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_
         }))?;
         let base = server.base_url();
         let output = work.join(mode);
-        let checked = ["normal", "delayed", "defaults"].contains(&mode);
+        let checked = ["normal", "delayed", "defaults", "ready-storm"].contains(&mode);
         let expected_exit = if checked { 0 } else { 3 };
         let mut diagnostics = json!({"enabled":true,"resources":[{"id":"session","pathname":format!("/session/{secret}")},{"id":"module","pathname":format!("/module/{secret}.mjs")}],"markers":[{"id":"content","selector":"main"},{"id":"ready","selector":"#ready"}]});
-        if mode == "limit-boundary" {
+        if ["limit-boundary", "ready-storm"].contains(&mode) {
             for index in 2..16 {
                 diagnostics["resources"].as_array_mut().unwrap().push(
                     json!({"id":format!("resource-{index}"),"pathname":format!("/unused/{index}")}),
@@ -1279,7 +1281,7 @@ for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_
                 diagnostics.clone()
             };
         }
-        if ["storm", "limit-boundary"].contains(&mode) {
+        if ["storm", "limit-boundary", "ready-storm"].contains(&mode) {
             target["waitFor"]["responseUrl"] = json!("**/storm-finished");
         }
         if mode == "mask-error" {
@@ -1366,6 +1368,41 @@ for (const value of [undefined, null, 7, {{}}, 'ERR_ABORTED', 'net::ERR_PRIVATE_
             if checked {
                 if diagnostic.get("status") != Some(&json!("ready")) {
                     return Err("healthy page falsely failed".into());
+                }
+                let events = diagnostic
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .ok_or("successful readiness discarded its resource timeline")?;
+                if (mode != "ready-storm"
+                    && !events.iter().any(|event| {
+                        event.get("event") == Some(&json!("response"))
+                            && event.get("resource") == Some(&json!("session"))
+                            && event.get("status") == Some(&json!(200))
+                    }))
+                    || events
+                        .iter()
+                        .any(|event| event.get("failureCode").is_some())
+                    || diagnostic.get("pendingResources").is_none()
+                    || diagnostic.get("unknownResources").is_none()
+                    || diagnostic.get("waitStages").is_none()
+                    || diagnostic.get("captures").is_some()
+                    || diagnostic.get("document").is_some()
+                {
+                    return Err("ready resource timeline is incomplete or falsely failed".into());
+                }
+                if mode == "ready-storm"
+                    && (diagnostic
+                        .get("droppedEvents")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        == 0
+                        || diagnostic
+                            .get("totalEvents")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0)
+                            <= 64)
+                {
+                    return Err("successful readiness did not exercise its event bound".into());
                 }
             } else {
                 if diagnostic.pointer("/failure/stage") != Some(&json!("initial-readiness"))

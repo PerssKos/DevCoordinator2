@@ -95,7 +95,9 @@ headers, console text or error prose. Limits are 16 resources, 16 markers,
 full-page images of that same page before cleanup, with a three-second capture
 deadline. Masking failure has no unmasked fallback. The original failure and
 coverage exit remain failures, not manual-review approvals. Successful opted
-cells remain successful; absent/disabled diagnostics retain ordinary behavior.
+cells retain the same bounded passive timeline for slow-load diagnosis and remain
+successful, without extra probes or waits; absent/disabled diagnostics retain
+ordinary behavior.
 Opted cells bypass evidence caching so a fresh-page diagnostic is never a replay.
 This does not capture authentication bootstrap failures or infer the cause of a
 previous run. Read the linked contract for privacy and partial-capture limits.

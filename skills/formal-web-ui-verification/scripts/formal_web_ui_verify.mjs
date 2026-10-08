@@ -4997,12 +4997,19 @@ function startInitialReadinessDiagnostics(page, target) {
     detached = Object.entries(handlers).every(([event, handler]) => !page.listeners(event).includes(handler));
   };
   const snapshot = (status) => ({ status, elapsedMs: elapsed(), totalEvents: total, droppedEvents: dropped, events: [...events], unknownResources: { ...unknown }, pendingResources: { ...inflight }, waitStages: [...waitStages], listenersRemoved: detached });
+  const boundedSnapshot = (evidence) => {
+    while (Buffer.byteLength(JSON.stringify(evidence)) > 16384 && evidence.events.length) {
+      evidence.events.pop();
+      evidence.droppedEvents += 1;
+    }
+    return evidence;
+  };
   return {
     stop,
     completedWait: (entry) => { if (waitStages.length < 16) waitStages.push(entry); },
     success: () => {
       stop();
-      return { status: "ready", elapsedMs: elapsed(), totalEvents: total, droppedEvents: dropped, listenersRemoved: detached };
+      return boundedSnapshot(snapshot("ready"));
     },
     async failure(result, error, stage, config, viewport, cellId) {
       const failedAt = Date.now();
@@ -5041,11 +5048,7 @@ function startInitialReadinessDiagnostics(page, target) {
           }
         }
         evidence.captureDurationMs = Date.now() - failedAt;
-        while (Buffer.byteLength(JSON.stringify(evidence)) > 16384 && evidence.events.length) {
-          evidence.events.pop();
-          evidence.droppedEvents += 1;
-        }
-        result.initialReadinessDiagnostics = evidence;
+        result.initialReadinessDiagnostics = boundedSnapshot(evidence);
       } finally {
         clearTimeout(deadlineTimer);
         if (closeOnDeadline) await closeOnDeadline;
