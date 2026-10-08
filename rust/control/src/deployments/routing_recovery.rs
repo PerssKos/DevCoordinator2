@@ -272,5 +272,9 @@ pub(crate) fn restore_route(
         Some(port),
         Some(generation),
     )?;
+    // A prior lease withdrawal marks the deployment degraded. Recompute from
+    // every component so a recovered route clears that marker only when the
+    // rest of the deployment is healthy too.
+    deployments.recompute_state(&target)?;
     Ok(Recovery::Restored)
 }

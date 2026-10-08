@@ -413,6 +413,7 @@ fn reconcile_recovers_missing_saved_process_on_original_route_lease() {
         .unwrap();
     fixture.deployments.reconcile_routes().unwrap();
     let recovered = fixture.status(&first.deployment_id);
+    assert_eq!(recovered.state, "running");
     assert_eq!(recovered.current_generation, first.current_generation);
     assert_eq!(recovered.route_port, first.route_port);
     assert_eq!(
