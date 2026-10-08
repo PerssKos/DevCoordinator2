@@ -486,6 +486,15 @@ impl TestRunStore {
         let Some(value) = read_json::<serde_json::Value>(&test, EVIDENCE_FILE)? else {
             return Ok(None);
         };
+        let schema = value
+            .get("schema")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| TestStateError::Invalid("test evidence schema is missing".into()))?;
+        if schema != 2 {
+            return Err(TestStateError::Invalid(
+                "test evidence schema is invalid".into(),
+            ));
+        }
         let Some(runs) = value.get("runs").and_then(serde_json::Value::as_array) else {
             return Err(TestStateError::Invalid(
                 "test evidence runs must be an array".into(),
@@ -548,6 +557,15 @@ impl TestRunStore {
         let Some(value) = read_json::<serde_json::Value>(&test, HISTORY_FILE)? else {
             return Ok(None);
         };
+        let schema = value
+            .get("schema")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| TestStateError::Invalid("test history schema is missing".into()))?;
+        if schema != 2 {
+            return Err(TestStateError::Invalid(
+                "test history schema is invalid".into(),
+            ));
+        }
         let Some(runs) = value.get("runs").and_then(serde_json::Value::as_array) else {
             return Err(TestStateError::Invalid(
                 "test history runs must be an array".into(),
