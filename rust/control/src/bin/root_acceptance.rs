@@ -3263,6 +3263,124 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
     Ok(())
 }
 
+fn case_shared_postgres_owner_port_health(world: &mut World) -> Result<(), String> {
+    world.write_config(
+        r#"schema = 2
+[deployment.owner]
+source = "worktree"
+components = ["db"]
+
+[deployment.owner.component.db]
+type = "postgres"
+image = "postgres:16-alpine"
+database = "app"
+user = "app"
+"#,
+    )?;
+    let owner = data(&world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "owner@worktree"}),
+    )?)?
+    .clone();
+    let owner_id = owner["deployment_id"]
+        .as_str()
+        .ok_or_else(|| "owner deployment id is missing".to_owned())?
+        .to_owned();
+    let owner_db = component(&owner, "db")?;
+    let owner_port = owner_db["port"]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "owner PostgreSQL port is missing".to_owned())?;
+    ensure!(
+        owner_db["owned"] == true && owner_db["health"] == "healthy",
+        "owner PostgreSQL component was not healthy and owned"
+    );
+    ensure!(
+        tcp_reachable(owner_port),
+        "owner PostgreSQL host port is unreachable"
+    );
+    world.track_volume(&format!("devcoordinator2-{owner_id}-db-pgdata"));
+
+    world.write_config(&format!(
+        r#"schema = 2
+[deployment.owner]
+source = "worktree"
+components = ["db"]
+
+[deployment.owner.component.db]
+type = "postgres"
+image = "postgres:16-alpine"
+database = "app"
+user = "app"
+
+[deployment.consumer]
+source = "worktree"
+components = ["db"]
+
+[deployment.consumer.component.db]
+type = "postgres"
+shared_from = "{owner_id}/db"
+"#
+    ))?;
+    let consumer = data(&world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "consumer@worktree"}),
+    )?)?
+    .clone();
+    let consumer_id = consumer["deployment_id"]
+        .as_str()
+        .ok_or_else(|| "consumer deployment id is missing".to_owned())?
+        .to_owned();
+    let consumer_db = component(&consumer, "db")?;
+    ensure!(
+        consumer_db["health"] == "healthy"
+            && consumer_db["owned"] == false
+            && consumer_db["port"].is_null(),
+        "shared PostgreSQL consumer did not use the healthy owner binding"
+    );
+    let owner_status_response =
+        world.call("deployment.status", json!({"deployment_id": owner_id}))?;
+    let owner_status = data(&owner_status_response)?;
+    ensure!(
+        component(owner_status, "db")?["port"] == json!(owner_port),
+        "shared consumer altered the owner port binding"
+    );
+
+    let removed_owner = data(&world.call(
+        "deployment.remove",
+        json!({"deployment_id": owner_id, "delete_data": false}),
+    )?)?
+    .clone();
+    ensure!(
+        removed_owner["removed"] == true,
+        "owner deployment was not removed for the negative guard"
+    );
+    let missing_owner = world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "consumer@worktree"}),
+    )?;
+    ensure!(
+        error_code(&missing_owner) == Some("deployment_apply_failed"),
+        "consumer succeeded after its shared owner was removed"
+    );
+    ensure!(
+        missing_owner
+            .to_string()
+            .contains("shared PostgreSQL component is not deployed"),
+        "missing-owner failure did not identify the ownership boundary"
+    );
+    let removed_consumer_response = world.call(
+        "deployment.remove",
+        json!({"deployment_id": consumer_id, "delete_data": false}),
+    )?;
+    let removed_consumer = data(&removed_consumer_response)?;
+    ensure!(
+        removed_consumer["removed"] == true,
+        "consumer deployment cleanup did not complete"
+    );
+    Ok(())
+}
+
 fn case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(
     world: &mut World,
 ) -> Result<(), String> {
@@ -6673,6 +6791,10 @@ fn cases() -> Vec<Case> {
         (
             "postgres_real_query_labels_secrecy_and_cleanup",
             case_postgres_real_query_labels_secrecy_and_cleanup,
+        ),
+        (
+            "shared_postgres_owner_port_health",
+            case_shared_postgres_owner_port_health,
         ),
         (
             "postgres_18_data_directory_query_and_cleanup",

@@ -3292,7 +3292,7 @@ impl Deployments {
         port_map: &BTreeMap<String, u16>,
     ) -> Result<Option<String>, ProtocolError> {
         let (credentials, port) = if let Some(shared) = &component.shared_from {
-            let (deployment, component) = shared.split_once('/').ok_or_else(|| {
+            let (deployment, owner_component) = shared.split_once('/').ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::RepositoryConfigInvalid,
                     "shared PostgreSQL target is invalid",
@@ -3300,16 +3300,12 @@ impl Deployments {
             })?;
             let Some(credentials) = self
                 .files
-                .read_postgres_credentials(deployment, component)
+                .read_postgres_credentials(deployment, owner_component)
                 .map_err(file_apply_error)?
             else {
                 return Ok(None);
             };
-            let Some(port) = crate::ports::assigned(&self.database, deployment, 0)
-                .map_err(runtime_error)?
-                .get(component)
-                .copied()
-            else {
+            let Some(port) = self.postgres_port(component, port_map)? else {
                 return Ok(None);
             };
             (credentials, port)
@@ -3332,6 +3328,30 @@ impl Deployments {
             "postgresql://{}:{}@127.0.0.1:{}/{}",
             credentials.user, credentials.password, port, credentials.database
         )))
+    }
+
+    /// Resolve the host port for a PostgreSQL component from the runtime that
+    /// owns it. Shared components deliberately do not receive a lease in the
+    /// borrowing deployment, so consulting `port_map` for them would either
+    /// reject a valid deployment or accept a stray borrower lease.
+    fn postgres_port(
+        &self,
+        component: &ComponentSpec,
+        port_map: &BTreeMap<String, u16>,
+    ) -> Result<Option<u16>, ProtocolError> {
+        let Some(shared) = &component.shared_from else {
+            return Ok(port_map.get(&component.name).copied());
+        };
+        let (deployment, owner_component) = shared.split_once('/').ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::RepositoryConfigInvalid,
+                "shared PostgreSQL target is invalid",
+            )
+        })?;
+        Ok(crate::ports::assigned(&self.database, deployment, 0)
+            .map_err(runtime_error)?
+            .get(owner_component)
+            .copied())
     }
 
     fn compose_context(
@@ -3434,7 +3454,11 @@ impl Deployments {
                     .store
                     .components(deployment)?
                     .into_iter()
-                    .find(|row| row.name == name)
+                    .find(|row| {
+                        row.name == name
+                            && row.kind == "postgres"
+                            && row.binding_kind.as_deref() == Some("container")
+                    })
                     .and_then(|row| row.binding_identity)
                     .ok_or_else(|| {
                         ProtocolError::new(
@@ -3476,10 +3500,12 @@ impl Deployments {
             if !readiness.ready {
                 return Ok(readiness);
             }
-            let Some(port) = port_map.get(&component.name).copied() else {
-                return Ok(Readiness::failed(
-                    "PostgreSQL component has no allocated host port",
-                ));
+            let Some(port) = self.postgres_port(component, port_map)? else {
+                return Ok(Readiness::failed(if component.shared_from.is_some() {
+                    "shared PostgreSQL owner has no allocated host port"
+                } else {
+                    "PostgreSQL component has no allocated host port"
+                }));
             };
             let host = self
                 .health
@@ -7097,6 +7123,152 @@ database="app"
                 .iter()
                 .any(|action| action.contains("volume-remove:"))
         );
+    }
+
+    #[test]
+    fn shared_postgres_health_uses_owner_port_without_borrower_lease() {
+        let temporary = tempdir().unwrap();
+        let worktree = temporary.path().join("repository");
+        std::fs::create_dir(&worktree).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&worktree)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/nonexistent")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let worktree_id = crate::ids::worktree_id(&worktree).unwrap();
+        let owner_id = DeploymentStore::deployment_id(&worktree_id, "owner", "worktree");
+        let consumer_id = DeploymentStore::deployment_id(&worktree_id, "consumer", "worktree");
+        std::fs::write(
+            worktree.join(".devcoordinator.toml"),
+            format!(
+                r#"
+schema=2
+[deployment.owner]
+source="worktree"
+components=["db"]
+[deployment.owner.component.db]
+type="postgres"
+image="postgres:18"
+user="app"
+database="app"
+[deployment.consumer]
+source="worktree"
+components=["db"]
+[deployment.consumer.component.db]
+type="postgres"
+shared_from="{owner_id}/db"
+"#
+            ),
+        )
+        .unwrap();
+        let state = temporary.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let database = Database::open(state.join("authority.sqlite3")).unwrap();
+        let config = Config {
+            socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
+            unit_prefix: "devcoordinator2-test".into(),
+            slice_name: "devcoordinator2-tests.slice".into(),
+            client_group: "clients".into(),
+            port_range: (41000, 41100),
+            base_domain: "example.test".into(),
+            edge_uid: None,
+            admin_emails: Vec::new(),
+            telegram_token_file: None,
+            telegram_api: "https://api.telegram.org".into(),
+            bugs_dir: temporary.path().join("bugs"),
+            compose_env_allowlist_file: None,
+            compose_env_authorizations: HashSet::new(),
+            codex_usage_sources_file: None,
+            codex_usage_sources: Vec::new(),
+            state_dir: state,
+        };
+        let docker = Arc::new(MutationDocker::new());
+        let deployments = Deployments::with_runtime_adapters(
+            config.clone(),
+            database.clone(),
+            Registry::new(database.clone()),
+            docker,
+            Arc::new(FakeSystemd),
+            Arc::new(ReadyNetwork),
+            Arc::new(FixtureGit),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
+        );
+        let caller = Caller {
+            via_edge: false,
+            pid: 1,
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
+            client_session: None,
+            work: None,
+            identity: None,
+        };
+        assert_ne!(
+            caller.uid, 0,
+            "shared PostgreSQL fixture requires a non-root caller"
+        );
+
+        let owner = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("owner"),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(owner.deployment_id, owner_id);
+        assert_eq!(owner.components[0].port, Some(41000));
+
+        let consumer = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("consumer"),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(consumer.deployment_id, consumer_id);
+        assert_eq!(consumer.components[0].port, None);
+        assert_eq!(consumer.components[0].owned, false);
+        assert_eq!(consumer.components[0].health, "healthy");
+
+        crate::ports::release(&database, &owner_id, None, Some("db")).unwrap();
+        crate::ports::lease_with_availability(
+            &database,
+            (41000, 41100),
+            &consumer_id,
+            "db",
+            0,
+            "t",
+            &FixturePorts,
+        )
+        .unwrap();
+        let failure = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("consumer"),
+                None,
+                &caller,
+            )
+            .unwrap_err();
+        assert!(
+            failure
+                .message
+                .contains("shared PostgreSQL owner has no allocated host port")
+        );
+        crate::ports::release(&database, &consumer_id, None, Some("db")).unwrap();
     }
 
     #[test]
