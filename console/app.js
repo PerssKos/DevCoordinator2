@@ -3419,6 +3419,20 @@ function activityRows(data) {
 
 function outcomeCostPulse(data) {
   const rows = [...(data.outcomes || [])].sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)).slice(0, 8);
+  if (!rows.length && data.coverage?.state === 'unavailable') {
+    const reasons = Object.entries(data.coverage.unavailable_reasons || {}).map(([reason, count]) => {
+      const label = reason === 'mapping_unavailable'
+        ? 'this repository is not mapped in one configured Codex environment'
+        : reason === 'source_unavailable'
+          ? 'one configured Codex environment could not be read'
+          : reason === 'mapping_pending'
+            ? 'this repository is still waiting for environment mapping'
+            : reason.replaceAll('_', ' ');
+      return `${label}${count > 1 ? ` (${count})` : ''}`;
+    });
+    const detail = reasons.length ? reasons.join('; ') : 'the configured Codex environments returned no usable measurements';
+    return `<section class="notice usage-unavailable-summary" role="status"><strong>Usage data unavailable</strong><p>No provider measurements or outcome costs were returned for this repository because ${esc(detail)}.</p><p class="muted">Historical usage from a different Git root is not reassigned automatically. New usage will appear after this checkout is mapped and its Codex environment is readable.</p></section>`;
+  }
   if (!rows.length) return '<p class="muted">No outcome-attributed cost measurements are available in this window.</p>';
   return `<section class="usage-outcome-pulse"><div class="usage-section-title"><div><h2>Outcome cost pulse</h2><p class="muted">Outcomes ranked by API-equivalent estimate from provider-reported usage.</p></div><details class="usage-cost-basis"><summary>Rate-card basis</summary><p>Standard public API rates are used for an API-equivalent estimate. This is operational insight, not a bill or subscription summary.</p></details></div><div class="tablewrap"><table><thead><tr><th>#</th><th>Outcome</th><th>Tokens</th><th>API-equivalent estimate</th><th>Coverage</th><th>Share</th></tr></thead><tbody>${rows.map((row, index) => { const share = data.totals?.total_tokens ? (Number(row.total_tokens) / Number(data.totals.total_tokens) * 100) : null; return `<tr><td>${index + 1}</td><td class="wrap"><strong>${esc(row.title || row.outcome_id)}</strong></td><td>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td><strong>${esc(costAmount(row.cost))}</strong><small class="muted">${esc(costBasis(row.cost))}</small></td><td>${row.cost?.status === 'complete' ? '<span class="badge ok">Complete</span>' : row.cost?.status === 'partial' ? '<span class="badge warn">Partial</span>' : '<span class="badge">Unavailable</span>'}</td><td>${share == null ? '—' : `${share.toFixed(1)}%`}</td></tr>`; }).join('')}</tbody></table></div></section>`;
 }

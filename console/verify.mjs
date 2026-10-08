@@ -235,7 +235,9 @@ const fixtures = (scenario) => {
   });
   const usageDetail = {
     repository_id: REPO, display_name: 'repo-one', range: '24h', generated_at_ms: Date.now(),
-    coverage: usageCoverage,
+    coverage: scenario.usageUnavailable
+      ? { ...usageCoverage, state: 'unavailable', has_gaps: true, available_collectors: 0, contributing_collectors: 0, freshest_at_ms: null, unavailable_reasons: { mapping_unavailable: 1, source_unavailable: 1 }, snapshot: { updated_at_ms: null, refreshing: false, refresh_failed: true } }
+      : usageCoverage,
     totals: usageHasNoMeasurements
       ? { total_tokens: null, input_tokens: null, cached_input_tokens: null, output_tokens: null, reasoning_tokens: null, model_requests: 0, tool_calls: 0, operations: 0, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, input_usd_micros: null, cached_input_usd_micros: null, cache_write_usd_micros: null, output_usd_micros: null, unknown_observations: 0, rate_card_ref: null } }
       : { total_tokens: 6405721, input_tokens: 6391772, cached_input_tokens: 6212608, output_tokens: 13949, reasoning_tokens: 7821, model_requests: 104, tool_calls: 236, operations: 340, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 1842000, input_usd_micros: 1200000, cached_input_usd_micros: 480000, cache_write_usd_micros: 0, output_usd_micros: 162000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09', rate_card_refs: ['openai-standard-2026-09'] } },
@@ -949,6 +951,28 @@ async function main() {
       console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
       process.exitCode = report.failures.length ? 1 : 0;
     } finally { await browser.close(); await edge.close(); await daemon.close(); }
+    return;
+  }
+
+  if (process.env.CONSOLE_VERIFY_USAGE_UNAVAILABLE_ONLY) {
+    try {
+      daemon.setScenario({ ...SCENARIOS.populated, usageUnavailable: true });
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
+      await page.waitForSelector('.usage-unavailable-summary');
+      check('usage-only: unavailable collectors explain the actual recovery condition', /Usage data unavailable/.test(await page.locator('.usage-unavailable-summary').innerText())
+        && /not mapped/.test(await page.locator('.usage-unavailable-summary').innerText())
+        && /could not be read/.test(await page.locator('.usage-unavailable-summary').innerText()));
+      await context.close();
+    } catch (error) { check('usage-unavailable-only journey', false, error.message); }
+    await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    await browser.close(); await edge.close(); await daemon.close();
     return;
   }
 
