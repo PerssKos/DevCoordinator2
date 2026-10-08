@@ -66,11 +66,24 @@ window.DevCoordinatorWorkspace = (() => {
           && isPathInside(path, candidate.root_path))
         .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
     };
+    // Some Codex checkouts are registered as standalone records because their
+    // local Git metadata cannot prove the origin relationship. A generated
+    // state checkout beneath a verified repository root is still presented as
+    // that repository's worktree while retaining its own record identity.
+    const generatedStateOwner = (row) => {
+      const path = row.worktree_path || row.root_path;
+      if (!path || !path.includes('/.state/')) return null;
+      return repositories
+        .filter((candidate) => candidate.repository_id !== row.repository_id
+          && candidate.repository_source?.key
+          && isPathInside(path, candidate.root_path))
+        .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
+    };
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
       const registeredOwner = registeredWorktreeOwners.get(row.worktree_path || row.root_path);
-      const owner = registeredOwner || scratchOwner(row) || registeredRootOwner(row);
+      const owner = registeredOwner || scratchOwner(row) || registeredRootOwner(row) || generatedStateOwner(row);
       const ownerSource = owner?.repository_source;
       records.set(row.repository_id, {
         ...previous, ...row,

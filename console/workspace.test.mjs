@@ -69,6 +69,17 @@ test('registered worktree paths stay under their canonical repository', () => {
   assert.ok(groups[0].paths.includes('/home/CodexMulti/.state/rebase-rust-v0.157.1-candidate'));
 });
 
+test('unresolved Codex state checkouts stay under the verified codex source', () => {
+  const groups = catalogue([
+    { repository_id: 'codex', display_name: 'CodexMulti', repository_source: { key: 'codex-origin', name: 'codex' }, root_path: '/home/CodexMulti' },
+    { repository_id: 'candidate', display_name: 'rebase-rust-v0.157.1-candidate', root_path: '/home/CodexMulti/.state/rebase-rust-v0.157.1-candidate' },
+  ], [], []);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, 'codex');
+  assert.equal(groups[0].repositoryId, 'codex');
+  assert.ok(groups[0].records.some(record => record.repository_id === 'candidate'));
+});
+
 test('repository roots and source grouping survive unavailable or incomplete test results', () => {
   const source = { key: 'verified-origin', name: 'project' };
   const repositories = [
