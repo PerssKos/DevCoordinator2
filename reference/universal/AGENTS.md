@@ -109,7 +109,10 @@ earlier model messages or reload unchanged instructions.
 - Explain outcomes through the user's task and keep requested content first.
   UI work loads its journey, design, terminology, and rendered-interaction
   requirements. Every new shipped product UI element also enters the
-  `ui-design-gate` module: load the named imagegen and Product Design
+  `ui-design-gate` module: resolve the active skill catalog for the current
+  checkout before judging capability; in Codex Desktop refresh app-server
+  `skills/list` with `forceReload: true` when the session snapshot omits a
+  required contract. Then load the named imagegen and Product Design
   index/ideate contracts, use Product Design `get-context`, generate exactly
   three independent visual options with the highest capability the runtime
   provides, present them in actual display order, and pause implementation

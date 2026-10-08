@@ -18,6 +18,26 @@ Before implementation, load and follow these exact skill contracts:
 - The Product Design `get-context` skill required by the index and ideate
   contracts.
 
+### Resolve the active Product Design capability
+
+The injected skill list can be a session-start snapshot. An omitted
+Product Design entry is therefore an exposure gap to diagnose, not evidence
+that the plugin is absent. In Codex Desktop, refresh the active app-server
+`skills/list` for the current checkout with `forceReload: true`, then read and
+invoke the returned contracts through that same resolver. Confirm the six
+required contracts (`imagegen`, `product-design:index`,
+`product-design:get-context`, `product-design:ideate`,
+`product-design:audit`, and `product-design:design-qa`) by their returned
+runtime records before proceeding.
+
+Do not use a filesystem cache, plugin manifest, CLI plugin listing, connector
+or marketplace status, a local configuration flag, or a fresh-chat assumption
+as activation evidence. Those sources may describe a different registry or a
+stale session. If the refreshed active resolver still does not expose a
+required contract, preserve the admission gate as blocked and report the
+specific missing capability; if it does expose the contracts, continue in
+the current session and retain the resolver evidence.
+
 Resolve the minimum product and journey brief before ideation. Use the
 built-in Image Gen workflow and generate exactly three independent visual
 options. Options must differ in layout, hierarchy, interaction model, or
