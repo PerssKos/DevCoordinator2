@@ -25,6 +25,20 @@ window.DevCoordinatorWorkspace = (() => {
 
   function catalogue(repositories, runs, deployments) {
     const records = new Map();
+    // Registered worktrees carry an explicit owning repository relation. Use
+    // that relation for exact paths before considering the narrower legacy
+    // scratch/source heuristics, so a standalone plan row for a known
+    // worktree is displayed under its canonical repository without merging
+    // ordinary nested repositories.
+    const registeredWorktreeOwners = new Map(
+      repositories
+        .filter((row) => row.worktree_path && row.repository_group_key)
+        .map((row) => [row.worktree_path, {
+          repository_id: row.repository_group_key,
+          display_name: row.repository_group_name || row.display_name,
+          repository_source: row.repository_source,
+        }]),
+    );
     const isPathInside = (path, root) => {
       if (!path || !root) return false;
       const normalizedRoot = root.endsWith('/') ? root.slice(0, -1) : root;
@@ -55,7 +69,8 @@ window.DevCoordinatorWorkspace = (() => {
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
-      const owner = scratchOwner(row) || registeredRootOwner(row);
+      const registeredOwner = registeredWorktreeOwners.get(row.worktree_path || row.root_path);
+      const owner = registeredOwner || scratchOwner(row) || registeredRootOwner(row);
       const ownerSource = owner?.repository_source;
       records.set(row.repository_id, {
         ...previous, ...row,
@@ -283,20 +298,33 @@ window.DevCoordinatorWorkspace = (() => {
         read('plan.overview'),
         includeTests ? read('test.list') : { value: { runs: [] } },
         read('deployment.list'),
-      ]).then(async ([plans, tests, deploymentList]) => {
+        read('repository.list'),
+      ]).then(async ([plans, tests, deploymentList, repositoryList]) => {
         if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
-        data = { repositories: [...(plans.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        const registered = (repositoryList.value?.repositories || []).flatMap((record) => {
+          const worktrees = record.worktrees || [];
+          return worktrees.map((worktree) => ({
+            repository_id: record.repository_id,
+            display_name: record.display_name,
+            repository_group_key: record.repository_id,
+            repository_group_name: record.repository_source?.name || record.display_name,
+            root_path: record.root_path,
+            worktree_path: worktree.worktree_path,
+            repository_source: record.repository_source,
+          }));
+        });
+        data = { repositories: [...(plans.value?.repositories || []), ...registered], registered, runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
-        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]]);
+        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
         void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
           if (signal.aborted) return;
-          data.repositories = [...(plans.value?.repositories || []), ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          data.repositories = [...(plans.value?.repositories || []), ...registered, ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
           groups = catalogue(data.repositories, data.runs, data.deployments);
-          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Usage', usage], ['Progress', progress]]);
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Usage', usage], ['Progress', progress]]);
           if (active) paint();
         }).catch(() => {});
       });
