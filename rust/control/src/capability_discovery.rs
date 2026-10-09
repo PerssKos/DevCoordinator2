@@ -218,3 +218,62 @@ fn valid_slug(value: &str) -> bool {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_parser_keeps_only_visible_models_and_exact_effort_pairs() {
+        let catalog = br#"{
+            "models": [
+                {"slug":"hidden","visibility":"hide","supported_reasoning_levels":[{"effort":"max"}]},
+                {"slug":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"high"},{"effort":"high"}]},
+                {"slug":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"max"}]},
+                {"slug":"invalid","visibility":"list"}
+            ]
+        }"#;
+        let (models, efforts, pairs) = parse_codex(catalog).unwrap();
+        assert_eq!(models, vec!["fixture-model"]);
+        assert_eq!(efforts, vec!["high", "max"]);
+        assert_eq!(
+            pairs
+                .iter()
+                .map(|pair| (pair.model.as_str(), pair.effort.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("fixture-model", "high"), ("fixture-model", "max")]
+        );
+        assert_eq!(
+            parse_codex(br#"{"models":[]}"#).unwrap_err(),
+            "catalog_empty"
+        );
+        assert_eq!(parse_codex(b"not json").unwrap_err(), "catalog_invalid");
+    }
+
+    #[test]
+    fn antigravity_parser_requires_valid_slugs_and_explicit_effort_labels() {
+        let output = b"gemini-pro-low stable\ngemini-pro-high stable\ngemini-thinking Thinking mode\ninvalid/slash high\nmodel-without-effort stable\n";
+        let (models, efforts, pairs) = parse_antigravity(output).unwrap();
+        assert_eq!(
+            models,
+            vec![
+                "gemini-pro-high".to_owned(),
+                "gemini-pro-low".to_owned(),
+                "gemini-thinking".to_owned()
+            ]
+        );
+        assert_eq!(efforts, vec!["high", "low", "thinking"]);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(
+            parse_antigravity(b"model-without-effort stable\n").unwrap_err(),
+            "catalog_empty"
+        );
+    }
+
+    #[test]
+    fn discovery_slug_validation_rejects_paths_and_unbounded_values() {
+        assert!(valid_slug("provider.model-v2"));
+        assert!(!valid_slug("provider/model"));
+        assert!(!valid_slug(&"x".repeat(161)));
+    }
+}

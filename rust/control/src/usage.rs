@@ -6,8 +6,10 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -3032,19 +3034,32 @@ pub(crate) fn run_probe_with_limit(
     if Instant::now() >= deadline {
         return Err("query_budget_exhausted".into());
     }
+    command.process_group(0);
     let mut child = command.spawn().map_err(|_| "source_unavailable")?;
     let stdout = child.stdout.take().ok_or("source_unavailable")?;
     let stderr = child.stderr.take().ok_or("source_unavailable")?;
-    let stdout = thread::spawn(move || read_capture(stdout, output_limit));
-    let stderr = thread::spawn(move || read_capture(stderr, output_limit));
+    let output_overflow = Arc::new(AtomicBool::new(false));
+    let stdout = {
+        let output_overflow = output_overflow.clone();
+        thread::spawn(move || read_capture(stdout, output_limit, output_overflow))
+    };
+    let stderr = {
+        let output_overflow = output_overflow.clone();
+        thread::spawn(move || read_capture(stderr, output_limit, output_overflow))
+    };
     let status = loop {
+        if output_overflow.load(Ordering::Acquire) {
+            kill_probe_group(&mut child);
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err("source_unavailable".into());
+        }
         if let Some(status) = child.try_wait().map_err(|_| "source_unavailable")? {
             break status;
         }
         let now = Instant::now();
         if now >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_probe_group(&mut child);
             let _ = stdout.join();
             let _ = stderr.join();
             return Err("query_budget_exhausted".into());
@@ -3072,7 +3087,23 @@ fn run_probe(command: Command, deadline: Instant) -> Result<ProbeOutput, String>
     run_probe_with_limit(command, deadline, SOURCE_OUTPUT_BYTES)
 }
 
-fn read_capture(mut source: impl Read, limit: usize) -> io::Result<(Vec<u8>, bool)> {
+fn kill_probe_group(child: &mut std::process::Child) {
+    let pid = rustix::process::Pid::from_raw(child.id() as i32);
+    if let Some(pid) = pid {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::TERM);
+        thread::sleep(PROCESS_POLL);
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    } else {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn read_capture(
+    mut source: impl Read,
+    limit: usize,
+    output_overflow: Arc<AtomicBool>,
+) -> io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
     let mut truncated = false;
@@ -3083,7 +3114,11 @@ fn read_capture(mut source: impl Read, limit: usize) -> io::Result<(Vec<u8>, boo
         }
         let remaining = limit.saturating_sub(output.len());
         output.extend_from_slice(&buffer[..read.min(remaining)]);
-        truncated |= read > remaining;
+        if read > remaining {
+            truncated = true;
+            output_overflow.store(true, Ordering::Release);
+            return Ok((output, truncated));
+        }
     }
 }
 
@@ -4130,6 +4165,61 @@ pub(crate) mod tests {
             .probe(&source, temporary.path(), 1_234)
             .unwrap();
         assert_eq!(result, ("c".repeat(64), 4, 1));
+
+        // A provider may leave a child holding its output pipe. Deadline and
+        // output limits must terminate that probe rather than wait for the child.
+        let mut failures = Vec::new();
+        for (name, output, budget, expected) in [
+            ("deadline", "", Duration::from_millis(150), "query_budget_exhausted"),
+            ("output", "head -c 4096 /dev/zero;", Duration::from_secs(2), "source_unavailable"),
+        ] {
+            let child_file = temporary.path().join(format!("{name}.child"));
+            let quoted = format!("'{}'", child_file.display().to_string().replace('\'', "'\"'\"'"));
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {output} wait")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let started = Instant::now();
+            let result = run_probe_with_limit(command, started + budget, 64);
+            let elapsed = started.elapsed();
+            if result.as_ref().err().map(String::as_str) != Some(expected)
+                || elapsed >= Duration::from_millis(750)
+            {
+                let observed = result.as_ref().err().map(String::as_str).unwrap_or("ok");
+                failures.push(format!(
+                    "{name}: observed={observed}, expected={expected}, elapsed={elapsed:?}"
+                ));
+            }
+            let cleanup_deadline = Instant::now() + Duration::from_millis(500);
+            let child_pid = loop {
+                if let Some(pid) = std::fs::read_to_string(&child_file)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<i32>().ok())
+                {
+                    break Some(pid);
+                }
+                if Instant::now() >= cleanup_deadline {
+                    break None;
+                }
+                thread::sleep(PROCESS_POLL);
+            };
+            if child_pid.is_some_and(|pid| {
+                let Some(pid) = rustix::process::Pid::from_raw(pid) else {
+                    return false;
+                };
+                while Instant::now() < cleanup_deadline
+                    && rustix::process::test_kill_process(pid).is_ok()
+                {
+                    thread::sleep(PROCESS_POLL);
+                }
+                rustix::process::test_kill_process(pid).is_ok()
+            }) {
+                failures.push(format!("{name}: descendant process survived cleanup"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
     }
 
     #[test]
