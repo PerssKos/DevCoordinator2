@@ -1032,7 +1032,7 @@ impl Deployments {
                     let generation = stored
                         .iter()
                         .find(|saved| saved.name == component.name)
-                        .and_then(|saved| saved.generation)
+                        .and_then(|saved| saved.generation.filter(|generation| *generation > 0))
                         .or(row.current_generation)
                         .ok_or_else(|| {
                             ProtocolError::new(
