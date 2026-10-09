@@ -1026,9 +1026,20 @@ impl Deployments {
             return Err(ProtocolError::new(blocker.code, blocker.message));
         }
         if matches!(action, "start" | "restart") {
-            let generation = row.current_generation.unwrap_or(0);
+            let stored = self.store.components(&target.deployment_id)?;
             for component in &components {
-                if DeploymentStore::is_owned(component) {
+                if component.kind == ComponentKind::Process {
+                    let generation = stored
+                        .iter()
+                        .find(|saved| saved.name == component.name)
+                        .and_then(|saved| saved.generation)
+                        .or(row.current_generation)
+                        .ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::DeploymentActionFailed,
+                                "the applied generation is unavailable; reapply the deployment",
+                            )
+                        })?;
                     self.saved_environment_path(&target, component, generation)?;
                 }
             }
@@ -1644,7 +1655,6 @@ impl Deployments {
             if !DeploymentStore::is_owned(component) {
                 continue;
             }
-            self.saved_environment_path(target, component, generation)?;
             self.set_running_intent(target, std::slice::from_ref(component))?;
             let old = stored.get(&component.name);
             let started = (|| {
@@ -1683,10 +1693,12 @@ impl Deployments {
                     }
                     Ok(("compose".into(), project.to_owned()))
                 } else {
+                    let component_generation =
+                        old.and_then(|saved| saved.generation).unwrap_or(generation);
                     self.start_component(
                         target,
                         component,
-                        generation,
+                        component_generation,
                         &generation_path,
                         &port_map,
                         true,
@@ -3156,19 +3168,28 @@ impl Deployments {
                 .environment_path(&target.deployment_id, &component.name, generation)
         }
         .map_err(file_apply_error)?;
-        let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
-            ProtocolError::new(
-                ErrorCode::DeploymentActionFailed,
-                "the applied generation environment is unavailable; reapply the deployment",
-            )
-        })?;
-        if !metadata.file_type().is_file() {
-            return Err(ProtocolError::new(
-                ErrorCode::DeploymentActionFailed,
-                "the applied generation environment is unavailable; reapply the deployment",
-            ));
-        }
-        Ok(path)
+        let root = self
+            .files
+            .deployment_dir(&target.deployment_id)
+            .map_err(file_apply_error)?;
+        let relative = path
+            .strip_prefix(&root)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentActionFailed,
+                    "saved environment path is invalid",
+                )
+            })?;
+        self.files
+            .validate_repository_file(&root, relative)
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentActionFailed,
+                    "the applied generation environment is unavailable; reapply the deployment",
+                )
+            })
     }
 
     fn start_container_component(

@@ -1427,7 +1427,7 @@ fn fixture_command(world: &World, arguments: &[&str]) -> Vec<String> {
 
 fn web_deployment_config(
     world: &World,
-    _version: &str,
+    version: &str,
     api_command: Option<Vec<String>>,
 ) -> Result<String, String> {
     let api =
@@ -1458,6 +1458,7 @@ port = true
 route = true
 health = {{ path = "/healthz", timeout_seconds = 30 }}
 depends_on = ["db", "cache"]
+env = {{ FIXTURE_REVIEW_MODE = "{version}" }}
 
 [deployment.web.component.worker]
 type = "process"
@@ -4001,12 +4002,6 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     // Simulate a host restart that lost the managed process while preserving
     // the committed generation, desired-running intent and stable lease.
     run_status("systemctl", &["stop", &api_unit])?;
-    // Change the checkout after apply without applying it. Recovery must use
-    // the committed generation's command/environment and continue serving v1.
-    // Change the declaration after apply while preserving the applied
-    // worktree source file. Restart recovery must use the committed
-    // generation, rather than the mutable checkout declaration.
-    world.write_config(&web_deployment_config(world, "v2", None)?)?;
     world.stop_daemon(true)?;
     world.start_daemon(None, None, None)?;
     let recovered =
@@ -4023,6 +4018,45 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         "recovered routed process did not serve the original generation"
     );
     let database_url = deployment_database_url(world, &deployment_id, 1)?;
+    let api_environment = world
+        .state
+        .join("deployments")
+        .join(&deployment_id)
+        .join("env/api-g1.env");
+    let saved_environment = fs::read(&api_environment).map_err(|error| error.to_string())?;
+    let credentials = world
+        .state
+        .join("secrets")
+        .join(&deployment_id)
+        .join("db.json");
+    let saved_credentials = fs::read(&credentials).map_err(|error| error.to_string())?;
+    ensure!(
+        http_get_json(api_port)?["review_enabled"] == true,
+        "applied preview configuration was not available"
+    );
+    // Change only the configuration; a worktree deployment still reads its
+    // mutable source files, while restart must preserve the applied settings.
+    world.write_config(&web_deployment_config(world, "v2", None)?)?;
+    let restarted_api = world.call(
+        "deployment.restart",
+        json!({"deployment_id":deployment_id,"component":"api"}),
+    )?;
+    ensure!(
+        data(&restarted_api)?["current_generation"] == 1,
+        "component restart created a new generation"
+    );
+    ensure!(
+        http_get_json(api_port)?["review_enabled"] == true,
+        "restart replaced the applied preview configuration"
+    );
+    ensure!(
+        fs::read(&api_environment).map_err(|error| error.to_string())? == saved_environment,
+        "restart rewrote the applied environment"
+    );
+    ensure!(
+        fs::read(&credentials).map_err(|error| error.to_string())? == saved_credentials,
+        "restart changed stored database credentials"
+    );
     command_stdout(
         "/usr/bin/psql",
         &[
@@ -4099,11 +4133,12 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         "component restart failed"
     );
     let worker_env = world
-        .base
+        .state
         .join("deployments")
         .join(&deployment_id)
         .join("env")
         .join("worker-g1.env");
+    let saved_worker_environment = fs::read(&worker_env).map_err(|error| error.to_string())?;
     fs::remove_file(&worker_env).map_err(|error| error.to_string())?;
     let missing_environment = world.call(
         "deployment.restart",
@@ -4117,6 +4152,19 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         error_code(&missing_environment) == Some("deployment_action_failed"),
         "restart unexpectedly regenerated a missing applied environment"
     );
+    let worker_status = world.call("deployment.status", json!({"deployment_id":deployment_id}))?;
+    ensure!(
+        component(data(&worker_status)?, "worker")?["state"] == "running",
+        "missing environment refusal stopped the healthy worker"
+    );
+    fs::write(&worker_env, saved_worker_environment).map_err(|error| error.to_string())?;
+    fs::set_permissions(&worker_env, fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())?;
+    chown_path(
+        &worker_env,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
     let old_port = component(&started, "api")?["port"]
         .as_u64()
         .ok_or_else(|| "old API port is missing".to_owned())?;
@@ -4161,6 +4209,18 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     ensure!(
         component(&reapplied, "db")?["binding"]["identity"] == database_id,
         "stable database was replaced during reapply"
+    );
+    let restarted_database = world.call(
+        "deployment.restart",
+        json!({"deployment_id":deployment_id,"component":"db"}),
+    )?;
+    ensure!(
+        component(data(&restarted_database)?, "db")?["binding"]["identity"] == database_id,
+        "restart replaced the database retained from generation one"
+    );
+    ensure!(
+        fs::read(&credentials).map_err(|error| error.to_string())? == saved_credentials,
+        "database restart changed retained credentials"
     );
     let logs = world.call(
         "deployment.logs",

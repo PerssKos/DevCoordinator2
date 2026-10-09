@@ -74,6 +74,7 @@ fn serve_http(version: &str) -> Result<i32, String> {
             "version": version,
             "generation": env::var("DC2_GENERATION").ok(),
             "has_db": env::var_os("DATABASE_URL").is_some(),
+            "review_enabled": env::var("FIXTURE_REVIEW_MODE").is_ok_and(|value| value == "v1"),
             "cache_port": env::var("DC2_PORT_CACHE").ok(),
             "port": env::var("PORT").ok(),
         }))
