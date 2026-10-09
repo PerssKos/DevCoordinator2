@@ -176,7 +176,7 @@ pub enum ResponseEnvelope {
         protocol: u8,
         id: String,
         ok: False,
-        error: ErrorBody,
+        error: Box<ErrorBody>,
     },
 }
 
@@ -277,7 +277,7 @@ impl ResponseEnvelope {
             protocol: PROTOCOL_VERSION,
             id: id.into(),
             ok: False,
-            error: error.into_body(),
+            error: Box::new(error.into_body()),
         }
     }
 

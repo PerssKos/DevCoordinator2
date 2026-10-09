@@ -18,6 +18,10 @@ before(async () => {
   directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dc2-app-session-'));
   upstream = http.createServer((req, res) => {
     seen = req.headers.cookie;
+    if (req.url === '/sw.js' || req.url === '/manifest.webmanifest') {
+      res.writeHead(200, { 'content-type': req.url === '/sw.js' ? 'text/javascript' : 'application/manifest+json' });
+      return res.end(req.url === '/sw.js' ? 'self.addEventListener("fetch", () => {});' : '{"name":"test"}');
+    }
     if (req.url.startsWith('/challenge/')) {
       const scheme = req.url.slice('/challenge/'.length);
       res.writeHead(401, { 'www-authenticate': `${scheme} realm="private upstream"`, 'content-type': 'application/json' });
@@ -70,6 +74,17 @@ test('missing or expired application sessions retain401 after edge sign-in', asy
     assert.equal(response.status, 401); assert.equal(response.body, '');
     assert.equal(response.headers['www-authenticate'], undefined);
   }
+});
+
+test('PWA static assets bypass the edge redirect while application routes stay protected', async () => {
+  for (const path of ['/sw.js', '/manifest.webmanifest']) {
+    const response = await request(path, { edgeCookie: '' });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.location, undefined);
+  }
+  const protectedResponse = await request('/api/auth/me', { edgeCookie: '' });
+  assert.equal(protectedResponse.status, 302);
+  assert.match(protectedResponse.headers.location, /^\/auth\/login/);
 });
 
 test('invalid application sign-in keeps its error and only application cookies', async () => {

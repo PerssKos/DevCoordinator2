@@ -375,6 +375,13 @@ enum JourneyDocsCommand {
 
 #[derive(Debug, Subcommand)]
 enum InstallCommand {
+    /// Bind one existing Certbot lineage to the stable edge's renewal deploy hook.
+    TlsRenewalConfigure {
+        #[arg(long)]
+        lineage: PathBuf,
+    },
+    /// Adopt Certbot's RENEWED_LINEAGE in the exact currently installed edge.
+    TlsRenewalDeploy,
     /// Configure direct loopback Console access for the next reviewed activation.
     ConsoleAccess {
         #[arg(long, value_parser = ["enabled", "disabled"])]
@@ -2056,6 +2063,25 @@ fn audit_archive_stamp() -> Result<String, String> {
 fn run_install(command: InstallCommand) -> ExitCode {
     use devcoordinator2_tooling::install::{self, HostRunner};
     let result = match command {
+        InstallCommand::TlsRenewalConfigure { lineage } => {
+            devcoordinator2_tooling::edge_tls::configure(&lineage, SOURCE_COMMIT, &HostRunner)
+                .and_then(|receipt| {
+                    serde_json::to_value(receipt)
+                        .map_err(|_| "cannot encode TLS renewal receipt".into())
+                })
+        }
+        InstallCommand::TlsRenewalDeploy => std::env::var_os("RENEWED_LINEAGE")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Certbot's successful renewal event must supply RENEWED_LINEAGE".to_owned()
+            })
+            .and_then(|lineage| {
+                devcoordinator2_tooling::edge_tls::deploy(&lineage, SOURCE_COMMIT, &HostRunner)
+            })
+            .and_then(|receipt| {
+                serde_json::to_value(receipt)
+                    .map_err(|_| "cannot encode TLS renewal receipt".into())
+            }),
         InstallCommand::ConsoleAccess { trusted_loopback } => (|| {
             if rustix::process::geteuid().as_raw() != 0 {
                 return Err("install console-access must run as root".into());

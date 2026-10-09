@@ -206,6 +206,49 @@ default is empty and retains renewal-only behavior. Remove a bootstrap hostname
 after the issued certificate covers it. Existing certificate names, private
 credentials and renewal hooks must be preserved during issuance.
 
+## Certificate renewal
+
+After installing the reviewed canonical release, register the existing Certbot
+lineage once through the source-owned installer, as root:
+
+```sh
+devcoordinator2-tooling install tls-renewal-configure \
+  --lineage /etc/letsencrypt/live/<certificate-name>
+```
+
+Registration validates the current certificate and installs only the named
+`/etc/letsencrypt/renewal-hooks/deploy/devcoordinator2-edge` hook. Other hooks,
+the existing renewal profile, and `certbot.timer` remain in use. The root-owned
+mode-0600 `/etc/devcoordinator2/edge/tls-renewal.json` binds the exact lineage;
+successful renewal events for other lineages are ignored. An existing hook
+at that exact name belonging to another workflow is preserved and refused.
+
+The deploy hook runs `install tls-renewal-deploy` with Certbot's
+`RENEWED_LINEAGE`. It verifies the installed release and clean canonical `main`,
+the exact stable-edge service, the certificate/key pair, current validity,
+later expiry, and coverage of the base domain, its wildcard deployment hosts,
+and the Console host. It retains both pairs privately, replaces only the
+existing TLS credential inputs, restarts only `devcoordinator2-edge.service`,
+and verifies normal CA-validated TLS and `/healthz` with the new certificate.
+The daemon, deployment generations, route document, grants, session secret,
+and sign-in credentials are not rewritten. A repeated unchanged event does
+not restart the edge.
+
+Renewal holds the existing installation admission lock through activation and
+any rollback. An installer or recovery drain causes an explicit refusal before
+credential changes; its lease and recovery evidence are preserved. Rerun the
+successful-renewal deploy hook after that installation or recovery completes.
+
+Failed activation restores the previous files and restarts and verifies the
+previous edge. Private mode-0700 transaction directories and mode-0600 recovery
+files remain under `/var/lib/devcoordinator2/cutover/tls-renewal`; a failed
+rollback explicitly requires owner repair using those retained files. PEM,
+private paths, hostnames, and subprocess output are absent from ordinary
+maintenance receipts. This follows the trusted-local repair, valuable-data,
+private-credential, and clean canonical-source assumptions in
+`security-assumptions.md` and DC2-TLS-COPY-RECOVERY-20261005. It introduces no new
+renewal scheduler or access-policy exception.
+
 ## Tests
 
 `node --test edge/test/*.test.mjs` runs the edge against a fixture OIDC issuer, a fake
@@ -213,3 +256,11 @@ daemon socket, and real upstreams. The Rust control tests in
 `rust/control/src/access.rs` and `rust/control/src/daemon.rs` prove identity
 trust, roles, invitation admission, revocation, and non-edge spoof rejection at
 the daemon boundary.
+
+`cargo test --locked -p devcoordinator2-tooling --lib edge_tls::tests` exercises
+renewal adoption against a disposable CA and the real Node edge. It checks
+public access, anonymous denial and signed-in access to a protected route,
+unchanged route/access bytes and generation, private recovery, invalid pairs,
+expired/future certificates, missing hostname coverage, unchanged events,
+failed restart, and failed TLS verification with recovery. Live installation
+and route verification use the reviewed non-self-hosting rollout workflow.

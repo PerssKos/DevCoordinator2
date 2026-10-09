@@ -1439,7 +1439,7 @@ fn fixture_command(world: &World, arguments: &[&str]) -> Vec<String> {
 
 fn web_deployment_config(
     world: &World,
-    _version: &str,
+    version: &str,
     api_command: Option<Vec<String>>,
 ) -> Result<String, String> {
     let api =
@@ -1470,6 +1470,7 @@ port = true
 route = true
 health = {{ path = "/healthz", timeout_seconds = 30 }}
 depends_on = ["db", "cache"]
+env = {{ FIXTURE_REVIEW_MODE = "{version}" }}
 
 [deployment.web.component.worker]
 type = "process"
@@ -3882,6 +3883,124 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
     Ok(())
 }
 
+fn case_shared_postgres_owner_port_health(world: &mut World) -> Result<(), String> {
+    world.write_config(
+        r#"schema = 2
+[deployment.owner]
+source = "worktree"
+components = ["db"]
+
+[deployment.owner.component.db]
+type = "postgres"
+image = "postgres:16-alpine"
+database = "app"
+user = "app"
+"#,
+    )?;
+    let owner = data(&world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "owner@worktree"}),
+    )?)?
+    .clone();
+    let owner_id = owner["deployment_id"]
+        .as_str()
+        .ok_or_else(|| "owner deployment id is missing".to_owned())?
+        .to_owned();
+    let owner_db = component(&owner, "db")?;
+    let owner_port = owner_db["port"]
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "owner PostgreSQL port is missing".to_owned())?;
+    ensure!(
+        owner_db["owned"] == true && owner_db["health"] == "healthy",
+        "owner PostgreSQL component was not healthy and owned"
+    );
+    ensure!(
+        tcp_reachable(owner_port),
+        "owner PostgreSQL host port is unreachable"
+    );
+    world.track_volume(format!("devcoordinator2-{owner_id}-db-pgdata"));
+
+    world.write_config(&format!(
+        r#"schema = 2
+[deployment.owner]
+source = "worktree"
+components = ["db"]
+
+[deployment.owner.component.db]
+type = "postgres"
+image = "postgres:16-alpine"
+database = "app"
+user = "app"
+
+[deployment.consumer]
+source = "worktree"
+components = ["db"]
+
+[deployment.consumer.component.db]
+type = "postgres"
+shared_from = "{owner_id}/db"
+"#
+    ))?;
+    let consumer = data(&world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "consumer@worktree"}),
+    )?)?
+    .clone();
+    let consumer_id = consumer["deployment_id"]
+        .as_str()
+        .ok_or_else(|| "consumer deployment id is missing".to_owned())?
+        .to_owned();
+    let consumer_db = component(&consumer, "db")?;
+    ensure!(
+        consumer_db["health"] == "healthy"
+            && consumer_db["owned"] == false
+            && consumer_db["port"].is_null(),
+        "shared PostgreSQL consumer did not use the healthy owner binding"
+    );
+    let owner_status_response =
+        world.call("deployment.status", json!({"deployment_id": owner_id}))?;
+    let owner_status = data(&owner_status_response)?;
+    ensure!(
+        component(owner_status, "db")?["port"] == json!(owner_port),
+        "shared consumer altered the owner port binding"
+    );
+
+    let removed_owner = data(&world.call(
+        "deployment.remove",
+        json!({"deployment_id": owner_id, "delete_data": false}),
+    )?)?
+    .clone();
+    ensure!(
+        removed_owner["removed"] == true,
+        "owner deployment was not removed for the negative guard"
+    );
+    let missing_owner = world.call(
+        "deployment.apply",
+        json!({"path": world.repo, "name": "consumer@worktree"}),
+    )?;
+    ensure!(
+        error_code(&missing_owner) == Some("deployment_apply_failed"),
+        "consumer succeeded after its shared owner was removed"
+    );
+    ensure!(
+        missing_owner
+            .to_string()
+            .contains("shared PostgreSQL component is not deployed"),
+        "missing-owner failure did not identify the ownership boundary"
+    );
+    let removed_consumer_response = world.call(
+        "deployment.remove",
+        json!({"deployment_id": consumer_id, "delete_data": false}),
+    )?;
+    let removed_consumer = data(&removed_consumer_response)?;
+    ensure!(
+        removed_consumer["removed"] == true,
+        "consumer deployment cleanup did not complete"
+    );
+    Ok(())
+}
+
 fn case_digest_pinned_postgis_fixture_is_pulled_injected_and_removed(
     world: &mut World,
 ) -> Result<(), String> {
@@ -4501,6 +4620,10 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         .as_u64()
         .and_then(|value| u16::try_from(value).ok())
         .ok_or_else(|| "API port is missing".to_owned())?;
+    let api_unit = api["binding"]["identity"]
+        .as_str()
+        .ok_or_else(|| "API unit is missing".to_owned())?
+        .to_owned();
     let body = http_get_json(api_port)?;
     let cache_port = component(&status, "cache")?["port"]
         .as_u64()
@@ -4543,7 +4666,64 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
             .is_some_and(|value| !value.is_empty()),
         "route checksum is missing"
     );
+    // Simulate a host restart that lost the managed process while preserving
+    // the committed generation, desired-running intent and stable lease.
+    run_status("systemctl", &["stop", &api_unit])?;
+    world.stop_daemon(true)?;
+    world.start_daemon(None, None, None)?;
+    let recovered =
+        data(&world.call("deployment.status", json!({"deployment_id": deployment_id}))?)?.clone();
+    ensure!(
+        recovered["current_generation"] == 1
+            && component(&recovered, "api")?["binding"]["identity"] == api_unit
+            && component(&recovered, "api")?["port"] == json!(api_port)
+            && recovered["readiness"]["ready"] == true,
+        "daemon restart did not recover the committed routed process"
+    );
+    ensure!(
+        http_get_json(api_port)?["version"] == "v1",
+        "recovered routed process did not serve the original generation"
+    );
     let database_url = deployment_database_url(world, &deployment_id, 1)?;
+    let api_environment = world
+        .state
+        .join("deployments")
+        .join(&deployment_id)
+        .join("env/api-g1.env");
+    let saved_environment = fs::read(&api_environment).map_err(|error| error.to_string())?;
+    let credentials = world
+        .state
+        .join("secrets")
+        .join(&deployment_id)
+        .join("db.json");
+    let saved_credentials = fs::read(&credentials).map_err(|error| error.to_string())?;
+    ensure!(
+        http_get_json(api_port)?["review_enabled"] == true,
+        "applied preview configuration was not available"
+    );
+    // Change only the configuration; a worktree deployment still reads its
+    // mutable source files, while restart must preserve the applied settings.
+    world.write_config(&web_deployment_config(world, "v2", None)?)?;
+    let restarted_api = world.call(
+        "deployment.restart",
+        json!({"deployment_id":deployment_id,"component":"api"}),
+    )?;
+    ensure!(
+        data(&restarted_api)?["current_generation"] == 1,
+        "component restart created a new generation"
+    );
+    ensure!(
+        http_get_json(api_port)?["review_enabled"] == true,
+        "restart replaced the applied preview configuration"
+    );
+    ensure!(
+        fs::read(&api_environment).map_err(|error| error.to_string())? == saved_environment,
+        "restart rewrote the applied environment"
+    );
+    ensure!(
+        fs::read(&credentials).map_err(|error| error.to_string())? == saved_credentials,
+        "restart changed stored database credentials"
+    );
     command_stdout(
         "/usr/bin/psql",
         &[
@@ -4619,6 +4799,39 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
         component(data(&restarted)?, "worker")?["state"] == "running",
         "component restart failed"
     );
+    let worker_env = world
+        .state
+        .join("deployments")
+        .join(&deployment_id)
+        .join("env")
+        .join("worker-g1.env");
+    let saved_worker_environment = fs::read(&worker_env).map_err(|error| error.to_string())?;
+    fs::remove_file(&worker_env).map_err(|error| error.to_string())?;
+    let missing_environment = world.call(
+        "deployment.restart",
+        json!({
+            "path": world.repo,
+            "name": "web@worktree",
+            "component": "worker",
+        }),
+    )?;
+    ensure!(
+        error_code(&missing_environment) == Some("deployment_action_failed"),
+        "restart unexpectedly regenerated a missing applied environment"
+    );
+    let worker_status = world.call("deployment.status", json!({"deployment_id":deployment_id}))?;
+    ensure!(
+        component(data(&worker_status)?, "worker")?["state"] == "running",
+        "missing environment refusal stopped the healthy worker"
+    );
+    fs::write(&worker_env, saved_worker_environment).map_err(|error| error.to_string())?;
+    fs::set_permissions(&worker_env, fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())?;
+    chown_path(
+        &worker_env,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
     let old_port = component(&started, "api")?["port"]
         .as_u64()
         .ok_or_else(|| "old API port is missing".to_owned())?;
@@ -4663,6 +4876,18 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     ensure!(
         component(&reapplied, "db")?["binding"]["identity"] == database_id,
         "stable database was replaced during reapply"
+    );
+    let restarted_database = world.call(
+        "deployment.restart",
+        json!({"deployment_id":deployment_id,"component":"db"}),
+    )?;
+    ensure!(
+        component(data(&restarted_database)?, "db")?["binding"]["identity"] == database_id,
+        "restart replaced the database retained from generation one"
+    );
+    ensure!(
+        fs::read(&credentials).map_err(|error| error.to_string())? == saved_credentials,
+        "database restart changed retained credentials"
     );
     let logs = world.call(
         "deployment.logs",
@@ -7319,6 +7544,10 @@ fn cases() -> Vec<Case> {
         (
             "postgres_real_query_labels_secrecy_and_cleanup",
             case_postgres_real_query_labels_secrecy_and_cleanup,
+        ),
+        (
+            "shared_postgres_owner_port_health",
+            case_shared_postgres_owner_port_health,
         ),
         (
             "postgres_18_data_directory_query_and_cleanup",

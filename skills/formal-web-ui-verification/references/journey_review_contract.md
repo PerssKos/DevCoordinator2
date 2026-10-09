@@ -82,6 +82,16 @@ fails target coverage.
 repeated fixture targets, but every effective target/state still must resolve a
 complete contract.
 
+For an isolated preview whose loopback port changes between runs, an explicit
+`reviewEnvironmentIdentity` may name the same leased environment. It is opt-in:
+the requested origin remains in formal and manual evidence, while only a
+matching identity may carry a prior cell across ports. The target requires an
+explicit stable name, an HTTP(S) loopback URL, and a `sourceBinding.expected`
+value verified against the rendered page. The retained observed source digest
+must also match the prior receipt. A missing or changed
+identity, source fingerprint, observed source, route/state, intent, theme, or viewport requires
+fresh visual review.
+
 ## Required Coverage Cells
 
 Top-level `requiredCoverage` declares cells that must exist in the full

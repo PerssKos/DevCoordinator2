@@ -590,6 +590,10 @@ struct EvidenceReferenceArgs {
     path: PathArg,
     #[arg(long)]
     run_id: String,
+    #[arg(long, default_value_t = 0)]
+    offset: u32,
+    #[arg(long, default_value_t = 10)]
+    limit: u8,
 }
 
 #[derive(Debug, Args)]
@@ -1820,10 +1824,13 @@ impl EvidenceCommand {
                 "test.evidence.lookup",
                 json!({"run_id":run_id,"image_id":image_id,"worktree_id":worktree_id}),
             ),
-            Self::Show(args) => remote(
-                "test.evidence.get",
-                json!({"path":args.path.absolute()?,"run_id":args.run_id}),
-            ),
+            Self::Show(args) => {
+                require_range("--limit", args.limit, 1, 32)?;
+                remote(
+                    "test.evidence.get",
+                    json!({"path":args.path.absolute()?,"run_id":args.run_id,"offset":args.offset,"limit":args.limit}),
+                )
+            }
             Self::Image(args) => {
                 require_range("--max-bytes", args.max_bytes, 1, 184_320)?;
                 remote(

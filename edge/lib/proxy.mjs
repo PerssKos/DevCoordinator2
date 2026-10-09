@@ -178,7 +178,7 @@ function localAttributionHeaders(target) {
     }
   }
   if (email === null) {
-    if (target?.localAgent) {
+    if (target?.localAgent || target?.publicProjectAsset) {
       return { [LOCAL_ATTRIBUTION_HEADERS.routeId]: routeId };
     }
     throw new TypeError('protected project proxy target requires email attribution');

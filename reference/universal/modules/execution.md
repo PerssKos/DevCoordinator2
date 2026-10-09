@@ -80,16 +80,94 @@
 - Asynchronous execution is not fire-and-forget. Retain operation
   identities, observe completion and failures, preserve evidence, and
   perform required cleanup. Submission alone is never proof of success.
-- Wait through blocking event subscriptions rather than model-turn status
-  polling. Give each subscription an expected-event deadline, multiplex
-  pending subscriptions, and return all due heartbeats through one shared
-  scheduler.
-- On wake, fetch bounded authoritative state once and advance its cursor.
-  If events are unavailable, one service-owned watcher may poll using bounded
-  backoff, resetting on a meaningful state change. The agent does not poll.
-  Give the watcher a cancellation path and expected-event deadline; timeouts
-  are failure ceilings. Choose backoff for the source and responsiveness need,
-  not a blanket 100 ms interval. Deduplicate watchers for the same obligation.
 - Before claiming completion, account for every required background
   operation and verify its result. Do not leave necessary work running
   unobserved or imply ongoing execution that has not been established.
+
+### Await required asynchronous work
+
+Required running or queued work remains part of the active task. A tool yield
+continues the wait; a final response ends the active work cycle and is not a
+substitute for waiting.
+
+1. When launching required asynchronous work, retain its operation/run ID,
+   source identity, expected terminal outcomes, and next dependent action.
+   Continue independent authorized work while it runs.
+2. Before waiting, read the operation's current status. If already terminal,
+   inspect its result and continue immediately. Preserve the last observed
+   sequence or cursor so completion between the status read and subscription
+   is not lost.
+3. When its result is needed, use the runtime's event-wait tool, such as
+   `await_work` when exposed, only if the provider is confirmed connected to
+   that runtime's event ingress. Use the provider's actual event types, exact
+   operation labels, last observed sequence, and a meaningful deadline.
+   Naming a source does not establish an event integration. Multiplex pending
+   subscriptions and due heartbeats through the existing shared scheduler.
+4. Verify that registration succeeded and retain the returned subscription
+   identity or supported wait handle. After a tool yields, remain in that
+   wait through its supported continuation. Do not substitute repeated
+   sleep/status-query loops or a final response.
+5. If event delivery is unavailable, use the provider's supported blocking
+   wait, such as Coordinator `test wait`. If that is unavailable, use one
+   existing service-owned watcher with bounded backoff, a deadline, and
+   cancellation. Deduplicate watchers for the same obligation, choose backoff
+   for the source and responsiveness need, and reset it on meaningful state
+   change. Do not add a scheduler, poll through model turns, or repeatedly
+   resubscribe to a known unavailable source.
+6. On wake, read bounded authoritative status once and advance the cursor.
+   Inspect terminal results, preserve failures, perform required cleanup,
+   and take the next authorized action. A deadline, disconnection, or
+   source-unavailable event does not mean the operation completed. Diagnose
+   the current state and supported recovery before renewing a wait; do not
+   cancel or relaunch accepted work merely because observation ended.
+7. Before sending a final response, account for every required outstanding
+   operation. Continue waiting unless the user stopped the task, a genuine
+   external blocker prevents both progress and supported waiting, or an
+   explicitly authorized background handoff has a verified wake route.
+   Confirm any required background-wake permission; an alarm or subscription
+   registration alone does not grant it. Without a working continuation
+   route, state the missing capability and required unblock action instead
+   of promising automatic resumption.
+
+Use the runtime's durable alarm tool, such as `alarm_set` when exposed, for
+deadline reminders or supported exact-operation terminal triggers. Do not
+attach a completion alarm to a launch command and assume it observes the
+external job's eventual completion. A reminder does not replace the wait or
+the terminal-result check.
+
+### Continue development while testing is unavailable
+
+1. Inspect the refusal and its typed recovery guidance, including whether
+   independent work is safe, whether the condition is temporary, and which
+   wait operation is supported. A refused launch is not queued work and has
+   no accepted run to await. For example, a Coordinator upgrade or Rust
+   cutover can close test admission while existing accepted runs drain.
+2. Continue independent authorized development, test authoring, source
+   review, and permitted static checks while runtime testing is unavailable.
+   Keep the affected acceptance checks and source identities explicit in
+   existing task/evidence records; defer execution, not the requirement to
+   verify. Preserve frozen candidates, ownership, UI admission, security,
+   delivery hard stops, and the prohibition on self-hosted Coordinator
+   validation. Do not bypass the refusal with an unmanaged test runner or
+   assume an untested prerequisite succeeded.
+3. When no independent work remains, keep the task active and apply the
+   completion-wait procedure above to the required availability transition.
+   Use a confirmed availability event source or the provider's named blocking
+   wait. For Coordinator `tests_draining`, inspect `test.admission.status`,
+   then use `test.admission.wait` (CLI `test admission-wait --deadline-at ...`)
+   with a real deadline if admission is still closed. A provider wait does
+   not require a separate runtime event integration. If the service cannot
+   accept the wait, use its existing external availability watcher when
+   supported; do not invent a source or repeatedly submit refused tests.
+4. After availability returns, read the authoritative state once, reconcile
+   any accepted runs, and submit the deferred checks for the intended source
+   candidate. A refused request must be submitted again after recovery; it
+   will not start by itself. Observe each accepted run through completion,
+   inspect its results, and repair failures before claiming verification.
+5. A wait deadline or lost connection requires diagnosis, not a completion
+   claim or automatic abandonment. Resume a supported wait when recovery is
+   still expected and the deadline is justified by current evidence. If
+   recovery needs an unavailable capability or external action and no
+   supported wait remains, preserve the unfinished outcome and explain the
+   exact blocker, missing verification, and smallest unblock action. Never
+   claim automatic continuation without the confirmed route and permission.

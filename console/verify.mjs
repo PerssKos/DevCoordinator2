@@ -235,7 +235,9 @@ const fixtures = (scenario) => {
   });
   const usageDetail = {
     repository_id: REPO, display_name: 'repo-one', range: '24h', generated_at_ms: Date.now(),
-    coverage: usageCoverage,
+    coverage: scenario.usageUnavailable
+      ? { ...usageCoverage, state: 'unavailable', has_gaps: true, available_collectors: 0, contributing_collectors: 0, freshest_at_ms: null, unavailable_reasons: { mapping_unavailable: 1, source_unavailable: 1 }, snapshot: { updated_at_ms: null, refreshing: false, refresh_failed: true } }
+      : usageCoverage,
     totals: usageHasNoMeasurements
       ? { total_tokens: null, input_tokens: null, cached_input_tokens: null, output_tokens: null, reasoning_tokens: null, model_requests: 0, tool_calls: 0, operations: 0, cost: { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: null, input_usd_micros: null, cached_input_usd_micros: null, cache_write_usd_micros: null, output_usd_micros: null, unknown_observations: 0, rate_card_ref: null } }
       : { total_tokens: 6405721, input_tokens: 6391772, cached_input_tokens: 6212608, output_tokens: 13949, reasoning_tokens: 7821, model_requests: 104, tool_calls: 236, operations: 340, cost: { status: 'complete', basis: 'api_equivalent', currency: 'USD', estimated_usd_micros: 1842000, input_usd_micros: 1200000, cached_input_usd_micros: 480000, cache_write_usd_micros: 0, output_usd_micros: 162000, unknown_observations: 0, rate_card_ref: 'openai-standard-2026-09', rate_card_refs: ['openai-standard-2026-09'] } },
@@ -747,6 +749,7 @@ async function startFakeDaemon(dir) {
         }
         return reply({ ok: true, data: result });
       }
+      if (cmd === 'repository.list') return reply({ ok: true, data: { repositories: [{ repository_id: REPO, root_path: '/repo-one', display_name: 'repo-one', registered_at: '2026-01-01T00:00:00Z', last_seen_at: '2026-01-01T00:00:00Z', archived_at: null, archived_by_uid: null, archive_note: null, merged_into_repository_id: null, worktrees: [{ worktree_id: 'wmain', worktree_path: '/repo-one' }, { worktree_id: 'wfeature', worktree_path: '/repo-one/.worktrees/feature-ux' }, { worktree_id: 'wrelease', worktree_path: '/repo-one/.worktrees/release-candidate' }] }] } });
       if (cmd === 'progress.repository') return reply({ ok: true, data: progressFixture(scenario, req.params.period || 'day') });
       if (cmd === 'progress.repositories') return reply({ ok: true, data: fixtures(scenario)['progress.repositories'] });
       if (cmd === 'usage.repository') {
@@ -972,6 +975,68 @@ async function main() {
     return;
   }
 
+  if (process.env.CONSOLE_VERIFY_USAGE_UNAVAILABLE_ONLY) {
+    try {
+      daemon.setScenario({ ...SCENARIOS.populated, usageUnavailable: true });
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
+      await page.waitForSelector('.usage-unavailable-summary');
+      check('usage-only: unavailable collectors explain the actual recovery condition', /Usage data unavailable/.test(await page.locator('.usage-unavailable-summary').innerText())
+        && /not mapped/.test(await page.locator('.usage-unavailable-summary').innerText())
+        && /could not be read/.test(await page.locator('.usage-unavailable-summary').innerText()));
+      await context.close();
+    } catch (error) { check('usage-unavailable-only journey', false, error.message); }
+    await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    await browser.close(); await edge.close(); await daemon.close();
+    return;
+  }
+
+  if (process.env.CONSOLE_VERIFY_USAGE_ONLY) {
+    try {
+      const context = await browser.newContext({ viewport: VIEWPORTS.wide, reducedMotion: 'reduce', colorScheme: 'light' });
+      const { cookie } = sessions.issue({ sub: 'sub', email: 'owner@example.test' });
+      await context.addCookies([{ name: 'dc2_session', value: cookie.split(';')[0].split('=')[1], domain: '.' + BASE, path: '/' }]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(8000);
+      await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
+      check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+      await page.click('[data-usage-worktree-scope-toggle]');
+      check('usage-only: all registered worktrees are checked', await page.locator('[data-usage-worktree-id]:checked').count() === 3);
+      await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-worktree-unavailable');
+      check('usage-only: subset sends registered ids and hides unproven totals', await page.locator('.usage-metrics').count() === 0 && daemon.calls.some((call) => call.operation === 'usage.repository' && call.params.worktree_ids?.length === 2));
+      await page.click('[data-usage-worktree-scope-toggle]');
+      await page.locator('[data-usage-worktree-all]').check();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: consolidated selection restores repository totals', await page.locator('.usage-metrics').count() === 1 && !await page.locator('.usage-worktree-unavailable').count());
+      await page.click('[data-usage-worktree-scope-toggle]');
+      await page.locator('[data-usage-worktree-all]').uncheck();
+      await page.click('[data-usage-worktree-apply]');
+      await page.waitForSelector('.usage-worktree-unavailable');
+      check('usage-only: empty selection is an explicit unavailable state', /No worktrees selected/.test(await page.locator('.usage-worktree-unavailable').innerText()));
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.reload();
+      await page.waitForSelector('.usage-phase-chart');
+      check('usage-only: narrow phase chart also fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+      await context.close();
+    } catch (error) { check('usage-only journey', false, error.message); }
+    await fs.writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checks: report.checks.length, failures: report.failures, report: path.join(OUT, 'report.json') }));
+    process.exitCode = report.failures.length ? 1 : 0;
+    await browser.close(); await edge.close(); await daemon.close();
+    return;
+  }
+
   if (process.env.CONSOLE_VERIFY_CACHE_ONLY) {
     try {
       for (const viewport of [{ width: 1110, height: 876 }, { width: 390, height: 844 }]) {
@@ -1018,9 +1083,9 @@ async function main() {
             const failed = ['failed', 'unavailable'].includes(cacheState);
             const waitRequest = failed ? null : page.waitForRequest(request => [operation, ...(route === 'usage' ? ['usage.repository'] : [])].some(name => request.url().endsWith('/api/v2/' + name)) && request.postDataJSON()?.wait_for_refresh === true).catch(error => ({ error }));
             await page.goto('http://' + HOST + ':' + port + '/?cache=' + cacheState + '#/' + route);
-            await page.waitForFunction(() => /Loading usage|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText));
-            const before = await page.locator('main').innerText();
-            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage|Indexing usage cache/i.test(before));
+            await page.waitForFunction(() => /Loading usage|Rebuilding usage cache|Indexing usage cache|Saved usage|Refresh failed/i.test(document.querySelector('main').innerText + ' ' + (document.querySelector('.usage-coverage-indicator')?.title || '')));
+            const before = await page.evaluate(() => document.querySelector('main').innerText + ' ' + (document.querySelector('.usage-coverage-indicator')?.title || ''));
+            check('cache ' + viewport.width + ' ' + route + ' ' + cacheState + ': truthful snapshot label', cacheState === 'loading' ? /Loading usage|Rebuilding usage cache|Indexing usage cache/.test(before) : failed ? /refresh failed/i.test(before) : /saved usage|Indexing usage cache/i.test(before));
             if (cacheState === 'unavailable' && route === 'usage/' + REPO) check('empty usage failure is shown once', (before.match(/refresh failed/gi) || []).length === 1 && await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail hides unmeasured metrics', await page.locator('.usage-metrics').count() === 0);
             if (cacheState === 'loading' && route === 'usage/' + REPO) check('cache cold detail shows rebuild progress', await page.locator('.usage-rebuild-progress').count() === 1 && /3,426/.test(await page.locator('.usage-rebuild-progress').innerText()));
@@ -1029,13 +1094,13 @@ async function main() {
               ? await page.locator('[data-progress-evidence="tokens"] > strong').textContent() : null;
             if (savedProgressTokens !== null) check('cache stale Progress retains measured token evidence while indexing',
               savedProgressTokens !== '—' && /Indexing usage cache · 100%/.test(before));
-            const details = route === 'progress/' + REPO ? '.progress-exact' : route === 'usage/' + REPO ? '.usage-provenance' : null;
+            const details = route === 'progress/' + REPO ? '.progress-exact' : null;
             if (cacheState === 'stale' && details) await page.locator(details + ' summary').click();
             if (waitRequest) {
               const received = await waitRequest;
               if (received.error) throw received.error;
               daemon.releaseDelayed();
-              await page.waitForFunction(() => !/Loading usage|Saved usage · updating|Updating saved usage|Indexing usage cache/.test(document.querySelector('main').innerText));
+              await page.waitForFunction(() => !/Loading usage|Rebuilding usage cache|Saved usage · updating|Updating saved usage|Indexing usage cache/.test(document.querySelector('main').innerText + ' ' + (document.querySelector('.usage-coverage-indicator')?.title || '')));
               if (cacheState === 'stale' && details) check('cache ' + route + ': open details survive refresh', await page.locator(details).getAttribute('open') !== null);
               if (savedProgressTokens !== null) check('cache stale Progress preserves measured token evidence after refresh',
                 await page.locator('[data-progress-evidence="tokens"] > strong').textContent() === savedProgressTokens);
@@ -1231,7 +1296,9 @@ async function main() {
         if (scenarioName === 'populated' && view === `#/usage/${REPO}`) {
           check(`${label}: repository and primary usage trend lead the page`, /Codex Usage/.test(metrics.text) && /repo-one/.test(metrics.text) && await page.locator('[data-ui-region="usage-primary-trend"] svg').count() === 1);
           check(`${label}: usage never exposes collector or captured-content identities`, !/agent-private|request-private|\/home\//.test(metrics.text));
-          check(`${label}: usage provides exact chart values`, await page.locator('.usage-exact table').count() === 1);
+          check(`${label}: usage omits the redundant completeness/provenance block`,
+            await page.locator('.usage-provenance').count() === 0
+            && await page.locator('.usage-exact').count() === 0);
         }
         if (scenarioName === 'populated' && view === `#/progress/${REPO}`) {
           check(`${label}: progress leads with the release forecast and daily progress`,
@@ -2030,6 +2097,29 @@ async function main() {
   // chart, keyboard-preserving range changes, and accessible exact values.
   await page.goto(`http://${HOST}:${port}/#/usage/${REPO}`);
   await page.waitForSelector('.usage-phase-chart');
+  check('usage: worktree scope is grouped under the canonical repository',
+    await page.locator('[data-usage-worktree-scope-toggle]').count() === 1
+    && /All worktrees/.test(await page.locator('[data-usage-worktree-scope-toggle]').innerText()));
+  await page.click('[data-usage-worktree-scope-toggle]');
+  check('usage: worktree scope exposes an accessible checkbox popover',
+    await page.locator('.usage-worktree-scope-popover:not([hidden])').count() === 1
+    && await page.locator('[data-usage-worktree-id]').count() === 3
+    && await page.locator('[data-usage-worktree-all]').isChecked());
+  await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();
+  await page.click('[data-usage-worktree-apply]');
+  await page.waitForSelector('.usage-worktree-unavailable');
+  check('usage: individual worktree selection stays truthful when producer attribution is unavailable',
+    await page.locator('.usage-worktree-unavailable').count() === 1
+    && await page.locator('.usage-metrics').count() === 0
+    && /common Git root/.test(await page.locator('.usage-worktree-unavailable').innerText())
+    && daemon.calls.some((call) => call.operation === 'usage.repository' && call.params.worktree_ids?.length === 2 && call.params.include_unassigned === false));
+  await page.click('[data-usage-worktree-scope-toggle]');
+  await page.locator('[data-usage-worktree-all]').check();
+  await page.click('[data-usage-worktree-apply]');
+  await page.waitForSelector('.usage-phase-chart');
+  check('usage: consolidated worktree selection restores measured repository totals',
+    await page.locator('.usage-metrics').count() === 1
+    && await page.locator('.usage-worktree-unavailable').count() === 0);
   check('usage: the shared workspace offers real same-aspect repository links',
     await page.locator('#repository-list a[href="#/usage/r2"]').count() === 1 && await page.locator('[data-project-picker]').count() === 0);
   await chooseRepository(page, LONG);
@@ -2045,10 +2135,17 @@ async function main() {
     await page.locator('[data-usage-model-ledger]').count() === 1
     && await page.locator('.usage-model-row').count() >= 2
     && await page.locator('[data-usage-model-detail]').count() === 1);
+  check('usage: model names retain readable width in the ledger',
+    await page.locator('.usage-model-name strong').evaluateAll((names) => names.every((name) => name.getBoundingClientRect().width >= 48)));
   await page.locator('.usage-model-row').nth(1).click();
+  const modelDetailBox = await page.locator('[data-usage-model-detail]').boundingBox();
+  const usageViewport = await page.evaluate(() => ({ height: window.innerHeight, width: window.innerWidth }));
   check('interaction: selecting a model updates its token and cost detail',
     await page.locator('.usage-model-row').nth(1).getAttribute('aria-pressed') === 'true'
-    && (await page.locator('[data-usage-model-detail]').innerText()).includes('Total tokens'));
+    && (await page.locator('[data-usage-model-detail]').innerText()).includes('Total tokens')
+    && modelDetailBox && modelDetailBox.y >= 0 && modelDetailBox.y + modelDetailBox.height <= usageViewport.height
+    && modelDetailBox.x >= 0 && modelDetailBox.x + modelDetailBox.width <= usageViewport.width,
+    JSON.stringify({ modelDetailBox, usageViewport }));
   await page.locator('.usage-phase-chart rect').first().hover();
   check('interaction: hovering a phase bar shows token and cost details',
     await page.locator('[data-usage-chart-tooltip]:visible').count() === 1
@@ -2062,12 +2159,14 @@ async function main() {
     await page.locator('.usage-rail').count() === 3
     && /not added together/.test(await page.innerText('.usage-lower')));
   const usageContextText = await page.innerText('.usage-context');
-  check('usage: missing-data status stays concise before the chart',
-    /Some usage may be missing/.test(usageContextText)
-    && /data from 3 of 4 configured Codex environments/.test(usageContextText)
+  check('usage: completeness status is available from the labelled hint without taking page space',
+    !/Some usage may be missing/.test(usageContextText)
+    && !/data from 3 of 4 configured Codex environments/.test(usageContextText)
     && !/separately configured local Codex setup with its own usage history/.test(usageContextText)
     && !/excluded, never counted as zero/.test(usageContextText)
     && await page.locator('.usage-coverage-popover[hidden]').count() === 1
+    && await page.locator('.usage-coverage-indicator.warn').count() === 1
+    && await page.locator('.usage-coverage-hint-toggle').getAttribute('aria-label')
     && await page.locator('.usage-coverage-note').count() === 0
     && !/\bcollectors?\b|Partial coverage|measured values only|configured histories/.test(usageContextText));
   const usageHintToggle = page.locator('[data-usage-coverage-hint-toggle]');
@@ -2104,18 +2203,9 @@ async function main() {
   check('interaction: the 7d range re-reads the selected repository and restores focus',
     daemon.calls.some((c) => c.operation === 'usage.repository' && c.params.repository_id === REPO && c.params.range === '7d')
     && await page.locator('[data-codex-range="7d"]:focus').count() === 1);
-  await page.click('.usage-provenance summary');
-  check('interaction: coverage and provenance expands in place',
-    await page.locator('.usage-provenance[open]').count() === 1);
-  check('interaction: exact bucket values are available without hover',
-    await page.locator('.usage-provenance[open] .usage-exact tbody tr').count() > 0);
-  const completenessText = await page.innerText('.usage-provenance');
-  check('usage: expanded details explain completeness and bucket status without collector jargon',
-    /Data completeness/.test(completenessText)
-    && /Counting method/.test(completenessText)
-    && /Data status/.test(completenessText)
-    && /Measured with gaps/.test(completenessText)
-    && !/\bcollectors?\b|Partial coverage/.test(completenessText));
+  check('usage: redundant completeness/provenance block is removed',
+    await page.locator('.usage-provenance').count() === 0
+    && await page.locator('.usage-exact').count() === 0);
 
   for (const [scenarioName, scenario, expected, explanation] of [
     ['complete', SCENARIOS.usageComplete, 'All 4 environments included', 'Every configured environment supplied measurable data for this repository and period.'],
@@ -2125,11 +2215,10 @@ async function main() {
     daemon.setScenario(scenario);
     await page.reload();
     await page.waitForSelector('[data-usage-coverage-hint-toggle]');
-    await page.waitForFunction((expectedText) =>
-      (document.querySelector('.usage-context')?.innerText || '').includes(expectedText), expected);
+    await page.waitForFunction(() => document.querySelector('.usage-coverage-indicator'));
     const contextText = await page.innerText('.usage-context');
     check(`usage: ${scenarioName} state keeps its explanation hidden by default`,
-      contextText.includes(expected) && !contextText.includes(explanation)
+      !contextText.includes(expected) && !contextText.includes(explanation)
       && await page.locator('.usage-coverage-popover[hidden]').count() === 1
       && !/\bcollectors?\b|Partial coverage|Complete coverage|measured values only|configured histories/.test(contextText),
       contextText.slice(0, 240));

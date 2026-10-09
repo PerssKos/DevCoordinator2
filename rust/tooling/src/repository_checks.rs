@@ -12,6 +12,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::LazyLock;
 
 use serde_json::{Value, json};
 
@@ -828,8 +829,37 @@ fn neutrality_paths(root: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), CheckEr
     Ok((markup, prompts))
 }
 
+fn mask_skill_catalog_adapter_names(text: &str) -> String {
+    // These are factual catalog adapters and named contracts. Mask only the
+    // captured identifier, so unrelated runtime instructions remain visible.
+    static ADAPTERS: LazyLock<[regex::Regex; 2]> = LazyLock::new(|| {
+        [
+            r"(?i)\bin\s+(codex)\s+desktop,?\s+refresh\s+(?:the\s+active\s+)?app-server\s+`skills/list`\s+(?:for\s+the\s+current\s+checkout\s+)?with\s+`forcereload:\s*true`",
+            r"(?i)\brequired\s+contracts\s+\(`(imagegen)`,\s*`product-design:index`,\s*`product-design:get-context`,\s*`product-design:ideate`,\s*`product-design:audit`,\s*and\s*`product-design:design-qa`\)",
+        ]
+        .map(|pattern| regex::Regex::new(pattern).expect("static skill catalog adapter"))
+    });
+    let mut masked = text.to_owned();
+    for adapter in ADAPTERS.iter() {
+        masked = adapter
+            .replace_all(&masked, |captures: &regex::Captures<'_>| {
+                let whole = captures.get(0).expect("adapter match");
+                let name = captures.get(1).expect("adapter identifier");
+                let mut replacement = whole.as_str().to_owned();
+                replacement.replace_range(
+                    name.start() - whole.start()..name.end() - whole.start(),
+                    "agent",
+                );
+                replacement
+            })
+            .into_owned();
+    }
+    masked
+}
+
 fn scan_neutrality_file(collector: &mut FindingCollector, text: &str, path: &str, prompt: bool) {
-    for (index, line) in text.lines().enumerate() {
+    let masked = mask_skill_catalog_adapter_names(text);
+    for (index, line) in masked.lines().enumerate() {
         let folded = line.to_ascii_lowercase();
         let runtime_name = if prompt {
             contains_word_case_insensitive(line, "in Codex")
@@ -2593,7 +2623,7 @@ const DESIGN_GATE_TERMS: &[&str] = &[
 fn policy_named_skill_scan(text: &str) -> String {
     let core_end = text.find("\n## ").unwrap_or(text.len());
     let core = fold_policy(&text[..core_end]).replace(
-        "`ui-design-gate` module: load the named imagegen and product design index/ideate contracts",
+        "load the named imagegen and product design index/ideate contracts",
         "required named skill reference",
     );
     let mut scan = format!("{core}{}", &text[core_end..]);
@@ -2619,11 +2649,38 @@ fn policy_named_skill_scan(text: &str) -> String {
     scan
 }
 
+const POLICY_TERM_EQUIVALENTS: &[(&str, &str)] = &[
+    (
+        "use the runtime's event-wait tool",
+        "use a blocking event subscription rather than model-turn status polling",
+    ),
+    ("a meaningful deadline", "an expected-event deadline"),
+    (
+        "multiplex pending subscriptions and due heartbeats through the existing shared scheduler",
+        "multiplex pending subscriptions and all due heartbeats through one shared scheduler",
+    ),
+    (
+        "read bounded authoritative status once and advance the cursor",
+        "fetch bounded authoritative state once and advance its cursor",
+    ),
+    (
+        "reset it on meaningful state change",
+        "resetting on a meaningful state change",
+    ),
+];
+
+fn policy_term_present(folded: &str, term: &str) -> bool {
+    folded.contains(&term.to_lowercase())
+        || POLICY_TERM_EQUIVALENTS
+            .iter()
+            .any(|(required, equivalent)| *required == term && folded.contains(equivalent))
+}
+
 fn require_policy_terms(violations: &mut Vec<String>, body: &str, label: &str, terms: &[&str]) {
     let folded = fold_policy(body);
     let missing = terms
         .iter()
-        .filter(|term| !folded.contains(&term.to_lowercase()))
+        .filter(|term| !policy_term_present(&folded, term))
         .copied()
         .collect::<Vec<_>>();
     if !missing.is_empty() {
@@ -2954,19 +3011,33 @@ const POLICY_CONTRACTS: &[(&str, usize, &[&str])] = &[
         "event-wait contract",
         4,
         &[
-            "blocking event subscriptions rather than model-turn status polling",
-            "expected-event deadline",
-            "multiplex pending subscriptions",
-            "all due heartbeats through one shared scheduler",
-            "fetch bounded authoritative state once",
-            "advance its cursor",
-            "one service-owned watcher may poll using bounded backoff",
-            "resetting on a meaningful state change",
-            "the agent does not poll",
-            "watcher a cancellation path and expected-event deadline",
-            "timeouts are failure ceilings",
-            "not a blanket 100 ms interval",
+            "required running or queued work remains part of the active task",
+            "read the operation's current status",
+            "last observed sequence or cursor",
+            "use the runtime's event-wait tool",
+            "only if the provider is confirmed connected to that runtime's event ingress",
+            "provider's actual event types, exact operation labels, last observed sequence",
+            "a meaningful deadline",
+            "naming a source does not establish an event integration",
+            "multiplex pending subscriptions and due heartbeats through the existing shared scheduler",
+            "verify that registration succeeded",
+            "returned subscription identity or supported wait handle",
+            "remain in that wait through its supported continuation",
+            "do not substitute repeated sleep/status-query loops or a final response",
+            "provider's supported blocking wait",
+            "one existing service-owned watcher with bounded backoff, a deadline, and cancellation",
             "deduplicate watchers for the same obligation",
+            "choose backoff for the source and responsiveness need",
+            "reset it on meaningful state change",
+            "do not add a scheduler, poll through model turns, or repeatedly resubscribe to a known unavailable source",
+            "read bounded authoritative status once and advance the cursor",
+            "a deadline, disconnection, or source-unavailable event does not mean the operation completed",
+            "do not cancel or relaunch accepted work merely because observation ended",
+            "account for every required outstanding operation",
+            "continue waiting unless the user stopped the task",
+            "confirm any required background-wake permission",
+            "an alarm or subscription registration alone does not grant it",
+            "a reminder does not replace the wait or the terminal-result check",
         ],
     ),
     (
@@ -4126,7 +4197,7 @@ pub fn find_app_wide_policy_violations(text: &str) -> Vec<String> {
         "UI design admission gate",
         UI_GATE_TERMS,
     );
-    let named_skill_scan = policy_named_skill_scan(text);
+    let named_skill_scan = policy_named_skill_scan(&mask_skill_catalog_adapter_names(text));
     let ui_gate = fold_policy(policy_section(text, "UI design admission gate"));
     if !UI_GATE_SELECTION_TERMS
         .iter()
@@ -4389,6 +4460,32 @@ mod tests {
         let tree = TestTree::new("neutrality");
         neutrality_fixture(&tree.path);
         assert!(audit_agent_neutrality(&tree.path).unwrap().is_clean());
+        for adapter in [
+            "In Codex Desktop, refresh the active app-server `skills/list` for the current checkout with `forceReload: true`.",
+            "Resolve the active skill catalog; in Codex Desktop refresh app-server\n`skills/list` with `forceReload: true` when a required contract is missing.",
+            "IN CODEX DESKTOP, REFRESH THE ACTIVE APP-SERVER `SKILLS/LIST` WITH `FORCERELOAD: TRUE`.",
+        ] {
+            write(tree.path.join("skills/sample/SKILL.md"), adapter);
+            let report = audit_agent_neutrality(&tree.path).unwrap();
+            assert!(report.is_clean(), "factual adapter rejected: {report:?}");
+        }
+        for instruction in [
+            "In Codex Desktop, refresh the active app-server `skills/list` with `forceReload: false`.",
+            "In Codex Desktop, use a filesystem cache instead of the active app-server `skills/list`.",
+            "In Codex Desktop, refresh the active app-server `skills/list` with `forceReload: true`; require Codex workers for every task.",
+            "In Codex Desktop, refresh the active app-server `skills/list` with `forceReload: true`.\nUse Codex workers for every task.",
+        ] {
+            write(tree.path.join("skills/sample/SKILL.md"), instruction);
+            let report = audit_agent_neutrality(&tree.path).unwrap();
+            assert!(rules(&report).contains("runtime-name"), "{report:?}");
+        }
+        write(
+            tree.path.join("skills/sample/SKILL.md"),
+            "In Codex Desktop, refresh the active app-server `skills/list` with `forceReload: true`; store workers in ~/.codex/skills and set fork_turns.",
+        );
+        let report = audit_agent_neutrality(&tree.path).unwrap();
+        assert!(rules(&report).contains("runtime-home"));
+        assert!(rules(&report).contains("runtime-api"));
         write(
             tree.path.join("skills/sample/SKILL.md"),
             "In Codex set fork_turns to none.\n",
@@ -5049,6 +5146,16 @@ mod tests {
             &format!("{policy}\nUse ImageGen for every build."),
             "runtime/project-specific term: ImageGen",
         );
+        for instruction in [
+            "Use `ImageGen` for every build.",
+            "Confirm the required contracts (`imagegen`, `a-different-plugin`).",
+            "Confirm the six required contracts (`imagegen`, `product-design:index`, `product-design:get-context`, `product-design:ideate`, `product-design:audit`, and `product-design:design-qa`); use ImageGen for every build.",
+        ] {
+            assert_policy_violation(
+                &format!("{policy}\n{instruction}"),
+                "runtime/project-specific term: ImageGen",
+            );
+        }
         let importer = audit_project_policy_importer(&root.join("CLAUDE.md"));
         assert!(importer.is_empty(), "{}", importer.join("\n"));
     }
@@ -5697,6 +5804,47 @@ mod tests {
                 assert_policy_violation(&replace_policy_section(&policy, heading, &changed), label);
             }
         }
+        let heading = REQUIRED_POLICY_SECTIONS[4];
+        let execution = fold_policy(policy_section(&policy, heading));
+        for (required, regression) in [
+            (
+                "use the runtime's event-wait tool",
+                "poll operation status from every model turn",
+            ),
+            (
+                "only if the provider is confirmed connected to that runtime's event ingress",
+                "even when the provider has no event connection",
+            ),
+            (
+                "verify that registration succeeded",
+                "assume wait registration succeeded without checking",
+            ),
+            (
+                "one existing service-owned watcher with bounded backoff, a deadline, and cancellation",
+                "one agent-owned watcher with fixed 100 ms polling, no deadline, and no cancellation",
+            ),
+            (
+                "read bounded authoritative status once and advance the cursor",
+                "read all operation logs repeatedly and ignore the cursor",
+            ),
+            (
+                "a deadline, disconnection, or source-unavailable event does not mean the operation completed",
+                "a deadline or disconnected observer proves the operation completed",
+            ),
+            (
+                "an alarm or subscription registration alone does not grant it",
+                "an alarm or subscription registration grants background-wake permission",
+            ),
+        ] {
+            assert_policy_violation(
+                &replace_policy_section(
+                    &policy,
+                    heading,
+                    &replace_once(&execution, required, regression),
+                ),
+                "event-wait contract",
+            );
+        }
     }
 
     #[test]
@@ -5866,6 +6014,38 @@ mod tests {
         let policy = read_policy_bundle(&repository_root().join("reference/universal/AGENTS.md"))
             .unwrap()
             .contract_text;
+        let heading = REQUIRED_POLICY_SECTIONS[4];
+        let execution = fold_policy(policy_section(&policy, heading));
+        for (current, equivalent) in [
+            (
+                "use the runtime's event-wait tool",
+                "use a blocking event subscription rather than model-turn status polling",
+            ),
+            ("a meaningful deadline", "an expected-event deadline"),
+            (
+                "multiplex pending subscriptions and due heartbeats through the existing shared scheduler",
+                "multiplex pending subscriptions and all due heartbeats through one shared scheduler",
+            ),
+            (
+                "read bounded authoritative status once and advance the cursor",
+                "fetch bounded authoritative state once and advance its cursor",
+            ),
+            (
+                "reset it on meaningful state change",
+                "resetting on a meaningful state change",
+            ),
+        ] {
+            let candidate = replace_policy_section(
+                &policy,
+                heading,
+                &replace_once(&execution, current, equivalent),
+            );
+            let actual = find_app_wide_policy_violations(&candidate);
+            assert!(
+                actual.is_empty(),
+                "equivalent wait wording rejected: {actual:?}"
+            );
+        }
         let allowed = [
             "Never stop deployment at the first failure. Do not request unbounded tool output. Delegated agents may not skip issue ledgers. Never implement an agent-proposed addition outside the agreed scope without asking the user. Silent scope expansion is never permitted.",
             "After completing read-only investigation, present one plain-language decision that explains the problem, recommended outcome, boundaries, consequences, and tradeoffs. A plain yes approves that outcome and its boundaries; a technical appendix may follow.",

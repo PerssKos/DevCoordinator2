@@ -1346,6 +1346,7 @@ pub struct EvidenceGet {
     pub issues: Vec<EvidenceIssue>,
     pub issues_truncated: bool,
     pub image_count: u32,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -2412,6 +2413,25 @@ pub struct UsageRepository {
     pub time: UsageTime,
     pub tools: UsageTools,
     pub semantics: UsageSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_scope: Option<UsageWorktreeScope>,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageWorktreeScope {
+    pub worktrees: Vec<UsageWorktree>,
+    pub selected_worktree_ids: Option<Vec<String>>,
+    pub include_unassigned: bool,
+    pub attribution_available: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageWorktree {
+    pub worktree_id: String,
+    pub label: String,
+    pub available: bool,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

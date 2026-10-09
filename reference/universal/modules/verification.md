@@ -7,6 +7,12 @@
 - During implementation, run cheap checks and focused tests that can
   invalidate the current design or changed behavior. Complete coherent
   implementation batches before broader validation.
+- If testing is temporarily unavailable, follow the execution module's
+  availability-wait procedure: continue independent authorized development,
+  retain the deferred acceptance checks, and wait for recovery when no
+  independent work remains. Run those checks after recovery against the
+  intended candidate; unavailable testing neither proves correctness nor
+  removes required verification.
 - Do not run the complete suite after each plan item, edit, commit, or
   delegated result. Run pre-merge validation once shared interfaces and
   integrations are stable.

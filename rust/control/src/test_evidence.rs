@@ -25,7 +25,7 @@ use devcoordinator2_api::results::{
     FeedbackCreated, FeedbackMutation, ImageChunk, Screenshot, TestList, UnavailableScreenshot,
     VisualEvidenceSummary,
 };
-use devcoordinator2_api::{ErrorCode, ProtocolError};
+use devcoordinator2_api::{ErrorCode, MAX_RESPONSE_BYTES, ProtocolError, ResponseEnvelope};
 use regex::Regex;
 use rusqlite::OptionalExtension;
 use rustix::fs::{self as unix_fs, Dir, Mode, OFlags};
@@ -51,6 +51,7 @@ const MAX_CELLS: usize = 512;
 const MAX_COMMENTS: usize = 512;
 const MAX_MARKS: usize = 64;
 const MAX_POINTS: usize = 256;
+const EVIDENCE_PAGE_LIMIT: u8 = 32;
 const HASH_BLOCK_BYTES: usize = 1024 * 1024;
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
@@ -92,17 +93,15 @@ impl TestEvidenceService {
             &params.run_id,
             &caller.actor(),
         )?;
-        Ok(EvidenceGet {
-            repository_id: resolved.repository_id,
-            worktree_id: resolved.worktree_id,
-            run_id: params.run_id,
-            status: availability(&loaded.bundles),
-            bundles: loaded.bundles,
+        page_evidence(
+            &loaded,
             feedback,
-            issues_truncated: loaded.issues.len() >= 64,
-            image_count: bounded_u32(loaded.images.len()),
-            issues: loaded.issues,
-        })
+            resolved.repository_id,
+            resolved.worktree_id,
+            params.run_id,
+            params.offset,
+            params.limit,
+        )
     }
 
     pub fn summary_registered(
@@ -193,17 +192,15 @@ impl TestEvidenceService {
                 &params.run_id,
                 &caller.actor(),
             )?;
-            let evidence = EvidenceGet {
+            let evidence = page_evidence(
+                &loaded,
+                feedback,
                 repository_id,
                 worktree_id,
-                run_id: params.run_id.clone(),
-                status: availability(&loaded.bundles),
-                image_count: bounded_u32(loaded.images.len()),
-                issues_truncated: loaded.issues.len() >= 64,
-                bundles: loaded.bundles,
-                feedback,
-                issues: loaded.issues,
-            };
+                params.run_id.clone(),
+                params.offset,
+                params.limit,
+            )?;
             found = Some(devcoordinator2_api::results::EvidenceLookup { context, evidence });
         }
         found.ok_or_else(expired)
@@ -448,6 +445,135 @@ struct LoadedEvidence {
     bundles: Vec<EvidenceBundle>,
     images: HashMap<String, Image>,
     issues: Vec<EvidenceIssue>,
+}
+
+#[derive(Clone)]
+enum EvidencePageUnit {
+    Bundle(Box<EvidenceBundle>),
+    Feedback(Box<Feedback>),
+}
+
+fn page_evidence(
+    loaded: &LoadedEvidence,
+    feedback: Vec<Feedback>,
+    repository_id: String,
+    worktree_id: String,
+    run_id: String,
+    offset: u32,
+    limit: u8,
+) -> Result<EvidenceGet, ProtocolError> {
+    if limit == 0 || limit > EVIDENCE_PAGE_LIMIT {
+        return Err(invalid_argument("'limit' must be in the range 1..=32"));
+    }
+    let units = evidence_page_units(&loaded.bundles, &feedback);
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+    if offset > units.len() {
+        return Err(invalid_argument("'offset' is beyond the retained evidence"));
+    }
+    let mut selected = Vec::new();
+    let maximum = units.len().min(offset.saturating_add(usize::from(limit)));
+    for unit in units.iter().take(maximum).skip(offset) {
+        let mut candidate = selected.clone();
+        candidate.push(unit.clone());
+        let result = evidence_page_result(
+            loaded,
+            &candidate,
+            repository_id.clone(),
+            worktree_id.clone(),
+            run_id.clone(),
+            None,
+        );
+        if serialized_response_bytes(&result) > MAX_RESPONSE_BYTES {
+            if selected.is_empty() {
+                return Err(ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "one retained evidence item exceeds the response bound",
+                ));
+            }
+            break;
+        }
+        selected = candidate;
+    }
+    let next = offset.saturating_add(selected.len());
+    Ok(evidence_page_result(
+        loaded,
+        &selected,
+        repository_id,
+        worktree_id,
+        run_id,
+        (next < units.len()).then_some(next as u32),
+    ))
+}
+
+fn evidence_page_units(bundles: &[EvidenceBundle], feedback: &[Feedback]) -> Vec<EvidencePageUnit> {
+    let mut units = Vec::new();
+    for bundle in bundles {
+        let oversized = serde_json::to_vec(bundle)
+            .map(|bytes| bytes.len() > MAX_RESPONSE_BYTES / 2)
+            .unwrap_or(true);
+        if bundle.cells.is_empty() || !oversized {
+            units.push(EvidencePageUnit::Bundle(Box::new(bundle.clone())));
+            continue;
+        }
+        for cell in &bundle.cells {
+            let mut page = bundle.clone();
+            page.cells = vec![cell.clone()];
+            units.push(EvidencePageUnit::Bundle(Box::new(page)));
+        }
+    }
+    for row in feedback {
+        let oversized = serde_json::to_vec(row)
+            .map(|bytes| bytes.len() > MAX_RESPONSE_BYTES / 4)
+            .unwrap_or(true);
+        if row.comments.is_empty() || !oversized {
+            units.push(EvidencePageUnit::Feedback(Box::new(row.clone())));
+            continue;
+        }
+        for comment in &row.comments {
+            let mut page = row.clone();
+            page.comments = vec![comment.clone()];
+            units.push(EvidencePageUnit::Feedback(Box::new(page)));
+        }
+    }
+    units
+}
+
+fn evidence_page_result(
+    loaded: &LoadedEvidence,
+    units: &[EvidencePageUnit],
+    repository_id: String,
+    worktree_id: String,
+    run_id: String,
+    next_offset: Option<u32>,
+) -> EvidenceGet {
+    let mut bundles = Vec::new();
+    let mut feedback = Vec::new();
+    for unit in units {
+        match unit {
+            EvidencePageUnit::Bundle(bundle) => bundles.push((**bundle).clone()),
+            EvidencePageUnit::Feedback(row) => feedback.push((**row).clone()),
+        }
+    }
+    EvidenceGet {
+        repository_id,
+        worktree_id,
+        run_id,
+        status: availability(&loaded.bundles),
+        bundles,
+        feedback,
+        issues_truncated: loaded.issues.len() >= 64,
+        image_count: bounded_u32(loaded.images.len()),
+        issues: loaded.issues.clone(),
+        next_offset,
+    }
+}
+
+fn serialized_response_bytes(result: &EvidenceGet) -> usize {
+    ResponseEnvelope::success("evidence", result)
+        .ok()
+        .and_then(|response| serde_json::to_vec(&response).ok())
+        .map(|bytes| bytes.len().saturating_add(1))
+        .unwrap_or(usize::MAX)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2785,10 +2911,152 @@ mod tests {
                 EvidenceReference {
                     path: world.repo.display().to_string(),
                     run_id: RUN_ID.to_owned(),
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn evidence_get_pages_large_runs_with_a_bounded_response() {
+        let world = world();
+        let second = world
+            .evidence
+            .join("formal-runs/0000000000000000000000000000000000000000000000000000000000000000");
+        fs::create_dir_all(second.join("screenshots")).unwrap();
+        fs::copy(
+            world.evidence.join(MANIFEST_NAME),
+            second.join(MANIFEST_NAME),
+        )
+        .unwrap();
+        fs::copy(
+            &world.screenshot,
+            second.join("screenshots/cell-1-desktop-viewport.png"),
+        )
+        .unwrap();
+        let first = world
+            .service
+            .get(
+                EvidenceReference {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.into(),
+                    offset: 0,
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(first.bundles.len(), 1);
+        assert_eq!(first.next_offset, Some(1));
+        assert!(serde_json::to_vec(&first).unwrap().len() < MAX_RESPONSE_BYTES);
+        let second_page = world
+            .service
+            .get(
+                EvidenceReference {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.into(),
+                    offset: first.next_offset.unwrap(),
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(second_page.bundles.len(), 1);
+        assert_eq!(second_page.next_offset, None);
+        let lookup = world
+            .service
+            .lookup(
+                devcoordinator2_api::params::EvidenceLookup {
+                    run_id: RUN_ID.into(),
+                    image_id: Some(image_id(&evidence(&world))),
+                    worktree_id: Some(world.worktree_id.clone()),
+                    offset: 0,
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(lookup.evidence.bundles.len(), 1);
+        assert_eq!(lookup.evidence.next_offset, Some(1));
+        assert!(serde_json::to_vec(&lookup).unwrap().len() < MAX_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn oversized_bundle_pages_cells_without_losing_visual_evidence() {
+        let world = world();
+        let second = world
+            .evidence
+            .join("formal-runs/0000000000000000000000000000000000000000000000000000000000000001");
+        fs::create_dir_all(second.join("screenshots")).unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(world.evidence.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let template = manifest["cells"][0].clone();
+        let cells = (0..MAX_CELLS)
+            .map(|index| {
+                let mut cell = template.clone();
+                cell["cellId"] = serde_json::json!(format!("cell-{index}"));
+                cell["planIndex"] = serde_json::json!(index);
+                cell
+            })
+            .collect::<Vec<_>>();
+        manifest["coverage"]["checkedPages"] = serde_json::json!(MAX_CELLS);
+        manifest["coverage"]["plannedPages"] = serde_json::json!(MAX_CELLS);
+        manifest["cells"] = serde_json::Value::Array(cells);
+        fs::copy(
+            &world.screenshot,
+            second.join("screenshots/cell-1-desktop-viewport.png"),
+        )
+        .unwrap();
+        fs::write(
+            second.join(MANIFEST_NAME),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let first = world
+            .service
+            .get(
+                EvidenceReference {
+                    path: world.repo.display().to_string(),
+                    run_id: RUN_ID.into(),
+                    offset: 0,
+                    limit: 1,
+                },
+                &caller("owner@example.test"),
+            )
+            .unwrap();
+        assert_eq!(first.bundles.len(), 1);
+        assert_eq!(first.bundles[0].cells.len(), 1);
+        assert!(first.next_offset.is_some());
+        assert!(serde_json::to_vec(&first).unwrap().len() < MAX_RESPONSE_BYTES);
+        let mut offset = first.next_offset.unwrap();
+        let mut cells_seen = first.bundles[0].cells.len();
+        while let Some(next) = offset.checked_add(1) {
+            let page = world
+                .service
+                .get(
+                    EvidenceReference {
+                        path: world.repo.display().to_string(),
+                        run_id: RUN_ID.into(),
+                        offset,
+                        limit: 32,
+                    },
+                    &caller("owner@example.test"),
+                )
+                .unwrap();
+            cells_seen += page
+                .bundles
+                .iter()
+                .map(|bundle| bundle.cells.len())
+                .sum::<usize>();
+            if page.next_offset.is_none() {
+                break;
+            }
+            offset = page.next_offset.unwrap();
+            assert!(offset >= next);
+        }
+        assert_eq!(cells_seen, MAX_CELLS + 1);
     }
 
     fn image_id(result: &EvidenceGet) -> String {
@@ -3072,6 +3340,8 @@ mod tests {
                     run_id: RUN_ID.into(),
                     image_id: Some(image_id(&evidence(&world))),
                     worktree_id: None,
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )
@@ -3084,6 +3354,8 @@ mod tests {
                     run_id: RUN_ID.into(),
                     image_id: Some(image_id(&evidence(&world))),
                     worktree_id: Some(world.worktree_id.clone()),
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )
@@ -3417,6 +3689,8 @@ writeJourneyEvidenceArtifact({...original,pages,coverage,plan:{plannedPageCount:
                 EvidenceReference {
                     path: world.repo.display().to_string(),
                     run_id: "t20260902T020304Z-fedcba".to_owned(),
+                    offset: 0,
+                    limit: 10,
                 },
                 &caller("owner@example.test"),
             )

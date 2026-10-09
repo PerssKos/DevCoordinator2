@@ -82,9 +82,9 @@ test('private route credentials reach only the authorized HTTP and WebSocket ups
   const sessions = createSessionManager({ secret: config.sessionSecret, ttlMs: 60000, cookieName: 'dc2_session', secure: false });
   const cookie = sessions.issue({ sub: 'owner', email: 'owner@example.test' }).cookie.split(';')[0];
   const deniedCookie = sessions.issue({ sub: 'ungranted', email: 'ungranted@example.test' }).cookie.split(';')[0];
-  async function request(label, { upgrade = false, authenticated = true, sessionCookie = cookie } = {}) {
+  async function request(label, { upgrade = false, authenticated = true, sessionCookie = cookie, requestPath = '/', method = 'GET' } = {}) {
     return new Promise((resolve, reject) => {
-      const outgoing = http.request({ host: '127.0.0.1', port, path: '/', headers: {
+      const outgoing = http.request({ host: '127.0.0.1', port, path: requestPath, method, headers: {
         host: `${label}.example.test`, authorization: 'Bearer browser-controlled',
         ...(authenticated ? { cookie: sessionCookie } : {}), ...(upgrade ? { connection: 'Upgrade', upgrade: 'websocket' } : {}),
       } }, (response) => {
@@ -112,6 +112,17 @@ test('private route credentials reach only the authorized HTTP and WebSocket ups
     assert.equal((await request('app', { upgrade, authenticated: false })).status, upgrade ? 403 : 302);
     assert.equal(seen.length, before);
     assert.equal((await request('app', { upgrade, sessionCookie: deniedCookie })).status, 403);
+    assert.equal(seen.length, before);
+  }
+  for (const requestPath of ['/sw.js', '/manifest.webmanifest']) {
+    for (const method of ['GET', 'HEAD']) {
+      assert.equal((await request('app', { authenticated: false, requestPath, method })).status, 200);
+      assert.equal(seen.at(-1).authorization, undefined);
+      assert.equal(seen.at(-1)['x-devcoordinator2-review-identity'], undefined);
+    }
+    const before = seen.length;
+    assert.equal((await request('app', { authenticated: false, requestPath, method: 'POST' })).status, 302);
+    assert.equal((await request('app', { authenticated: false, requestPath: requestPath + '/private' })).status, 302);
     assert.equal(seen.length, before);
   }
   for (const credential of Object.values(credentials)) {

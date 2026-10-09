@@ -21,7 +21,8 @@ use tokio::task::JoinSet;
 use crate::ExecutorError;
 use crate::capacity::{CapacityObservation, PermitProvider};
 use crate::diagnostics::{
-    DiagnosticContext, diagnostic_fingerprint, normalize_diagnostics, parse_declared_report,
+    DiagnosticContext, bounded_diagnostic_value, diagnostic_fingerprint, normalize_diagnostics,
+    parse_declared_report,
 };
 use crate::evidence::{
     RetainedArtifactIdentity, artifact_receipts, receipts_match, retain_artifact_trees,
@@ -827,6 +828,20 @@ fn failure_entry(
     entry
 }
 
+fn failure_entry_with_reason(
+    mut entry: FailureIndexEntry,
+    reason: Option<&str>,
+) -> FailureIndexEntry {
+    if let Some(reason) = reason {
+        entry.actual = Some(bounded_diagnostic_value(
+            devcoordinator2_executor_protocol::DiagnosticValueType::String,
+            reason,
+        ));
+        entry.fingerprint = diagnostic_fingerprint(&entry);
+    }
+    entry
+}
+
 fn process_failure_semantics(
     process: &ProcessResult,
     completion: CompletionMode,
@@ -1479,6 +1494,7 @@ async fn execute_check(
             ) {
                 Ok(receipts) => receipts,
                 Err(error) => {
+                    let reason = error.to_string();
                     record_leaf_postprocess_failure(
                         &plan,
                         &check,
@@ -1489,8 +1505,8 @@ async fn execute_check(
                         LeafStatus::Failed,
                         ErrorCategory::Artifact,
                         None,
+                        Some(&reason),
                     );
-                    let _ = error;
                     Vec::new()
                 }
             }
@@ -1503,6 +1519,7 @@ async fn execute_check(
                 Err(error) => {
                     process.status = ProcessStatus::Failed;
                     process.reason = Some(error.to_string());
+                    let reason = process.reason.clone();
                     record_leaf_postprocess_failure(
                         &plan,
                         &check,
@@ -1513,6 +1530,7 @@ async fn execute_check(
                         LeafStatus::Failed,
                         ErrorCategory::Artifact,
                         None,
+                        reason.as_deref(),
                     );
                     Vec::new()
                 }
@@ -2629,6 +2647,7 @@ fn record_leaf_postprocess_failure(
     status: LeafStatus,
     error_category: ErrorCategory,
     termination_reason: Option<TerminationReason>,
+    reason: Option<&str>,
 ) {
     process.status = if status == LeafStatus::Unsafe {
         ProcessStatus::Unsafe
@@ -2641,15 +2660,19 @@ fn record_leaf_postprocess_failure(
     if error_category == ErrorCategory::StructuredEvidenceInvalid {
         process.structured_evidence_invalid = true;
     }
-    process.diagnostics.push(failure_entry(
-        &plan.run_id,
-        Some(&check.name),
-        selector.case_id.as_deref(),
-        status,
-        process.exit_code,
-        termination_reason,
-        error_category,
-        Some(selector.phase),
+    process.reason = reason.map(bounded_reason).or_else(|| process.reason.take());
+    process.diagnostics.push(failure_entry_with_reason(
+        failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            status,
+            process.exit_code,
+            termination_reason,
+            error_category,
+            Some(selector.phase),
+        ),
+        process.reason.as_deref(),
     ));
     if let Ok(normalized) = normalize_diagnostics(std::mem::take(&mut process.diagnostics)) {
         process.diagnostics = normalized.entries;
@@ -2881,6 +2904,7 @@ fn discovery_postprocess_failure(
         status,
         error_category,
         termination_reason,
+        Some(&reason),
     );
     CheckOutcome {
         cache_key: None,

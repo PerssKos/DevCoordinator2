@@ -73,13 +73,18 @@
 .repository-scoped .usage-context { display: flex; flex-wrap: wrap; gap: 14px; }
 .repository-scoped .usage-title { min-width: 0; flex: 1; }
 .repository-scoped .usage-coverage { flex-basis: 100%; }
+.repository-scoped .usage-coverage { flex: 0 0 auto; flex-basis: auto; margin-left: auto; }
 .repository-scoped .usage-coverage-status { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
 .repository-scoped .usage-lower { grid-template-columns: repeat(2, minmax(0,1fr)); }
 .repository-scoped .usage-lower > section:nth-child(2) { border-right: 0; }
 .repository-scoped .usage-lower > section:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
-.repository-scoped .usage-provenance summary { grid-template-columns: auto minmax(0,1fr); }
 @media(max-width:1100px) { .repository-scoped .usage-lower { grid-template-columns: minmax(0,1fr); } .repository-scoped .usage-lower > section { border-right: 0; } .repository-scoped .usage-lower > section + section { border-top: 1px solid var(--line); } }
-@media(max-width:760px) { .repository-scoped .usage-provenance summary { grid-template-columns: minmax(0,1fr); } }
+@media(max-width:760px) {
+  .repository-scoped .usage-context { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px 12px; }
+  .repository-scoped .usage-title { grid-column: 1 / -1; width: 100%; flex: none; }
+  .repository-scoped .usage-range { grid-column: 1; grid-row: 2; justify-self: start; }
+  .repository-scoped .usage-coverage { grid-column: 2; grid-row: 2; margin-left: 0; justify-self: end; }
+}
 .repository-scoped .tests-workspace { display: block; min-height: 0; }
 .workspace-tests-heading { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 14px; }
 .workspace-tests-heading h1 { margin: 0; flex: 1; }

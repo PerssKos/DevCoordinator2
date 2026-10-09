@@ -1540,6 +1540,52 @@ async fn failed_direct_check_retains_diagnostics_without_reusable_build_receipts
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_retained_artifact_failure_preserves_named_reason() {
+    let repository = Repository::new("oversized-retained-artifact");
+    fs::write(repository.root.join(".gitignore"), b"browser-evidence/\n")
+        .expect("ignore generated evidence");
+    run_git(&repository.root, &["add", ".gitignore"]);
+    let mut check = direct("browser", fixture(&["write-artifact-tree"]));
+    check.retained_artifacts = vec![RetainedArtifactSpec {
+        name: "diagnostics".into(),
+        path: "browser-evidence".into(),
+        max_bytes: 4,
+    }];
+    let report = execute(plan(
+        &repository,
+        "run-oversized-retained-artifact",
+        vec![check],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[0].exit.code, Some(0));
+    let diagnostic = failure(&report, Some("browser"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::Artifact);
+    assert_eq!(
+        diagnostic
+            .actual
+            .as_ref()
+            .and_then(|value| value.preview.as_deref()),
+        Some("retained artifact \"diagnostics\": retained artifact exceeds its 4 byte limit")
+    );
+
+    let report_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(
+            repository
+                .current("run-oversized-retained-artifact")
+                .join("check-report.json"),
+        )
+        .expect("check report"),
+    )
+    .expect("check report JSON");
+    assert_eq!(
+        report_json["failure_index"][0]["actual"]["preview"],
+        "retained artifact \"diagnostics\": retained artifact exceeds its 4 byte limit"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn direct_discovery_and_case_logs_use_distinct_stable_leaves() {
     let repository = Repository::new("phase-layout");
     let mut fanout = dynamic_fanout("cases", "one-discovery");

@@ -25,6 +25,20 @@ window.DevCoordinatorWorkspace = (() => {
 
   function catalogue(repositories, runs, deployments) {
     const records = new Map();
+    // Registered worktrees carry an explicit owning repository relation. Use
+    // that relation for exact paths before considering the narrower legacy
+    // scratch/source heuristics, so a standalone plan row for a known
+    // worktree is displayed under its canonical repository without merging
+    // ordinary nested repositories.
+    const registeredWorktreeOwners = new Map(
+      repositories
+        .filter((row) => row.worktree_path && row.repository_group_key)
+        .map((row) => [row.worktree_path, {
+          repository_id: row.repository_group_key,
+          display_name: row.repository_group_name || row.display_name,
+          repository_source: row.repository_source,
+        }]),
+    );
     const isPathInside = (path, root) => {
       if (!path || !root) return false;
       const normalizedRoot = root.endsWith('/') ? root.slice(0, -1) : root;
@@ -42,10 +56,34 @@ window.DevCoordinatorWorkspace = (() => {
         .filter((candidate) => candidate.repository_id !== row.repository_id && isPathInside(path, candidate.root_path))
         .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
     };
+    const registeredRootOwner = (row) => {
+      const path = row.worktree_path || row.root_path;
+      if (!path) return null;
+      return repositories
+        .filter((candidate) => candidate.repository_id !== row.repository_id
+          && row.repository_source?.key
+          && candidate.repository_source?.key === row.repository_source.key
+          && isPathInside(path, candidate.root_path))
+        .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
+    };
+    // Some Codex checkouts are registered as standalone records because their
+    // local Git metadata cannot prove the origin relationship. A generated
+    // state checkout beneath a verified repository root is still presented as
+    // that repository's worktree while retaining its own record identity.
+    const generatedStateOwner = (row) => {
+      const path = row.worktree_path || row.root_path;
+      if (!path || !path.includes('/.state/')) return null;
+      return repositories
+        .filter((candidate) => candidate.repository_id !== row.repository_id
+          && candidate.repository_source?.key
+          && isPathInside(path, candidate.root_path))
+        .sort((left, right) => (right.root_path?.length || 0) - (left.root_path?.length || 0))[0] || null;
+    };
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
-      const owner = scratchOwner(row);
+      const registeredOwner = registeredWorktreeOwners.get(row.worktree_path || row.root_path);
+      const owner = registeredOwner || scratchOwner(row) || registeredRootOwner(row) || generatedStateOwner(row);
       const ownerSource = owner?.repository_source;
       records.set(row.repository_id, {
         ...previous, ...row,
@@ -273,20 +311,35 @@ window.DevCoordinatorWorkspace = (() => {
         read('plan.overview'),
         includeTests ? read('test.list') : { value: { runs: [] } },
         read('deployment.list'),
-      ]).then(async ([plans, tests, deploymentList]) => {
+        read('repository.list'),
+      ]).then(async ([plans, tests, deploymentList, repositoryList]) => {
         if (plans.error && !includeTests) tests = await read('test.list');
         if (signal.aborted) return;
         if ([plans, tests, deploymentList].every((result) => result.error)) throw plans.error;
-        data = { repositories: [...(plans.value?.repositories || [])], runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
+        const registered = (repositoryList.value?.repositories || []).flatMap((record) => {
+          const planned = plans.value?.repositories?.find((row) => row.repository_id === record.repository_id);
+          const source = planned?.repository_source || record.repository_source;
+          const worktrees = record.worktrees || [];
+          return worktrees.map((worktree) => ({
+            repository_id: record.repository_id,
+            display_name: record.display_name,
+            repository_group_key: source?.key || record.repository_id,
+            repository_group_name: source?.name || record.display_name,
+            root_path: planned?.root_path || record.root_path,
+            worktree_path: worktree.worktree_path,
+            repository_source: source,
+          }));
+        });
+        data = { repositories: [...(plans.value?.repositories || []), ...registered], registered, runs: tests.value?.runs || [], deployments: deploymentList.value?.deployments || [] };
         testsLoaded = includeTests || !!plans.error;
         groups = catalogue(data.repositories, data.runs, data.deployments);
-        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList]]);
+        updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList]]);
         if (!canOperate()) return;
         void Promise.all([read('usage.repositories'), read('progress.repositories')]).then(([usage, progress]) => {
           if (signal.aborted) return;
-          data.repositories = [...(plans.value?.repositories || []), ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
+          data.repositories = [...(plans.value?.repositories || []), ...registered, ...(usage.value?.repositories || []), ...(progress.value?.repositories || [])];
           groups = catalogue(data.repositories, data.runs, data.deployments);
-          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Usage', usage], ['Progress', progress]]);
+          updateStatus([['Plan', plans], ['Tests', tests], ['Deployments', deploymentList], ['Repositories', repositoryList], ['Usage', usage], ['Progress', progress]]);
           if (active) paint();
         }).catch(() => {});
       });

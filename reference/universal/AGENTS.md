@@ -84,8 +84,17 @@ earlier model messages or reload unchanged instructions.
   only the reviewed repository and current authorized scope. Do not classify
   user waiting or intentional required release revalidation as waste.
 - Submit dependency-ready work concurrently, preserve ownership boundaries,
-  track every asynchronous operation, and verify completion. Prefer events;
-  if unavailable, use one service-owned bounded-backoff watcher. Do not add a competing scheduler.
+  track every asynchronous operation, and verify completion. Required running
+  or queued work remains part of the active task: wait instead of sending a
+  final response. Follow the execution module's completion-wait procedure
+  before yielding. Never promise automatic continuation without a confirmed
+  wait registration and, when needed, verified background-wake permission.
+- Temporary testing or Coordinator unavailability does not end authorized
+  development. Continue independent work, retain the missing verification,
+  then use the execution module's availability-wait procedure when no
+  independent work remains. Resume the deferred checks after recovery;
+  unverified changes are not complete. Preserve mandatory gates and never
+  bypass a refusal or create a competing scheduler.
 - Preserve canonical sources, valuable dirty work, shared services, credentials,
   and recoverable data. Mutate derived/install copies only by reviewed source
   workflows. Keep user-visible behavior real and verify the original affected
@@ -109,7 +118,10 @@ earlier model messages or reload unchanged instructions.
 - Explain outcomes through the user's task and keep requested content first.
   UI work loads its journey, design, terminology, and rendered-interaction
   requirements. Every new shipped product UI element also enters the
-  `ui-design-gate` module: load the named imagegen and Product Design
+  `ui-design-gate` module: resolve the active skill catalog for the current
+  checkout before judging capability; in Codex Desktop refresh app-server
+  `skills/list` with `forceReload: true` when the session snapshot omits a
+  required contract. Then load the named imagegen and Product Design
   index/ideate contracts, use Product Design `get-context`, generate exactly
   three independent visual options with the highest capability the runtime
   provides, present them in actual display order, and pause implementation

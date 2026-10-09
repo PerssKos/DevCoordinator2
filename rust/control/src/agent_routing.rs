@@ -75,7 +75,7 @@ impl AgentRoutingService {
             .database
             .call(move |c| read_capability(c, harness, now_ms))
             .map_err(db_error)?;
-        if current.reported_at_ms.is_some() {
+        if current.reported_at_ms.is_some() && current.fresh {
             return Ok(current);
         }
         let guard = self
@@ -86,7 +86,7 @@ impl AgentRoutingService {
             .database
             .call(move |c| read_capability(c, harness, now_ms))
             .map_err(db_error)?;
-        if latest.reported_at_ms.is_some() {
+        if latest.reported_at_ms.is_some() && latest.fresh {
             drop(guard);
             return Ok(latest);
         }
@@ -762,7 +762,40 @@ fn valid_role_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
+
+    fn capability_config(
+        root: &std::path::Path,
+        codex_home: std::path::PathBuf,
+        executable: std::path::PathBuf,
+    ) -> Config {
+        Config {
+            socket_path: root.join("daemon.sock"),
+            sandbox_bridge_dir: root.join("bridge"),
+            state_dir: root.join("state"),
+            unit_prefix: "fixture".into(),
+            slice_name: "fixture.slice".into(),
+            client_group: "clients".into(),
+            port_range: (40000, 40100),
+            base_domain: "example.test".into(),
+            edge_uid: None,
+            admin_emails: Vec::new(),
+            telegram_token_file: None,
+            telegram_api: "https://api.telegram.org".into(),
+            bugs_dir: root.join("bugs"),
+            compose_env_allowlist_file: None,
+            compose_env_authorizations: HashSet::new(),
+            codex_usage_sources_file: None,
+            codex_usage_sources: vec![crate::config::CodexUsageSource {
+                api_socket: None,
+                uid: rustix::process::getuid().as_raw(),
+                codex_home,
+                executable,
+            }],
+        }
+    }
 
     #[test]
     fn capability_report_save_and_instruction_resolve_conditional_rules() {
@@ -919,5 +952,185 @@ mod tests {
             1,
         );
         assert_eq!(conflict.unwrap_err().code, ErrorCode::ConfigurationInvalid);
+    }
+
+    #[test]
+    fn automatic_codex_discovery_refreshes_expiry_and_persists_exact_pairs() {
+        let temp = tempdir().unwrap();
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir(&codex_home).unwrap();
+        let catalog = codex_home.join("catalog.json");
+        let count = codex_home.join("calls");
+        let executable = temp.path().join("codex-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\ncount=\"$CODEX_HOME/calls\"\nn=$(cat \"$count\" 2>/dev/null || printf 0)\nprintf '%s' \"$((n + 1))\" > \"$count\"\ncat \"$CODEX_HOME/catalog.json\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(
+            &catalog,
+            r#"{"models":[{"slug":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"high"}]}]}"#,
+        )
+        .unwrap();
+        let config = capability_config(temp.path(), codex_home, executable);
+        let service = AgentRoutingService::new(
+            crate::database::Database::open(temp.path().join("authority.sqlite3")).unwrap(),
+        )
+        .unwrap();
+        let first = service
+            .ensure_capability(&config, ClientKind::Codex, 1_000)
+            .unwrap();
+        assert!(first.fresh);
+        assert_eq!(first.models, vec!["fixture-model"]);
+        assert_eq!(first.efforts, vec!["high"]);
+        assert_eq!(first.pairs.len(), 1);
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "1");
+
+        let cached = service
+            .ensure_capability(&config, ClientKind::Codex, 1_001)
+            .unwrap();
+        assert!(cached.fresh);
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "1");
+        let saved = service
+            .save_settings(
+                devcoordinator2_api::params::AgentSettingsSave {
+                    scope: Scope::Global,
+                    repository_id: None,
+                    harness: ClientKind::Codex,
+                    expected_revision: 0,
+                    rules: vec![RuleInput {
+                        role_id: "backend_implementation".into(),
+                        action: Action::AlwaysSpawn,
+                        model: Some("fixture-model".into()),
+                        effort: Some("high".into()),
+                    }],
+                },
+                "uid:fixture",
+                1_001,
+            )
+            .unwrap();
+        let settings = service
+            .settings(Scope::Global, None, ClientKind::Codex, 1_001)
+            .unwrap();
+        let rule = settings
+            .rules
+            .iter()
+            .find(|rule| rule.role_id == "backend_implementation")
+            .unwrap();
+        assert_eq!(saved.revision, 1);
+        assert!(!rule.stale);
+        assert_eq!(rule.model.as_deref(), Some("fixture-model"));
+        assert_eq!(rule.effort.as_deref(), Some("high"));
+
+        std::fs::write(
+            &catalog,
+            r#"{"models":[{"slug":"fixture-next","visibility":"list","supported_reasoning_levels":[{"effort":"max"}]}]}"#,
+        )
+        .unwrap();
+        let refreshed = service
+            .ensure_capability(&config, ClientKind::Codex, 1_000 + DEFAULT_EXPIRY_MS + 1)
+            .unwrap();
+        assert!(refreshed.fresh);
+        assert_eq!(refreshed.models, vec!["fixture-next"]);
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+        let stale = service
+            .settings(
+                Scope::Global,
+                None,
+                ClientKind::Codex,
+                1_000 + DEFAULT_EXPIRY_MS + 1,
+            )
+            .unwrap();
+        assert!(
+            stale
+                .rules
+                .iter()
+                .find(|rule| rule.role_id == "backend_implementation")
+                .unwrap()
+                .stale
+        );
+        service
+            .save_settings(
+                devcoordinator2_api::params::AgentSettingsSave {
+                    scope: Scope::Global,
+                    repository_id: None,
+                    harness: ClientKind::Codex,
+                    expected_revision: saved.revision,
+                    rules: vec![RuleInput {
+                        role_id: "backend_implementation".into(),
+                        action: Action::AlwaysSpawn,
+                        model: Some("fixture-next".into()),
+                        effort: Some("max".into()),
+                    }],
+                },
+                "uid:fixture",
+                1_000 + DEFAULT_EXPIRY_MS + 1,
+            )
+            .unwrap();
+        let reloaded = service
+            .settings(
+                Scope::Global,
+                None,
+                ClientKind::Codex,
+                1_000 + DEFAULT_EXPIRY_MS + 1,
+            )
+            .unwrap();
+        let rule = reloaded
+            .rules
+            .iter()
+            .find(|rule| rule.role_id == "backend_implementation")
+            .unwrap();
+        assert!(!rule.stale);
+        assert_eq!(rule.model.as_deref(), Some("fixture-next"));
+        assert_eq!(rule.effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn automatic_discovery_failure_preserves_empty_capability_state() {
+        let temp = tempdir().unwrap();
+        let codex_home = temp.path().join("codex-home");
+        std::fs::create_dir(&codex_home).unwrap();
+        let executable = temp.path().join("codex-failure");
+        std::fs::write(&executable, "#!/bin/sh\nexit 17\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = capability_config(temp.path(), codex_home, executable);
+        let service = AgentRoutingService::new(
+            crate::database::Database::open(temp.path().join("authority.sqlite3")).unwrap(),
+        )
+        .unwrap();
+        let capabilities = service
+            .ensure_capability(&config, ClientKind::Codex, 2_000)
+            .unwrap();
+        assert!(!capabilities.fresh);
+        assert!(capabilities.models.is_empty());
+        assert!(capabilities.pairs.is_empty());
+    }
+
+    #[test]
+    fn installed_codex_debug_models_catalog_is_consumable_when_available() {
+        let Some(executable) = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .map(|path| path.join("codex"))
+            .find(|candidate| candidate.is_file())
+        else {
+            return;
+        };
+        let temp = tempdir().unwrap();
+        let home = crate::usage::user_record(rustix::process::getuid().as_raw())
+            .unwrap()
+            .home;
+        let config = capability_config(
+            temp.path(),
+            std::path::PathBuf::from(home).join(".codex"),
+            executable,
+        );
+        let capabilities = crate::capability_discovery::discover(&config, ClientKind::Codex, 3_000)
+            .expect("installed Codex debug models catalog should be readable");
+        assert!(capabilities.fresh);
+        assert!(!capabilities.models.is_empty());
+        assert!(!capabilities.efforts.is_empty());
+        assert!(!capabilities.pairs.is_empty());
     }
 }

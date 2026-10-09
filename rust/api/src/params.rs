@@ -561,6 +561,16 @@ pub struct EvidenceReference {
     pub path: String,
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"))]
     pub run_id: String,
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub offset: u32,
+    #[serde(default = "default_evidence_limit")]
+    #[schemars(range(min = 1, max = 32))]
+    pub limit: u8,
+}
+
+fn default_evidence_limit() -> u8 {
+    10
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -572,6 +582,12 @@ pub struct EvidenceLookup {
     pub image_id: Option<String>,
     #[schemars(regex(pattern = r"^w[0-9a-f]{16}$"))]
     pub worktree_id: Option<String>,
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub offset: u32,
+    #[serde(default = "default_evidence_limit")]
+    #[schemars(range(min = 1, max = 32))]
+    pub limit: u8,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -1131,6 +1147,17 @@ pub struct UsageRepository {
     pub repository_id: String,
     #[serde(default = "default_usage_range")]
     pub range: UsageRange,
+    /// Registered Coordinator worktree ids to include. `None` keeps the
+    /// consolidated repository view; an empty list selects only unassigned
+    /// historical work when `include_unassigned` is true.
+    #[serde(default)]
+    pub worktree_ids: Option<Vec<String>>,
+    #[serde(default = "default_include_unassigned")]
+    pub include_unassigned: bool,
+}
+
+fn default_include_unassigned() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

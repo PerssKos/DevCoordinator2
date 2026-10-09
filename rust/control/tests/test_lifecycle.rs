@@ -1153,6 +1153,40 @@ fn current_run_pages_bound_large_reports_and_keep_every_worktree_discoverable() 
 }
 
 #[test]
+fn current_run_list_skips_worktrees_with_replaced_state_paths() {
+    let world = LifecycleWorld::new();
+    let first = world.start();
+    world.systemd.finish(&first.unit);
+    world.wait_status(TestStatus::Passed);
+    let (other, second) = world.start_named("other-list-entry");
+    world.systemd.finish(&second.unit);
+    world.wait_status_at(&other, TestStatus::Passed);
+
+    // The registration can outlive a checkout or one of its state ancestors.
+    // A read-only global list must skip that stale record and still return the
+    // healthy worktree instead of surfacing test_log_unavailable.
+    let state_root = world.worktree.join(".devcoordinator");
+    std::fs::remove_dir_all(&state_root).unwrap();
+    std::fs::write(&state_root, "stale scratch entry").unwrap();
+
+    let page = world
+        .lifecycle
+        .list_current_page(devcoordinator2_api::params::TestList {
+            after_worktree_id: None,
+            limit: Some(50),
+        })
+        .expect("one stale worktree must not fail the global list");
+    assert!(
+        page.runs
+            .iter()
+            .all(|run| run.worktree_path != world.worktree)
+    );
+    assert!(page.runs.iter().any(|run| {
+        run.worktree_path == other.to_string_lossy() && run.summary.status == TestStatus::Passed
+    }));
+}
+
+#[test]
 fn finished_runs_explain_missing_invalid_mismatched_and_incomplete_reports() {
     use devcoordinator2_api::results::TestReportIssue;
     for issue in [

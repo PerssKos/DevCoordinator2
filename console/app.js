@@ -74,6 +74,8 @@ const state = {
   agentScope: 'global',
   agentRepositoryId: null,
   agentHarness: 'codex',
+  usageWorktreeSelection: new Map(),
+  usageWorktreeAllSelection: new Map(),
 };
 const RANGES = {
   '1h': { minutes: 60, points: 60 },
@@ -2474,6 +2476,43 @@ function refreshEvidenceSelection() {
   loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
 }
 
+function mergeEvidencePage(target, page) {
+  for (const bundle of page.bundles || []) {
+    const key = [bundle.formal_run_id, bundle.check, bundle.phase, bundle.case || ''].join('\u0000');
+    const existing = target.bundles.find((item) => [item.formal_run_id, item.check, item.phase, item.case || ''].join('\u0000') === key);
+    if (!existing) target.bundles.push({ ...bundle, cells: [...(bundle.cells || [])] });
+    else for (const cell of bundle.cells || []) if (!existing.cells.some((item) => item.cell_id === cell.cell_id)) existing.cells.push(cell);
+  }
+  for (const feedback of page.feedback || []) {
+    const existing = target.feedback.find((item) => item.feedback_id === feedback.feedback_id);
+    if (!existing) target.feedback.push({ ...feedback, comments: [...(feedback.comments || [])] });
+    else for (const comment of feedback.comments || []) if (!existing.comments.some((item) => item.comment_id === comment.comment_id)) existing.comments.push(comment);
+  }
+  for (const issue of page.issues || []) {
+    if (!target.issues.some((item) => item.check === issue.check && item.phase === issue.phase && item.case === issue.case && item.code === issue.code)) target.issues.push(issue);
+  }
+  target.status = page.status || target.status;
+  target.repository_id ||= page.repository_id;
+  target.worktree_id ||= page.worktree_id;
+  target.image_count = Math.max(target.image_count || 0, page.image_count || 0);
+  target.issues_truncated ||= !!page.issues_truncated;
+}
+
+async function loadAllTestEvidence(api, operation, params, first) {
+  const result = { ...first, bundles: [], feedback: [], issues: [], next_offset: null };
+  let page = first;
+  let offset = Number(params.offset || 0);
+  for (;;) {
+    mergeEvidencePage(result, page);
+    if (page.next_offset == null) break;
+    const next = Number(page.next_offset);
+    if (!Number.isInteger(next) || next <= offset) throw new Error('Visual evidence pagination did not advance. Refresh to retry.');
+    offset = next;
+    page = await api(operation, { ...params, offset, limit: 32 });
+  }
+  return result;
+}
+
 async function viewTestEvidence(reference) {
   const [runId, queryString] = reference.split('?');
   const requestedImage = new URLSearchParams(queryString || '').get('image');
@@ -2492,7 +2531,12 @@ async function viewTestEvidence(reference) {
     run = { ...retained.context, isEarlierEvidence: true };
   }
   if (state.evidenceRunId !== runId) resetEvidenceImages();
-  const data = retained?.evidence || await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
+  const operation = retained?.evidence ? 'test.evidence.lookup' : 'test.evidence.get';
+  const request = retained?.evidence
+    ? { run_id: runId, image_id: requestedImage || undefined, worktree_id: requestedWorktree || undefined, offset: 0, limit: 32 }
+    : { path: run.worktree_path, run_id: run.run_id, offset: 0, limit: 32 };
+  const first = retained?.evidence || await api(operation, request);
+  const data = await loadAllTestEvidence(api, operation, request, first.evidence || first);
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
   if (requestedImage) {
@@ -3093,7 +3137,7 @@ function usageViewIdentity() {
 
 function usageRefreshContext(waiting) {
   if (!waiting) return () => {};
-  const opened = ['.progress-exact', '.usage-provenance'].filter((selector) => main.querySelector(selector)?.open);
+  const opened = ['.progress-exact'].filter((selector) => main.querySelector(selector)?.open);
   const focus = document.activeElement;
   const attribute = focus?.hasAttribute('data-progress-period') ? 'data-progress-period'
     : focus?.hasAttribute('data-codex-range') ? 'data-codex-range' : null;
@@ -3102,6 +3146,83 @@ function usageRefreshContext(waiting) {
     for (const selector of opened) { const details = main.querySelector(selector); if (details) details.open = true; }
     if (attribute) main.querySelector('[' + attribute + '="' + CSS.escape(value) + '"]')?.focus({ preventScroll: true });
   };
+}
+
+function usageWorktreeLabel(worktree, rootPath, repositoryName) {
+  if (worktree.worktree_path === rootPath) return repositoryName || 'codex';
+  const relative = rootPath && worktree.worktree_path?.startsWith(`${rootPath}/`)
+    ? worktree.worktree_path.slice(rootPath.length + 1)
+    : worktree.worktree_path;
+  return String(relative || worktree.worktree_id).split('/').filter(Boolean).pop() || worktree.worktree_id;
+}
+
+function usageWorktreeScope(repositoryId, repositoryList, repositoryName) {
+  const repository = (repositoryList?.repositories || []).find((row) => row.repository_id === repositoryId);
+  const worktrees = (repository?.worktrees || []).map((worktree) => ({
+    ...worktree,
+    label: usageWorktreeLabel(worktree, repository.root_path, repositoryName),
+  }));
+  if (!worktrees.length) return null;
+  let selectedIds = state.usageWorktreeSelection.get(repositoryId);
+  if (!selectedIds) {
+    selectedIds = worktrees.map((worktree) => worktree.worktree_id);
+    state.usageWorktreeSelection.set(repositoryId, selectedIds);
+    state.usageWorktreeAllSelection.set(repositoryId, true);
+  } else if (state.usageWorktreeAllSelection.get(repositoryId)) {
+    selectedIds = worktrees.map((worktree) => worktree.worktree_id);
+    state.usageWorktreeSelection.set(repositoryId, selectedIds);
+  } else {
+    const valid = new Set(worktrees.map((worktree) => worktree.worktree_id));
+    selectedIds = selectedIds.filter((id) => valid.has(id));
+    state.usageWorktreeAllSelection.set(repositoryId, selectedIds.length === worktrees.length);
+  }
+  return { worktrees, selectedIds, allSelected: selectedIds.length === worktrees.length, empty: selectedIds.length === 0, unavailable: selectedIds.length < worktrees.length };
+}
+
+function usageWorktreeRequest(repositoryId) {
+  const selected = state.usageWorktreeSelection.get(repositoryId);
+  if (!selected || state.usageWorktreeAllSelection.get(repositoryId) !== false) return {};
+  return { worktree_ids: [...selected], include_unassigned: false };
+}
+
+function usageWorktreeScopeMarkup(scope) {
+  if (!scope) return '';
+  const selected = new Set(scope.selectedIds);
+  const label = scope.allSelected ? 'All worktrees' : `${scope.selectedIds.length} worktree${scope.selectedIds.length === 1 ? '' : 's'} selected`;
+  return `<div class="usage-worktree-scope"><button type="button" class="usage-worktree-scope-toggle" aria-haspopup="dialog" aria-expanded="false" aria-controls="usage-worktree-scope-popover" data-usage-worktree-scope-toggle>${esc(`Worktree scope · ${label}`)}</button><div class="usage-worktree-scope-popover" id="usage-worktree-scope-popover" role="dialog" aria-label="Worktree scope" tabindex="-1" hidden><strong>Worktree scope</strong><p>Select all checkouts for a consolidated repository total, or choose a subset. Separate totals are available only when Codex has worktree-level attribution.</p><div class="usage-worktree-scope-list"><label class="usage-worktree-option usage-worktree-all"><input type="checkbox" data-usage-worktree-all ${scope.allSelected ? 'checked' : ''}><span><strong>All worktrees</strong><small>${scope.worktrees.length} registered checkouts · consolidated repository total</small></span></label>${scope.worktrees.map((worktree) => `<label class="usage-worktree-option" title="${esc(worktree.worktree_path)}"><input type="checkbox" data-usage-worktree-id="${esc(worktree.worktree_id)}" ${selected.has(worktree.worktree_id) ? 'checked' : ''}><span><strong>${esc(worktree.label)}</strong><small>${worktree.available === true ? 'Attributed total available' : 'Separate total unavailable'} · ${esc(worktree.worktree_path)}</small></span></label>`).join('')}</div><div class="usage-worktree-scope-actions"><button type="button" class="btn btn-small" data-usage-worktree-clear>Clear</button><button type="button" class="btn btn-small btn-primary" data-usage-worktree-apply>Apply</button></div></div></div>`;
+}
+
+function bindUsageWorktreeScope(root, repositoryId, scope) {
+  if (!scope) return;
+  const control = $('.usage-worktree-scope', root);
+  const toggle = $('[data-usage-worktree-scope-toggle]', root);
+  const popover = $('.usage-worktree-scope-popover', root);
+  if (!control || !toggle || !popover) return;
+  let draft = new Set(scope.selectedIds);
+  const all = $('[data-usage-worktree-all]', popover);
+  const refreshChecks = () => {
+    all.checked = draft.size === scope.worktrees.length;
+    popover.querySelectorAll('[data-usage-worktree-id]').forEach((input) => { input.checked = draft.has(input.dataset.usageWorktreeId); });
+  };
+  const close = (restoreFocus = false) => {
+    if (popover.hidden) return;
+    popover.hidden = true; toggle.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true);
+    if (restoreFocus) toggle.focus();
+  };
+  const outside = (event) => { if (!control.contains(event.target)) close(false); };
+  const open = () => { draft = new Set(state.usageWorktreeSelection.get(repositoryId) || scope.selectedIds); refreshChecks(); popover.hidden = false; toggle.setAttribute('aria-expanded', 'true'); document.addEventListener('pointerdown', outside, true); popover.focus({ preventScroll: true }); };
+  toggle.addEventListener('click', () => popover.hidden ? open() : close(true));
+  all.addEventListener('change', () => { draft = all.checked ? new Set(scope.worktrees.map((worktree) => worktree.worktree_id)) : new Set(); refreshChecks(); });
+  popover.querySelectorAll('[data-usage-worktree-id]').forEach((input) => input.addEventListener('change', () => { if (input.checked) draft.add(input.dataset.usageWorktreeId); else draft.delete(input.dataset.usageWorktreeId); refreshChecks(); }));
+  $('[data-usage-worktree-clear]', popover).addEventListener('click', () => { draft.clear(); refreshChecks(); });
+  $('[data-usage-worktree-apply]', popover).addEventListener('click', () => { state.usageWorktreeSelection.set(repositoryId, [...draft]); state.usageWorktreeAllSelection.set(repositoryId, draft.size === scope.worktrees.length); close(true); void viewCodexUsage(repositoryId); });
+  popover.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(true); } });
+}
+
+function usageWorktreeUnavailable(scope) {
+  if (scope?.empty) return '<section class="usage-worktree-unavailable" role="status"><strong>No worktrees selected</strong><p>Select a worktree to view its usage.</p></section>';
+  if (!scope?.unavailable) return '';
+  return '<section class="usage-worktree-unavailable" role="status"><strong>Worktree-specific usage unavailable</strong><p>Codex currently records this repository at its common Git root, so separate totals for the selected worktrees cannot be proven. Select all worktrees to view the consolidated repository total.</p></section>';
 }
 
 const usageRefreshTimers = new Map();
@@ -3204,7 +3325,9 @@ function coverageMark(coverage, compact = false) {
 function coverageHint(coverage) {
   const hintId = 'usage-coverage-hint';
   const titleId = `${hintId}-title`;
-  return `<div class="usage-coverage-line"><span class="usage-coverage-status">${coverageMark(coverage)}</span><button type="button" class="usage-coverage-hint-toggle" aria-label="Explain Codex usage data completeness" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
+  const state = coverageKind(coverage);
+  const summary = coverageText(coverage);
+  return `<div class="usage-coverage-line"><span class="usage-coverage-indicator ${state}" title="${esc(summary)}" aria-hidden="true"></span><button type="button" class="usage-coverage-hint-toggle" aria-label="${esc(summary)}" aria-haspopup="dialog" aria-expanded="false" aria-controls="${hintId}" data-usage-coverage-hint-toggle data-i18n-attrs='{"aria-label":"usage.explain_codex_usage_data_completeness_63247d"}'>${planIcon('info-circle')}</button><div class="usage-coverage-popover" id="${hintId}" role="dialog" aria-labelledby="${titleId}" tabindex="-1" data-ui-allow-overlap="Open information hint intentionally overlays dashboard content" hidden><strong id="${titleId}" data-ui-continuation-anchor><span data-i18n="usage.about_codex_environments_4a2e3e">About Codex environments</span></strong><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(coverage))}</p></div></div>`;
 }
 
 function bindCoverageHint(root = main) {
@@ -3280,7 +3403,8 @@ function usagePhaseChart(series, totalCost = null) {
     const x = left + index * column + column / 2;
     return `<text x="${x.toFixed(2)}" y="${height - 13}" text-anchor="middle">${esc(utcBucket(point.bucket_start_ms, index === 0))}</text>`;
   }).join('');
-  return `<div class="usage-chart-scroll" tabindex="0" aria-label="Scrollable token chart" data-i18n-attrs='{"aria-label":"usage.scrollable_token_chart_83cb1f"}'><svg class="usage-phase-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="usage-chart-title usage-chart-desc"><title id="usage-chart-title" data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</title><desc id="usage-chart-desc" data-i18n="usage.stacked_utc_time_buckets_exact_values_are_listed_993096">Stacked UTC time buckets. Exact values are listed after the charts.</desc>${grid}${bars}${labels}<text x="4" y="${top + 3}" class="usage-axis-title" data-i18n="usage.tokens_a039df">Tokens</text></svg><div class="usage-chart-tooltip" data-usage-chart-tooltip role="status" hidden></div></div>`;
+  const chartLabel = window.DevCoordinatorI18n.t("usage.provider_reported_total_tokens_by_work_phase_d1895d");
+  return `<div class="usage-chart-scroll" aria-label="${esc(chartLabel)}"><svg class="usage-phase-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="usage-chart-title usage-chart-desc"><title id="usage-chart-title" data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</title><desc id="usage-chart-desc" data-i18n="usage.stacked_utc_time_buckets_exact_values_are_listed_993096">Stacked UTC time buckets. Exact values are listed after the charts.</desc>${grid}${bars}${labels}<text x="4" y="${top + 3}" class="usage-axis-title" data-i18n="usage.tokens_a039df">Tokens</text></svg><div class="usage-chart-tooltip" data-usage-chart-tooltip role="status" hidden></div></div>`;
 }
 
 function bindUsageChartTooltip(root) {
@@ -3367,6 +3491,20 @@ function activityRows(data) {
 
 function outcomeCostPulse(data) {
   const rows = [...(data.outcomes || [])].sort((a, b) => (b.cost?.estimated_usd_micros || 0) - (a.cost?.estimated_usd_micros || 0)).slice(0, 8);
+  if (!rows.length && data.coverage?.state === 'unavailable') {
+    const reasons = Object.entries(data.coverage.unavailable_reasons || {}).map(([reason, count]) => {
+      const label = reason === 'mapping_unavailable'
+        ? 'this repository is not mapped in one configured Codex environment'
+        : reason === 'source_unavailable'
+          ? 'one configured Codex environment could not be read'
+          : reason === 'mapping_pending'
+            ? 'this repository is still waiting for environment mapping'
+            : reason.replaceAll('_', ' ');
+      return `${label}${count > 1 ? ` (${count})` : ''}`;
+    });
+    const detail = reasons.length ? reasons.join('; ') : 'the configured Codex environments returned no usable measurements';
+    return `<section class="notice usage-unavailable-summary" role="status"><strong>Usage data unavailable</strong><p>No provider measurements or outcome costs were returned for this repository because ${esc(detail)}.</p><p class="muted">Historical usage from a different Git root is not reassigned automatically. New usage will appear after this checkout is mapped and its Codex environment is readable.</p></section>`;
+  }
   if (!rows.length) return '<p class="muted">No outcome-attributed cost measurements are available in this window.</p>';
   return `<section class="usage-outcome-pulse"><div class="usage-section-title"><div><h2>Outcome cost pulse</h2><p class="muted">Outcomes ranked by API-equivalent estimate from provider-reported usage.</p></div><details class="usage-cost-basis"><summary>Rate-card basis</summary><p>Standard public API rates are used for an API-equivalent estimate. This is operational insight, not a bill or subscription summary.</p></details></div><div class="tablewrap"><table><thead><tr><th>#</th><th>Outcome</th><th>Tokens</th><th>API-equivalent estimate</th><th>Coverage</th><th>Share</th></tr></thead><tbody>${rows.map((row, index) => { const share = data.totals?.total_tokens ? (Number(row.total_tokens) / Number(data.totals.total_tokens) * 100) : null; return `<tr><td>${index + 1}</td><td class="wrap"><strong>${esc(row.title || row.outcome_id)}</strong></td><td>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })}</td><td><strong>${esc(costAmount(row.cost))}</strong><small class="muted">${esc(costBasis(row.cost))}</small></td><td>${row.cost?.status === 'complete' ? '<span class="badge ok">Complete</span>' : row.cost?.status === 'partial' ? '<span class="badge warn">Partial</span>' : '<span class="badge">Unavailable</span>'}</td><td>${share == null ? '—' : `${share.toFixed(1)}%`}</td></tr>`; }).join('')}</tbody></table></div></section>`;
 }
@@ -3380,7 +3518,7 @@ function modelCostPulse(data) {
   const palette = ['var(--chart-blue)', 'var(--chart-teal)', 'var(--chart-violet)', 'var(--line-strong)'];
   const total = costValue(data.totals?.cost);
   const first = rows[0];
-  const detail = (row) => `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong>${esc(row.model)}</strong><span>${row.cost?.status === 'complete' ? 'Complete estimate' : row.cost?.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(row.cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(row.cost))}${row.cost?.rate_card_refs?.length ? ` · ${esc(row.cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+  const detail = (row) => `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(row.model)}</strong><span>${row.cost?.status === 'complete' ? 'Complete estimate' : row.cost?.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(row.cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', row.cost?.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(row.cost))}${row.cost?.rate_card_refs?.length ? ` · ${esc(row.cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
   const rowsMarkup = rows.map((row, index) => {
     const knownCost = row.cost?.estimated_usd_micros != null;
     const share = total != null && knownCost ? (Number(row.cost.estimated_usd_micros) / (total * 1000000) * 100) : null;
@@ -3388,7 +3526,7 @@ function modelCostPulse(data) {
     const status = row.cost?.status === 'complete' ? 'Complete' : row.cost?.status === 'partial' ? 'Partial' : 'Unpriced';
     return `<button type="button" class="usage-model-row${index === 0 ? ' selected' : ''}" data-usage-model-index="${index}" aria-pressed="${index === 0}"><span class="usage-model-swatch" style="background:${palette[index % palette.length]}"></span><span class="usage-model-name"><strong>${esc(row.model)}</strong><small>${window.DevCoordinatorI18n.formatted('number', row.total_tokens, { notation: 'compact', maximumFractionDigits: 1 })} tokens · ${window.DevCoordinatorI18n.formatted('number', row.model_requests)} requests</small></span><span class="usage-model-bar"><i style="width:${bar.toFixed(1)}%"></i></span><strong class="usage-model-amount">${esc(costAmount(row.cost))}</strong><span class="usage-model-share">${share == null ? '—' : `${share.toFixed(1)}%`}</span><span class="badge ${status === 'Complete' ? 'ok' : status === 'Partial' ? 'warn' : ''}">${status}</span><span class="usage-model-chevron" aria-hidden="true">›</span></button>`;
   }).join('');
-  return `<section class="usage-model-pulse" data-usage-model-ledger><div class="usage-section-title"><div><h2>Cost ledger by model</h2><p class="muted">Select a model to inspect token components, rate coverage, and request cost.</p></div><span class="muted">${rows.length} models</span></div><div class="usage-model-ledger-list">${rowsMarkup}</div><aside class="usage-model-detail" data-usage-model-detail>${detail(first)}</aside></section>`;
+  return `<section class="usage-model-pulse" data-usage-model-ledger><div class="usage-section-title"><div><h2>Cost ledger by model</h2><p class="muted">Select a model to inspect token components, rate coverage, and request cost.</p></div><span class="muted">${rows.length} models</span></div><div class="usage-model-ledger-list">${rowsMarkup}</div><aside class="usage-model-detail" data-usage-model-detail tabindex="-1" aria-live="polite" aria-atomic="true">${detail(first)}</aside></section>`;
 }
 
 function bindUsageModelLedger(root, data) {
@@ -3409,7 +3547,8 @@ function bindUsageModelLedger(root, data) {
     const model = models[index];
     if (!model || !detail) return;
     const cost = model.cost || {};
-    detail.innerHTML = `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong>${esc(model.model)}</strong><span>${cost.status === 'complete' ? 'Complete estimate' : cost.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(cost))}${cost.rate_card_refs?.length ? ` · ${esc(cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+    detail.innerHTML = `<div class="usage-model-detail-body"><div class="usage-model-detail-head"><strong data-ui-continuation-anchor>${esc(model.model)}</strong><span>${cost.status === 'complete' ? 'Complete estimate' : cost.status === 'partial' ? 'Partial estimate' : 'No rate coverage'}</span></div><div class="usage-model-detail-total"><strong>${esc(costAmount(cost))}</strong><small>API-equivalent USD</small></div><dl><div><dt>Total tokens</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.total_tokens)}</dd></div><div><dt>Requests</dt><dd>${window.DevCoordinatorI18n.formatted('number', model.model_requests)}</dd></div><div><dt>Input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.input_tokens)}</dd></div><div><dt>Cached input</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.cached_input_tokens)}</dd></div><div><dt>Output</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.output_tokens)}</dd></div><div><dt>Unknown observations</dt><dd>${window.DevCoordinatorI18n.formatted('number', cost.unknown_observations || 0)}</dd></div></dl><p class="muted">${esc(costBasis(cost))}${cost.rate_card_refs?.length ? ` · ${esc(cost.rate_card_refs.join(', '))}` : ''}</p></div>`;
+    detail.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
   };
   rows.forEach((row, index) => row.addEventListener('click', () => render(index)));
   rows.forEach((row, index) => row.addEventListener('keydown', (event) => {
@@ -3439,10 +3578,6 @@ function toolOutcomeRows(data) {
   return `<div class="usage-outcomes">${rows.map((row) => `<div><span><i class="usage-outcome-${esc(row.outcome)}" aria-hidden="true"></i>${esc(row.outcome[0].toUpperCase() + row.outcome.slice(1))}</span><strong>${window.DevCoordinatorI18n.formatted('number', row.count)}</strong><span>${total ? `${((row.count / total) * 100).toFixed(1)}%` : '—'}</span></div>`).join('')}<div class="usage-outcome-total"><span><span data-i18n="usage.total_c9b3c3">Total</span></span><strong>${window.DevCoordinatorI18n.formatted('number', total)}</strong><span>${total ? '100%' : '—'}</span></div></div>`;
 }
 
-function exactUsageTable(data) {
-  return `<section class="usage-exact"><h3><span data-i18n="usage.exact_bucket_values_a2a7fe">Exact bucket values</span></h3><div class="tablewrap"><table><thead><tr><th><span data-i18n="usage.utc_bucket_fbd8d9">UTC bucket</span></th><th><span data-i18n="usage.total_c9b3c3">Total</span></th>${USAGE_PHASES.map((phase) => `<th>${window.DevCoordinatorI18n.markup("common.phase_" + phase)}</th>`).join('')}<th><span data-i18n="usage.data_status_87d914">Data status</span></th></tr></thead><tbody>${data.series.map((point) => `<tr><td>${window.DevCoordinatorI18n.computedMarkup(() => utcBucket(point.bucket_start_ms, true))}</td><td>${window.DevCoordinatorI18n.formatted('number', Number(point.total_tokens))}</td>${USAGE_PHASES.map((phase) => `<td>${window.DevCoordinatorI18n.formatted('number', Number(point.phases?.[phase] || 0))}</td>`).join('')}<td>${badge(bucketDataStatus(point.coverage), coverageKind(point.coverage))}</td></tr>`).join('')}</tbody></table></div></section>`;
-}
-
 const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
   const identity = usageViewIdentity();
   if (!waitForRefresh) main.innerHTML = `${pageHeading('Codex Usage', '#/usage')}${skeleton(5)}`;
@@ -3465,33 +3600,39 @@ const viewCodexUsageRepositories = guard(async (waitForRefresh = false) => {
 const viewCodexUsage = guard(async (repositoryId, waitForRefresh = false) => {
   const identity = usageViewIdentity();
   if (!waitForRefresh) main.innerHTML = `<div class="usage-loading">${pageHeading('Codex Usage', '#/usage')}${skeleton(8)}</div>`;
-  const [data, projectList] = await Promise.all([
-    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
+  const [data, projectList, repositoryList] = await Promise.all([
+    api('usage.repository', { repository_id: repositoryId, range: state.codexUsageRange, ...usageWorktreeRequest(repositoryId), ...(waitForRefresh ? { wait_for_refresh: true } : {}) }),
     workspace.active ? {} : api('plan.overview', {}),
+    api('repository.list', {}),
   ]);
   const projects = [...(projectList.repositories || []), {
     repository_id: repositoryId, display_name: data.display_name,
   }];
+  const canonicalProject = (projectList.repositories || []).find((row) => row.repository_id === repositoryId);
+  const canonicalName = workspace.active ? (workspace.current()?.name || data.display_name) : (canonicalProject?.repository_source?.name || data.display_name);
+  const scope = usageWorktreeScope(repositoryId, repositoryList, canonicalName);
+  if (scope && data.worktree_scope) {
+    const reported = new Map((data.worktree_scope.worktrees || []).map((row) => [row.worktree_id, row]));
+    scope.worktrees = scope.worktrees.map((row) => ({ ...row, available: reported.get(row.worktree_id)?.available }));
+    scope.unavailable = scope.empty || Boolean(data.worktree_scope.selected_worktree_ids && !data.worktree_scope.attribution_available);
+  }
   if (identity !== usageViewIdentity()) return;
   const restore = usageRefreshContext(waitForRefresh);
-  const subsets = [
-    ['input', data.totals.input_tokens], ['cached', data.totals.cached_input_tokens],
-    ['output', data.totals.output_tokens], ['reasoning', data.totals.reasoning_tokens],
-  ].filter(([, value]) => value != null).map(([label, value]) => `${label} ${compactNumber(value)}`).join(' · ');
   main.innerHTML = `<section class="usage-dashboard" data-ui-region="codex-usage-dashboard">
-    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range">${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
-    <div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>
-    <div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
+    <div class="usage-context"><div class="usage-title"><span class="usage-repo-mark" aria-hidden="true">${planIcon('focus-centered')}</span><h1>${destinationLink('Codex Usage', '#/usage')}</h1><span class="usage-slash" aria-hidden="true">/</span>${projectPicker(projects, repositoryId, (id) => `#/usage/${id}`, 'usage')}</div><div class="usage-range"><div class="usage-range-tools">${usageWorktreeScopeMarkup(scope)}${seg(['24h', '7d', '30d'], state.codexUsageRange, 'codex-range')}</div></div><div class="usage-coverage">${coverageHint(data.coverage)}<span class="muted">${data.coverage.snapshot ? esc(usageSnapshotText(data.coverage)) : `Data current ${data.coverage.freshest_at_ms ? ago(new Date(data.coverage.freshest_at_ms).toISOString()) : '—'}`}</span>${usageRebuildProgress(data.coverage)}</div></div>
+    ${usageWorktreeUnavailable(scope)}
+    ${scope?.unavailable ? '' : `<div class="usage-metrics" data-ui-verify-min-content-inset="12">${usageMetric('Total tokens', compactNumber(data.totals.total_tokens), 'Provider-reported')}${usageMetric('API-equivalent estimate', costAmount(data.totals.cost), costBasis(data.totals.cost))}${usageMetric('Model requests', compactNumber(data.totals.model_requests))}${usageMetric('Cache efficiency', data.totals.input_tokens ? `${((Number(data.totals.cached_input_tokens || 0) / Number(data.totals.input_tokens)) * 100).toFixed(1)}%` : '—', 'Cached input / input tokens')}</div>`}
+    ${scope?.unavailable ? '' : `<div class="usage-trend-row"><section class="usage-primary" data-ui-region="usage-primary-trend"><div class="usage-section-title"><h2><span data-i18n="usage.provider_reported_total_tokens_by_work_phase_d1895d">Provider-reported total tokens by work phase</span></h2></div>${phaseLegend()}${usagePhaseChart(data.series, data.totals.cost)}</section>${modelCostPulse(data)}</div>
     ${outcomeCostPulse(data)}
-    <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>
-    <details class="usage-provenance"><summary><strong><span data-i18n="usage.data_completeness_c7114d">Data completeness</span></strong><span>${window.DevCoordinatorI18n.computedMarkup(() => coverageText(data.coverage))}</span><strong><span data-i18n="usage.counting_method_7a480a">Counting method</span></strong><span><span data-i18n="usage.provider_reported_total_tokens_cached_input_and__9908f6">Provider-reported total tokens; cached input and reasoning are subsets.</span></span></summary><div><p>${window.DevCoordinatorI18n.computedMarkup(() => coverageExplanation(data.coverage))}</p><p>${(subsets ? esc(subsets) : window.DevCoordinatorI18n.markup("usage.token_subsets_unavailable_4cec86"))}</p><p class="usage-cost-basis-line"><strong>API-equivalent estimate</strong> · ${esc(costBasis(data.totals.cost))} · ${esc(costRateCardLabel(data.totals.cost))}<br><span class="muted">${esc(costComponents(data.totals.cost) || 'Component values unavailable')}</span></p><p>${window.DevCoordinatorI18n.markup("usage.schema_value19_taxonomy_value20_cdddf8", {value19: data.coverage.database_schemas.join(', ') || 'unavailable', value20: data.coverage.taxonomy_versions.join(', ') || 'unavailable'})}</p><p>${window.DevCoordinatorI18n.markup("usage.value21_environments_that_supplied_no_data_and_u_cbbc39", {value21: data.semantics.time})}</p>${exactUsageTable(data)}</div></details>
+    <div class="usage-lower"><section><h2><span data-i18n="usage.activity_breakdown_7ebc89">Activity breakdown</span></h2>${activityRows(data)}</section><section><h2><span data-i18n="usage.time_breakdown_ca0aca">Time breakdown</span> <span class="muted"><span data-i18n="usage.separate_not_added_together_6dbbe5">(separate, not added together)</span></span></h2>${timeRails(data)}</section><section><h2><span data-i18n="usage.tool_outcomes_3a7a68">Tool outcomes</span></h2>${toolOutcomeRows(data)}</section></div>`}
   </section>`;
   bindProjectPicker(main);
   bindCoverageHint(main);
+  bindUsageWorktreeScope(main, repositoryId, scope);
   bindUsageModelLedger(main, data);
   bindUsageChartTooltip(main);
   if (data.coverage.snapshot && (!data.coverage.snapshot.updated_at_ms || !data.coverage.available_collectors)) {
-    main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower, .usage-provenance').forEach((element) => element.remove());
+    main.querySelectorAll('.usage-metrics, .usage-primary, .usage-lower').forEach((element) => element.remove());
     main.querySelector('.usage-coverage > .muted')?.remove();
   }
   restore();

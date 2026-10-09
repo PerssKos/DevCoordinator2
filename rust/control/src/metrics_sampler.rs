@@ -25,6 +25,7 @@ use crate::systemd::SystemdControl;
 
 pub const SAMPLE_SECONDS: u32 = 15;
 pub const STORAGE_SECONDS: u32 = 300;
+const STORAGE_START_DELAY_SECONDS: u64 = 1;
 
 // Directory and Docker storage probes walk user-controlled trees and can be
 // much more expensive than the health request that consumes their result.
@@ -109,6 +110,45 @@ struct StorageScanState {
     shared: DockerStorage,
 }
 
+/// Scheduling state for the host-wide health storage probe. A refresh request
+/// is intentionally coalesced with the next periodic slot: callers need the
+/// next truthful observation, but an event burst must not start back-to-back
+/// filesystem walks while the previous one has just completed.
+#[derive(Clone, Copy)]
+struct StorageSchedule {
+    next_due: tokio::time::Instant,
+    last_completed: Option<tokio::time::Instant>,
+}
+
+impl StorageSchedule {
+    fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            next_due: now + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS),
+            last_completed: None,
+        }
+    }
+
+    fn due(&self, now: tokio::time::Instant) -> bool {
+        now >= self.next_due
+    }
+
+    fn request(&mut self, now: tokio::time::Instant) {
+        let earliest = self.last_completed.map_or(now, |completed| {
+            completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS))
+        });
+        if now >= earliest {
+            self.next_due = self
+                .next_due
+                .min(now + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS));
+        }
+    }
+
+    fn completed(&mut self, now: tokio::time::Instant) {
+        self.last_completed = Some(now);
+        self.next_due = now + StdDuration::from_secs(u64::from(STORAGE_SECONDS));
+    }
+}
+
 #[derive(Clone)]
 struct Subject {
     key: SubjectKey,
@@ -125,6 +165,18 @@ struct ComponentRecord {
     state: String,
     binding_kind: Option<String>,
     binding_identity: Option<String>,
+    finite_success: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct StoredComponentSpec {
+    name: String,
+    #[serde(rename = "type")]
+    kind: crate::repository_config::ComponentKind,
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    finite_services: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -795,7 +847,7 @@ impl MetricSampler {
 
     pub async fn serve(&self, mut shutdown: watch::Receiver<bool>) {
         let mut next_sample = tokio::time::Instant::now();
-        let mut next_storage = tokio::time::Instant::now();
+        let mut storage_schedule = StorageSchedule::new(tokio::time::Instant::now());
         let mut storage_task: Option<JoinHandle<Result<(), ProtocolError>>> = None;
         loop {
             if *shutdown.borrow() {
@@ -808,13 +860,12 @@ impl MetricSampler {
                 next_sample =
                     tokio::time::Instant::now() + StdDuration::from_secs(u64::from(SAMPLE_SECONDS));
             }
-            if storage_task.is_none()
-                && (now >= next_storage || self.inner.storage_requested.load(Ordering::SeqCst))
-            {
+            if self.inner.storage_requested.load(Ordering::Acquire) {
+                storage_schedule.request(now);
+            }
+            if storage_task.is_none() && storage_schedule.due(now) {
                 let sampler = self.clone();
                 storage_task = Some(tokio::task::spawn_blocking(move || sampler.storage_tick()));
-                next_storage = tokio::time::Instant::now()
-                    + StdDuration::from_secs(u64::from(STORAGE_SECONDS));
             }
             tokio::select! {
                 changed = shutdown.changed() => {
@@ -829,6 +880,7 @@ impl MetricSampler {
                         .await
                 }, if storage_task.is_some() => {
                     storage_task = None;
+                    storage_schedule.completed(tokio::time::Instant::now());
                     if let Ok(Err(error)) = completed {
                         warn!(%error, "storage sampler failed");
                     }
@@ -992,6 +1044,7 @@ impl MetricSampler {
                 severity: "critical".into(),
                 message: format!("component {id} is {}", component.state),
                 active: component.desired_state == "running"
+                    && !component.finite_success
                     && !matches!(component.state.as_str(), "running" | "completed"),
                 sustain_seconds: 120.0,
             });
@@ -1147,18 +1200,91 @@ fn query_components(
     connection: &rusqlite::Connection,
 ) -> Result<Vec<ComponentRecord>, DatabaseError> {
     let mut statement = connection.prepare(
-        "SELECT deployment_id,name,type,desired_state,state,binding_kind,binding_identity FROM components",
+        "SELECT c.deployment_id,c.name,c.type,c.desired_state,c.state,c.binding_kind,c.binding_identity,
+                c.generation,d.current_generation,d.spec_json,
+                (SELECT COUNT(*) FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)) AS completion_count,
+                (SELECT COUNT(*) FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)
+                      AND cc.exit_code != 0) AS failure_count
+                ,(SELECT GROUP_CONCAT(cc.service, '|') FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)) AS completion_services
+         FROM components c
+         JOIN deployments d ON d.deployment_id=c.deployment_id",
     )?;
     Ok(statement
         .query_map([], |row| {
+            let kind: String = row.get(2)?;
+            let name: String = row.get(1)?;
+            let generation: Option<u32> = row.get(7)?;
+            let current_generation: Option<u32> = row.get(8)?;
+            let spec_json: String = row.get(9)?;
+            let completion_count: u32 = row.get(10)?;
+            let failure_count: u32 = row.get(11)?;
+            let completion_services: Option<String> = row.get(12)?;
+            let stored_component = serde_json::from_str::<serde_json::Value>(&spec_json)
+                .ok()
+                .and_then(|spec| spec.get("components").cloned())
+                .and_then(|components| {
+                    serde_json::from_value::<Vec<StoredComponentSpec>>(components).ok()
+                })
+                .and_then(|components| {
+                    components
+                        .into_iter()
+                        .find(|component| component.name == name)
+                });
+            let finite_services = stored_component.as_ref().is_some_and(|component| {
+                kind == component.kind.as_str()
+                    && component.kind == crate::repository_config::ComponentKind::Compose
+                    && !component.services.is_empty()
+                    && component.services.len() == component.finite_services.len()
+                    && component
+                        .services
+                        .iter()
+                        .all(|service| component.finite_services.contains(service))
+            });
+            let expected_services = if finite_services {
+                stored_component
+                    .as_ref()
+                    .map(|component| {
+                        component
+                            .finite_services
+                            .iter()
+                            .cloned()
+                            .collect::<BTreeSet<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                BTreeSet::new()
+            };
+            let finite_success = finite_services
+                && generation
+                    .or(current_generation)
+                    .is_some_and(|generation| generation > 0)
+                && !expected_services.is_empty()
+                && completion_count == expected_services.len() as u32
+                && completion_services.as_deref().map(|services| {
+                    services
+                        .split('|')
+                        .map(str::to_owned)
+                        .collect::<BTreeSet<_>>()
+                }) == Some(expected_services)
+                && failure_count == 0;
             Ok(ComponentRecord {
                 deployment_id: row.get(0)?,
-                name: row.get(1)?,
-                kind: row.get(2)?,
+                name,
+                kind,
                 desired_state: row.get(3)?,
                 state: row.get(4)?,
                 binding_kind: row.get(5)?,
                 binding_identity: row.get(6)?,
+                finite_success,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
@@ -1392,10 +1518,20 @@ mod tests {
     struct FakeSource {
         cpu: AtomicU64,
         request_during_scan: Mutex<Option<MetricSampler>>,
+        scans: AtomicU64,
+        observations: Mutex<Option<tokio::sync::mpsc::UnboundedSender<&'static str>>>,
+    }
+    impl FakeSource {
+        fn observe(&self, event: &'static str) {
+            if let Some(observer) = self.observations.lock().unwrap().as_ref() {
+                observer.send(event).expect("test observation receiver");
+            }
+        }
     }
     impl MetricSource for FakeSource {
         fn host_cpu_ticks(&self) -> (u64, u64) {
             let value = self.cpu.fetch_add(10, Ordering::SeqCst);
+            self.observe("sample");
             (value, value * 2 + 100)
         }
         fn host_memory(&self) -> HostMemory {
@@ -1433,6 +1569,11 @@ mod tests {
             Some(10)
         }
         fn container_sizes(&self, _: StdDuration) -> BTreeMap<String, u64> {
+            self.scans.fetch_add(1, Ordering::SeqCst);
+            if let Some(sampler) = self.request_during_scan.lock().unwrap().take() {
+                sampler.request_storage();
+            }
+            self.observe("storage");
             BTreeMap::new()
         }
         fn docker_shared_sizes(&self, _: StdDuration) -> DockerStorage {
@@ -1477,6 +1618,8 @@ mod tests {
         let source = Arc::new(FakeSource {
             cpu: AtomicU64::new(10),
             request_during_scan: Mutex::new(None),
+            scans: AtomicU64::new(0),
+            observations: Mutex::new(None),
         });
         let sampler = MetricSampler::with_adapters(
             config,
@@ -1507,26 +1650,36 @@ mod tests {
         // Extend the real sampler/store path: successful finite work and an
         // intentional stop must not become incidents; a failed worker must.
         sampler.inner.database.transaction(|c| {
-            c.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
+            c.execute_batch(r#"INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
                 INSERT INTO worktrees VALUES('w1','r1','/fixture','t','t');
-                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f','{}','failed','t',1000,'fixture','t');")?;
-            for (name,desired,state) in [("bundle","running","completed"),("worker","running","failed"),("paused","stopped","stopped")] {
-                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,'external',0,'f',?2,?3,'none','t')",rusqlite::params![name,desired,state])?;
+                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f', '{"components":[{"name":"bundle","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"finite_failed","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"mixed","type":"compose","services":["web-build","worker"],"finite_services":["web-build"]},{"name":"incomplete","type":"compose","services":["first","second"],"finite_services":["first","second"]}]}','failed',1,'t',1000,'fixture','t');"#)?;
+            for (name,kind,desired,state) in [("bundle","compose","running","failed"),("worker","external","running","failed"),("finite_failed","compose","running","failed"),("mixed","compose","running","failed"),("incomplete","compose","running","failed"),("paused","external","stopped","stopped")] {
+                c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,?2,0,'f',?3,?4,'none','t')",rusqlite::params![name,kind,desired,state])?;
             }
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','bundle','web-build',1,'b',0,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','finite_failed','web-build',1,'f',7,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','mixed','web-build',1,'m',0,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','incomplete','first',1,'i',0,'t')", [])?;
             Ok(())
         }).unwrap();
         for _ in 0..10 {
             sampler.tick().unwrap();
         }
         let alerts = sampler.alerts().current().unwrap();
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].subject_id, "d1/worker");
+        let subjects = alerts
+            .iter()
+            .map(|alert| alert.subject_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            subjects,
+            HashSet::from(["d1/worker", "d1/finite_failed", "d1/mixed", "d1/incomplete"])
+        );
         sampler
             .inner
             .database
             .call(|c| {
                 c.execute(
-                    "UPDATE components SET state='completed' WHERE name='worker'",
+                    "UPDATE components SET state='completed' WHERE deployment_id='d1'",
                     [],
                 )?;
                 Ok(())
@@ -1546,5 +1699,68 @@ mod tests {
         assert!(sampler.inner.storage_requested.load(Ordering::SeqCst));
         sampler.storage_tick().unwrap();
         assert!(!sampler.inner.storage_requested.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn storage_schedule_delays_start_and_coalesces_refreshes() {
+        let start = tokio::time::Instant::now();
+        let mut schedule = StorageSchedule::new(start);
+        assert!(!schedule.due(start));
+        assert!(!schedule.due(start + StdDuration::from_millis(999)));
+        assert!(schedule.due(start + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS)));
+
+        let completed = start + StdDuration::from_secs(STORAGE_START_DELAY_SECONDS);
+        schedule.completed(completed);
+        schedule.request(completed + StdDuration::from_millis(100));
+        assert!(!schedule.due(completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS) - 1)));
+        assert!(schedule.due(completed + StdDuration::from_secs(u64::from(STORAGE_SECONDS))));
+        // A slow scan must retain the full gap after it finishes, even when
+        // its execution exceeds the ordinary periodic interval.
+        let late_completion = completed + StdDuration::from_secs(900);
+        schedule.completed(late_completion);
+        schedule.request(late_completion);
+        assert!(!schedule.due(late_completion));
+        assert!(schedule.due(late_completion + StdDuration::from_secs(u64::from(STORAGE_SECONDS))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn storage_service_coalesces_a_request_received_during_observation() {
+        let (_temporary, sampler, source) = storage_fixture();
+        *source.request_during_scan.lock().unwrap() = Some(sampler.clone());
+        let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+        *source.observations.lock().unwrap() = Some(observed);
+        let (shutdown, receiver) = watch::channel(false);
+        let service_sampler = sampler.clone();
+        let service = tokio::spawn(async move { service_sampler.serve(receiver).await });
+        assert_eq!(observations.recv().await, Some("sample"));
+        tokio::time::advance(StdDuration::from_millis(250)).await;
+        let startup_scans = source.scans.load(Ordering::SeqCst);
+        tokio::time::advance(StdDuration::from_secs(STORAGE_START_DELAY_SECONDS)).await;
+        assert_eq!(observations.recv().await, Some("storage"));
+        // Observe later service cycles while remaining inside the storage
+        // throttle interval. Another scan would emit "storage" before "sample".
+        for _ in 0..2 {
+            tokio::time::advance(StdDuration::from_secs(u64::from(SAMPLE_SECONDS) + 1)).await;
+            assert_eq!(observations.recv().await, Some("sample"));
+        }
+        let completed_scans = source.scans.load(Ordering::SeqCst);
+        let request_retained = sampler.inner.storage_requested.load(Ordering::SeqCst);
+        shutdown.send(true).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(5), service)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            startup_scans, 0,
+            "storage probes must leave startup responsive"
+        );
+        assert_eq!(
+            completed_scans, 1,
+            "an event during a scan must not chain another scan"
+        );
+        assert!(
+            request_retained,
+            "the next scheduled observation must retain the refresh request"
+        );
     }
 }

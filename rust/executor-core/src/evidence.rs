@@ -188,7 +188,10 @@ pub fn retain_artifact_trees(
                 spec.max_bytes,
                 &mut size,
                 &mut entries,
-            )?;
+            )
+            .map_err(|error| {
+                ExecutorError::new(format!("retained artifact {:?}: {error}", spec.name))
+            })?;
             if entries.is_empty() {
                 return Err(ExecutorError::new(format!(
                     "declared retained artifact {:?} is empty",

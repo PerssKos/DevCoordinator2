@@ -954,3 +954,45 @@ Comparison history: the initial implementation was revised to keep the inspector
 - The repository’s Coordinator service timed out while final delivery evidence was being requested.
 
 final result: blocked
+
+## Usage selection visibility and completeness chrome repair (2026-10-08)
+
+### Source and implementation
+
+- Approved source direction: Coordinator decision `DC2-USAGE-COST-LEDGER-REDESIGN-20261001` (`n24658c01816d4dd4`), retained Cost Ledger mockup asset `01a0df7a-c47a-78d0-bc42-fa890c1c8c6e/exec-698e1bd7-6703-4ce9-8824-eb2f8c495d9b.png`, SHA-256 `a9569621187fa9ec6715a4225546439d392d8789db3762213aae66a6e977ef24`.
+- Implementation source: worktree commit `bfa9f70b2109de959a7bb24fb51e380b4c458ffe`.
+- Comparison conditions: dark Console theme, repository Usage route, populated usage fixture, 1487×1058 CSS viewport, authenticated operator state, same source target and route family.
+- Implementation captures: `/tmp/dc2-usage-selection-audit/01-base-dark-1487x1058.png` (SHA-256 `98c36431259d1b14f1a5dba0827b3ee23914f9abebf44e20e7a3d55470f1b323`) and `/tmp/dc2-usage-selection-audit/02-model-selected-dark-1487x1058.png` (SHA-256 `d9f25019e3b7d6c5e683fd8baaf3f0a63759a0d48671454191dc421451657a5e`).
+- Formal receipt: `formal-web-ui-muzvtubl-669ea5d3`, `formal.result: passed`, candidate `c28a36b5880e41281c0a92662e9981510b80ba7ed43ae3b0c38352387f21f433`, source SHA-256 `1ec21c41725d9dacdaaa95b698b4634c739b773ca0505c56c1d43d4cb033e232`, artifact manifest SHA-256 `30d96352567fc9fc3d9bc501a7a607544d5290236c805eddde398d7c70323363`.
+- Manual receipt: `/tmp/formal-web-ui-verification-HZXbsq/manual-review.json`, `manual.result: passed`, all four cells reviewed.
+
+### Journey review
+
+1. **Open repository Usage** — passed. The usage title, range controls, token summary, phase chart, model ledger, activity and timing sections are readable in the initial and full-page captures.
+2. **Select a model** — passed. The selected row remains recognizable and the detail panel appears in the same viewport after activation on desktop and mobile.
+3. **Read incomplete-data state** — passed. The large repeated completeness sentence and bottom provenance block are removed; a compact state indicator and labelled information hint preserve access to the explanation without displacing the dashboard.
+4. **Use the phone layout** — passed. The title occupies its own row, range controls and coverage hint share the following row, and no content overlaps or clips.
+
+### Findings and iterations
+
+- Initial formal candidate was blocked by a loading capture, missing fixture-shape/source bindings, and a zero-width model-name track. Those were corrected before the passing run.
+- The first visual pass found the model names unreadable in the narrow ledger column. The row now gives the model name the flexible track and collapses redundant bar/share columns while retaining cost, status and chevron affordances.
+- The first phone capture found the range switcher overlapping the Usage title. The repository-scoped header now uses a two-row grid below 760px.
+- Typography, spacing, colors/tokens, icon treatment, responsive reflow, copy, and interaction continuation were reviewed in the paired captures. No actionable P0, P1, or P2 issue remains.
+
+### Accepted deviations and limits
+
+- The approved source includes the older visible completeness sentence and a cache-rebuild state. The current user-directed repair intentionally removes the duplicated sentence/provenance panel and retains the honest state through the compact indicator and on-demand hint; the rebuild state was not active in this populated fixture.
+- The source and implementation use different measured values and model names because the implementation is bound to the real usage fixture; this is an expected content difference, not a visual-target substitution.
+- Screenshots do not prove persistence, authorization, or assistive-technology behavior; those are covered by the rendered interaction suite and remain distinct from this visual comparison.
+
+**final result: passed**
+
+
+# Usage worktree scope first-version handoff — 2026-10-08
+
+final result: blocked
+
+The selected Usage worktree-scope direction is implemented in the Console and has a focused rendered journey. The current evidence covers the anchored checkbox scope control, consolidated selection, partial selection, empty selection, and canonical `codex` grouping; the formal browser receipt, manual screenshot receipt, Product Design audit, and live source-identity verification remain outstanding for this new surface.
+
+The remaining blocker is delivery of the CodexMulti producer build containing schema 9 worktree attribution. Until that build is installed and exercised through the Coordinator collector, per-worktree totals remain explicitly unavailable while consolidated historical totals remain valid.

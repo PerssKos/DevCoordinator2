@@ -653,6 +653,7 @@ Use a config file when allowances are route-specific:
     "primaryJourney": "review-dashboard",
     "regions": [{"selector": "[data-ui-region='dashboard-primary']", "role": "primary-content", "journey": "review-dashboard"}],
     "theme": "light",
+    "reviewEnvironmentIdentity": "leased-console-preview",
     "reviewInputs": [
       {"path": "src/dashboard", "kind": "ui-code"},
       {"path": "src/styles/dashboard.css", "kind": "style"}
@@ -698,6 +699,14 @@ Use a config file when allowances are route-specific:
   "rules": {"failOn": "critical", "strictTruncation": false}
 }
 ```
+
+When the same source-bound preview is intentionally leased on changing loopback
+ports, set `reviewEnvironmentIdentity` to one stable printable identity for that
+logical environment and provide an explicit target `name` and `sourceBinding`.
+Only HTTP(S) loopback targets qualify. The formal review key then uses that identity while every report and
+manual-review cell still records the requested origin. Reuse requires the same
+explicit identity, observed source binding, source fingerprint, route/state, theme/intent, and viewport;
+without the identity (or when it changes), a new origin requires a fresh review.
 
 Set `"scroll": false` (or pass `--no-scroll`) to disable the full-page scroll
 pass when a page must not scroll during inspection.

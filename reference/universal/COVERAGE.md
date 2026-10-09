@@ -12,7 +12,7 @@ decisions, and execution evidence remain in their authoritative services.
 | 2 (73–106) | `modules/context-evidence.md` | Applicable requirements and older corrections; negative acceptance criteria; bounded context and cold logs; catalogue-first evidence; untrusted external content; authoritative third-party facts |
 | 3 (107–189) | `modules/approval-security.md` | Every questions/approval rule; proportional security-assumptions gate; actual authority; concise material questions; no blanket hardening or scope expansion |
 | 4 (190–230) | `modules/ledger-decisions.md` | Database authority; decisions/options/cost/risk/supersession; rolling summaries; unfinished outcomes versus executions; diagnosed tasks; readable outcomes; evidence and readiness |
-| 5 (231–276) | `modules/execution.md` | Dependency concurrency; asynchronous ownership; delegation interfaces and limits; host capacity; failure dependencies; events, cursors, bounded fallback watcher, and observed completion |
+| 5 (231–276) | `modules/execution.md` | Dependency concurrency; asynchronous ownership and completion waits; delegation interfaces and limits; host capacity; failure dependencies; confirmed events, cursors, provider blocking waits, bounded fallback watcher, verified wake permission, availability waits, and observed completion |
 | 6 (277–426) | `modules/delivery.md` | Eligible clocks and defaults; accessible web previews; every desktop target and real updater; concurrent incremental publication; original verification/access boundaries; recovery-only hard stop |
 | 7 (427–469) | `modules/verification.md` | Manual prose review only; end-to-end-first test selection; existing-test extension before new unit coverage; focused versus stable/full validation; frozen candidates; safe sealed runs; isolated repairs; one suite owner; realistic journeys, recall, and precision |
 | 8 (470–496) | `modules/truthful-results.md` | Real facts/data/persistence/errors; rendered evidence for enabled controls; unavailable controls linked to open outcomes; truthful prototypes/disabled future UI; complete end-to-end results |
@@ -32,6 +32,16 @@ decisions, and execution evidence remain in their authoritative services.
 - Section 5 replaces the universal 100 ms ceiling with events or one
   service-owned, cancellable, deadline-bounded backoff watcher. It does not
   restore model-turn polling or create another capacity/scheduling authority.
+- The core and Sections 5 and 7 keep required asynchronous work active through
+  a confirmed completion wait, including tool continuations, current-status
+  checks, real event integration, provider blocking waits, and exact terminal
+  result inspection. Temporary test unavailability defers execution while
+  independent authorized development continues; once no independent work
+  remains, agents wait for availability and resume the deferred checks.
+  Refused launches are never treated as queued runs. Final responses,
+  deadlines, and launch-command alarms are not completion evidence. Automatic
+  background continuation requires an authorized handoff, a verified wake
+  route, and any required permission. Mandatory gates remain in force.
 - Section 6 follows `APP-WIDE-TWO-STAGE-DELIVERY-OVERRIDES` and
   `APP-WIDE-PROJECT-DELIVERY-DEADLINES`: performance-only work has no delivery
   alarms; an authorized implementation target establishes one runtime alarm;

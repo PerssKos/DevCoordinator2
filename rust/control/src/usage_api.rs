@@ -91,6 +91,46 @@ pub(super) struct Report {
     pub provider_tokens_by_activity: Vec<Activity>,
     #[serde(default)]
     pub cost: Option<SourceCost>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub worktrees: Vec<WorktreeSummary>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub worktree_coverage: Option<WorktreeCoverage>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WorktreeSummary {
+    #[allow(dead_code)]
+    pub worktree_key: String,
+    #[allow(dead_code)]
+    pub repository_key: String,
+    #[allow(dead_code)]
+    pub label: String,
+    #[allow(dead_code)]
+    pub operation_count: u64,
+    #[allow(dead_code)]
+    pub model_request_count: u64,
+    #[allow(dead_code)]
+    pub tool_count: u64,
+    #[allow(dead_code)]
+    pub total_tokens: Option<u64>,
+    #[allow(dead_code)]
+    pub unknown_token_observations: u64,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct WorktreeCoverage {
+    #[allow(dead_code)]
+    pub assigned_operation_count: u64,
+    #[allow(dead_code)]
+    pub unassigned_operation_count: u64,
+    #[allow(dead_code)]
+    pub assigned_token_observation_count: u64,
+    #[allow(dead_code)]
+    pub unassigned_token_observation_count: u64,
 }
 
 #[derive(Clone, Deserialize)]
@@ -198,19 +238,24 @@ pub(super) struct Activity {
 }
 
 impl CollectorApi {
+    // Keep the existing explicit query dimensions at the collector boundary.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn summary(
         &self,
         source: &CodexUsageSource,
         repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
         start: u64,
         end: u64,
         deadline: Instant,
     ) -> Result<Arc<Summary>, String> {
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
         let key = format!(
-            "{}:{path:?}:{}:{start}:{end}",
+            "{}:{path:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
             source.uid,
-            repository.unwrap_or("all")
+            repository.unwrap_or("all"),
+            worktree_keys,
         );
         let mut state = self.0.try_lock().map_err(|_| "api_busy")?;
         if let Some(entry) = state
@@ -228,7 +273,15 @@ impl CollectorApi {
             return Err("api_unavailable".into());
         }
         // The lock coalesces source requests; callers never queue unbounded work.
-        let result = fetch(source, repository, start, end, deadline);
+        let result = fetch(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            start,
+            end,
+            deadline,
+        );
         match result {
             Ok((report, bytes)) => {
                 state.failed_until.remove(path);
@@ -271,6 +324,8 @@ impl CollectorApi {
 fn fetch(
     source: &CodexUsageSource,
     repository: Option<&str>,
+    worktree_keys: Option<&[String]>,
+    include_unassigned: bool,
     start: u64,
     end: u64,
     deadline: Instant,
@@ -337,7 +392,7 @@ fn fetch(
         &mut socket,
         2,
         "localUsage/summary",
-        json!({"repositoryKey":repository,"fromAt":start,"toAt":end}),
+        json!({"repositoryKey":repository,"worktreeKeys":worktree_keys,"includeUnassigned":include_unassigned,"fromAt":start,"toAt":end}),
         deadline,
     )?;
     let bytes = serde_json::to_vec(&value)
@@ -511,7 +566,13 @@ fn validate(
 }
 
 impl Summary {
-    pub(super) fn source_report(&self, repository: Option<&str>, buckets: usize) -> SourceReport {
+    pub(super) fn source_report(
+        &self,
+        repository: Option<&str>,
+        buckets: usize,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+    ) -> SourceReport {
         let r = &self.report;
         let partial = r.coverage.has_gaps || r.coverage.state != "complete";
         let mut result = SourceReport {
@@ -589,6 +650,10 @@ impl Summary {
                 }
             }
         }
+        // The producer has already applied the worktree selection to every
+        // vector in this summary. Keep the extra arguments in the consumer
+        // contract so cache keys cannot accidentally mix scopes.
+        let _ = (worktree_keys, include_unassigned);
         if buckets == 1 {
             for ((phase, _), value) in &result.activities {
                 *result.phase_series[0].entry(phase.clone()).or_default() += value;
@@ -650,12 +715,18 @@ impl CodexUsage {
             let mut failures = BTreeMap::new();
             for source in &self.config.codex_usage_sources {
                 match self.repository_key(source, repository, now, false) {
-                    Ok(key) => match self.api.summary(source, Some(&key), start, end, deadline) {
-                        Ok(summary) => {
-                            reports.push((source.uid, summary.source_report(Some(&key), count)))
+                    Ok(key) => {
+                        match self
+                            .api
+                            .summary(source, Some(&key), None, true, start, end, deadline)
+                        {
+                            Ok(summary) => reports.push((
+                                source.uid,
+                                summary.source_report(Some(&key), count, None, true),
+                            )),
+                            Err(_) => return Ok(None),
                         }
-                        Err(_) => return Ok(None),
-                    },
+                    }
                     Err(error) => increment(&mut failures, &error.message),
                 }
             }

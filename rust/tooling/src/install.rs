@@ -283,7 +283,7 @@ struct UsagePolicy {
     sources: Vec<CodexUsageSource>,
 }
 
-pub fn validate_live_checkout<R: CommandRunner>(
+pub fn validate_live_checkout<R: CommandRunner + ?Sized>(
     root: &Path,
     fetch: bool,
     runner: &R,
@@ -914,6 +914,56 @@ pub fn configure_loopback_console(
     enabled: bool,
     expected_uid: u32,
 ) -> Result<bool, String> {
+    set_owned_edge_env_value(
+        path,
+        "EDGE_TRUST_LOCAL_CONSOLE",
+        if enabled { "1" } else { "0" },
+        expected_uid,
+    )
+}
+
+pub fn configure_edge_source_revision(
+    path: &Path,
+    source_commit: &str,
+    expected_uid: u32,
+) -> Result<bool, String> {
+    validate_commit(source_commit)?;
+    set_owned_edge_env_value(
+        path,
+        "EDGE_UI_SOURCE_REVISION",
+        &format!("git:{source_commit}"),
+        expected_uid,
+    )
+}
+
+pub fn refresh_edge_source_revision<R: CommandRunner + ?Sized>(
+    path: &Path,
+    source_root: &Path,
+    expected_uid: u32,
+    runner: &R,
+) -> Result<bool, String> {
+    match validate_live_checkout(source_root, false, runner) {
+        Ok(commit) => configure_edge_source_revision(path, &commit, expected_uid),
+        Err(error) => {
+            set_owned_edge_env_value(path, "EDGE_UI_SOURCE_REVISION", "", expected_uid)
+                .map_err(|clear_error| {
+                    format!(
+                        "Console source identity is unverified: {error}; cannot clear its marker: {clear_error}"
+                    )
+                })?;
+            Err(format!(
+                "Console source identity is unverified; its marker was cleared: {error}"
+            ))
+        }
+    }
+}
+
+fn set_owned_edge_env_value(
+    path: &Path,
+    key: &str,
+    value: &str,
+    expected_uid: u32,
+) -> Result<bool, String> {
     let (_, metadata) = read_optional_regular(path)?;
     let metadata = metadata.ok_or("the existing edge configuration is required")?;
     if metadata.uid() != expected_uid || metadata.mode() & 0o027 != 0 {
@@ -921,11 +971,7 @@ pub fn configure_loopback_console(
             "edge configuration must retain its private installation owner and permissions".into(),
         );
     }
-    set_env_value(
-        path,
-        "EDGE_TRUST_LOCAL_CONSOLE",
-        if enabled { "1" } else { "0" },
-    )
+    set_env_value(path, key, value)
 }
 
 pub fn compose_env_authorizations<R: CommandRunner>(
@@ -1557,7 +1603,7 @@ pub fn retire_legacy_skill_link(path: &Path) -> Result<bool, String> {
 
 fn git<R, I, S>(root: &Path, args: I, runner: &R) -> Result<String, String>
 where
-    R: CommandRunner,
+    R: CommandRunner + ?Sized,
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
@@ -1573,7 +1619,7 @@ where
 
 fn run_git_raw<R, I, S>(root: &Path, args: I, runner: &R) -> Result<CommandOutput, String>
 where
-    R: CommandRunner,
+    R: CommandRunner + ?Sized,
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
@@ -2410,7 +2456,7 @@ mod tests {
     }
 
     #[test]
-    fn loopback_console_configuration_preserves_existing_installation_settings() {
+    fn edge_configuration_preserves_existing_installation_settings() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("edge.env");
         std::fs::write(
@@ -2432,6 +2478,34 @@ mod tests {
             (after.uid(), after.gid(), after.mode())
         );
         assert!(configure_loopback_console(&path, false, before.uid()).unwrap());
+        let source_commit = "a".repeat(40);
+        assert!(configure_edge_source_revision(&path, &source_commit, before.uid()).unwrap());
+        assert!(!configure_edge_source_revision(&path, &source_commit, before.uid()).unwrap());
+        let expected = format!(
+            "EDGE_BASE_DOMAIN=example.test\nUNRELATED=preserved\nEDGE_TRUST_LOCAL_CONSOLE=0\nEDGE_UI_SOURCE_REVISION=git:{source_commit}\n"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(configure_edge_source_revision(&path, "unverified", before.uid()).is_err());
+        assert!(configure_edge_source_revision(&path, &source_commit, before.uid() + 1).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        std::fs::write(
+            &path,
+            format!("{expected}EDGE_UI_SOURCE_REVISION=private-fixture\n"),
+        )
+        .unwrap();
+        let duplicate_error =
+            configure_edge_source_revision(&path, &source_commit, before.uid()).unwrap_err();
+        assert!(duplicate_error.contains("appears more than once"));
+        assert!(!duplicate_error.contains("private-fixture"));
+        std::fs::write(&path, &expected).unwrap();
+        let after_source = std::fs::metadata(&path).unwrap();
+        assert_eq!(
+            (before.uid(), before.gid(), before.mode()),
+            (after_source.uid(), after_source.gid(), after_source.mode())
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(configure_edge_source_revision(&path, &source_commit, before.uid()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
         assert!(configure_loopback_console(&path, true, before.uid() + 1).is_err());
         assert!(
             configure_loopback_console(&directory.path().join("missing"), true, before.uid())

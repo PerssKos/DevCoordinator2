@@ -1,5 +1,6 @@
 //! Deployment resolution, truthful status, observed control, and route changes.
 mod recovery;
+mod routing_recovery;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsString;
@@ -974,11 +975,18 @@ impl Deployments {
         {
             return self.control_observed(action, deployment_id, component);
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
         let row = target
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        if matches!(action, "start" | "restart") {
+            // Runtime controls must use the exact specification recorded by
+            // the applied generation. The checkout may have changed since
+            // that generation was applied; reading it here would silently
+            // restart with new commands, ports, or environment values.
+            target.specification = stored_deployment_specification(&row)?;
+        }
         if action == "stop"
             && component.is_none()
             && let Some((requested, finished)) = self
@@ -1024,6 +1032,25 @@ impl Deployments {
             && let Some(blocker) = self.docker_preflight_blocker(&components)
         {
             return Err(ProtocolError::new(blocker.code, blocker.message));
+        }
+        if matches!(action, "start" | "restart") {
+            let stored = self.store.components(&target.deployment_id)?;
+            for component in &components {
+                if component.kind == ComponentKind::Process {
+                    let generation = stored
+                        .iter()
+                        .find(|saved| saved.name == component.name)
+                        .and_then(|saved| saved.generation.filter(|generation| *generation > 0))
+                        .or(row.current_generation)
+                        .ok_or_else(|| {
+                            ProtocolError::new(
+                                ErrorCode::DeploymentActionFailed,
+                                "the applied generation is unavailable; reapply the deployment",
+                            )
+                        })?;
+                    self.saved_environment_path(&target, component, generation)?;
+                }
+            }
         }
         if matches!(action, "stop" | "restart") {
             let mut reverse = components.clone();
@@ -1674,7 +1701,16 @@ impl Deployments {
                     }
                     Ok(("compose".into(), project.to_owned()))
                 } else {
-                    self.start_component(target, component, generation, &generation_path, &port_map)
+                    let component_generation =
+                        old.and_then(|saved| saved.generation).unwrap_or(generation);
+                    self.start_component(
+                        target,
+                        component,
+                        component_generation,
+                        &generation_path,
+                        &port_map,
+                        true,
+                    )
                 }
             })();
             let binding = match started {
@@ -2434,7 +2470,14 @@ impl Deployments {
                         .map_err(runtime_error)?,
                 );
                 let restored = self
-                    .start_component(target, &component, old_generation, &old_path, &old_ports)
+                    .start_component(
+                        target,
+                        &component,
+                        old_generation,
+                        &old_path,
+                        &old_ports,
+                        true,
+                    )
                     .and_then(|binding| {
                         self.prove_health(target, &component, &binding, &old_ports, old_generation)
                     });
@@ -2921,7 +2964,14 @@ impl Deployments {
             return Ok(("none".into(), String::new()));
         }
         if DeploymentStore::is_generation_scoped(component) {
-            return self.start_component(target, component, generation, generation_path, port_map);
+            return self.start_component(
+                target,
+                component,
+                generation,
+                generation_path,
+                port_map,
+                false,
+            );
         }
         let old = old_components.get(&component.name);
         let unchanged = old.is_some_and(|old| {
@@ -2946,7 +2996,14 @@ impl Deployments {
                 return Ok(("container".into(), identity.to_string()));
             }
         }
-        self.start_component(target, component, generation, generation_path, port_map)
+        self.start_component(
+            target,
+            component,
+            generation,
+            generation_path,
+            port_map,
+            false,
+        )
     }
 
     fn start_component(
@@ -2956,36 +3013,41 @@ impl Deployments {
         generation: u32,
         generation_path: &Path,
         port_map: &BTreeMap<String, u16>,
+        reuse_environment: bool,
     ) -> Result<(String, String), ProtocolError> {
         self.files
             .ensure_layout(&target.deployment_id, target.caller_uid, target.caller_gid)
             .map_err(file_apply_error)?;
-        let environment = self.component_environment(target, component, generation, port_map)?;
         let process_environment = component.kind == ComponentKind::Process;
-        let environment_path = self
-            .files
-            .write_environment(
-                &target.deployment_id,
-                &component.name,
-                generation,
-                &environment,
-                if process_environment {
-                    EnvironmentFormat::Systemd
-                } else {
-                    EnvironmentFormat::Docker
-                },
-                if process_environment {
-                    target.caller_uid
-                } else {
-                    rustix::process::geteuid().as_raw()
-                },
-                if process_environment {
-                    target.caller_gid
-                } else {
-                    rustix::process::getegid().as_raw()
-                },
-            )
-            .map_err(file_apply_error)?;
+        let environment_path = if reuse_environment {
+            self.saved_environment_path(target, component, generation)?
+        } else {
+            let environment =
+                self.component_environment(target, component, generation, port_map)?;
+            self.files
+                .write_environment(
+                    &target.deployment_id,
+                    &component.name,
+                    generation,
+                    &environment,
+                    if process_environment {
+                        EnvironmentFormat::Systemd
+                    } else {
+                        EnvironmentFormat::Docker
+                    },
+                    if process_environment {
+                        target.caller_uid
+                    } else {
+                        rustix::process::geteuid().as_raw()
+                    },
+                    if process_environment {
+                        target.caller_gid
+                    } else {
+                        rustix::process::getegid().as_raw()
+                    },
+                )
+                .map_err(file_apply_error)?
+        };
         match component.kind {
             ComponentKind::Process => {
                 let unit = process_unit_name(
@@ -3047,6 +3109,7 @@ impl Deployments {
                     generation,
                     port_map,
                     environment_path,
+                    reuse_environment,
                 )?;
                 Ok(("container".into(), identity.to_string()))
             }
@@ -3099,6 +3162,44 @@ impl Deployments {
         }
     }
 
+    fn saved_environment_path(
+        &self,
+        target: &DeploymentTarget,
+        component: &ComponentSpec,
+        generation: u32,
+    ) -> Result<PathBuf, ProtocolError> {
+        let path = if component.kind == ComponentKind::Postgres {
+            self.files
+                .postgres_environment_path(&target.deployment_id, &component.name, generation)
+        } else {
+            self.files
+                .environment_path(&target.deployment_id, &component.name, generation)
+        }
+        .map_err(file_apply_error)?;
+        let root = self
+            .files
+            .deployment_dir(&target.deployment_id)
+            .map_err(file_apply_error)?;
+        let relative = path
+            .strip_prefix(&root)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or_else(|| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentActionFailed,
+                    "saved environment path is invalid",
+                )
+            })?;
+        self.files
+            .validate_repository_file(&root, relative)
+            .map_err(|_| {
+                ProtocolError::new(
+                    ErrorCode::DeploymentActionFailed,
+                    "the applied generation environment is unavailable; reapply the deployment",
+                )
+            })
+    }
+
     fn start_container_component(
         &self,
         target: &DeploymentTarget,
@@ -3106,6 +3207,7 @@ impl Deployments {
         generation: u32,
         port_map: &BTreeMap<String, u16>,
         mut environment_path: PathBuf,
+        reuse_environment: bool,
     ) -> Result<ExactContainerId, ProtocolError> {
         let mut name = container_name(&target.deployment_id, &component.name);
         if DeploymentStore::is_generation_scoped(component) {
@@ -3135,24 +3237,26 @@ impl Deployments {
         let mut command = component.command.clone();
         let image = component.image.as_deref().unwrap_or("");
         if component.kind == ComponentKind::Postgres {
-            let credentials = self
-                .files
-                .postgres_credentials(
-                    &target.deployment_id,
-                    &component.name,
-                    component.user.as_deref().unwrap_or("app"),
-                    component.database.as_deref().unwrap_or("app"),
-                )
-                .map_err(file_apply_error)?;
-            environment_path = self
-                .files
-                .write_postgres_environment(
-                    &target.deployment_id,
-                    &component.name,
-                    generation,
-                    &credentials,
-                )
-                .map_err(file_apply_error)?;
+            if !reuse_environment {
+                let credentials = self
+                    .files
+                    .postgres_credentials(
+                        &target.deployment_id,
+                        &component.name,
+                        component.user.as_deref().unwrap_or("app"),
+                        component.database.as_deref().unwrap_or("app"),
+                    )
+                    .map_err(file_apply_error)?;
+                environment_path = self
+                    .files
+                    .write_postgres_environment(
+                        &target.deployment_id,
+                        &component.name,
+                        generation,
+                        &credentials,
+                    )
+                    .map_err(file_apply_error)?;
+            }
             let port = port_map.get(&component.name).copied().ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::DeploymentApplyFailed,
@@ -3299,7 +3403,7 @@ impl Deployments {
         port_map: &BTreeMap<String, u16>,
     ) -> Result<Option<String>, ProtocolError> {
         let (credentials, port) = if let Some(shared) = &component.shared_from {
-            let (deployment, component) = shared.split_once('/').ok_or_else(|| {
+            let (deployment, owner_component) = shared.split_once('/').ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::RepositoryConfigInvalid,
                     "shared PostgreSQL target is invalid",
@@ -3307,16 +3411,12 @@ impl Deployments {
             })?;
             let Some(credentials) = self
                 .files
-                .read_postgres_credentials(deployment, component)
+                .read_postgres_credentials(deployment, owner_component)
                 .map_err(file_apply_error)?
             else {
                 return Ok(None);
             };
-            let Some(port) = crate::ports::assigned(&self.database, deployment, 0)
-                .map_err(runtime_error)?
-                .get(component)
-                .copied()
-            else {
+            let Some(port) = self.postgres_port(component, port_map)? else {
                 return Ok(None);
             };
             (credentials, port)
@@ -3339,6 +3439,30 @@ impl Deployments {
             "postgresql://{}:{}@127.0.0.1:{}/{}",
             credentials.user, credentials.password, port, credentials.database
         )))
+    }
+
+    /// Resolve the host port for a PostgreSQL component from the runtime that
+    /// owns it. Shared components deliberately do not receive a lease in the
+    /// borrowing deployment, so consulting `port_map` for them would either
+    /// reject a valid deployment or accept a stray borrower lease.
+    fn postgres_port(
+        &self,
+        component: &ComponentSpec,
+        port_map: &BTreeMap<String, u16>,
+    ) -> Result<Option<u16>, ProtocolError> {
+        let Some(shared) = &component.shared_from else {
+            return Ok(port_map.get(&component.name).copied());
+        };
+        let (deployment, owner_component) = shared.split_once('/').ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::RepositoryConfigInvalid,
+                "shared PostgreSQL target is invalid",
+            )
+        })?;
+        Ok(crate::ports::assigned(&self.database, deployment, 0)
+            .map_err(runtime_error)?
+            .get(owner_component)
+            .copied())
     }
 
     fn compose_context(
@@ -3441,7 +3565,11 @@ impl Deployments {
                     .store
                     .components(deployment)?
                     .into_iter()
-                    .find(|row| row.name == name)
+                    .find(|row| {
+                        row.name == name
+                            && row.kind == "postgres"
+                            && row.binding_kind.as_deref() == Some("container")
+                    })
                     .and_then(|row| row.binding_identity)
                     .ok_or_else(|| {
                         ProtocolError::new(
@@ -3492,9 +3620,11 @@ impl Deployments {
                 return Ok(readiness);
             }
             let Some(port) = port else {
-                return Ok(Readiness::failed(
-                    "PostgreSQL component has no allocated host port",
-                ));
+                return Ok(Readiness::failed(if component.shared_from.is_some() {
+                    "shared PostgreSQL owner has no allocated host port"
+                } else {
+                    "PostgreSQL component has no allocated host port"
+                }));
             };
             let host = self
                 .health
@@ -3844,22 +3974,40 @@ impl Deployments {
         let ids = self
             .database
             .call(|connection| {
-                let mut statement = connection
-                    .prepare("SELECT deployment_id FROM domain_routes WHERE port IS NOT NULL")?;
+                let mut statement =
+                    connection.prepare("SELECT deployment_id FROM domain_routes")?;
                 Ok(statement
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?)
             })
             .map_err(database_error)?;
+        let mut changed = false;
         for id in ids {
             let Ok(_busy) = self.acquire_busy(&id) else {
                 continue;
             };
-            if let Err(error) = self.validate_or_withdraw_route(&id) {
-                tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+            match routing_recovery::restore_route(self, &id) {
+                Ok(routing_recovery::Recovery::Restored) => changed = true,
+                Ok(routing_recovery::Recovery::Deferred) => continue,
+                Ok(routing_recovery::Recovery::NotApplicable) => {}
+                Err(error) => {
+                    tracing::warn!(code=%error.code, deployment_id=%id, "route recovery incomplete");
+                    continue;
+                }
+            }
+            match self.validate_or_withdraw_route(&id) {
+                Ok(true) => {}
+                Ok(false) => changed = true,
+                Err(error) => {
+                    tracing::warn!(code=%error.code, deployment_id=%id, "route reconciliation failed");
+                }
             }
         }
-        self.routes.publish_current()?;
+        // A deferred deployment keeps its prior route, but it must not hide a
+        // confirmed change for another deployment (or a successful recovery).
+        if changed {
+            self.routes.publish_current()?;
+        }
         Ok(())
     }
 
@@ -4596,6 +4744,44 @@ impl Deployments {
                 )
             })
     }
+}
+
+fn stored_deployment_specification(row: &DeploymentRow) -> Result<DeploymentSpec, ProtocolError> {
+    #[derive(serde::Deserialize)]
+    struct SavedSpec {
+        name: String,
+        source: String,
+        domain: Option<String>,
+        build: Vec<String>,
+        ttl_seconds: Option<u64>,
+        public: bool,
+        components: Vec<ComponentSpec>,
+    }
+    let saved: SavedSpec = serde_json::from_str(&row.spec_json).map_err(|_| {
+        ProtocolError::new(
+            ErrorCode::DeploymentActionFailed,
+            "saved deployment specification is unavailable; reapply the deployment",
+        )
+    })?;
+    if saved.name != row.name || saved.source != row.source {
+        return Err(ProtocolError::new(
+            ErrorCode::DeploymentActionFailed,
+            "saved deployment specification does not match the deployment",
+        ));
+    }
+    Ok(DeploymentSpec {
+        name: saved.name,
+        sources: vec![saved.source.clone()],
+        domains: saved
+            .domain
+            .map(|domain| (saved.source, domain))
+            .into_iter()
+            .collect(),
+        build: saved.build,
+        ttl_seconds: saved.ttl_seconds,
+        public: saved.public,
+        components: saved.components,
+    })
 }
 
 fn live_health(row: &ComponentRow, state: &str) -> String {
@@ -7143,6 +7329,152 @@ database="app"
                 .iter()
                 .any(|action| action.contains("volume-remove:"))
         );
+    }
+
+    #[test]
+    fn shared_postgres_health_uses_owner_port_without_borrower_lease() {
+        let temporary = tempdir().unwrap();
+        let worktree = temporary.path().join("repository");
+        std::fs::create_dir(&worktree).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(&worktree)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/nonexistent")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let worktree_id = crate::ids::worktree_id(&worktree).unwrap();
+        let owner_id = DeploymentStore::deployment_id(&worktree_id, "owner", "worktree");
+        let consumer_id = DeploymentStore::deployment_id(&worktree_id, "consumer", "worktree");
+        std::fs::write(
+            worktree.join(".devcoordinator.toml"),
+            format!(
+                r#"
+schema=2
+[deployment.owner]
+source="worktree"
+components=["db"]
+[deployment.owner.component.db]
+type="postgres"
+image="postgres:18"
+user="app"
+database="app"
+[deployment.consumer]
+source="worktree"
+components=["db"]
+[deployment.consumer.component.db]
+type="postgres"
+shared_from="{owner_id}/db"
+"#
+            ),
+        )
+        .unwrap();
+        let state = temporary.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let database = Database::open(state.join("authority.sqlite3")).unwrap();
+        let config = Config {
+            socket_path: temporary.path().join("daemon.sock"),
+            sandbox_bridge_dir: std::path::PathBuf::from("/tmp/devcoordinator2-bridge"),
+            unit_prefix: "devcoordinator2-test".into(),
+            slice_name: "devcoordinator2-tests.slice".into(),
+            client_group: "clients".into(),
+            port_range: (41000, 41100),
+            base_domain: "example.test".into(),
+            edge_uid: None,
+            admin_emails: Vec::new(),
+            telegram_token_file: None,
+            telegram_api: "https://api.telegram.org".into(),
+            bugs_dir: temporary.path().join("bugs"),
+            compose_env_allowlist_file: None,
+            compose_env_authorizations: HashSet::new(),
+            codex_usage_sources_file: None,
+            codex_usage_sources: Vec::new(),
+            state_dir: state,
+        };
+        let docker = Arc::new(MutationDocker::new());
+        let deployments = Deployments::with_runtime_adapters(
+            config.clone(),
+            database.clone(),
+            Registry::new(database.clone()),
+            docker,
+            Arc::new(FakeSystemd),
+            Arc::new(ReadyNetwork),
+            Arc::new(FixtureGit),
+            Arc::new(FixtureHealth),
+            DeploymentFiles::new(config.deployments_dir(), config.secrets_dir()),
+            Arc::new(FixturePorts),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-04 00:00 UTC))),
+        );
+        let caller = Caller {
+            via_edge: false,
+            pid: 1,
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            client_kind: devcoordinator2_api::ClientKind::Codex,
+            model: None,
+            effort: None,
+            client_session: None,
+            work: None,
+            identity: None,
+        };
+        assert_ne!(
+            caller.uid, 0,
+            "shared PostgreSQL fixture requires a non-root caller"
+        );
+
+        let owner = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("owner"),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(owner.deployment_id, owner_id);
+        assert_eq!(owner.components[0].port, Some(41000));
+
+        let consumer = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("consumer"),
+                None,
+                &caller,
+            )
+            .unwrap();
+        assert_eq!(consumer.deployment_id, consumer_id);
+        assert_eq!(consumer.components[0].port, None);
+        assert!(!consumer.components[0].owned);
+        assert_eq!(consumer.components[0].health, "healthy");
+
+        crate::ports::release(&database, &owner_id, None, Some("db")).unwrap();
+        crate::ports::lease_with_availability(
+            &database,
+            (41000, 41100),
+            &consumer_id,
+            "db",
+            0,
+            "t",
+            &FixturePorts,
+        )
+        .unwrap();
+        let failure = deployments
+            .apply(
+                Some(worktree.to_str().unwrap()),
+                Some("consumer"),
+                None,
+                &caller,
+            )
+            .unwrap_err();
+        assert!(
+            failure
+                .message
+                .contains("shared PostgreSQL owner has no allocated host port")
+        );
+        crate::ports::release(&database, &consumer_id, None, Some("db")).unwrap();
     }
 
     #[test]

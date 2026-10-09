@@ -11,6 +11,7 @@ pub mod ci_evidence;
 pub mod cutover;
 pub mod decision_import;
 pub mod deployment_backup;
+pub mod edge_tls;
 pub mod formal_review;
 pub mod formal_selftest;
 pub mod install;
