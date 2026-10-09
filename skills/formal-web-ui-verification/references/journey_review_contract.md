@@ -218,6 +218,13 @@ Wrapping uses rendered text ranges grouped by line and grapheme counts without
 retaining text. Single-character labels are a guard; intentional stacked or
 CJK text requires an explicit allowance when it meets the detector condition.
 
+`fixtureDataShapes` contains at most 512 rows; other bounded contract lists keep
+their existing limits. Each distinct target/state, including a separately named
+breakpoint target, needs an exact binding. Shared fixture content does not make
+different target groups interchangeable. The `--config-only` preflight checks
+the complete expanded plan, missing/ambiguous shapes and required cells without
+browser work; its receipt is never formal or delivery evidence.
+
 Every `fixtureDataShapes` row requires `id`, `revision`, `route`, `state`,
 nonempty `conditionalDom`, and `layoutEffect`. `route` includes the path and
 query. Optional `target` resolves an exact target name and is required when

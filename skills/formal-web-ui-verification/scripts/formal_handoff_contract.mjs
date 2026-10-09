@@ -14,9 +14,9 @@ function finite(value, label, minimum = 0) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum) throw new Error(`${label} must be finite and >= ${minimum}`);
   return value;
 }
-function list(value, label) {
+function list(value, label, maximum = 256) {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 256) throw new Error(`${label} must be a bounded array`);
+  if (!Array.isArray(value) || value.length > maximum) throw new Error(`${label} must be a bounded array`);
   const ids = new Set();
   return value.map((row, index) => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(`${label}[${index}] must be an object`);
@@ -49,7 +49,7 @@ export function normalizeGeometry(value, label = 'geometryAssertions') {
   });
 }
 export function normalizeShapes(value) {
-  return list(value, 'fixtureDataShapes').map(row => {
+  return list(value, 'fixtureDataShapes', 512).map(row => {
     known(row, ['id', 'revision', 'target', 'route', 'state', 'conditionalDom', 'layoutEffect'], 'fixtureDataShapes');
     if (!Array.isArray(row.conditionalDom) || !row.conditionalDom.length || row.conditionalDom.length > 128) throw new Error('fixtureDataShapes requires bounded non-empty conditionalDom');
     const route = text(row.route, 'route');
