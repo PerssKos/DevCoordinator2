@@ -532,6 +532,18 @@ pub fn finalize(
                 .ok_or("carried review has no prior evidence binding")?;
             if prior.get("sourceFingerprint") != cell.get("sourceFingerprint")
                 || prior.get("intentFingerprint") != cell.get("intentFingerprint")
+                || prior
+                    .get("reviewEnvironmentIdentity")
+                    .filter(|value| !value.is_null())
+                    != cell
+                        .get("reviewEnvironmentIdentity")
+                        .filter(|value| !value.is_null())
+                || prior
+                    .get("reviewEnvironmentSourceSha256")
+                    .filter(|value| !value.is_null())
+                    != cell
+                        .get("reviewEnvironmentSourceSha256")
+                        .filter(|value| !value.is_null())
                 || prior.get("manualManifestSha256")
                     != run
                         .report
@@ -599,6 +611,7 @@ pub fn finalize(
             "viewport":cell.get("viewport").cloned().unwrap_or(Value::Null),
             "theme":cell.get("theme").cloned().unwrap_or(Value::Null),
             "reviewEnvironmentIdentity":cell.get("reviewEnvironmentIdentity").cloned().unwrap_or(Value::Null),
+            "reviewEnvironmentSourceSha256":cell.get("reviewEnvironmentSourceSha256").cloned().unwrap_or(Value::Null),
             "reviewer":reviewer,"reviewedAt":reviewed_at,
             "decision":decision,"note":note,"basis":basis,
             "sourceFingerprint":cell.get("sourceFingerprint").cloned().unwrap_or(Value::Null),
@@ -707,6 +720,7 @@ pub fn validate(
                     "theme":cell.get("theme").cloned().unwrap_or(Value::Null),
                     "viewport":cell.get("viewport").cloned().unwrap_or(Value::Null),
                     "reviewEnvironmentIdentity":cell.get("reviewEnvironmentIdentity").cloned().unwrap_or(Value::Null),
+                    "reviewEnvironmentSourceSha256":cell.get("reviewEnvironmentSourceSha256").cloned().unwrap_or(Value::Null),
                     "sourceFingerprint":cell.get("sourceFingerprint").cloned().unwrap_or(Value::Null),
                     "intentFingerprint":cell.get("intentFingerprint").cloned().unwrap_or(Value::Null),
                     "screenshots":Value::Object(screenshot_hashes(cell)?),
@@ -767,12 +781,20 @@ pub fn validate(
             "theme",
             "viewport",
             "reviewEnvironmentIdentity",
+            "reviewEnvironmentSourceSha256",
             "sourceFingerprint",
             "intentFingerprint",
             "screenshots",
             "carriedFrom",
         ] {
-            if item.get(field) != expected[key].get(field) {
+            let optional_origin_field = matches!(
+                field,
+                "requestedOrigin" | "reviewEnvironmentIdentity" | "reviewEnvironmentSourceSha256"
+            );
+            let actual_field = item
+                .get(field)
+                .or_else(|| optional_origin_field.then_some(&Value::Null));
+            if actual_field != expected[key].get(field) {
                 return Err(format!(
                     "manual review decision for {key} does not bind current {field}"
                 ));
@@ -980,6 +1002,20 @@ mod tests {
             changed["manual"]["sourceSha256"] = json!("0".repeat(64));
             std::fs::write(&output, serde_json::to_vec(&changed).unwrap()).unwrap();
             assert!(validate(&output, &report, &queue).is_err());
+            for field in [
+                "requestedOrigin",
+                "reviewEnvironmentIdentity",
+                "reviewEnvironmentSourceSha256",
+            ] {
+                let mut changed = review.clone();
+                changed["decisions"][0][field] = json!("unrelated-origin-evidence");
+                changed["manual"]["cells"] = changed["decisions"].clone();
+                std::fs::write(&output, serde_json::to_vec(&changed).unwrap()).unwrap();
+                assert!(
+                    validate(&output, &report, &queue).is_err(),
+                    "changed {field} accepted"
+                );
+            }
         }
     }
 

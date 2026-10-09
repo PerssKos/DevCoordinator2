@@ -672,9 +672,10 @@ Use a config file when allowances are route-specific:
 
 When the same source-bound preview is intentionally leased on changing loopback
 ports, set `reviewEnvironmentIdentity` to one stable printable identity for that
-lease. The formal review key then uses that identity while every report and
+logical environment and provide an explicit target `name` and `sourceBinding`.
+Only HTTP(S) loopback targets qualify. The formal review key then uses that identity while every report and
 manual-review cell still records the requested origin. Reuse requires the same
-explicit identity, source fingerprint, route/state, theme/intent, and viewport;
+explicit identity, observed source binding, source fingerprint, route/state, theme/intent, and viewport;
 without the identity (or when it changes), a new origin requires a fresh review.
 
 Set `"scroll": false` (or pass `--no-scroll`) to disable the full-page scroll

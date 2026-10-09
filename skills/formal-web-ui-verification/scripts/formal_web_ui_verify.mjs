@@ -534,6 +534,17 @@ function normalizeReviewEnvironmentIdentity(value, name) {
   return normalized;
 }
 
+function isLoopbackReviewOrigin(value) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) &&
+      ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) &&
+      !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeContinuation(value, name) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -651,6 +662,12 @@ function loadPriorManualReview(value) {
       throw new Error(`reviewAgainst.decisions[${index}] requires a note for ${item.decision}`);
     }
     if (typeof item.reviewer !== "string" || !item.reviewer.trim() || !Number.isFinite(Date.parse(item.reviewedAt || ""))) throw new Error("reviewAgainst requires a reviewer and review timestamp for every cell");
+    if (item.reviewEnvironmentIdentity != null) {
+      normalizeReviewEnvironmentIdentity(item.reviewEnvironmentIdentity, `reviewAgainst.decisions[${index}].reviewEnvironmentIdentity`);
+      if (!isLoopbackReviewOrigin(item.requestedOrigin) || !SHA256_RE.test(item.reviewEnvironmentSourceSha256 || "")) {
+        throw new Error("reviewAgainst environment identity requires loopback origin and observed source evidence");
+      }
+    }
     return { ...item, reviewCellKey };
   });
   return {
@@ -2149,6 +2166,17 @@ function prepareTargetContracts(targets, config) {
   const reviewCache = new Map();
   const prepared = targets.map((target) => {
     const contractErrors = journeyContractErrors(target);
+    if (target.reviewEnvironmentIdentity) {
+      if (!isLoopbackReviewOrigin(target.url)) {
+        contractErrors.push("reviewEnvironmentIdentity requires an explicit loopback HTTP(S) target");
+      }
+      if (!(target.sourceBinding || config.sourceBinding)?.expected) {
+        contractErrors.push("reviewEnvironmentIdentity requires sourceBinding.expected observed from the rendered target");
+      }
+      if (!target.baseTargetName || target.baseTargetName === target.url) {
+        contractErrors.push("reviewEnvironmentIdentity requires an explicit stable target name");
+      }
+    }
     let reviewEvidence = null;
     if (target.reviewInputs?.length) {
       if (repo.error) {
@@ -4958,8 +4986,9 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   const reviewEnvironmentIdentity = target.reviewEnvironmentIdentity || null;
   const reviewCellKey = sha256(stableJson({
     target: target.name || target.url,
-    requestedOrigin: reviewEnvironmentIdentity ? null : requestedRoute.origin,
-    reviewEnvironmentIdentity,
+    ...(reviewEnvironmentIdentity
+      ? { reviewEnvironmentIdentity }
+      : { requestedOrigin: requestedRoute.origin }),
     requestedPath: requestedRoute.path,
     stateName: target.stateName || "base",
     viewport: { name: viewport.name, width: viewport.width, height: viewport.height },
@@ -5453,13 +5482,17 @@ function buildChangedReviewQueue(pages, config, runId) {
     const intentFingerprint = page.review.intentFingerprint;
     const reviewEnvironmentIdentity = page.review.reviewEnvironmentIdentity || null;
     const requestedOrigin = page.review.requestedOrigin || null;
+    const reviewEnvironmentSourceSha256 = reviewEnvironmentIdentity && page.sourceBinding?.status === "matched"
+      ? sha256(page.sourceBinding.observed)
+      : null;
     const sourceUnchanged = Boolean(prior && prior.sourceFingerprint === sourceFingerprint);
     const intentUnchanged = Boolean(prior && prior.intentFingerprint === intentFingerprint);
     const priorEnvironmentIdentity = prior?.reviewEnvironmentIdentity || null;
     const environmentUnchanged = Boolean(
       prior && (
         (!reviewEnvironmentIdentity && !priorEnvironmentIdentity) ||
-        (reviewEnvironmentIdentity && priorEnvironmentIdentity === reviewEnvironmentIdentity)
+        (reviewEnvironmentIdentity && priorEnvironmentIdentity === reviewEnvironmentIdentity &&
+          reviewEnvironmentSourceSha256 && prior.reviewEnvironmentSourceSha256 === reviewEnvironmentSourceSha256)
       ),
     );
     const screenshots = {
@@ -5480,6 +5513,7 @@ function buildChangedReviewQueue(pages, config, runId) {
       intentFingerprint,
       requestedOrigin,
       reviewEnvironmentIdentity,
+      reviewEnvironmentSourceSha256,
       reviewInputs: page.target.reviewEvidence || null,
       screenshots,
       paletteRisks: (page.findings || [])
@@ -5498,7 +5532,11 @@ function buildChangedReviewQueue(pages, config, runId) {
         decision: prior.decision,
         note: prior.note || "",
         basis: "unchanged-ui-inputs-and-intent",
-        carriedFrom: { manualManifestSha256: config.priorReview.sha256, formalRunId: config.priorReview.reviewedRunId, sourceFingerprint: prior.sourceFingerprint, intentFingerprint: prior.intentFingerprint, screenshots: prior.screenshots, reviewer: prior.reviewer, reviewedAt: prior.reviewedAt },
+        carriedFrom: { manualManifestSha256: config.priorReview.sha256, formalRunId: config.priorReview.reviewedRunId, sourceFingerprint: prior.sourceFingerprint, intentFingerprint: prior.intentFingerprint, screenshots: prior.screenshots, reviewer: prior.reviewer, reviewedAt: prior.reviewedAt,
+          requestedOrigin: prior.requestedOrigin || null,
+          reviewEnvironmentIdentity: priorEnvironmentIdentity,
+          reviewEnvironmentSourceSha256: prior.reviewEnvironmentSourceSha256 || null,
+        },
       };
       cells.push(cell);
       if (prior.decision !== "pass") {

@@ -3077,10 +3077,11 @@ fn run_review_phase(
     }
 
     let mut equivalent_origin = second_config.clone();
-    let original_url = equivalent_origin["targets"][0]["url"]
-        .as_str()
-        .ok_or_else(|| "review fixture target URL is missing".to_owned())?;
-    equivalent_origin["targets"][0]["url"] = json!(original_url.replace("127.0.0.1", "localhost"));
+    let equivalent_server = StaticServer::start(load_pages(root)?)?;
+    equivalent_origin["targets"][0]["url"] = json!(format!(
+        "{}/dynamic-review.html",
+        equivalent_server.base_url()
+    ));
     let equivalent = run_verifier(
         root,
         &equivalent_origin,
@@ -3096,7 +3097,30 @@ fn run_review_phase(
         || equivalent.pointer("/review/cells/0/requestedOrigin")
             == second.pointer("/review/cells/0/requestedOrigin")
     {
-        return Err("explicitly equivalent leased origins did not carry visual review safely".to_owned());
+        return Err(
+            "explicitly equivalent leased origins did not carry visual review safely".to_owned(),
+        );
+    }
+    let equivalent_dir = work.join("equivalent-origin");
+    let carried_review = crate::formal_review::finalize(
+        &equivalent_dir.join("report.json"),
+        &equivalent_dir.join("review-queue.json"),
+        None,
+        "2026-10-09T01:00:00Z",
+    )?;
+    let carried_path = equivalent_dir.join("manual-review.json");
+    crate::formal_review::write_new_review(&carried_path, &carried_review)?;
+    crate::formal_review::validate(
+        &carried_path,
+        &equivalent_dir.join("report.json"),
+        &equivalent_dir.join("review-queue.json"),
+    )?;
+    if carried_review.pointer("/decisions/0/carriedFrom/requestedOrigin")
+        != first.pointer("/review/cells/0/requestedOrigin")
+        || carried_review.pointer("/decisions/0/requestedOrigin")
+            != equivalent.pointer("/review/cells/0/requestedOrigin")
+    {
+        return Err("carried review did not preserve both actual origins".to_owned());
     }
     let mut unbound_origin = equivalent_origin.clone();
     unbound_origin["targets"][0]
@@ -3113,6 +3137,78 @@ fn run_review_phase(
     )?;
     if unbound.pointer("/review/pendingCount") != Some(&json!(1)) {
         return Err("unbound origin unexpectedly reused a prior visual review".to_owned());
+    }
+
+    for (name, url, binding) in [
+        (
+            "missing-source-binding",
+            format!("{base}/dynamic-review.html"),
+            Value::Null,
+        ),
+        (
+            "non-loopback-environment",
+            "https://example.test/dynamic-review.html".to_owned(),
+            base_config["targets"][0]["sourceBinding"].clone(),
+        ),
+    ] {
+        let mut invalid_environment = second_config.clone();
+        invalid_environment["targets"][0]["url"] = json!(url);
+        invalid_environment["targets"][0]["sourceBinding"] = binding;
+        let invalid = run_verifier(
+            root,
+            &invalid_environment,
+            &work.join(name),
+            &[3],
+            timeout,
+            &[],
+        )?;
+        if invalid.pointer("/pages/0/outcome") != Some(&json!("journey_contract_error"))
+            || invalid.pointer("/review/carriedPassCount") != Some(&json!(0))
+        {
+            return Err(format!(
+                "{name} bypassed review environment source/origin guards"
+            ));
+        }
+    }
+    let mut different_environment = equivalent_origin.clone();
+    different_environment["targets"][0]["reviewEnvironmentIdentity"] = json!("different-fixture");
+    let different = run_verifier(
+        root,
+        &different_environment,
+        &work.join("different-environment"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if different.pointer("/review/pendingCount") != Some(&json!(1))
+        || different.pointer("/review/carriedPassCount") != Some(&json!(0))
+    {
+        return Err("different environments unexpectedly shared a visual review".to_owned());
+    }
+
+    let mut changed_pages = load_pages(root)?;
+    let changed_page = changed_pages
+        .get_mut("dynamic-review.html")
+        .expect("review fixture");
+    changed_page.extend_from_slice(b"<!-- changed application source -->");
+    let changed_revision = crate::audit_common::sha256_hex(changed_page);
+    let changed_server = StaticServer::start(changed_pages)?;
+    let mut changed_binding = second_config.clone();
+    changed_binding["targets"][0]["url"] =
+        json!(format!("{}/dynamic-review.html", changed_server.base_url()));
+    changed_binding["targets"][0]["sourceBinding"]["expected"] = json!(changed_revision);
+    let changed_binding = run_verifier(
+        root,
+        &changed_binding,
+        &work.join("changed-bound-source"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    if changed_binding.pointer("/review/pendingCount") != Some(&json!(1))
+        || changed_binding.pointer("/review/carriedPassCount") != Some(&json!(0))
+    {
+        return Err("changed observed source binding unexpectedly reused visual review".to_owned());
     }
 
     write_bytes_nofollow(&repo.join("backend.txt"), b"unrelated backend v2\n", 0o600)
@@ -3282,7 +3378,7 @@ fn run_review_phase(
     if !error.contains("hash mismatch") {
         return Err("screenshot tampering was not rejected".to_owned());
     }
-    Ok(11)
+    Ok(17)
 }
 
 fn run_compatibility_phase(
