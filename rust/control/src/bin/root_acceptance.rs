@@ -994,8 +994,12 @@ fn command_stdout_as(
         .map_err(|error| format!("cannot run {program}: {error}"))?;
     ensure!(
         output.status.success(),
-        "{program} exited {}: {}",
+        "{program} exited {}; stdout={}; stderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout)
+            .chars()
+            .take(1000)
+            .collect::<String>(),
         String::from_utf8_lossy(&output.stderr)
             .chars()
             .take(1000)
@@ -1765,39 +1769,65 @@ fn retained_artifact_capacity_after_run(world: &mut World, run_id: &str) -> Resu
             && tail["next_offset"].is_null(),
         "catalogue did not reach the exact final page"
     );
-    let destination = world.repo.join("materialized");
-    let output = command_stdout_as(
+    let materialize = |destination: &Path| {
+        command_stdout_as(
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+            &world.repo,
+            "/usr/bin/env",
+            &[
+                &format!("DEVCOORDINATOR2_SOCKET={}", world.socket.display()),
+                "DEVCOORDINATOR2_INSTANCE_ENV=/nonexistent",
+                world
+                    .harness
+                    .daemon
+                    .to_str()
+                    .ok_or("candidate path is not UTF-8")?,
+                "--client",
+                "codex",
+                "test",
+                "artifact",
+                "materialize",
+                world.repo.to_str().ok_or("repository path is not UTF-8")?,
+                "--run-id",
+                run_id,
+                "--check",
+                "main",
+                "--artifact",
+                "browser",
+                "--destination",
+                destination
+                    .to_str()
+                    .ok_or("destination path is not UTF-8")?,
+            ],
+            &world.base,
+        )
+    };
+    // The harness deliberately gives callers traverse-only access to its
+    // root-owned ancestors. Preserve the materializer's no-follow read guard.
+    let restricted_destination = world.repo.join("materialized");
+    let denied = materialize(&restricted_destination)
+        .err()
+        .ok_or("traverse-only destination ancestors must remain unavailable")?;
+    ensure!(
+        denied.contains("params_invalid")
+            && denied.contains("destination parent is unavailable without following links")
+            && !restricted_destination.exists(),
+        "restricted destination did not fail before creation: {denied}"
+    );
+    // Only this newly allocated disposable fixture changes ownership. Its
+    // readable ancestors allow the real caller to use the unchanged CLI.
+    let temporary = tempfile::Builder::new()
+        .prefix("devcoordinator2-rustint-artifact-")
+        .tempdir_in("/var/tmp")
+        .map_err(|error| error.to_string())?;
+    chown_path(
+        temporary.path(),
         world.harness.caller_uid,
         world.harness.caller_gid,
-        &world.repo,
-        "/usr/bin/env",
-        &[
-            &format!("DEVCOORDINATOR2_SOCKET={}", world.socket.display()),
-            "DEVCOORDINATOR2_INSTANCE_ENV=/nonexistent",
-            world
-                .harness
-                .daemon
-                .to_str()
-                .ok_or("candidate path is not UTF-8")?,
-            "--client",
-            "codex",
-            "test",
-            "artifact",
-            "materialize",
-            world.repo.to_str().ok_or("repository path is not UTF-8")?,
-            "--run-id",
-            run_id,
-            "--check",
-            "main",
-            "--artifact",
-            "browser",
-            "--destination",
-            destination
-                .to_str()
-                .ok_or("destination path is not UTF-8")?,
-        ],
-        &world.base,
     )?;
+    let destination = temporary.path().join("materialized");
+    let output = materialize(&destination)?;
     let receipt: Value = serde_json::from_str(&output).map_err(|error| error.to_string())?;
     let receipt = data(&receipt)?;
     for key in [
@@ -1869,6 +1899,12 @@ fn retained_artifact_capacity_after_run(world: &mut World, run_id: &str) -> Resu
     world
         .measurements
         .insert("retained_artifact_files".into(), expected.len() as u128);
+    let temporary_path = temporary.path().to_path_buf();
+    temporary.close().map_err(|error| error.to_string())?;
+    ensure!(
+        !temporary_path.exists(),
+        "materialization fixture survived exact cleanup"
+    );
     Ok(())
 }
 
