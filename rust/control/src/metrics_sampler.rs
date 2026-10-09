@@ -168,6 +168,17 @@ struct ComponentRecord {
     finite_success: bool,
 }
 
+#[derive(serde::Deserialize)]
+struct StoredComponentSpec {
+    name: String,
+    #[serde(rename = "type")]
+    kind: crate::repository_config::ComponentKind,
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    finite_services: Vec<String>,
+}
+
 #[derive(Clone)]
 struct DeploymentRecord {
     deployment_id: String,
@@ -1190,33 +1201,90 @@ fn query_components(
 ) -> Result<Vec<ComponentRecord>, DatabaseError> {
     let mut statement = connection.prepare(
         "SELECT c.deployment_id,c.name,c.type,c.desired_state,c.state,c.binding_kind,c.binding_identity,
-                EXISTS(
-                    SELECT 1 FROM compose_completions cc
+                c.generation,d.current_generation,d.spec_json,
+                (SELECT COUNT(*) FROM compose_completions cc
+                    WHERE cc.deployment_id=c.deployment_id
+                      AND cc.component=c.name
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)) AS completion_count,
+                (SELECT COUNT(*) FROM compose_completions cc
                     WHERE cc.deployment_id=c.deployment_id
                       AND cc.component=c.name
                       AND cc.generation=COALESCE(c.generation,d.current_generation)
-                )
-                AND NOT EXISTS(
-                    SELECT 1 FROM compose_completions cc
+                      AND cc.exit_code != 0) AS failure_count
+                ,(SELECT GROUP_CONCAT(cc.service, '|') FROM compose_completions cc
                     WHERE cc.deployment_id=c.deployment_id
                       AND cc.component=c.name
-                      AND cc.generation=COALESCE(c.generation,d.current_generation)
-                      AND cc.exit_code != 0
-                ) AS finite_success
+                      AND cc.generation=COALESCE(c.generation,d.current_generation)) AS completion_services
          FROM components c
          JOIN deployments d ON d.deployment_id=c.deployment_id",
     )?;
     Ok(statement
         .query_map([], |row| {
+            let kind: String = row.get(2)?;
+            let name: String = row.get(1)?;
+            let generation: Option<u32> = row.get(7)?;
+            let current_generation: Option<u32> = row.get(8)?;
+            let spec_json: String = row.get(9)?;
+            let completion_count: u32 = row.get(10)?;
+            let failure_count: u32 = row.get(11)?;
+            let completion_services: Option<String> = row.get(12)?;
+            let stored_component = serde_json::from_str::<serde_json::Value>(&spec_json)
+                .ok()
+                .and_then(|spec| spec.get("components").cloned())
+                .and_then(|components| {
+                    serde_json::from_value::<Vec<StoredComponentSpec>>(components).ok()
+                })
+                .and_then(|components| {
+                    components
+                        .into_iter()
+                        .find(|component| component.name == name)
+                });
+            let finite_services = stored_component.as_ref().is_some_and(|component| {
+                kind == component.kind.as_str()
+                    && component.kind == crate::repository_config::ComponentKind::Compose
+                    && !component.services.is_empty()
+                    && component.services.len() == component.finite_services.len()
+                    && component
+                        .services
+                        .iter()
+                        .all(|service| component.finite_services.contains(service))
+            });
+            let expected_services = if finite_services {
+                stored_component
+                    .as_ref()
+                    .map(|component| {
+                        component
+                            .finite_services
+                            .iter()
+                            .cloned()
+                            .collect::<BTreeSet<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                BTreeSet::new()
+            };
+            let finite_success = finite_services
+                && generation
+                    .or(current_generation)
+                    .is_some_and(|generation| generation > 0)
+                && !expected_services.is_empty()
+                && completion_count == expected_services.len() as u32
+                && completion_services.as_deref().map(|services| {
+                    services
+                        .split('|')
+                        .map(str::to_owned)
+                        .collect::<BTreeSet<_>>()
+                }) == Some(expected_services)
+                && failure_count == 0;
             Ok(ComponentRecord {
                 deployment_id: row.get(0)?,
-                name: row.get(1)?,
-                kind: row.get(2)?,
+                name,
+                kind,
                 desired_state: row.get(3)?,
                 state: row.get(4)?,
                 binding_kind: row.get(5)?,
                 binding_identity: row.get(6)?,
-                finite_success: row.get(7)?,
+                finite_success,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?)
@@ -1571,15 +1639,16 @@ mod tests {
         // Extend the real sampler/store path: successful finite work and an
         // intentional stop must not become incidents; a failed worker must.
         sampler.inner.database.transaction(|c| {
-            c.execute_batch("INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
+            c.execute_batch(r#"INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('r1','/fixture','fixture','t',1000,'t');
                 INSERT INTO worktrees VALUES('w1','r1','/fixture','t','t');
-                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f','{}','failed','t',1000,'fixture','t');")?;
-            c.execute("UPDATE deployments SET current_generation=1 WHERE deployment_id='d1'", [])?;
-            for (name,kind,desired,state) in [("bundle","compose","running","failed"),("worker","external","running","failed"),("finite_failed","compose","running","failed"),("paused","external","stopped","stopped")] {
+                INSERT INTO deployments(deployment_id,repository_id,worktree_id,name,source,spec_fingerprint,spec_json,state,current_generation,created_at,created_by_uid,client,updated_at) VALUES('d1','r1','w1','web','worktree','f', '{"components":[{"name":"bundle","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"finite_failed","type":"compose","services":["web-build"],"finite_services":["web-build"]},{"name":"mixed","type":"compose","services":["web-build","worker"],"finite_services":["web-build"]},{"name":"incomplete","type":"compose","services":["first","second"],"finite_services":["first","second"]}]}','failed',1,'t',1000,'fixture','t');"#)?;
+            for (name,kind,desired,state) in [("bundle","compose","running","failed"),("worker","external","running","failed"),("finite_failed","compose","running","failed"),("mixed","compose","running","failed"),("incomplete","compose","running","failed"),("paused","external","stopped","stopped")] {
                 c.execute("INSERT INTO components(deployment_id,name,type,order_index,spec_fingerprint,desired_state,state,health,updated_at) VALUES('d1',?1,?2,0,'f',?3,?4,'none','t')",rusqlite::params![name,kind,desired,state])?;
             }
             c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','bundle','web-build',1,'b',0,'t')", [])?;
             c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','finite_failed','web-build',1,'f',7,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','mixed','web-build',1,'m',0,'t')", [])?;
+            c.execute("INSERT INTO compose_completions(deployment_id,component,service,generation,container_id,exit_code,recorded_at) VALUES('d1','incomplete','first',1,'i',0,'t')", [])?;
             Ok(())
         }).unwrap();
         for _ in 0..10 {
@@ -1590,13 +1659,16 @@ mod tests {
             .iter()
             .map(|alert| alert.subject_id.as_str())
             .collect::<HashSet<_>>();
-        assert_eq!(subjects, HashSet::from(["d1/worker", "d1/finite_failed"]));
+        assert_eq!(
+            subjects,
+            HashSet::from(["d1/worker", "d1/finite_failed", "d1/mixed", "d1/incomplete"])
+        );
         sampler
             .inner
             .database
             .call(|c| {
                 c.execute(
-                    "UPDATE components SET state='completed' WHERE name IN ('worker','finite_failed')",
+                    "UPDATE components SET state='completed' WHERE deployment_id='d1'",
                     [],
                 )?;
                 Ok(())
