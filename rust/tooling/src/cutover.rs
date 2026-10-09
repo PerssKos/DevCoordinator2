@@ -869,6 +869,14 @@ pub fn recover_host(
     if !database_integrity(&backup_path).map_err(invalid_target)? {
         return Err("recovery target backup failed integrity verification".into());
     }
+    // Reject a source that is already known to be unverified without taking
+    // down the serving edge or changing its private settings. The later
+    // refresh remains inside the recovery drain to catch concurrent drift.
+    install::validate_live_checkout(&config.source_root, false, runner).map_err(|error| {
+        format!(
+            "Console source binding is unverified; recovery left running services and installation unchanged: {error}"
+        )
+    })?;
     // Share activation's atomic admission boundary with edge maintenance, and
     // keep the recovery marker present until source and route checks finish.
     let recovery_drain = begin_drain(&config.runtime_dir, expected_owner)?;
@@ -2065,7 +2073,9 @@ mod tests {
     struct HostFake {
         commit: String,
         checkout_commit: Option<String>,
+        upstream_commit: Option<String>,
         dirty_checkout: bool,
+        dirty_checkout_after_stop: bool,
         fail_ping: bool,
         retryable_ping_failures: AtomicUsize,
         requests: Mutex<Vec<CommandRequest>>,
@@ -2076,26 +2086,35 @@ mod tests {
             self.requests.lock().unwrap().push(request.clone());
             if request.program == Path::new("/usr/bin/git") && request.args.len() >= 5 {
                 let args = &request.args[4..];
-                let stdout = if args == ["rev-parse", "--show-toplevel"] {
-                    request.args[3].to_string_lossy().into_owned()
-                } else if args == ["branch", "--show-current"] {
-                    "main".to_owned()
-                } else if args == ["status", "--porcelain", "--untracked-files=all"] {
-                    if self.dirty_checkout {
-                        " M console/workspace.js\n".to_owned()
+                let stdout =
+                    if args == ["rev-parse", "--show-toplevel"] {
+                        request.args[3].to_string_lossy().into_owned()
+                    } else if args == ["branch", "--show-current"] {
+                        "main".to_owned()
+                    } else if args == ["status", "--porcelain", "--untracked-files=all"] {
+                        let stopped =
+                            self.requests.lock().unwrap().iter().any(|request| {
+                                request.args.first() == Some(&OsString::from("stop"))
+                            });
+                        if self.dirty_checkout || (self.dirty_checkout_after_stop && stopped) {
+                            " M console/workspace.js\n".to_owned()
+                        } else {
+                            String::new()
+                        }
+                    } else if args == ["rev-parse", "HEAD"] {
+                        self.checkout_commit
+                            .as_ref()
+                            .unwrap_or(&self.commit)
+                            .clone()
+                    } else if args == ["rev-parse", "refs/remotes/origin/main"] {
+                        self.upstream_commit
+                            .as_ref()
+                            .or(self.checkout_commit.as_ref())
+                            .unwrap_or(&self.commit)
+                            .clone()
                     } else {
-                        String::new()
-                    }
-                } else if args == ["rev-parse", "HEAD"]
-                    || args == ["rev-parse", "refs/remotes/origin/main"]
-                {
-                    self.checkout_commit
-                        .as_ref()
-                        .unwrap_or(&self.commit)
-                        .clone()
-                } else {
-                    return Err("unexpected Git checkout fixture command".into());
-                };
+                        return Err("unexpected Git checkout fixture command".into());
+                    };
                 return Ok(crate::install::CommandOutput {
                     success: true,
                     stdout,
@@ -2869,135 +2888,209 @@ mod tests {
 
     #[test]
     fn offline_recovery_replays_persisted_snapshot_after_interrupted_install() {
-        for dirty_checkout in [false, true] {
-            let world = host_world();
-            let prior_edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
-            let runner = Arc::new(HostFake {
-                commit: world.commit.clone(),
-                ..HostFake::default()
-            });
-            let mut host =
-                HostCutover::new_owned(world.config.clone(), runner.clone(), world.expected_owner)
-                    .unwrap();
-            let drain = host.close_admission().unwrap();
-            host.fence_legacy_socket().unwrap();
-            host.wait_for_quiescence(&drain).unwrap();
-            host.backup_database().unwrap();
-            host.capture_installation().unwrap();
-            host.stop_legacy().unwrap();
-            host.install_rust().unwrap();
-            assert_eq!(
-                std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                world.old_edge_env.replace(&"b".repeat(40), &world.commit)
-            );
-            std::fs::write(&world.config.database_path, b"not a database").unwrap();
-            std::fs::write(
-                world.config.runtime_dir.join(DRAIN_FILE),
-                b"{\"schema\":1,\"pid\":4294967295,\"process_start\":\"gone\",\"nonce\":\"stale\"}",
-            )
-            .unwrap();
-            let source_root = PathBuf::from(&host.manifest.source_root);
-            drop(host);
-
-            let recovery_runner = HostFake {
-                commit: world.commit.clone(),
-                dirty_checkout,
-                ..HostFake::default()
-            };
-            let recovery = recover_host(
-                &RecoveryConfig {
-                    transaction_dir: world.config.transaction_dir.clone(),
-                    runtime_dir: world.config.runtime_dir.clone(),
-                    socket_path: world.config.socket_path.clone(),
-                    database_path: world.config.database_path.clone(),
-                    systemctl: world.config.systemctl.clone(),
-                    daemon_unit: world.config.daemon_unit.clone(),
-                    edge_unit: world.config.edge_unit.clone(),
-                    edge_state_dir: world.config.edge_state_dir.clone(),
-                    source_root,
-                    edge_env: world.config.edge_env.clone(),
-                },
-                &recovery_runner,
-                world.expected_owner,
-            );
-            let marker = if dirty_checkout {
-                let error = recovery.unwrap_err();
-                assert!(error.contains("marker was cleared"));
-                assert!(!error.contains("retained-private-setting"));
-                assert!(
-                    !recovery_runner
-                        .requests
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .any(|request| {
-                            request.args.first() == Some(&OsString::from("restart"))
-                        })
-                );
-                String::new()
-            } else {
-                let receipt = recovery.unwrap();
-                assert_eq!(receipt.status, "recovered");
-                assert!(receipt.database_restored);
-                assert!(world.config.socket_path.exists());
-                assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
-                assert!(
-                    !serde_json::to_string(&receipt)
-                        .unwrap()
-                        .contains("retained-private-setting")
-                );
-                format!("git:{}", world.commit)
-            };
-            assert_eq!(
-                std::fs::read_to_string(&world.config.edge_env).unwrap(),
-                world
-                    .old_edge_env
-                    .replace(&format!("git:{}", "b".repeat(40)), &marker)
-            );
-            let edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
-            assert_eq!(
-                (
-                    edge_metadata.uid(),
-                    edge_metadata.gid(),
-                    edge_metadata.mode()
-                ),
-                (
-                    prior_edge_metadata.uid(),
-                    prior_edge_metadata.gid(),
-                    prior_edge_metadata.mode()
+        let mut failed_cases = Vec::new();
+        for state in ["clean", "initial_dirty", "initial_stale", "late_dirty"] {
+            let result = std::panic::catch_unwind(|| {
+                let world = host_world();
+                let prior_edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
+                let runner = Arc::new(HostFake {
+                    commit: world.commit.clone(),
+                    ..HostFake::default()
+                });
+                let mut host = HostCutover::new_owned(
+                    world.config.clone(),
+                    runner.clone(),
+                    world.expected_owner,
                 )
-            );
-            assert_eq!(
-                std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
-                world.old_edge_unit
-            );
-            assert_eq!(
-                std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
-                world.old_daemon
-            );
-            assert_eq!(
-                std::fs::read_to_string(&world.config.cli_link).unwrap(),
-                world.old_cli
-            );
-            assert!(database_integrity(&world.config.database_path).unwrap());
-            let prior_manifest: Value =
-                serde_json::from_slice(&std::fs::read(&world.config.installed_manifest).unwrap())
-                    .unwrap();
-            assert_eq!(prior_manifest["source_commit"], "b".repeat(40));
-            let snapshot =
-                read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
-            assert_eq!(snapshot.status == "recovered", !dirty_checkout);
-            let saved_edge = snapshot
-                .entries
-                .iter()
-                .find(|entry| Path::new(&entry.path) == world.config.edge_env)
                 .unwrap();
-            assert_eq!(
-                BASE64
-                    .decode(saved_edge.content_base64.as_ref().unwrap())
-                    .unwrap(),
-                world.old_edge_env.as_bytes()
-            );
+                let drain = host.close_admission().unwrap();
+                host.fence_legacy_socket().unwrap();
+                host.wait_for_quiescence(&drain).unwrap();
+                host.backup_database().unwrap();
+                host.capture_installation().unwrap();
+                host.stop_legacy().unwrap();
+                host.install_rust().unwrap();
+                assert_eq!(
+                    std::fs::read_to_string(&world.config.edge_env).unwrap(),
+                    world.old_edge_env.replace(&"b".repeat(40), &world.commit)
+                );
+                std::fs::write(&world.config.database_path, b"not a database").unwrap();
+                std::fs::write(
+                    world.config.runtime_dir.join(DRAIN_FILE),
+                    b"{\"schema\":1,\"pid\":4294967295,\"process_start\":\"gone\",\"nonce\":\"stale\"}",
+                )
+                .unwrap();
+                let source_root = PathBuf::from(&host.manifest.source_root);
+                let candidate_entries = host
+                    .snapshot_targets()
+                    .into_iter()
+                    .map(capture_entry)
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                let snapshot_path = world
+                    .config
+                    .transaction_dir
+                    .join("installation-snapshot.json");
+                let snapshot_before = std::fs::read(&snapshot_path).unwrap();
+                let drain_before =
+                    std::fs::read(world.config.runtime_dir.join(DRAIN_FILE)).unwrap();
+                let lock_before = capture_entry(&world.config.runtime_dir.join(LOCK_FILE)).unwrap();
+                drop(host);
+
+                let recovery_runner = HostFake {
+                    commit: world.commit.clone(),
+                    upstream_commit: (state == "initial_stale").then(|| "e".repeat(40)),
+                    dirty_checkout: state == "initial_dirty",
+                    dirty_checkout_after_stop: state == "late_dirty",
+                    ..HostFake::default()
+                };
+                let recovery = recover_host(
+                    &RecoveryConfig {
+                        transaction_dir: world.config.transaction_dir.clone(),
+                        runtime_dir: world.config.runtime_dir.clone(),
+                        socket_path: world.config.socket_path.clone(),
+                        database_path: world.config.database_path.clone(),
+                        systemctl: world.config.systemctl.clone(),
+                        daemon_unit: world.config.daemon_unit.clone(),
+                        edge_unit: world.config.edge_unit.clone(),
+                        edge_state_dir: world.config.edge_state_dir.clone(),
+                        source_root,
+                        edge_env: world.config.edge_env.clone(),
+                    },
+                    &recovery_runner,
+                    world.expected_owner,
+                );
+                if state.starts_with("initial_") {
+                    let error = recovery.unwrap_err();
+                    assert!(
+                        error.contains("source binding is unverified"),
+                        "{state}: {error}"
+                    );
+                    assert!(!error.contains("marker was cleared"));
+                    assert!(!error.contains("retained-private-setting"));
+                    assert!(
+                        !recovery_runner
+                            .requests
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|request| { request.program == world.config.systemctl }),
+                        "{state}: recovery must not stop, restart, or reload services"
+                    );
+                    let after_entries = candidate_entries
+                        .iter()
+                        .map(|entry| capture_entry(Path::new(&entry.path)))
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap();
+                    assert_eq!(
+                        serde_json::to_value(&after_entries).unwrap(),
+                        serde_json::to_value(&candidate_entries).unwrap()
+                    );
+                    assert_eq!(
+                        std::fs::read(&world.config.database_path).unwrap(),
+                        b"not a database"
+                    );
+                    assert_eq!(std::fs::read(&snapshot_path).unwrap(), snapshot_before);
+                    assert_eq!(
+                        std::fs::read(world.config.runtime_dir.join(DRAIN_FILE)).unwrap(),
+                        drain_before
+                    );
+                    assert_eq!(
+                        serde_json::to_value(
+                            capture_entry(&world.config.runtime_dir.join(LOCK_FILE)).unwrap()
+                        )
+                        .unwrap(),
+                        serde_json::to_value(&lock_before).unwrap()
+                    );
+                    return;
+                }
+                let marker = if state == "late_dirty" {
+                    let error = recovery.unwrap_err();
+                    assert!(error.contains("marker was cleared"));
+                    assert!(!error.contains("retained-private-setting"));
+                    assert!(
+                        !recovery_runner
+                            .requests
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .any(|request| {
+                                request.args.first() == Some(&OsString::from("restart"))
+                            })
+                    );
+                    String::new()
+                } else {
+                    let receipt = recovery.unwrap();
+                    assert_eq!(receipt.status, "recovered");
+                    assert!(receipt.database_restored);
+                    assert!(world.config.socket_path.exists());
+                    assert!(!world.config.runtime_dir.join(DRAIN_FILE).exists());
+                    assert!(
+                        !serde_json::to_string(&receipt)
+                            .unwrap()
+                            .contains("retained-private-setting")
+                    );
+                    format!("git:{}", world.commit)
+                };
+                assert_eq!(
+                    std::fs::read_to_string(&world.config.edge_env).unwrap(),
+                    world
+                        .old_edge_env
+                        .replace(&format!("git:{}", "b".repeat(40)), &marker)
+                );
+                let edge_metadata = std::fs::metadata(&world.config.edge_env).unwrap();
+                assert_eq!(
+                    (
+                        edge_metadata.uid(),
+                        edge_metadata.gid(),
+                        edge_metadata.mode()
+                    ),
+                    (
+                        prior_edge_metadata.uid(),
+                        prior_edge_metadata.gid(),
+                        prior_edge_metadata.mode()
+                    )
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&world.config.edge_unit_path).unwrap(),
+                    world.old_edge_unit
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&world.config.daemon_unit_path).unwrap(),
+                    world.old_daemon
+                );
+                assert_eq!(
+                    std::fs::read_to_string(&world.config.cli_link).unwrap(),
+                    world.old_cli
+                );
+                assert!(database_integrity(&world.config.database_path).unwrap());
+                let prior_manifest: Value = serde_json::from_slice(
+                    &std::fs::read(&world.config.installed_manifest).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(prior_manifest["source_commit"], "b".repeat(40));
+                let snapshot =
+                    read_snapshot(&world.config.transaction_dir, world.expected_owner.0).unwrap();
+                assert_eq!(snapshot.status == "recovered", state == "clean");
+                let saved_edge = snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| Path::new(&entry.path) == world.config.edge_env)
+                    .unwrap();
+                assert_eq!(
+                    BASE64
+                        .decode(saved_edge.content_base64.as_ref().unwrap())
+                        .unwrap(),
+                    world.old_edge_env.as_bytes()
+                );
+            });
+            if result.is_err() {
+                failed_cases.push(state);
+            }
         }
+        assert!(
+            failed_cases.is_empty(),
+            "failed recovery states: {failed_cases:?}"
+        );
     }
 }
