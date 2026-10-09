@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, writeFile, symlink, truncate } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile, symlink, truncate, readdir } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -27,7 +27,9 @@ const variants = new Map([
 const uploadedRequests = [];
 let uploadMutation = null;
 const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
+let requestCount = 0;
 const server = createServer((request, response) => {
+  requestCount++;
   const pathname = new URL(request.url, 'http://fixture').pathname;
   if (pathname === '/upload' && uploadMutation) { uploadMutation(); uploadMutation = null; }
   if (pathname === '/uploaded') {
@@ -181,6 +183,55 @@ async function verify(name, config, check, setupError = null) {
     results.push({ name, passed: true, exitCode });
   } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
 }
+async function configurationFixtures() {
+  async function check(name, config, status, inspect = () => {}) {
+    const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
+    const configPath = join(directory, 'config.json');
+    config.browserExecutable = join(directory, 'browser-must-not-start');
+    config.authProfiles = [{ name: 'private', url: target.url, actions: [{ action: 'fill', selector: '#private', value: 'PREFLIGHT_PRIVATE_CANARY' }] }];
+    await writeFile(configPath, JSON.stringify(config));
+    const beforeRequests = requestCount;
+    const child = spawn(process.execPath, [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', configPath, '--config-only', '--json-out', join(directory, 'report.json')], { cwd: directory, env: { ...process.env, DEVCOORDINATOR_EVIDENCE_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '', stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
+    const [exitCode] = await once(child, 'exit');
+    try {
+      const receipt = JSON.parse(stdout.trim());
+      assert.equal(exitCode, status === 'valid' ? 0 : 2);
+      assert.equal(receipt.kind, 'configuration-preflight'); assert.equal(receipt.status, status);
+      assert.equal(receipt.browserStarted, false); assert.equal(receipt.readinessEligible, false);
+      assert.equal(receipt.formal, undefined); assert.equal(receipt.qualified, undefined);
+      assert.equal(requestCount, beforeRequests, 'preflight must not navigate, authenticate or probe targets');
+      assert(Buffer.byteLength(stdout) <= 2048); assert(!stdout.includes('PREFLIGHT_PRIVATE_CANARY')); assert.equal(stderr, '');
+      assert.deepEqual(await readdir(directory), ['config.json'], 'preflight cannot create formal acceptance artifacts');
+      inspect(receipt);
+      results.push({ name, passed: true, exitCode });
+    } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
+    await writeFile(join(directory, 'preflight.json'), stdout);
+  }
+  function many(count) {
+    const config = full(); config.maxPageCount = count;
+    const original = config.targets[0], shape = config.fixtureDataShapes[0];
+    config.targets = Array.from({ length: count }, (_, index) => ({ ...original, name: `target-${index}` }));
+    config.fixtureDataShapes = config.targets.map(row => ({ ...shape, id: row.name, target: row.name }));
+    config.requiredCoverage = config.targets.map(row => ({ target: row.name, state: 'base', viewport: 'desktop', width: 1440 }));
+    return config;
+  }
+  for (const count of [270, 512]) await check(`config-${count}-shapes`, many(count), 'valid', receipt => { assert.equal(receipt.plannedCells, count); assert.equal(receipt.declaredShapes, count); assert.deepEqual(receipt.gapCounts, {}); });
+  await check('config-513-shapes', many(513), 'invalid', receipt => assert.equal(receipt.error, 'configuration-invalid'));
+  const missing = full(); missing.maxPageCount = 5;
+  missing.targets.push({ ...missing.targets[0], name: 'handoff-breakpoints', breakpointProfile: { name: 'edge', baseViewport: 'desktop', breakpoints: [800], height: 900 } });
+  await check('config-missing-breakpoint-shape', missing, 'invalid', receipt => { assert.equal(receipt.plannedCells, 5); assert.equal(receipt.gapCounts['data-shape-not-declared'], 4); });
+  const complete = structuredClone(missing); complete.fixtureDataShapes.push({ ...complete.fixtureDataShapes[0], id: 'edge-shape', target: 'handoff-breakpoints' });
+  await check('config-complete-breakpoint-shape', complete, 'valid', receipt => assert.equal(receipt.plannedCells, 5));
+  const ambiguous = structuredClone(missing); delete ambiguous.fixtureDataShapes[0].target;
+  await check('config-ambiguous-shape', ambiguous, 'invalid', receipt => assert.equal(receipt.gapCounts['ambiguous-target'], 1));
+  const uncovered = full(); uncovered.requiredCoverage[0].state = 'undeclared-state';
+  await check('config-missing-required-cell', uncovered, 'invalid', receipt => assert.equal(receipt.gapCounts['required-coverage-not-mapped'], 1));
+  const duplicate = full(); duplicate.fixtureDataShapes.push({ ...duplicate.fixtureDataShapes[0] });
+  await check('config-duplicate-shape-id', duplicate, 'invalid');
+  const otherLimit = full(); otherLimit.targets[0].geometryAssertions = Array.from({ length: 257 }, (_, index) => ({ ...otherLimit.targets[0].geometryAssertions[0], id: `geometry-${index}` }));
+  await check('config-geometry-limit-unchanged', otherLimit, 'invalid');
+}
 async function uploadFixtures() {
   const repository = join(scratch, 'upload-repository');
   await mkdir(join(repository, 'fixtures'), { recursive: true });
@@ -257,6 +308,8 @@ async function uploadFixtures() {
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
 try {
+  if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) await configurationFixtures();
+  if (!process.argv.includes('--config-only-selftest')) {
   if (!process.argv.includes('--capture-only')) await uploadFixtures();
   if (!process.argv.includes('--upload-only')) await capturePrivacy();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) {
@@ -383,6 +436,7 @@ try {
   await verify('setup-blocked', setup, expect('blocked'));
   const failedAction = full(); failedAction.targets[0].states = [{ name: 'failed-action', actions: [{ action: 'dblclick', selector: '#absent-label', timeoutMs: 10 }], continuation: { kind: 'in-page', anchor: '#editor-heading', focusWithin: '#editor' } }];
   await verify('rendered-action-failed', failedAction, expect('failed'));
+  }
   }
 } finally { await new Promise(resolve => server.close(resolve)); }
 await writeFile(join(scratch, 'results.json'), JSON.stringify({ results }, null, 2));

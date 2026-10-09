@@ -66,6 +66,7 @@ function usage() {
 Options:
   --url <url>                       Add a URL target. Requires complete targetDefaults from --config.
   --config <path>                   Load JSON config.
+  --config-only                     Validate the complete configuration and bindings without a browser; not formal evidence.
   --viewport <name=WIDTHxHEIGHT>    Add viewport. Can be repeated.
   --max-page-count <count>          Hard cap on route/state/viewport cells. Default: ${DEFAULT_MAX_PAGE_COUNT}.
   --concurrency <count>             Maximum concurrently running safe cells. Default: ${DEFAULT_MAX_CONCURRENCY}.
@@ -267,6 +268,7 @@ function parseArgs(argv) {
     allowOverlap: [],
     failOn: undefined,
     configPath: undefined,
+    configOnly: false,
     jsonOut: undefined,
     markdownOut: undefined,
     humanReadableStdout: false,
@@ -306,6 +308,8 @@ function parseArgs(argv) {
       cli.urls.push(next());
     } else if (arg === "--config") {
       cli.configPath = next();
+    } else if (arg === "--config-only") {
+      cli.configOnly = true;
     } else if (arg === "--viewport") {
       cli.viewports.push(parseViewport(next()));
     } else if (arg === "--max-page-count") {
@@ -7202,10 +7206,64 @@ async function executePlan(
   };
 }
 
+function prepareFullVerificationPlan(config) {
+  const targets = prepareTargetContracts(expandTargetStates(ensureTargets(config)), config);
+  const { chromium, devices } = resolvePlaywright(config.playwrightModuleDir);
+  config.viewports = resolveViewports(config.viewports, devices);
+  const fullPlanCells = buildExecutionPlan(targets, config.viewports, config.maxPageCount);
+  config.handoffRequirements = resolveHandoffRequirements(config, fullPlanCells);
+  const requiredCoverage = evaluateRequiredCoverage(fullPlanCells, config.requiredCoverage);
+  return { targets, chromium, fullPlanCells, requiredCoverage };
+}
+
+function configurationPreflight(rawArgs) {
+  const receipt = { tool: "formal-web-ui-verification", kind: "configuration-preflight", status: "invalid", browserStarted: false, readinessEligible: false, verifierSha256 };
+  try {
+    const cli = parseArgs(rawArgs);
+    const rawConfig = loadConfig(cli.configPath);
+    if (cli.fromCoordinator || rawConfig.fromCoordinator) throw new Error("explicit targets required");
+    // Paths are validated by the ordinary normalizer, but are never created or
+    // written. No cache, authentication, discovery or screenshot work runs here.
+    const directory = path.resolve(".formal-configuration-preflight");
+    const defaults = Object.fromEntries([
+      ["jsonOut", "report.json"], ["markdownOut", "report.md"],
+      ["reviewQueueOut", "review-queue.json"], ["journeyEvidenceOut", "journey-evidence.json"],
+      ["progressOut", "progress.jsonl"], ["screenshotDir", "screenshots"],
+    ].map(([key, name]) => [key, path.join(directory, name)]));
+    const config = normalizeConfig(rawConfig, cli, resolveArtifactPaths(rawConfig, cli, defaults));
+    const { fullPlanCells, requiredCoverage } = prepareFullVerificationPlan(config);
+    receipt.configSha256 = sha256(stableJson(privacySafeConfigContract(config)));
+    receipt.plannedCells = fullPlanCells.length;
+    receipt.declaredShapes = config.fixtureDataShapes.length;
+    const counts = {};
+    const add = (reason) => { counts[reason] = (counts[reason] || 0) + 1; };
+    for (const gap of config.handoffRequirements.gaps) add(gap.reason);
+    const shapedCells = new Set(config.handoffRequirements.shapes.flatMap(shape => shape.cells));
+    for (const cell of fullPlanCells) {
+      if (!shapedCells.has(cell.cellId)) add("data-shape-not-declared");
+      if (!cell.target.geometryAssertions?.length) add("geometry-not-declared");
+      if (cell.target.contractErrors?.length) add("target-contract-invalid");
+    }
+    for (const requirement of requiredCoverage.entries) if (requirement.status !== "satisfied") add("required-coverage-not-mapped");
+    receipt.gapCounts = counts;
+    receipt.status = Object.keys(counts).length ? "invalid" : "valid";
+  } catch {
+    // Invalid input may contain private values. Keep the preflight receipt
+    // content-free and distinct from every formal/delivery acceptance receipt.
+    receipt.error = "configuration-invalid";
+  }
+  emitReceipt(receipt);
+  process.exitCode = receipt.status === "valid" ? 0 : 2;
+}
+
 async function main() {
   const rawArgs = process.argv.slice(2);
   if (rawArgs.includes("--help") || rawArgs.includes("-h")) {
     console.log(usage());
+    return;
+  }
+  if (rawArgs.includes("--config-only")) {
+    configurationPreflight(rawArgs);
     return;
   }
   fallbackArtifacts = createDefaultArtifacts();
@@ -7216,12 +7274,7 @@ async function main() {
   activeArtifacts = resolveArtifactPaths(rawConfig, cli, fallbackArtifacts);
   const config = normalizeConfig(rawConfig, cli, activeArtifacts);
   activeConfigSha256 = sha256(stableJson(privacySafeConfigContract(config)));
-  const targets = prepareTargetContracts(expandTargetStates(ensureTargets(config)), config);
-  const { chromium, devices } = resolvePlaywright(config.playwrightModuleDir);
-  config.viewports = resolveViewports(config.viewports, devices);
-  const fullPlanCells = buildExecutionPlan(targets, config.viewports, config.maxPageCount);
-  config.handoffRequirements = resolveHandoffRequirements(config, fullPlanCells);
-  const requiredCoverage = evaluateRequiredCoverage(fullPlanCells, config.requiredCoverage);
+  const { targets, chromium, fullPlanCells, requiredCoverage } = prepareFullVerificationPlan(config);
   const selected = selectExecutionCells(fullPlanCells, config.development);
   const planCells = selected.cells;
   if (config.development.cache) {

@@ -721,6 +721,20 @@ native control text; an overflowing declared exception becomes an
 `allowOverlap` may document intentional native-control container escape; the
 exception remains an `allowed-overlap` warning.
 
+## Configuration preflight
+
+Before a large run, use `devcoordinator2-tooling formal-ui verify --config <path> --config-only`.
+It applies the ordinary normalization, target/state and breakpoint expansion,
+exact fixture binding and required-cell rules to the complete plan without
+launching a browser or making target requests. Explicit targets are required;
+Coordinator route discovery is not performed. `fixtureDataShapes` permits at
+most 512 exact descriptions; other existing list limits remain unchanged.
+The bounded `configuration-preflight` receipt has `status: valid` or `invalid`,
+`browserStarted: false` and `readinessEligible: false`. It never contains a
+formal result and writes no report, screenshot, review or delivery artifact.
+A valid configuration does not prove any rendered behavior; run the complete
+formal candidate afterward and apply the usual handoff rules.
+
 ## Completion Rules
 
 - Treat only `formal.result == passed` as formal verification success. Map an
