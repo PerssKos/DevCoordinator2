@@ -804,20 +804,16 @@ deployment_params!(DeploymentWait {
     pub state: DeploymentWaitState,
 });
 
-#[derive(Clone, Copy, Debug, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentWaitState {
     Applied,
+    #[default]
     Ready,
     SourceCurrent,
     RouteAcknowledged,
 }
 
-impl Default for DeploymentWaitState {
-    fn default() -> Self {
-        Self::Ready
-    }
-}
 deployment_params!(DeploymentApply {
     #[serde(default)]
     pub candidate: Option<DeploymentCandidateSource>,

@@ -829,26 +829,9 @@ fn failure_entry(
 }
 
 fn failure_entry_with_reason(
-    run_id: &str,
-    check: Option<&str>,
-    case: Option<&str>,
-    status: LeafStatus,
-    exit_code: Option<i32>,
-    termination_reason: Option<TerminationReason>,
-    error_category: ErrorCategory,
-    phase: Option<LogPhase>,
+    mut entry: FailureIndexEntry,
     reason: Option<&str>,
 ) -> FailureIndexEntry {
-    let mut entry = failure_entry(
-        run_id,
-        check,
-        case,
-        status,
-        exit_code,
-        termination_reason,
-        error_category,
-        phase,
-    );
     if let Some(reason) = reason {
         entry.actual = Some(bounded_diagnostic_value(
             devcoordinator2_executor_protocol::DiagnosticValueType::String,
@@ -2669,14 +2652,16 @@ fn record_leaf_postprocess_failure(
     }
     process.reason = reason.map(bounded_reason).or_else(|| process.reason.take());
     process.diagnostics.push(failure_entry_with_reason(
-        &plan.run_id,
-        Some(&check.name),
-        selector.case_id.as_deref(),
-        status,
-        process.exit_code,
-        termination_reason,
-        error_category,
-        Some(selector.phase),
+        failure_entry(
+            &plan.run_id,
+            Some(&check.name),
+            selector.case_id.as_deref(),
+            status,
+            process.exit_code,
+            termination_reason,
+            error_category,
+            Some(selector.phase),
+        ),
         process.reason.as_deref(),
     ));
     if let Ok(normalized) = normalize_diagnostics(std::mem::take(&mut process.diagnostics)) {

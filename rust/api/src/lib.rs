@@ -94,7 +94,7 @@ pub struct ErrorBody {
     #[serde(default)]
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery: Option<recovery::Guidance>,
+    pub recovery: Option<Box<recovery::Guidance>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -176,7 +176,7 @@ pub enum ResponseEnvelope {
         protocol: u8,
         id: String,
         ok: False,
-        error: ErrorBody,
+        error: Box<ErrorBody>,
     },
 }
 
@@ -277,7 +277,7 @@ impl ResponseEnvelope {
             protocol: PROTOCOL_VERSION,
             id: id.into(),
             ok: False,
-            error: error.into_body(),
+            error: Box::new(error.into_body()),
         }
     }
 
@@ -292,7 +292,7 @@ pub struct ProtocolError {
     pub code: ErrorCode,
     pub message: String,
     pub detail: String,
-    pub recovery: Option<recovery::Guidance>,
+    pub recovery: Option<Box<recovery::Guidance>>,
 }
 
 impl ProtocolError {
@@ -311,7 +311,7 @@ impl ProtocolError {
     }
 
     pub fn with_recovery(mut self, recovery: recovery::Guidance) -> Self {
-        self.recovery = Some(recovery);
+        self.recovery = Some(Box::new(recovery));
         self
     }
 
@@ -323,7 +323,7 @@ impl ProtocolError {
     fn into_body(self) -> ErrorBody {
         let recovery = self
             .recovery
-            .or_else(|| default_guidance(self.code, &self.message));
+            .or_else(|| default_guidance(self.code, &self.message).map(Box::new));
         ErrorBody {
             code: self.code,
             message: self.message,
