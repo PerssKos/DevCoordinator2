@@ -8,6 +8,8 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use crate::install::{BinaryReceipt, HostRunner};
 use sha2::{Digest, Sha256};
@@ -86,6 +88,12 @@ struct FixtureRunner {
     fail_probe: AtomicBool,
     dirty: AtomicBool,
     wrong_unit: AtomicBool,
+    pause_before_restart: Mutex<Option<RestartPause>>,
+}
+
+struct RestartPause {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
 }
 
 impl FixtureRunner {
@@ -173,6 +181,16 @@ impl CommandRunner for FixtureRunner {
                 }
                 "restart" => {
                     self.restarts.fetch_add(1, Ordering::SeqCst);
+                    if let Some(pause) = self.pause_before_restart.lock().unwrap().take() {
+                        pause
+                            .entered
+                            .send(())
+                            .map_err(|_| "fixture pause observer left")?;
+                        pause
+                            .release
+                            .recv_timeout(Duration::from_secs(20))
+                            .map_err(|_| "fixture restart pause reached its deadline")?;
+                    }
                     self.stop();
                     if self.fail_restart.swap(false, Ordering::SeqCst)
                         || self.fail_all_restarts.load(Ordering::SeqCst)
@@ -397,6 +415,7 @@ impl World {
             fail_probe: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             wrong_unit: AtomicBool::new(false),
+            pause_before_restart: Mutex::new(None),
         };
         let lineage = root.join("certbot/live/edge");
         let archive = root.join("certbot/archive/edge");
@@ -785,6 +804,138 @@ fn failed_rollback_keeps_recovery_and_reports_owner_repair_without_false_success
         .store(false, Ordering::SeqCst);
     systemctl(&world.runner, &["restart", UNIT]).unwrap();
     assert_eq!(world.assert_routes(), before);
+}
+
+#[test]
+fn active_installation_or_recovery_refuses_tls_without_changing_files_or_evidence() {
+    let world = World::new();
+    world.configure();
+    let before = world.assert_routes();
+    let configuration = std::fs::read(&world.layout.configuration).unwrap();
+    let hook = std::fs::read(&world.layout.hook).unwrap();
+    let environment = std::fs::read(&world.layout.edge_env).unwrap();
+    let retained_before = std::fs::read_dir(&world.layout.recovery).unwrap().count();
+    let backup = world
+        ._temporary
+        .path()
+        .join("cutover/installer-recovery.json");
+    write_private(&backup, b"retained installer recovery fixture");
+    // The source-owned admission library uses the same LOCK_FILE/DRAIN_FILE
+    // boundary as the installer's begin_drain/end_drain, without a live daemon.
+    let lease = devcoordinator2_control::test_admission::begin_drain(
+        &world.layout.runtime_dir,
+        "coordinator installation recovery",
+    )
+    .unwrap();
+    let marker = world.layout.runtime_dir.join("test-drain.json");
+    let marker_before = std::fs::read(&marker).unwrap();
+    let error = deploy_at(&world.layout, &world.lineage, COMMIT, &world.runner)
+        .err()
+        .expect("a live installation/recovery must refuse TLS adoption");
+    assert!(error.contains("installation or recovery is in progress"));
+    assert!(configure_at(&world.layout, &world.lineage, COMMIT, &world.runner).is_err());
+    world.assert_previous_files();
+    assert_eq!(world.assert_routes(), before);
+    assert!(std::fs::read(&world.layout.configuration).unwrap() == configuration);
+    assert!(std::fs::read(&world.layout.hook).unwrap() == hook);
+    assert!(std::fs::read(&world.layout.edge_env).unwrap() == environment);
+    assert!(std::fs::read(&marker).unwrap() == marker_before);
+    assert!(std::fs::read(&backup).unwrap() == b"retained installer recovery fixture");
+    assert_eq!(
+        std::fs::read_dir(&world.layout.recovery).unwrap().count(),
+        retained_before
+    );
+    assert_eq!(world.runner.restarts.load(Ordering::SeqCst), 0);
+    devcoordinator2_control::test_admission::end_drain(&lease).unwrap();
+    let mut stale: serde_json::Value = serde_json::from_slice(&marker_before).unwrap();
+    stale["pid"] = u32::MAX.into();
+    stale["process_start"] = 1.into();
+    let stale_bytes = serde_json::to_vec(&stale).unwrap();
+    write_private(&marker, &stale_bytes);
+    assert!(deploy_at(&world.layout, &world.lineage, COMMIT, &world.runner).is_err());
+    assert!(
+        std::fs::read(&marker).unwrap() == stale_bytes,
+        "TLS must preserve unfinished recovery leases"
+    );
+    world.assert_previous_files();
+    assert_eq!(world.assert_routes(), before);
+    let resumed = devcoordinator2_control::test_admission::begin_drain(
+        &world.layout.runtime_dir,
+        "reviewed recovery resumes the stale lease",
+    )
+    .unwrap();
+    devcoordinator2_control::test_admission::end_drain(&resumed).unwrap();
+    assert_eq!(
+        deploy_at(&world.layout, &world.lineage, COMMIT, &world.runner)
+            .unwrap()
+            .status,
+        "renewed"
+    );
+    world.assert_routes();
+}
+
+#[test]
+fn in_flight_tls_serializes_existing_installer_admission_through_activation() {
+    let world = World::new();
+    world.configure();
+    let before = world.assert_routes();
+    let environment = std::fs::read(&world.layout.edge_env).unwrap();
+    let (entered, restart_entered) = mpsc::channel();
+    let (restart_release, release) = mpsc::channel();
+    *world.runner.pause_before_restart.lock().unwrap() = Some(RestartPause { entered, release });
+    std::thread::scope(|scope| {
+        let renewal =
+            scope.spawn(|| deploy_at(&world.layout, &world.lineage, COMMIT, &world.runner));
+        restart_entered
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap();
+        // At this point the candidate files are staged in place but the actual
+        // edge still serves the previous TLS context. Prove the existing flock
+        // is held by this real deploy call, rather than relying on thread timing.
+        assert_eq!(world.assert_routes(), before);
+        assert!(
+            crate::cutover::edge_maintenance_guard(&world.layout.runtime_dir)
+                .err()
+                .unwrap()
+                .contains("admission is busy")
+        );
+        let (admitted, installer_admitted) = mpsc::channel();
+        let (finish, finish_installation) = mpsc::channel();
+        let installation_runtime = world.layout.runtime_dir.clone();
+        let installer = scope.spawn(move || {
+            let lease = devcoordinator2_control::test_admission::begin_drain(
+                &installation_runtime,
+                "contending coordinator installation",
+            )
+            .unwrap();
+            admitted.send(()).unwrap();
+            finish_installation
+                .recv_timeout(Duration::from_secs(20))
+                .unwrap();
+            devcoordinator2_control::test_admission::end_drain(&lease).unwrap();
+        });
+        assert!(
+            installer_admitted
+                .recv_timeout(Duration::from_millis(100))
+                .is_err()
+        );
+        assert!(!world.layout.runtime_dir.join("test-drain.json").exists());
+        assert!(std::fs::read(&world.layout.edge_env).unwrap() == environment);
+        restart_release.send(()).unwrap();
+        assert_eq!(renewal.join().unwrap().unwrap().status, "renewed");
+        installer_admitted
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap();
+        assert!(world.layout.runtime_dir.join("test-drain.json").is_file());
+        // No recovery-held descriptor remains when the existing cleanup owner
+        // reacquires its lock; this must finish rather than self-deadlock.
+        finish.send(()).unwrap();
+        installer.join().unwrap();
+    });
+    assert!(!world.layout.runtime_dir.join("test-drain.json").exists());
+    assert_ne!(world.assert_routes(), before);
+    assert!(std::fs::read(&world.layout.edge_env).unwrap() == environment);
+    world.assert_private_recovery();
 }
 
 #[test]
