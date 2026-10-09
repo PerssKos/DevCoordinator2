@@ -28,9 +28,47 @@ const uploadedRequests = [];
 let uploadMutation = null;
 const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
 let requestCount = 0;
+const sessionObservations = [];
 const server = createServer((request, response) => {
   requestCount++;
   const pathname = new URL(request.url, 'http://fixture').pathname;
+  if (pathname === '/session-observe') {
+    sessionObservations.push(Object.fromEntries(new URL(request.url, 'http://fixture').searchParams));
+    response.writeHead(204); response.end(); return;
+  }
+  if (pathname.startsWith('/session-')) {
+    if (pathname === '/session-redirect') {
+      response.writeHead(302, { location: `http://localhost:${server.address().port}/session-foreign` }); response.end(); return;
+    }
+    const identity = new URL(request.url, 'http://fixture').searchParams.get('identity') ?? 'A';
+    const cookieValid = request.headers.cookie?.includes(`sess=SESSION_PRIVATE_${identity}`) ?? false;
+    response.writeHead(200, { 'content-type': 'text/html', 'x-ui-source-revision': revision,
+      ...(pathname === '/session-legacy-login' ? { 'set-cookie': 'sess=SESSION_PRIVATE_B; Path=/' } : {}),
+      ...(pathname === '/session-opaque' ? { 'content-security-policy': 'sandbox allow-scripts' } : {}),
+    });
+    if (pathname === '/session-frame') {
+      response.end('<!doctype html><script>parent.postMessage({kind:"session-frame",empty:sessionStorage.getItem("SESSION_PRIVATE_KEY")===null},"*")</script>'); return;
+    }
+    if (pathname === '/session-foreign') {
+      response.end('<!doctype html><script>navigator.sendBeacon("/session-observe?foreignEmpty="+(sessionStorage.getItem("SESSION_PRIVATE_KEY")===null))</script>'); return;
+    }
+    const mode = new URL(request.url, 'http://fixture').searchParams.get('mode') ?? (['/session-reload','/session-logout'].includes(pathname) ? pathname.slice('/session-'.length) : null);
+    const script = pathname.endsWith('login')
+      ? `document.querySelector('#heading').dataset.session=${JSON.stringify(cookieValid ? 'authenticated' : 'denied')};`
+      : `const present=sessionStorage.getItem('SESSION_PRIVATE_KEY')===${JSON.stringify('SESSION_PRIVATE_VALUE_'+identity)};
+const returning=window.name==='session-return';
+sessionStorage.removeItem('SESSION_PRIVATE_KEY');
+if(${JSON.stringify(mode)}==='immediate'&&!returning){window.name='session-return';sessionStorage.clear();navigator.sendBeacon('/session-observe?identity=${identity}&phase=first&present='+present);location.reload();}
+else {
+const observed=()=>fetch('/session-observe?identity=${identity}&phase='+(returning?'return':'first')+'&present='+present+'&cookie=${cookieValid}').then(()=>{const heading=document.querySelector('#heading');if(returning){heading.tabIndex=-1;heading.focus()}heading.dataset.session=returning?(!present?'cleared':'reseeded'):((present||${JSON.stringify(mode)}==='no-seed')&&${cookieValid}?'ready':'missing')});
+if(${JSON.stringify(mode)}==='frames'){
+let remaining=2,empty=true;addEventListener('message',event=>{if(event.data?.kind!=='session-frame')return;empty=empty&&event.data.empty;if(--remaining===0){fetch('/session-observe?framesEmpty='+empty).then(()=>empty?observed():document.querySelector('#heading').dataset.session='reseeded')}});
+for(const host of [location.origin,location.origin.replace('127.0.0.1','localhost')]){const frame=document.createElement('iframe');frame.title='Isolated storage frame';frame.src=host+'/session-frame';document.querySelector('#primary').append(frame);}
+}else observed();
+document.querySelector('#label').onclick=()=>{window.name='session-return';sessionStorage.clear();if(${JSON.stringify(mode)}==='logout')document.cookie='sess=; Max-Age=0; Path=/';location.reload();};
+}`;
+    response.end(html.replace('</body>', `<script>${script}</script></body>`)); return;
+  }
   if (pathname === '/upload' && uploadMutation) { uploadMutation(); uploadMutation = null; }
   if (pathname === '/uploaded') {
     const chunks = []; request.on('data', chunk => chunks.push(chunk));
@@ -188,7 +226,7 @@ async function configurationFixtures() {
     const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
     const configPath = join(directory, 'config.json');
     config.browserExecutable = join(directory, 'browser-must-not-start');
-    config.authProfiles = [{ name: 'private', url: target.url, actions: [{ action: 'fill', selector: '#private', value: 'PREFLIGHT_PRIVATE_CANARY' }] }];
+    config.authProfiles ??= [{ name: 'private', url: target.url, actions: [{ action: 'fill', selector: '#private', value: 'PREFLIGHT_PRIVATE_CANARY' }] }];
     await writeFile(configPath, JSON.stringify(config));
     const beforeRequests = requestCount;
     const child = spawn(process.execPath, [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', configPath, '--config-only', '--json-out', join(directory, 'report.json')], { cwd: directory, env: { ...process.env, DEVCOORDINATOR_EVIDENCE_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -201,7 +239,7 @@ async function configurationFixtures() {
       assert.equal(receipt.browserStarted, false); assert.equal(receipt.readinessEligible, false);
       assert.equal(receipt.formal, undefined); assert.equal(receipt.qualified, undefined);
       assert.equal(requestCount, beforeRequests, 'preflight must not navigate, authenticate or probe targets');
-      assert(Buffer.byteLength(stdout) <= 2048); assert(!stdout.includes('PREFLIGHT_PRIVATE_CANARY')); assert.equal(stderr, '');
+      assert(Buffer.byteLength(stdout) <= 2048); assert(!stdout.includes('PREFLIGHT_PRIVATE_CANARY')); assert(!stdout.includes('SESSION_PRIVATE_')); assert.equal(stderr, '');
       assert.deepEqual(await readdir(directory), ['config.json'], 'preflight cannot create formal acceptance artifacts');
       inspect(receipt);
       results.push({ name, passed: true, exitCode });
@@ -231,6 +269,153 @@ async function configurationFixtures() {
   await check('config-duplicate-shape-id', duplicate, 'invalid');
   const otherLimit = full(); otherLimit.targets[0].geometryAssertions = Array.from({ length: 257 }, (_, index) => ({ ...otherLimit.targets[0].geometryAssertions[0], id: `geometry-${index}` }));
   await check('config-geometry-limit-unchanged', otherLimit, 'invalid');
+  const sessionConfig = () => {
+    const config = full(); config.targets[0].authProfile = 'fixture';
+    config.authProfiles = [{ name: 'fixture', url: target.url, actions: [{ action: 'focus', selector: '#label' }],
+      cookies: [{ name: 'SESSION_PRIVATE_COOKIE', value: 'SESSION_PRIVATE_VALUE', url: target.url }],
+      sessionStorage: { origin: new URL(target.url).origin, entries: [{ name: 'SESSION_PRIVATE_KEY', value: 'SESSION_PRIVATE_VALUE' }] } }];
+    return config;
+  };
+  await check('config-session-valid', sessionConfig(), 'valid');
+  const invalidSessions = [
+    ['origin-path', seed => { seed.origin += '/'; }],
+    ['origin-scheme', seed => { seed.origin = 'file:///private'; }],
+    ['origin-credentials', seed => { seed.origin = 'http://PRIVATE:VALUE@localhost'; }],
+    ['origin-mismatch', seed => { seed.origin = 'https://different.invalid'; }],
+    ['entries-type', seed => { seed.entries = 'SESSION_PRIVATE_VALUE'; }],
+    ['entries-empty', seed => { seed.entries = []; }],
+    ['duplicate', seed => { seed.entries.push({ ...seed.entries[0] }); }],
+    ['key-overflow', seed => { seed.entries[0].name = 'x'.repeat(1025); }],
+    ['value-overflow', seed => { seed.entries[0].value = 'x'.repeat(262145); }],
+    ['value-type', seed => { seed.entries[0].value = {}; }],
+    ['entries-overflow', seed => { seed.entries = Array.from({ length: 65 }, (_, i) => ({ name: String(i), value: '' })); }],
+    ['bytes-overflow', seed => { seed.entries = Array.from({ length: 4 }, (_, i) => ({ name: String(i), value: 'x'.repeat(262144) })); }],
+    ['unknown-field', seed => { seed.script = 'SESSION_PRIVATE_VALUE'; }],
+  ];
+  for (const [name, mutate] of invalidSessions) {
+    const config = sessionConfig(); mutate(config.authProfiles[0].sessionStorage);
+    await check(`config-session-${name}`, config, 'invalid');
+  }
+  const boundary = sessionConfig(); boundary.authProfiles[0].sessionStorage.entries = Array.from({ length: 64 }, (_, i) => ({ name: String(i), value: '' }));
+  await check('config-session-64-entries', boundary, 'valid');
+  const bytes = sessionConfig(); bytes.authProfiles[0].sessionStorage.entries = Array.from({ length: 4 }, (_, i) => ({ name: String(i).padEnd(1024, 'x'), value: 'x'.repeat(261120) }));
+  await check('config-session-byte-boundary', bytes, 'valid');
+  const individual = sessionConfig(); individual.authProfiles[0].sessionStorage.entries = [{ name: 'я'.repeat(512), value: 'x'.repeat(262144) }];
+  await check('config-session-individual-boundary', individual, 'valid');
+  individual.authProfiles[0].sessionStorage.entries[0].name += 'я';
+  await check('config-session-utf8-overflow', individual, 'invalid');
+  const invalidCookie = sessionConfig(); invalidCookie.authProfiles[0].cookies = ['SESSION_PRIVATE_BROKEN'];
+  await check('config-session-cookie-invalid', invalidCookie, 'invalid');
+  for (const scope of ['root','defaults','target','state']) {
+    const config = sessionConfig(), seed = config.authProfiles[0].sessionStorage;
+    if (scope === 'root') config.sessionStorage = seed;
+    if (scope === 'defaults') config.targetDefaults = { sessionStorage: seed };
+    if (scope === 'target') config.targets[0].sessionStorage = seed;
+    if (scope === 'state') config.targets[0].states = [{ name: 'misplaced', actions: [{ action: 'focus', selector: '#label' }], sessionStorage: seed }];
+    await check(`config-session-misplaced-${scope}`, config, 'invalid');
+  }
+}
+async function sessionFixtures() {
+  const config = full('/session-cell?identity=A');
+  config.viewports.push({ name: 'mobile', width: 390, height: 900 }); config.maxPageCount = 4;
+  config.cookies = [{ name: 'sess', value: 'SESSION_PRIVATE_GLOBAL', url: target.url }];
+  config.authProfiles = ['A', 'B'].map(identity => ({
+    name: `session-${identity}`, url: new URL(`/session-login?identity=${identity}`, target.url).href,
+    cookies: [{ name: 'sess', value: `SESSION_PRIVATE_${identity}`, url: target.url }],
+    actions: [{ action: 'focus', selector: '#label' }],
+    waitFor: { selector: '#heading[data-session="authenticated"]', timeoutMs: 500 },
+    sessionStorage: { origin: new URL(target.url).origin, entries: [{ name: 'SESSION_PRIVATE_KEY', value: `SESSION_PRIVATE_VALUE_${identity}` }] },
+  }));
+  config.targets = ['A', 'B'].map(identity => ({ ...config.targets[0], name: `session-${identity}`,
+    url: new URL(`/session-cell?identity=${identity}`, target.url).href, authProfile: `session-${identity}`,
+    waitFor: { selector: '#heading[data-session="ready"]', timeoutMs: 500 },
+  }));
+  config.fixtureDataShapes = config.targets.map(row => ({ ...config.fixtureDataShapes[0], id: row.name, target: row.name, route: new URL(row.url).pathname + new URL(row.url).search }));
+  config.requiredCoverage = config.targets.flatMap(row => config.viewports.map(viewport => ({ target: row.name, state: 'base', viewport: viewport.name, width: viewport.width })));
+  await verify('session-fresh-private-profiles', config, async ({ receipt, report, directory }) => {
+    assert.equal(receipt.formal.result, 'passed');
+    assert.deepEqual(sessionObservations.slice(-4).map(row => [row.identity, row.present, row.cookie]).sort(), [['A','true','true'],['A','true','true'],['B','true','true'],['B','true','true']]);
+    assert(report.pages.every(page => page.outcome === 'checked'));
+    for (const file of ['report.json','report.md','journey-evidence.json','review-queue.json','formal-receipt.json','stdout.json','stderr.txt']) {
+      assert(!(await readFile(join(directory,file),'utf8')).includes('SESSION_PRIVATE_'), file);
+    }
+  });
+  const single = mode => {
+    const result = structuredClone(config); result.targets = [result.targets[0]]; result.authProfiles = [result.authProfiles[0]];
+    result.viewports = [result.viewports[0]]; result.maxPageCount = 2;
+    result.targets[0].url = ['reload','logout'].includes(mode) ? new URL(`/session-${mode}`, target.url).href : result.targets[0].url + `&mode=${mode}`;
+    result.fixtureDataShapes = [{ ...result.fixtureDataShapes[0], route: new URL(result.targets[0].url).pathname + new URL(result.targets[0].url).search }];
+    result.requiredCoverage = [result.requiredCoverage[0]];
+    return result;
+  };
+  await verify('session-no-frame-seed', single('frames'), ({ receipt }) => {
+    assert.equal(receipt.formal.result, 'passed');
+    assert(sessionObservations.some(row => row.framesEmpty === 'true'));
+  });
+  for (const mode of ['reload','logout']) {
+    const result = single(mode), row = result.targets[0];
+    row.includeBase = false;
+    row.states = [{ name: 'cleared', actions: [{ action: 'click', selector: '#label' }],
+      waitFor: { selector: '#heading[data-session="cleared"]', timeoutMs: 1000 },
+      continuation: { kind: 'navigation', anchor: '#heading', expectedPath: new URL(row.url).pathname + new URL(row.url).search },
+    }];
+    result.fixtureDataShapes[0].state = 'cleared'; result.requiredCoverage[0].state = 'cleared';
+    await verify(`session-no-reseed-${mode}`, result, ({ receipt }) => {
+      assert.equal(receipt.formal.result, 'passed');
+      assert.equal(sessionObservations.at(-1).present, 'false');
+      if (mode === 'logout') assert.equal(sessionObservations.at(-1).cookie, 'false');
+    });
+  }
+  const immediateStart = sessionObservations.length;
+  await verify('session-immediate-clear-reload', single('immediate'), ({ receipt }) => {
+    const rows = sessionObservations.slice(immediateStart);
+    assert.deepEqual(rows.map(row => [row.phase,row.present]), [['first','true'],['return','false']], 'Even a reload from the first app script cannot reapply the seed');
+    assert.notEqual(receipt.formal.result, 'passed', 'Interrupted initial navigation cannot masquerade as a fresh normal pass');
+  });
+  for (const kind of ['redirect','opaque']) {
+    const result = single(kind); result.targets[0].url = new URL(`/session-${kind}`, target.url).href;
+    result.fixtureDataShapes[0].route = `/session-${kind}`;
+    const start = sessionObservations.length;
+    await verify(`session-fail-closed-${kind}`, result, ({ receipt, report }) => {
+      assert.notEqual(receipt.formal.result, 'passed'); assert.equal(report.pages[0].outcome, 'navigation_error');
+      assert.match(report.pages[0].skipReason, kind === 'opaque' ? /session fixture storage unavailable/ : /session fixture initialization failed/);
+      if (kind === 'redirect') assert(sessionObservations.slice(start).some(row => row.foreignEmpty === 'true'));
+    });
+  }
+  const broken = structuredClone(config); broken.authProfiles[0].cookies[0].value = 'SESSION_PRIVATE_INVALID';
+  await verify('session-failed-profile-isolation', broken, async ({ report, directory }) => {
+    assert.deepEqual(report.pages.map(row => row.outcome).sort(), ['auth_setup_error','auth_setup_error','checked','checked']);
+    assert(!(await readFile(join(directory,'report.json'),'utf8')).includes('SESSION_PRIVATE_'));
+  });
+  const legacy = single('legacy');
+  legacy.cookies[0].value = 'SESSION_PRIVATE_A'; delete legacy.authProfiles[0].cookies;
+  legacy.authProfiles[0].url = new URL('/session-legacy-login?identity=A', target.url).href;
+  await verify('session-legacy-global-cookie-precedence', legacy, ({ receipt }) => assert.equal(receipt.formal.result, 'passed'));
+  const anonymous = single('no-seed'); anonymous.authProfiles = []; delete anonymous.targets[0].authProfile; anonymous.cookies[0].value = 'SESSION_PRIVATE_A';
+  await verify('session-legacy-without-profile', anonymous, ({ receipt }) => assert.equal(receipt.formal.result, 'passed'));
+  const cacheDirectory = join(scratch, 'session-cache'); await mkdir(cacheDirectory, { mode: 0o700 });
+  const cached = single('cache'); cached.development = { cache: { directory: cacheDirectory, dataRevision: 'session-v1' } };
+  let originalKey;
+  await verify('session-private-cache-write', cached, ({ receipt, report }) => {
+    assert.notEqual(receipt.formal.result, 'passed');
+    assert.equal(report.pages[0].cache.hit, false); originalKey = report.pages[0].cache.key;
+    assert.equal(report.pages[0].cache.write.written, true);
+  });
+  await verify('session-private-cache-hit', cached, ({ receipt, report }) => {
+    assert.notEqual(receipt.formal.result, 'passed'); assert.equal(report.pages[0].cache.hit, true);
+  });
+  const cookieChanged = structuredClone(cached); cookieChanged.authProfiles[0].cookies.push({ name: 'SESSION_PRIVATE_EXTRA', value: 'SESSION_PRIVATE_COOKIE_CHANGED', url: target.url });
+  await verify('session-private-cookie-invalidates-cache', cookieChanged, ({ report }) => {
+    assert.equal(report.pages[0].cache.hit, false); assert.notEqual(report.pages[0].cache.key, originalKey); assert.equal(report.pages[0].outcome, 'checked');
+  });
+  const seedChanged = structuredClone(cached); seedChanged.authProfiles[0].sessionStorage.entries[0].value = 'SESSION_PRIVATE_CHANGED';
+  await verify('session-private-seed-invalidates-cache', seedChanged, ({ receipt, report }) => {
+    assert.notEqual(receipt.formal.result, 'passed'); assert.equal(report.pages[0].cache.hit, false);
+    assert.notEqual(report.pages[0].cache.key, originalKey); assert.notEqual(report.pages[0].outcome, 'checked');
+  });
+  for (const file of await readdir(cacheDirectory, { recursive: true })) if (file.endsWith('.json')) {
+    assert(!(await readFile(join(cacheDirectory,file),'utf8')).includes('SESSION_PRIVATE_'), 'Private session data leaked into the evidence cache');
+  }
 }
 async function uploadFixtures() {
   const repository = join(scratch, 'upload-repository');
@@ -308,6 +493,9 @@ async function uploadFixtures() {
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
 try {
+  if (process.argv.includes('--session-only')) await sessionFixtures();
+  else {
+  if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only') && !process.argv.includes('--config-only-selftest')) await sessionFixtures();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) await configurationFixtures();
   if (!process.argv.includes('--config-only-selftest')) {
   if (!process.argv.includes('--capture-only')) await uploadFixtures();
@@ -436,6 +624,7 @@ try {
   await verify('setup-blocked', setup, expect('blocked'));
   const failedAction = full(); failedAction.targets[0].states = [{ name: 'failed-action', actions: [{ action: 'dblclick', selector: '#absent-label', timeoutMs: 10 }], continuation: { kind: 'in-page', anchor: '#editor-heading', focusWithin: '#editor' } }];
   await verify('rendered-action-failed', failedAction, expect('failed'));
+  }
   }
   }
 } finally { await new Promise(resolve => server.close(resolve)); }

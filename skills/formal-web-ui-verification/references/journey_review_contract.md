@@ -444,6 +444,50 @@ seeds a fresh context for every bound cell. Profile failure affects only bound
 cells. Action values and storage contents never enter config evidence, reports,
 logs, progress, or cache entries.
 
+A profile may use an already prepared session through `cookies`, using the same
+cookie schema as the global configuration. Bootstrap applies global defaults
+first, then profile cookies; equal browser cookie identities are replaced by the
+profile values. For these explicitly cookie-bound profiles, fresh cells use the
+final bootstrap storage state without reapplying global cookies. Profiles that
+omit `cookies`, and targets without a profile, retain their previous global
+cookie behavior. Authentication actions must still be nonempty; a focus action
+and an authenticated readiness selector can verify an existing session.
+
+For a saved tab-local continuation, the same profile may declare:
+
+```json
+"sessionStorage": {
+  "origin": "http://127.0.0.1:3000",
+  "entries": [{"name": "caller-owned-fixture-key", "value": "prepared string data"}]
+}
+```
+
+The origin must be a canonical HTTP(S) origin without credentials, path, query
+or fragment, and match every expanded target that uses this profile. The login
+URL may differ. Only `origin` and `entries`, and only `name` and `value` per entry,
+are accepted. Each profile allows 1–64 unique string names of 1–1024 UTF-8 bytes,
+string values up to 262144 UTF-8 bytes, and at most 1048576 bytes in the sum of
+all names and values. The caller supplies real prepared references under the
+same authenticated session; the verifier neither invents business results nor
+captures arbitrary page storage after authentication.
+
+Each fresh cell installs this plain data only in its initial top-level document
+of the exact origin, before application scripts. A fixed internal Chromium
+checkpoint removes the installation registration before continuing; child
+frames, reloads, logout and immediate application navigation cannot reinstall
+deleted values. There is no extra navigation, warming request or caller script.
+Initialization, origin or cleanup failures cannot pass coverage. An interrupted
+initial document remains incomplete even when a later document loads. Setup
+elapsed time is not subtracted from browser measurements, and thresholds,
+readiness rules and fresh-context requirements do not change.
+
+Entry names and values and private profile cookie names/values are excluded from
+public configuration, reports, progress, errors and cache contents. Exact private
+input digests participate in cache identity so changed sessions or fixtures
+cannot reuse earlier evidence. Cached or config-only results remain ineligible
+for a fresh complete formal pass. Ordinary screenshot masking declarations are
+still required for private content intentionally rendered by the application.
+
 ## Development Selection And Cache
 
 Fast affected-cell runs are explicit development evidence:

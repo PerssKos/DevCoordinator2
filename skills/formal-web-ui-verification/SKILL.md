@@ -80,6 +80,14 @@ without weakening the fresh complete run required for readiness. Read
 [references/journey_review_contract.md](references/journey_review_contract.md)
 before using these advanced contracts.
 
+Authentication profiles can also carry private cookies and a bounded, exact-origin
+`sessionStorage` fixture for a prepared user session. The fixture is installed
+once before the first application script in each fresh cell; reload, logout and
+child frames never reinstall it. This accepts plain string data, not executable
+hooks. The complete contract, limits and cookie precedence are in the journey
+review contract linked above. Setup failure remains failed coverage; preparation
+time stays in the ordinary browser measurements.
+
 Each checked cell automatically emits a redacted initial-viewport screenshot
 and full-page screenshot plus a changed visual-review queue. Screenshot hashes
 prove integrity only. Manual review repeats only for new cells or changed

@@ -1149,6 +1149,31 @@ function normalizeAuthProfileName(value, name) {
   return value.trim();
 }
 
+function normalizeSessionStorage(value) {
+  if (value === undefined) return undefined;
+  const invalid = () => { throw new Error("invalid auth profile sessionStorage fixture"); };
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some(key => !["origin", "entries"].includes(key))) invalid();
+  let origin;
+  try { origin = new URL(value.origin); } catch { invalid(); }
+  if (typeof value.origin !== "string" || !["http:", "https:"].includes(origin.protocol) ||
+      origin.origin !== value.origin || origin.username || origin.password) invalid();
+  if (!Array.isArray(value.entries) || !value.entries.length || value.entries.length > 64) invalid();
+  const seen = new Set();
+  let bytes = 0;
+  const entries = value.entries.map(entry => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+        Object.keys(entry).some(key => !["name", "value"].includes(key)) ||
+        typeof entry.name !== "string" || typeof entry.value !== "string") invalid();
+    const nameBytes = Buffer.byteLength(entry.name), valueBytes = Buffer.byteLength(entry.value);
+    bytes += nameBytes + valueBytes;
+    if (!nameBytes || nameBytes > 1024 || valueBytes > 262144 || bytes > 1048576 || seen.has(entry.name)) invalid();
+    seen.add(entry.name);
+    return { name: entry.name, value: entry.value };
+  });
+  return { origin: origin.origin, entries };
+}
+
 function normalizeAuthProfiles(value) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error("authProfiles must be an array");
@@ -1173,11 +1198,18 @@ function normalizeAuthProfiles(value) {
     if (actions.some((action) => action.ownerJourney || action.ownerState)) {
       throw new Error(`authProfiles[${index}].actions cannot declare conditional ownership`);
     }
+    let cookies;
+    if (profile.cookies !== undefined) {
+      try { cookies = normalizeCookieList(profile.cookies); }
+      catch { throw new Error("invalid auth profile cookies"); }
+    }
     return {
       name,
       url: profile.url.trim(),
       actions,
       waitFor: normalizeWaitFor(profile.waitFor, `authProfiles[${index}].waitFor`),
+      ...(cookies === undefined ? {} : { cookies }),
+      ...(profile.sessionStorage === undefined ? {} : { sessionStorage: normalizeSessionStorage(profile.sessionStorage) }),
     };
   });
 }
@@ -1572,6 +1604,13 @@ function normalizeRequiredCoverage(value) {
 }
 
 function normalizeConfig(config, cli, artifacts) {
+  const fixtureScopes = [config, config.targetDefaults];
+  for (const target of Array.isArray(config.targets) ? config.targets : []) {
+    fixtureScopes.push(target, ...(Array.isArray(target?.states) ? target.states : []));
+  }
+  if (fixtureScopes.some(scope => scope && typeof scope === "object" && Object.hasOwn(scope, "sessionStorage"))) {
+    throw new Error("sessionStorage fixtures belong only to authentication profiles");
+  }
   const rules = config.rules && typeof config.rules === "object" ? config.rules : {};
   const failOn = cli.failOn || rules.failOn || "critical";
   if (!(failOn in SEVERITY_ORDER)) throw new Error(`Invalid failOn severity: ${failOn}`);
@@ -1783,6 +1822,8 @@ function privacySafeConfigContract(config) {
     cookies,
     authProfiles: (config.authProfiles || []).map((profile) => ({
       ...profile,
+      ...(profile.cookies === undefined ? {} : { cookies: profile.cookies.map(cookie => ({ ...cookie, name: "<redacted>", value: "<redacted>" })) }),
+      ...(profile.sessionStorage === undefined ? {} : { sessionStorage: { origin: profile.sessionStorage.origin, entryCount: profile.sessionStorage.entries.length } }),
       waitFor: redactWaitFor(profile.waitFor),
       actions: (profile.actions || []).map((action) => ({
         ...action,
@@ -2350,6 +2391,10 @@ function prepareTargetContracts(targets, config) {
   for (const target of prepared) {
     if (target.authProfile && !authNames.has(target.authProfile)) {
       target.contractErrors.push(`authProfile references unknown profile ${target.authProfile}`);
+    }
+    const fixture = config.authProfiles.find(profile => profile.name === target.authProfile)?.sessionStorage;
+    if (fixture && routeEvidence(target.url).origin !== fixture.origin) {
+      target.contractErrors.push("auth profile sessionStorage origin must match target origin");
     }
     const journeyIds = new Set((target.journeys || []).map((journey) => journey.id));
     for (const action of target.verificationState?.actions || []) {
@@ -5322,7 +5367,7 @@ async function assessRenderedPerformance(page, thresholds) {
   return { metrics, findings };
 }
 
-async function verifyTarget(page, target, viewport, config, cellId) {
+async function verifyTarget(page, target, viewport, config, cellId, sessionFixture = null) {
   const cellStartedMs = Date.now();
   await installRenderedPerformanceObserver(page);
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
@@ -5421,6 +5466,7 @@ async function verifyTarget(page, target, viewport, config, cellId) {
       target.url,
       { waitUntil: "domcontentloaded", timeout: 15000 },
     ));
+    if (sessionFixture) await sessionFixture.verify();
     initialStage = "initial-readiness";
     result.waitEvidence.push(...await stage(
       "initial-readiness",
@@ -6706,6 +6752,83 @@ function applyConfiguredCookies(context, cookies, targetUrl) {
   })));
 }
 
+// The fixed script pauses before touching storage. Its registration is removed
+// before execution resumes, so even an immediate application clear + reload
+// cannot install the fixture a second time. No caller-supplied code is executed.
+async function installSessionStorageFixture(page, fixture) {
+  const session = await page.context().newCDPSession(page);
+  const token = `__formal_session_${randomBytes(16).toString("hex")}`;
+  const sourceUrl = `formal-session-fixture-${randomBytes(16).toString("hex")}.js`;
+  const scripts = new Set();
+  let identifier = null, consumed = false, failure = false, closed = false;
+  let consumption = Promise.resolve();
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    let failed = false;
+    try { if (identifier) await session.send("Page.removeScriptToEvaluateOnNewDocument", { identifier }); } catch { failed = true; }
+    try { await session.send("Debugger.disable"); } catch { failed = true; }
+    try { await session.detach(); } catch { failed = true; }
+    if (failed) throw new Error("session fixture cleanup failed");
+  };
+  session.on("Debugger.scriptParsed", event => {
+    if (event.url === sourceUrl) scripts.add(event.scriptId);
+  });
+  session.on("Debugger.paused", event => {
+    consumption = (async () => {
+      if (consumed || !scripts.has(event.callFrames?.[0]?.location?.scriptId)) failure = true;
+      consumed = true;
+      try {
+        if (identifier) {
+          await session.send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+          identifier = null;
+        }
+        // Disabling resumes the owned checkpoint and removes debugger overhead
+        // before application scripts run, rather than retaining it until load.
+        await session.send("Debugger.disable");
+      } catch {
+        failure = true;
+        await session.send("Debugger.disable").catch(() => {});
+      }
+    })();
+  });
+  try {
+    await session.send("Page.enable");
+    await session.send("Debugger.enable");
+    const initialize = function applyFormalSessionFixture({ origin, entries, token }) {
+      if (window !== window.top || location.origin !== origin) return;
+      debugger;
+      let status = "ready";
+      try {
+        for (const { name, value } of entries) sessionStorage.setItem(name, value);
+        if (entries.some(({ name, value }) => sessionStorage.getItem(name) !== value)) status = "unavailable";
+      } catch { status = "unavailable"; }
+      Object.defineProperty(globalThis, token, { value: status, configurable: true });
+    };
+    const installed = await session.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(${initialize.toString()})(${JSON.stringify({ ...fixture, token })});\n//# sourceURL=${sourceUrl}`,
+    });
+    identifier = installed.identifier;
+    return {
+      close,
+      verify: async () => {
+        await consumption;
+        if (!consumed || failure) throw new Error("session fixture initialization failed");
+        const ready = await page.evaluate(key => {
+          const ready = globalThis[key] === "ready";
+          delete globalThis[key];
+          return ready;
+        }, token);
+        if (!ready) throw new Error("session fixture storage unavailable");
+        await close();
+      },
+    };
+  } catch {
+    await close().catch(() => {});
+    throw new Error("session fixture setup failed");
+  }
+}
+
 async function prepareAuthentication(browser, config) {
   const states = new Map();
   const report = [];
@@ -6717,6 +6840,7 @@ async function prepareAuthentication(browser, config) {
         ...(config.ignoreHttpsErrors ? { ignoreHTTPSErrors: true } : {}),
       });
       await applyConfiguredCookies(context, config.cookies, profile.url);
+      if (profile.cookies !== undefined) await applyConfiguredCookies(context, profile.cookies, profile.url);
       const page = await context.newPage();
       await page.goto(profile.url, { waitUntil: "domcontentloaded", timeout: 15000 });
       const execution = await applyInteractionState(page, {
@@ -6730,10 +6854,12 @@ async function prepareAuthentication(browser, config) {
         throw new Error(execution.failure?.message || "authentication action unexpectedly handed off");
       }
       const storageState = await context.storageState();
-      states.set(profile.name, { ok: true, storageState });
+      states.set(profile.name, { ok: true, storageState, preserveCookies: profile.cookies !== undefined, sessionStorage: profile.sessionStorage });
       report.push({ name: profile.name, status: "ready", durationMs: Date.now() - started });
     } catch (error) {
-      const message = String(error?.message || error).slice(0, 512);
+      const message = profile.cookies !== undefined || profile.sessionStorage !== undefined
+        ? `authentication setup failed (${diagnosticErrorKind(error)})`
+        : String(error?.message || error).slice(0, 512);
       states.set(profile.name, { ok: false, error: message });
       report.push({ name: profile.name, status: "failed", durationMs: Date.now() - started, error: message });
     } finally {
@@ -6747,6 +6873,8 @@ function cacheSecretDigest(config, target) {
   const authProfile = config.authProfiles.find((profile) => profile.name === target.authProfile);
   return sha256(stableJson({
     cookies: config.cookies.map((cookie) => ({ ...cookie })),
+    profileCookies: authProfile?.cookies,
+    sessionStorage: authProfile?.sessionStorage,
     stateActions: (target.verificationState?.actions || []).map((action) => ({
       action: action.action,
       selector: action.selector,
@@ -7068,9 +7196,14 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
       ...(profile?.storageState ? { storageState: profile.storageState } : {}),
       ...(config.ignoreHttpsErrors ? { ignoreHTTPSErrors: true } : {}),
     });
-    await applyConfiguredCookies(context, config.cookies, cell.target.url);
+    if (!profile?.preserveCookies) await applyConfiguredCookies(context, config.cookies, cell.target.url);
     const page = await context.newPage();
-    pageResult = await verifyTarget(page, cell.target, cell.viewport, config, cell.cellId);
+    const fixture = profile?.sessionStorage ? await installSessionStorageFixture(page, profile.sessionStorage) : null;
+    try {
+      pageResult = await verifyTarget(page, cell.target, cell.viewport, config, cell.cellId, fixture);
+    } finally {
+      if (fixture) await fixture.close();
+    }
   } catch (error) {
     pageResult = syntheticCellResult(
       cell,
