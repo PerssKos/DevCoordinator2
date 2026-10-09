@@ -22,6 +22,7 @@ const PROBE: &str = include_str!("../../../deploy/edge-tls-probe.cjs");
 
 #[derive(Clone)]
 struct Layout {
+    runtime_dir: PathBuf,
     configuration: PathBuf,
     manifest: PathBuf,
     edge_env: PathBuf,
@@ -36,6 +37,7 @@ struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            runtime_dir: "/run/devcoordinator2".into(),
             configuration: "/etc/devcoordinator2/edge/tls-renewal.json".into(),
             manifest: "/etc/devcoordinator2/install-manifest.json".into(),
             edge_env: "/etc/devcoordinator2/edge.env".into(),
@@ -110,6 +112,7 @@ fn configure_at<R: CommandRunner>(
     runner: &R,
 ) -> Result<RenewalReceipt, String> {
     let _lock = lock(layout)?;
+    let _edge_guard = crate::cutover::edge_maintenance_guard(&layout.runtime_dir)?;
     verify_installation(layout, source_commit, runner)?;
     let lineage = real_directory(lineage)?;
     let settings = edge_settings(layout)?;
@@ -164,6 +167,7 @@ fn deploy_at<R: CommandRunner>(
             recovery_retained: false,
         });
     }
+    let _edge_guard = crate::cutover::edge_maintenance_guard(&layout.runtime_dir)?;
     verify_installation(layout, source_commit, runner)?;
     service_identity(layout, runner)?;
     let settings = edge_settings(layout)?;

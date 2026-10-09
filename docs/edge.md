@@ -131,6 +131,11 @@ The daemon, deployment generations, route document, grants, session secret,
 and sign-in credentials are not rewritten. A repeated unchanged event does
 not restart the edge.
 
+Renewal holds the existing installation admission lock through activation and
+any rollback. An installer or recovery drain causes an explicit refusal before
+credential changes; its lease and recovery evidence are preserved. Rerun the
+successful-renewal deploy hook after that installation or recovery completes.
+
 Failed activation restores the previous files and restarts and verifies the
 previous edge. Private mode-0700 transaction directories and mode-0600 recovery
 files remain under `/var/lib/devcoordinator2/cutover/tls-renewal`; a failed

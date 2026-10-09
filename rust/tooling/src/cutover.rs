@@ -1049,6 +1049,30 @@ fn clear_stale_drain(runtime_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// TLS maintenance shares the installer admission boundary. The returned file
+/// holds the existing lock until replacement, verification, and any rollback
+/// finish; a drain marker keeps maintenance refused throughout cutover/recovery.
+pub(crate) fn edge_maintenance_guard(runtime_dir: &Path) -> Result<File, String> {
+    std::fs::create_dir_all(runtime_dir)
+        .map_err(|_| "cannot access the existing installation admission boundary")?;
+    let lock = unix_fs::open(
+        runtime_dir.join(LOCK_FILE),
+        OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::from_raw_mode(0o666),
+    )
+    .map(File::from)
+    .map_err(|_| "cannot open the existing installation admission boundary")?;
+    unix_fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| "TLS maintenance is deferred while installation admission is busy; retry the renewal deploy hook after it completes")?;
+    // Refuse even an unfinished stale drain. Only the reviewed installation or
+    // recovery path may retire that lease; renewal never deletes its evidence.
+    match runtime_dir.join(DRAIN_FILE).symlink_metadata() {
+        Ok(_) => Err("TLS maintenance is deferred while installation or recovery is in progress; retry the renewal deploy hook after recovery completes".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(lock),
+        Err(_) => Err("cannot inspect the existing installation admission boundary".into()),
+    }
+}
+
 fn begin_drain(runtime_dir: &Path, owner: (u32, u32)) -> Result<HostDrain, String> {
     std::fs::create_dir_all(runtime_dir)
         .map_err(|error| format!("cannot create runtime directory: {error}"))?;

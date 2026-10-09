@@ -287,6 +287,7 @@ impl World {
                 .unwrap();
         }
         let layout = Layout {
+            runtime_dir: root.join("runtime"),
             configuration: root.join("etc/edge/tls-renewal.json"),
             manifest: root.join("etc/install-manifest.json"),
             edge_env: root.join("etc/edge.env"),
