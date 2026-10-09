@@ -224,6 +224,55 @@ are incomplete evidence. Initial placement remains a separate assertion.
 
 Optional `allowance: {"reason":"..."}` retains a measured intentional
 difference. It cannot excuse a missing selector, region, track or measurement.
+Only `readable-canonical-identifier` can declare that the object identity does
+not apply to an actual recovery state:
+
+```json
+{
+  "id": "selected-object-identifier",
+  "kind": "readable-canonical-identifier",
+  "selector": "[data-selected-object-id]",
+  "applicability": {
+    "status": "not-applicable",
+    "state": "access-denied",
+    "stateSelector": "[data-object-access-denied]",
+    "reason": "The denied object is not disclosed in this state"
+  }
+}
+```
+
+The supported states are exactly `loading`, `access-denied`, and `error`.
+The selector must name the real object identity; a heading is not a substitute.
+Any matching identity, including an attached hidden element, fails this branch.
+The state selector must resolve to exactly one nonempty, visible, readable,
+unclipped marker fully inside the initial viewport and its clipping ancestors.
+Its measured text must itself be visible and fully inside the viewport and
+every clipping/scroll ancestor, including the marker. A visible container with
+only hidden descendant text is insufficient; hidden decorative descendants do
+not invalidate a separate, fully visible message. Visible text inside a
+boxless `display:contents` wrapper remains measurable; that wrapper does not
+establish a clipping box.
+Missing, ambiguous or invalid selectors remain incomplete evidence. Hidden,
+empty, zero-size, clipped or partly offscreen markers fail. This branch accepts
+neither a region shorthand nor width/track overrides or an allowance. It emits
+an explicit measured `not-applicable` geometry disposition with the declared
+reason/state and count/visibility/geometry/grapheme evidence, never the text.
+The assertion remains bound to source, configuration and review intent. All
+other geometry kinds, performance, screenshots and complete-cell requirements
+remain mandatory. Without `applicability`, the ordinary identity rule applies.
+
+The configuration-only preflight checks every required geometry kind on every
+expanded effective cell with the same required-kind contract used by the final
+formal decision. A complete N/A declaration is structurally valid; its actual
+absence and visible state still need browser measurement. The preflight never
+starts a browser or creates a formal/readiness/delivery pass.
+
+Journey hierarchy recognizes a primary region when its visible height is at
+least `min(element height, 24px)`, after viewport and overflow-ancestor clipping
+and visibility checks. Thus a completely visible 20px recovery message is not
+rejected just because it is shorter than 24px. A short clipped or partial row
+still fails; a taller region still requires 24px. The low-initial-visibility
+warning and other clipping, geometry and performance checks are unchanged.
 Wrapping uses rendered text ranges grouped by line and grapheme counts without
 retaining text. Single-character labels are a guard; intentional stacked or
 CJK text requires an explicit allowance when it meets the detector condition.

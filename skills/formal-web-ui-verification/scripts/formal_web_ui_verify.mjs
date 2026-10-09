@@ -6,7 +6,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { normalizeGeometry, normalizeShapes, normalizeReported, resolveHandoffRequirements, measureHandoff, formalDecision, retainFormalReceipt } from "./formal_handoff_contract.mjs";
+import { normalizeGeometry, normalizeShapes, normalizeReported, resolveHandoffRequirements, geometryRequirementGaps, measureHandoff, formalDecision, retainFormalReceipt } from "./formal_handoff_contract.mjs";
 
 const require = createRequire(import.meta.url);
 const VERIFIER_PATH = fileURLToPath(import.meta.url);
@@ -2891,7 +2891,7 @@ function journeyHierarchyVerifier(contract) {
   const visible = (element) => {
     const style = getComputedStyle(element);
     if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) <= 0.01) return false;
-    if (typeof element.checkVisibility === "function" && !element.checkVisibility()) return false;
+    if (typeof element.checkVisibility === "function" && !element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
     const rect = element.getBoundingClientRect();
     return rect.width > 1 && rect.height > 1;
   };
@@ -2925,9 +2925,16 @@ function journeyHierarchyVerifier(contract) {
     for (const element of elements) {
       const rect = element.getBoundingClientRect();
       const isVisible = visible(element);
-      const visibleTop = Math.max(0, rect.top);
-      const visibleBottom = Math.min(window.innerHeight, rect.bottom);
+      let visibleTop = Math.max(0, rect.top), visibleBottom = Math.min(window.innerHeight, rect.bottom);
+      let visibleLeft = Math.max(0, rect.left), visibleRight = Math.min(window.innerWidth, rect.right);
+      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+        const scaleX = parent.offsetWidth ? bounds.width / parent.offsetWidth : 1, scaleY = parent.offsetHeight ? bounds.height / parent.offsetHeight : 1;
+        if (["hidden", "clip", "auto", "scroll"].includes(style.overflowY)) { const edge = bounds.top + parent.clientTop * scaleY; visibleTop = Math.max(visibleTop, edge); visibleBottom = Math.min(visibleBottom, edge + parent.clientHeight * scaleY); }
+        if (["hidden", "clip", "auto", "scroll"].includes(style.overflowX)) { const edge = bounds.left + parent.clientLeft * scaleX; visibleLeft = Math.max(visibleLeft, edge); visibleRight = Math.min(visibleRight, edge + parent.clientWidth * scaleX); }
+      }
       const visibleHeight = isVisible ? Math.max(0, visibleBottom - visibleTop) : 0;
+      const visibleWidth = isVisible ? Math.max(0, visibleRight - visibleLeft) : 0;
       rows.push({
         name: region.name,
         selector: region.selector,
@@ -2935,8 +2942,10 @@ function journeyHierarchyVerifier(contract) {
         journey: region.journey,
         reason: region.reason,
         visible: isVisible,
-        inViewport: visibleHeight > 1 && rect.right > 0 && rect.left < window.innerWidth,
+        inViewport: visibleHeight > 1 && visibleWidth > 1,
         visibleHeight,
+        visibleWidth,
+        requiredVisibleHeight: Math.min(rect.height, 24),
         viewportHeightFraction: visibleHeight / Math.max(1, window.innerHeight),
         rect: rectObject(rect),
       });
@@ -2957,7 +2966,7 @@ function journeyHierarchyVerifier(contract) {
       area: null,
       evidence: { primaryJourney: contract.primaryJourney },
     });
-  } else if (!primaryInViewport.some((row) => row.visibleHeight >= 24)) {
+  } else if (!primaryInViewport.some((row) => row.visibleHeight >= row.requiredVisibleHeight)) {
     findings.push({
       severity: "critical",
       rule: "primary-journey-outside-initial-viewport",
@@ -2966,7 +2975,7 @@ function journeyHierarchyVerifier(contract) {
       textSnippet: "",
       rect: primaryRows[0].rect,
       area: null,
-      evidence: { primaryJourney: contract.primaryJourney, minimumVisibleHeight: 24 },
+      evidence: { primaryJourney: contract.primaryJourney, minimumVisibleHeight: primaryRows[0].requiredVisibleHeight, visibleHeight: primaryRows[0].visibleHeight },
     });
   } else {
     const strongest = primaryInViewport.reduce(
@@ -7375,6 +7384,7 @@ function configurationPreflight(rawArgs) {
     for (const cell of fullPlanCells) {
       if (!shapedCells.has(cell.cellId)) add("data-shape-not-declared");
       if (!cell.target.geometryAssertions?.length) add("geometry-not-declared");
+      for (const gap of geometryRequirementGaps(cell.target.geometryAssertions)) add(gap.reason);
       if (cell.target.contractErrors?.length) add("target-contract-invalid");
     }
     for (const requirement of requiredCoverage.entries) if (requirement.status !== "satisfied") add("required-coverage-not-mapped");

@@ -3,6 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 
 const kinds = new Set(['hidden-navigation-track', 'primary-content-width', 'readable-heading', 'readable-canonical-identifier', 'no-character-wrapping', 'document-horizontal-overflow', 'initial-viewport-placement', 'clipping']);
+const requiredKinds = [...kinds].filter(kind => kind !== 'hidden-navigation-track');
+export function geometryRequirementGaps(assertions = []) {
+  return requiredKinds.filter(kind => !assertions.some(row => row.kind === kind)).map(kind => ({ reason: `required-geometry-${kind}-missing` }));
+}
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const stable = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 const sha = value => digest(stable(value));
@@ -30,10 +34,17 @@ function known(row, keys, label) {
 }
 export function normalizeGeometry(value, label = 'geometryAssertions') {
   return list(value, label).map(row => {
-    known(row, ['id', 'kind', 'selector', 'region', 'minWidth', 'minWidthRatio', 'allowance', 'primarySelector', 'track', 'maxReservedSize'], label);
+    known(row, ['id', 'kind', 'selector', 'region', 'minWidth', 'minWidthRatio', 'allowance', 'primarySelector', 'track', 'maxReservedSize', 'applicability'], label);
     if (!kinds.has(row.kind)) throw new Error(`${label} has unsupported kind`);
     if (Boolean(row.selector) === Boolean(row.region)) throw new Error(`${label} requires selector XOR region`);
     const result = { id: row.id, kind: row.kind, ...(row.selector ? { selector: text(row.selector, 'selector') } : { region: text(row.region, 'region') }) };
+    if (row.applicability !== undefined) {
+      if (row.kind !== 'readable-canonical-identifier' || !row.selector || ['allowance', 'minWidth', 'minWidthRatio', 'primarySelector', 'track', 'maxReservedSize'].some(key => Object.hasOwn(row, key))) throw new Error('applicability requires an unwaived canonical-identifier selector');
+      const applicability = row.applicability;
+      known(applicability, ['status', 'state', 'stateSelector', 'reason'], 'applicability');
+      if (applicability.status !== 'not-applicable' || !['loading', 'access-denied', 'error'].includes(applicability.state)) throw new Error('unsupported canonical-identifier applicability');
+      result.applicability = { status: 'not-applicable', state: applicability.state, stateSelector: text(applicability.stateSelector, 'applicability.stateSelector'), reason: text(applicability.reason, 'applicability.reason') };
+    }
     for (const bound of ['minWidth', 'minWidthRatio']) if (row[bound] !== undefined) result[bound] = finite(row[bound], bound);
     if (row.kind === 'primary-content-width' && result.minWidth === undefined && result.minWidthRatio === undefined) throw new Error('primary-content-width requires an explicit width bound');
     if (row.allowance !== undefined) { known(row.allowance, ['reason'], 'allowance'); result.allowance = { reason: text(row.allowance?.reason, 'allowance.reason') }; }
@@ -104,24 +115,59 @@ export function measureHandoffInPage(input) {
     }
     return rows;
   };
-  const wrapping = element => {
+  const visibleRect = (box, parent) => {
+    let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right), top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    for (; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+      if (style.display === 'contents') continue;
+      const scaleX = parent.offsetWidth ? bounds.width / parent.offsetWidth : 1, scaleY = parent.offsetHeight ? bounds.height / parent.offsetHeight : 1;
+      if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX)) { const edge = bounds.left + parent.clientLeft * scaleX; left = Math.max(left, edge); right = Math.min(right, edge + parent.clientWidth * scaleX); }
+      if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY)) { const edge = bounds.top + parent.clientTop * scaleY; top = Math.max(top, edge); bottom = Math.min(bottom, edge + parent.clientHeight * scaleY); }
+    }
+    return { width: Math.max(0, right - left), height: Math.max(0, bottom - top), fullyVisible: box.width > 1 && box.height > 1 && left <= box.left && right >= box.right && top <= box.top && bottom >= box.bottom };
+  };
+  const visibleBox = element => visibleRect(element.getBoundingClientRect(), element.parentElement);
+  const visibleTextParent = element => {
+    if (!element || getComputedStyle(element).visibility !== 'visible') return false;
+    // Text has its own Range boxes; display:contents does not create a box
+    // or a clipping surface, but visibility still inherits through it.
+    while (element && getComputedStyle(element).display === 'contents') element = element.parentElement;
+    return Boolean(element?.checkVisibility({ checkOpacity: true }));
+  };
+  const wrapping = (element, requireVisibleText = false) => {
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT), lines = [];
-    let node, count = 0;
+    let node, count = 0, fullyVisibleText = true;
     const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
     while ((node = walker.nextNode())) for (const segment of segmenter.segment(node.textContent || '')) {
       if (!segment.segment.trim()) continue;
       if (++count > 8192) return { status: 'incomplete', reason: 'grapheme-budget-exceeded' };
+      if (requireVisibleText && !visibleTextParent(node.parentElement)) continue;
       const range = document.createRange(); range.setStart(node, segment.index); range.setEnd(node, segment.index + segment.segment.length);
       const boxes = [...range.getClientRects()].filter(box => box.width > 0 && box.height > 0);
       if (!boxes.length) continue;
+      if (requireVisibleText && !boxes.every(box => visibleRect(box, node.parentElement).fullyVisible)) { fullyVisibleText = false; continue; }
       const top = boxes[0].top; let line = lines.find(line => Math.abs(line.top - top) <= 1);
       if (!line) { line = { top, count: 0 }; lines.push(line); } line.count++;
     }
     const measured = lines.reduce((sum, line) => sum + line.count, 0);
-    return { status: 'measured', graphemeCount: measured, lineCount: lines.length, maximumLineGraphemes: Math.max(0, ...lines.map(line => line.count)), characterByCharacter: measured > 1 && lines.length > 1 && lines.every(line => line.count <= 1) };
+    return { status: 'measured', graphemeCount: measured, lineCount: lines.length, maximumLineGraphemes: Math.max(0, ...lines.map(line => line.count)), characterByCharacter: measured > 1 && lines.length > 1 && lines.every(line => line.count <= 1), ...(requireVisibleText ? { fullyVisibleText } : {}) };
   };
   const geometry = input.assertions.map(assertion => {
     const elements = find(assertion.selector), row = { id: assertion.id, kind: assertion.kind, selector: assertion.selector, status: 'incomplete', measurements: { matchCount: elements.length } };
+    if (assertion.applicability) {
+      row.applicability = assertion.applicability;
+      try { document.querySelectorAll(assertion.selector); } catch { row.reason = 'invalid-identity-selector'; return row; }
+      if (elements.length) { row.status = 'failed'; row.reason = 'canonical-identity-present'; return row; }
+      const states = find(assertion.applicability.stateSelector); row.measurements.stateMatchCount = states.length;
+      if (states.length !== 1) { row.reason = 'missing-or-ambiguous-state-marker'; return row; }
+      const state = states[0], shown = visible(state), clipped = clips(state), measured = wrapping(state, true), intersection = visibleBox(state);
+      Object.assign(row.measurements, { rect: rect(state), stateVisible: shown, stateClipped: clipped, stateWrapping: measured, stateVisibleBox: intersection });
+      if (measured.status !== 'measured') { row.reason = measured.reason; return row; }
+      const passed = shown && intersection.fullyVisible && !clipped.length && measured.fullyVisibleText && measured.graphemeCount > 0 && !measured.characterByCharacter;
+      row.status = passed ? 'not-applicable' : 'failed';
+      if (!passed) row.reason = 'state-marker-not-readable';
+      return row;
+    }
     if (elements.length !== 1) { row.reason = 'missing-or-ambiguous-selector'; return row; }
     const element = elements[0], box = element.getBoundingClientRect(), shown = visible(element), clipped = clips(element);
     Object.assign(row.measurements, { visible: shown, rect: rect(element), clipped });
@@ -224,7 +270,11 @@ export function formalDecision(report, exitCode, config, blocking) {
     if (!evidence) gaps.push({ cellId: page.cellId, reason: 'handoff-measurements-missing' });
     else {
       gaps.push(...evidence.gaps.map(gap => ({ cellId: page.cellId, ...gap })));
-      for (const kind of ['primary-content-width', 'readable-heading', 'readable-canonical-identifier', 'no-character-wrapping', 'document-horizontal-overflow', 'initial-viewport-placement', 'clipping']) if (!evidence.geometry.some(row => row.kind === kind)) gaps.push({ cellId: page.cellId, reason: `required-geometry-${kind}-missing` });
+      gaps.push(...geometryRequirementGaps(evidence.geometry).map(gap => ({ cellId: page.cellId, ...gap })));
+      for (const row of evidence.geometry.filter(row => row.status === 'not-applicable')) {
+        const measured = row.measurements;
+        if (row.kind !== 'readable-canonical-identifier' || row.applicability?.status !== 'not-applicable' || !['loading', 'access-denied', 'error'].includes(row.applicability.state) || measured.matchCount !== 0 || measured.stateMatchCount !== 1 || measured.stateVisible !== true || measured.stateVisibleBox?.fullyVisible !== true || measured.stateClipped?.length !== 0 || !(measured.stateWrapping?.graphemeCount > 0) || measured.stateWrapping.fullyVisibleText !== true || measured.stateWrapping.characterByCharacter !== false) gaps.push({ cellId: page.cellId, id: row.id, reason: 'unmeasured-identity-applicability' });
+      }
       for (const row of [...evidence.geometry, ...evidence.shapes, ...evidence.reported]) if (row.status === 'incomplete') gaps.push({ cellId: page.cellId, id: row.id, reason: row.reason || 'missing-measurement' });
     }
     if (page.sourceBinding?.status !== 'matched' || !page.review?.sourceFingerprint) gaps.push({ cellId: page.cellId, reason: 'source-identity-unbound' });

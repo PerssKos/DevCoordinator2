@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { captureEvidenceScreenshot } from '../../../skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs';
+import { formalDecision } from '../../../skills/formal-web-ui-verification/scripts/formal_handoff_contract.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const scratch = await mkdtemp(join(process.env.FORMAL_WEB_UI_HANDOFF_SCRATCH ?? process.env.TMPDIR ?? tmpdir(), 'formal-handoff-'));
@@ -24,6 +25,39 @@ const variants = new Map([
   ['/overflow', html.replace('body{margin:0', 'body{width:2000px;margin:0')],
   ['/offscreen', html.replace('main{padding:20px;grid-column:2;min-width:0}', 'main{padding:20px;margin-top:1000px}')],
 ]);
+const recoveryMarker = '<div id="recovery-clip"><div id="recovery-state" style="height:20px;line-height:20px">Loading the selected object</div></div>';
+const recoveryHtml = html.replace('</main>', recoveryMarker + '</main>');
+for (const [name, style] of [
+  ['short-visible', ''], ['short-partial', '#recovery-state{position:fixed;bottom:-1px}'],
+  ['short-clipped', '#recovery-clip{height:19px;overflow:hidden}'],
+  ['short-scroll-clipped', '#recovery-clip{height:19px;overflow:auto}'],
+  ['short-hidden', '#recovery-clip{opacity:0}'], ['short-zero', '#recovery-state{height:0!important;overflow:hidden}'],
+  ['tall-23-visible', '#recovery-state{height:40px!important;position:fixed;bottom:-17px}'],
+  ['tall-24-visible', '#recovery-state{height:40px!important;position:fixed;bottom:-16px}'],
+]) variants.set('/' + name, recoveryHtml.replace('</style>', style + '</style>'));
+for (const name of ['loading', 'access-denied', 'error', 'identity-visible', 'identity-hidden', 'marker-missing', 'marker-ambiguous', 'marker-hidden', 'marker-empty', 'marker-zero', 'marker-clipped', 'marker-partial', 'text-opacity', 'text-hidden', 'text-clipped', 'text-scroll-clipped', 'text-nested-visible', 'text-visible-with-hidden-decoration', 'text-visible-contents', 'text-visible-contents-clip-declaration']) {
+  let document = recoveryHtml;
+  if (!name.startsWith('identity-')) document = document.replace('<button id="label">Edit signal</button>', '');
+  if (name === 'identity-hidden') document = document.replace('id="label"', 'id="label" hidden');
+  if (name === 'marker-missing') document = document.replace(recoveryMarker, '');
+  if (name === 'marker-ambiguous') document = document.replace(recoveryMarker, recoveryMarker + recoveryMarker);
+  if (name === 'marker-hidden') document = document.replace('id="recovery-clip"', 'id="recovery-clip" style="opacity:0"');
+  if (name === 'marker-empty') document = document.replace('Loading the selected object', '');
+  if (name === 'marker-zero') document = document.replace('height:20px;line-height:20px', 'height:0;line-height:20px;overflow:hidden');
+  if (name === 'marker-clipped') document = document.replace('id="recovery-clip"', 'id="recovery-clip" style="height:19px;overflow:hidden"');
+  if (name === 'marker-partial') document = document.replace('height:20px;line-height:20px', 'height:20px;line-height:20px;position:fixed;bottom:-1px');
+  if (name === 'text-opacity') document = document.replace('Loading the selected object', '<span style="opacity:0">Loading the selected object</span>');
+  if (name === 'text-hidden') document = document.replace('Loading the selected object', '<span style="visibility:hidden">Loading the selected object</span>');
+  if (name === 'text-clipped') document = document.replace('Loading the selected object', '<span style="display:block;height:10px;overflow:hidden">Loading the selected object</span>');
+  if (name === 'text-scroll-clipped') document = document.replace('height:20px;line-height:20px', 'height:20px;line-height:40px;overflow:auto');
+  if (name === 'text-nested-visible') document = document.replace('Loading the selected object', '<span>Loading <span>the selected object</span></span>');
+  if (name === 'text-visible-with-hidden-decoration') document = document.replace('Loading the selected object', 'Loading the selected object<span hidden>Decorative detail</span>');
+  if (name === 'text-visible-contents') document = document.replace('Loading the selected object', '<span style="display:contents">Loading the selected object</span>');
+  if (name === 'text-visible-contents-clip-declaration') document = document.replace('Loading the selected object', '<span style="display:contents;overflow:hidden;width:1px;height:1px"><span>Loading the selected object</span></span>');
+  // The absent identity must not cause unrelated fixture script exceptions.
+  document = document.replace("document.querySelector('#label').addEventListener", "document.querySelector('#label')?.addEventListener");
+  variants.set('/recovery-' + name, document);
+}
 const uploadedRequests = [];
 let uploadMutation = null;
 const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
@@ -221,7 +255,7 @@ async function verify(name, config, check, setupError = null) {
     results.push({ name, passed: true, exitCode });
   } catch (error) { results.push({ name, passed: false, exitCode, error: error.message }); }
 }
-async function configurationFixtures() {
+async function configurationFixtures(recoveryOnly = false) {
   async function check(name, config, status, inspect = () => {}) {
     const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
     const configPath = join(directory, 'config.json');
@@ -254,6 +288,25 @@ async function configurationFixtures() {
     config.requiredCoverage = config.targets.map(row => ({ target: row.name, state: 'base', viewport: 'desktop', width: 1440 }));
     return config;
   }
+  for (const kind of ['primary-content-width', 'readable-heading', 'readable-canonical-identifier', 'no-character-wrapping', 'document-horizontal-overflow', 'initial-viewport-placement', 'clipping']) {
+    const config = full(); config.targets[0].geometryAssertions = config.targets[0].geometryAssertions.filter(row => row.kind !== kind);
+    await check('config-missing-' + kind, config, 'invalid', receipt => assert.equal(receipt.gapCounts['required-geometry-' + kind + '-missing'], 1));
+  }
+  const na = recoveryConfig('loading');
+  await check('config-identity-not-applicable', na, 'valid', receipt => assert.deepEqual(receipt.gapCounts, {}));
+  for (const [name, mutate] of [
+    ['other-kind', row => { row.kind = 'readable-heading'; }],
+    ['state', row => { row.applicability.state = 'ordinary'; }],
+    ['status', row => { row.applicability.status = 'skipped'; }],
+    ['reason', row => { row.applicability.reason = ''; }],
+    ['marker', row => { delete row.applicability.stateSelector; }],
+    ['allowance', row => { row.allowance = { reason: 'Must not waive N/A proof' }; }],
+    ['region', row => { delete row.selector; row.region = 'Fixture content'; }],
+  ]) {
+    const config = structuredClone(na); mutate(config.targets[0].geometryAssertions.find(row => row.id === 'identifier'));
+    await check('config-invalid-applicability-' + name, config, 'invalid');
+  }
+  if (recoveryOnly) return;
   for (const count of [270, 512]) await check(`config-${count}-shapes`, many(count), 'valid', receipt => { assert.equal(receipt.plannedCells, count); assert.equal(receipt.declaredShapes, count); assert.deepEqual(receipt.gapCounts, {}); });
   await check('config-513-shapes', many(513), 'invalid', receipt => assert.equal(receipt.error, 'configuration-invalid'));
   const missing = full(); missing.maxPageCount = 5;
@@ -314,6 +367,50 @@ async function configurationFixtures() {
     if (scope === 'state') config.targets[0].states = [{ name: 'misplaced', actions: [{ action: 'focus', selector: '#label' }], sessionStorage: seed }];
     await check(`config-session-misplaced-${scope}`, config, 'invalid');
   }
+}
+function recoveryConfig(name, state = name) {
+  const config = full('/recovery-' + name), assertions = config.targets[0].geometryAssertions;
+  assertions.find(row => row.kind === 'readable-canonical-identifier').applicability = { status: 'not-applicable', state, stateSelector: '#recovery-state', reason: 'The selected object is unavailable in this declared recovery state' };
+  assertions.find(row => row.kind === 'clipping').selector = '#heading';
+  config.fixtureDataShapes[0].conditionalDom = ['#layout', '#primary'];
+  return config;
+}
+async function recoveryGeometryFixtures() {
+  for (const [name, expected] of [['short-visible', false], ['short-partial', true], ['short-clipped', true], ['short-scroll-clipped', true], ['short-hidden', true], ['short-zero', true], ['tall-23-visible', true], ['tall-24-visible', false]]) {
+    const config = full('/' + name); config.targets[0].regions = [{ selector: '#recovery-state', role: 'primary-content', journey: 'edit-signal' }];
+    await verify(name, config, ({ receipt, report }) => {
+      const measured = report.pages[0].metrics.journey;
+      assert.equal(measured.findings.some(row => ['primary-journey-content-missing', 'primary-journey-outside-initial-viewport'].includes(row.rule)), expected);
+      if (name === 'short-visible') { assert.equal(receipt.formal.result, 'passed'); assert.equal(measured.regions[0].requiredVisibleHeight, 20); }
+      if (name.startsWith('tall-')) assert.equal(measured.regions[0].requiredVisibleHeight, 24);
+    });
+  }
+  for (const state of ['loading', 'access-denied', 'error']) await verify('identity-not-applicable-' + state, recoveryConfig(state), ({ receipt, report }) => {
+    assert.equal(receipt.formal.result, 'passed'); assert.equal(receipt.formal.coverage.gapCount, 0);
+    const row = report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier');
+    assert.equal(row.status, 'not-applicable'); assert.equal(row.measurements.matchCount, 0);
+    assert.equal(row.measurements.stateMatchCount, 1); assert.equal(row.measurements.stateVisible, true);
+    assert.equal(row.applicability.state, state); assert(!JSON.stringify(row).includes('Loading the selected object'));
+    for (const mutate of [row => { delete row.measurements.stateVisibleBox; }, row => { delete row.measurements.stateWrapping.fullyVisibleText; }, row => { row.measurements.matchCount = 1; }, row => { row.kind = 'readable-heading'; }]) {
+      const forged = structuredClone(report); mutate(forged.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier'));
+      assert.equal(formalDecision(forged, 0, { handoffRequirements: { gaps: [] } }, []).result, 'incomplete', 'An unmeasured N/A row cannot establish a formal pass');
+    }
+  });
+  for (const [name, expected] of [['identity-visible', 'failed'], ['identity-hidden', 'failed'], ['marker-missing', 'incomplete'], ['marker-ambiguous', 'incomplete'], ['marker-hidden', 'failed'], ['marker-empty', 'failed'], ['marker-zero', 'failed'], ['marker-clipped', 'failed'], ['marker-partial', 'failed']]) await verify('identity-not-applicable-' + name, recoveryConfig(name, 'loading'), ({ receipt, report }) => {
+    assert.equal(receipt.formal.result, expected);
+    const row = report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier');
+    assert.equal(row.status, expected); assert.notEqual(row.status, 'not-applicable');
+  });
+  const ordinary = recoveryConfig('loading'); delete ordinary.targets[0].geometryAssertions.find(row => row.id === 'identifier').applicability;
+  await verify('ordinary-missing-identity', ordinary, ({ receipt }) => assert.equal(receipt.formal.result, 'incomplete'));
+  const invalidIdentity = recoveryConfig('loading'); invalidIdentity.targets[0].geometryAssertions.find(row => row.id === 'identifier').selector = '[';
+  await verify('invalid-absent-identity-selector', invalidIdentity, ({ receipt, report }) => { assert.equal(receipt.formal.result, 'incomplete'); assert.equal(report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier').reason, 'invalid-identity-selector'); });
+  for (const name of ['text-opacity', 'text-hidden', 'text-clipped', 'text-scroll-clipped', 'text-nested-visible', 'text-visible-with-hidden-decoration', 'text-visible-contents', 'text-visible-contents-clip-declaration']) await verify('identity-not-applicable-' + name, recoveryConfig(name, 'loading'), ({ receipt, report }) => {
+    const positive = name.startsWith('text-nested-') || name.startsWith('text-visible-');
+    const row = report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier');
+    assert.equal(row.status, positive ? 'not-applicable' : 'failed', 'Container visibility cannot substitute for fully visible recovery text');
+    assert.equal(receipt.formal.result, positive ? 'passed' : 'failed');
+  });
 }
 async function sessionFixtures() {
   const config = full('/session-cell?identity=A');
@@ -497,7 +594,8 @@ async function uploadFixtures() {
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
 try {
-  if (process.argv.includes('--session-only')) await sessionFixtures();
+  if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
+  else if (process.argv.includes('--session-only')) await sessionFixtures();
   else {
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only') && !process.argv.includes('--config-only-selftest')) await sessionFixtures();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) await configurationFixtures();
@@ -505,6 +603,7 @@ try {
   if (!process.argv.includes('--capture-only')) await uploadFixtures();
   if (!process.argv.includes('--upload-only')) await capturePrivacy();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) {
+  await recoveryGeometryFixtures();
   await Promise.all([
     verify('formal-receipt', base, ({ exitCode, receipt }) => {
       assert.equal(exitCode, 0); assert(receipt.formal, 'The verifier must emit its measured formal receipt');
