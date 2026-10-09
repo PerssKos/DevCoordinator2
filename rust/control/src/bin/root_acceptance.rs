@@ -53,11 +53,23 @@ enum RootCommand {
         compose_subnet: Option<Ipv4Addr>,
         #[arg(long, default_value = "31000-31999", value_parser = parse_fixture_port_range)]
         port_range: String,
+        #[command(flatten)]
+        host_admission: Box<HostAdmissionArgs>,
     },
     Request {
         #[arg(long)]
         socket: PathBuf,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct HostAdmissionArgs {
+    /// Existing host installation admission directory; never a test target.
+    #[arg(long, requires = "admission_deadline_at")]
+    host_admission_runtime: Option<PathBuf>,
+    /// Deadline for accepted host tests to finish before fixture work starts.
+    #[arg(long, requires = "host_admission_runtime", value_parser = host_admission::parse_deadline)]
+    admission_deadline_at: Option<time::OffsetDateTime>,
 }
 
 #[derive(Clone)]
@@ -111,6 +123,8 @@ struct AcceptanceReport {
     failed: usize,
     caller: CallerIdentity,
     results: Vec<CaseResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_admission: Option<host_admission::Receipt>,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,6 +150,8 @@ macro_rules! ensure {
     };
 }
 
+#[path = "root_acceptance/host_admission.rs"]
+mod host_admission;
 #[path = "root_acceptance/storage.rs"]
 mod storage_cases;
 
@@ -187,7 +203,7 @@ impl World {
             std::process::id(),
             &sha256_hex(name.as_bytes())[..8]
         );
-        let mut world = Self {
+        let world = Self {
             harness: harness.clone(),
             base,
             repo,
@@ -204,7 +220,6 @@ impl World {
             isolated_docker_network: None,
             measurements: std::collections::BTreeMap::new(),
         };
-        world.start_daemon(None, None, None)?;
         Ok(world)
     }
 
@@ -375,12 +390,22 @@ impl World {
     }
 
     fn stop_daemon(&mut self, hard: bool) -> Result<(), String> {
-        let Some(mut child) = self.daemon.take() else {
+        let sandbox_unit = self.sandbox_unit_name();
+        let Some(child) = self.daemon.as_mut() else {
             return Ok(());
         };
         if self.sandboxed {
-            run_status_allow_absent("/usr/bin/systemctl", &["stop", &self.sandbox_unit_name()])?;
+            cleanup_status_allow_absent("/usr/bin/systemctl", &["stop", &sandbox_unit])?;
             child.wait().map_err(|error| error.to_string())?;
+            self.daemon = None;
+            return Ok(());
+        }
+        if child
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            self.daemon = None;
             return Ok(());
         }
         let signal = if hard { libc::SIGKILL } else { libc::SIGTERM };
@@ -398,11 +423,13 @@ impl World {
                 .map_err(|error| error.to_string())?
                 .is_some()
             {
+                self.daemon = None;
                 return Ok(());
             }
             if Instant::now() >= deadline {
                 child.kill().map_err(|error| error.to_string())?;
                 child.wait().map_err(|error| error.to_string())?;
+                self.daemon = None;
                 return Err("isolated daemon did not stop after its deadline".to_owned());
             }
             thread::sleep(Duration::from_millis(20));
@@ -572,24 +599,25 @@ impl World {
         if let Err(error) = self.stop_daemon(false) {
             failures.push(error);
         }
-        if let Some(mut child) = self.route_consumer.take() {
-            let _ = child.kill();
-            if let Err(error) = child.wait() {
-                failures.push(error.to_string());
+        if let Some(child) = self.route_consumer.as_mut() {
+            let stopped = stop_owned_child(child);
+            match stopped {
+                Ok(()) => self.route_consumer = None,
+                Err(error) => failures.push(error),
             }
         }
         for pattern in [
             format!("{}-*.service", self.unit_prefix),
             format!("{}-deploy*.service", self.unit_prefix.replace("-test", "")),
         ] {
-            match list_units(&pattern) {
+            match cleanup_list_units(&pattern) {
                 Ok(units) => {
                     for unit in units {
-                        if let Err(error) = run_status("systemctl", &["stop", &unit]) {
+                        if let Err(error) = cleanup_status("systemctl", &["stop", &unit]) {
                             failures.push(error);
                         }
                         if let Err(error) =
-                            run_status_allow_absent("systemctl", &["reset-failed", &unit])
+                            cleanup_status_allow_absent("systemctl", &["reset-failed", &unit])
                         {
                             failures.push(error);
                         }
@@ -598,16 +626,19 @@ impl World {
                 Err(error) => failures.push(error),
             }
         }
-        for unit in std::mem::take(&mut self.cleanup_fixture_units) {
-            if let Err(error) = run_status_allow_absent("systemctl", &["stop", &unit]) {
+        for unit in &self.cleanup_fixture_units {
+            if let Err(error) = cleanup_status_allow_absent("systemctl", &["stop", unit]) {
                 failures.push(error);
             }
         }
-        match docker_ids("instance", &self.unit_prefix) {
+        match cleanup_container_ids(&format!(
+            "label=devcoordinator2.instance={}",
+            self.unit_prefix
+        )) {
             Ok(ids) if !ids.is_empty() => {
                 let mut arguments = vec!["rm", "-f", "-v"];
                 arguments.extend(ids.iter().map(String::as_str));
-                if let Err(error) = run_status("docker", &arguments) {
+                if let Err(error) = cleanup_status("docker", &arguments) {
                     failures.push(error);
                 }
             }
@@ -617,8 +648,8 @@ impl World {
         if let Err(error) = self.cleanup_compose() {
             failures.push(error);
         }
-        if let Some(network) = self.isolated_docker_network.take() {
-            let owned = Command::new("docker")
+        if let Some(network) = self.isolated_docker_network.clone() {
+            let owned = cleanup_command("docker")
                 .args([
                     "network",
                     "inspect",
@@ -632,8 +663,9 @@ impl World {
                     if output.status.success()
                         && String::from_utf8_lossy(&output.stdout).trim() == self.unit_prefix =>
                 {
-                    if let Err(error) = run_status("docker", &["network", "rm", &network]) {
-                        failures.push(error);
+                    match cleanup_status("docker", &["network", "rm", &network]) {
+                        Ok(()) => self.isolated_docker_network = None,
+                        Err(error) => failures.push(error),
                     }
                 }
                 _ => {
@@ -641,14 +673,14 @@ impl World {
                 }
             }
         }
-        for unit in std::mem::take(&mut self.cleanup_storage_mount_units) {
-            if let Err(error) = run_status_allow_absent("systemctl", &["stop", &unit]) {
+        for unit in &self.cleanup_storage_mount_units {
+            if let Err(error) = cleanup_status_allow_absent("systemctl", &["stop", unit]) {
                 failures.push(error);
             }
         }
-        for volume in std::mem::take(&mut self.cleanup_volumes) {
-            let output = Command::new("docker")
-                .args(["volume", "rm", "--force", &volume])
+        for volume in &self.cleanup_volumes {
+            let output = cleanup_command("docker")
+                .args(["volume", "rm", "--force", volume])
                 .output();
             match output {
                 Ok(output)
@@ -665,7 +697,8 @@ impl World {
                 }
             }
         }
-        if !preserve_files
+        if failures.is_empty()
+            && !preserve_files
             && self.base.join(OWNERSHIP_MARKER).is_file()
             && let Err(error) = fs::remove_dir_all(&self.base)
         {
@@ -722,12 +755,16 @@ impl World {
             "label=com.docker.compose.project.working_dir={}",
             self.repo.display()
         );
-        let containers = command_stdout(
+        let containers = cleanup_stdout(
             "docker",
             &["ps", "-aq", "--no-trunc", "--filter", &working_directory],
         )?;
         for container in containers.lines().filter(|id| !id.is_empty()) {
-            let labels = docker_inspect_json(container, "{{json .Config.Labels}}")?;
+            let labels: Value = serde_json::from_str(&cleanup_stdout(
+                "docker",
+                &["inspect", "--format", "{{json .Config.Labels}}", container],
+            )?)
+            .map_err(|e| e.to_string())?;
             if let Some(project) = labels["com.docker.compose.project"].as_str() {
                 projects.insert(project.to_owned());
             }
@@ -735,21 +772,103 @@ impl World {
         for project in projects {
             let filter = format!("label=com.docker.compose.project={project}");
             let containers =
-                command_stdout("docker", &["ps", "-aq", "--no-trunc", "--filter", &filter])?;
+                cleanup_stdout("docker", &["ps", "-aq", "--no-trunc", "--filter", &filter])?;
             for container in containers.lines().filter(|id| !id.is_empty()) {
-                let labels = docker_inspect_json(container, "{{json .Config.Labels}}")?;
+                let labels: Value = serde_json::from_str(&cleanup_stdout(
+                    "docker",
+                    &["inspect", "--format", "{{json .Config.Labels}}", container],
+                )?)
+                .map_err(|e| e.to_string())?;
                 ensure!(
                     labels["com.docker.compose.project.working_dir"].as_str() == self.repo.to_str(),
                     "refusing to remove a Compose container outside the fixture"
                 );
-                run_status("docker", &["rm", "-f", "-v", container])?;
+                cleanup_status("docker", &["rm", "-f", "-v", container])?;
             }
             for resource in ["network", "volume"] {
-                let ids = command_stdout("docker", &[resource, "ls", "-q", "--filter", &filter])?;
+                let ids = cleanup_stdout("docker", &[resource, "ls", "-q", "--filter", &filter])?;
                 for id in ids.lines().filter(|id| !id.is_empty()) {
-                    run_status("docker", &[resource, "rm", id])?;
+                    cleanup_status("docker", &[resource, "rm", id])?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn runtime_quiescent(&mut self) -> Result<(), String> {
+        for child in [&mut self.daemon, &mut self.route_consumer] {
+            if let Some(process) = child.as_mut() {
+                ensure!(
+                    process.try_wait().map_err(|e| e.to_string())?.is_some(),
+                    "owned child is still running"
+                );
+                *child = None;
+            }
+        }
+        let mut units = BTreeSet::new();
+        for pattern in [
+            format!("{}-*.service", self.unit_prefix),
+            format!("{}-deploy*.service", self.unit_prefix.replace("-test", "")),
+        ] {
+            units.extend(cleanup_list_units(&pattern)?);
+        }
+        if self.sandboxed {
+            units.insert(self.sandbox_unit_name());
+        }
+        units.extend(self.cleanup_fixture_units.iter().cloned());
+        units.extend(self.cleanup_storage_mount_units.iter().cloned());
+        for unit in units {
+            let properties = cleanup_stdout(
+                "systemctl",
+                &[
+                    "show",
+                    &unit,
+                    "-p",
+                    "LoadState",
+                    "-p",
+                    "ActiveState",
+                    "-p",
+                    "MainPID",
+                    "-p",
+                    "ControlPID",
+                    "-p",
+                    "ControlGroup",
+                ],
+            )?;
+            if let Some(group) = stopped_unit_cgroup(&unit, &properties)? {
+                let group = Path::new(group);
+                ensure!(
+                    group.is_absolute()
+                        && group.components().all(|component| matches!(
+                            component,
+                            std::path::Component::RootDir | std::path::Component::Normal(_)
+                        )),
+                    "owned unit cgroup is invalid"
+                );
+                let events = Path::new("/sys/fs/cgroup")
+                    .join(group.strip_prefix("/").unwrap())
+                    .join("cgroup.events");
+                match fs::read_to_string(events) {
+                    Ok(value) => ensure!(
+                        value.lines().any(|line| line == "populated 0"),
+                        "owned unit cgroup still has processes"
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+        }
+        for filter in [
+            format!("label=devcoordinator2.instance={}", self.unit_prefix),
+            format!(
+                "label=com.docker.compose.project.working_dir={}",
+                self.repo.display()
+            ),
+        ] {
+            ensure!(
+                cleanup_container_ids(&filter)?.is_empty(),
+                "owned fixture containers remain"
+            );
         }
         Ok(())
     }
@@ -1045,26 +1164,108 @@ fn run_status(program: &str, arguments: &[&str]) -> Result<(), String> {
     }
 }
 
-fn run_status_allow_absent(program: &str, arguments: &[&str]) -> Result<(), String> {
-    let output = Command::new(program)
+fn cleanup_command(program: &str) -> Command {
+    let mut command = Command::new("/usr/bin/timeout");
+    command.args(["--kill-after=5s", "30s", program]);
+    command
+}
+
+fn stopped_unit_cgroup<'a>(unit: &str, properties: &'a str) -> Result<Option<&'a str>, String> {
+    let properties: BTreeMap<_, _> = properties
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    ensure!(
+        matches!(properties.get("LoadState"), Some(&"loaded" | &"not-found")),
+        "owned unit load state is unknown"
+    );
+    ensure!(
+        matches!(properties.get("ActiveState"), Some(&"inactive" | &"failed")),
+        "owned unit is not stopped"
+    );
+    // Services expose both PID properties; mounts expose only ControlPID.
+    // Automounts have no process/cgroup properties. Missing service evidence
+    // must never become proof that an owned actor stopped.
+    if unit.ends_with(".service") {
+        ensure!(
+            properties.get("MainPID") == Some(&"0"),
+            "owned service PID is not zero"
+        );
+    }
+    if unit.ends_with(".service") || unit.ends_with(".mount") {
+        ensure!(
+            properties.get("ControlPID") == Some(&"0"),
+            "owned unit control PID is not zero"
+        );
+        let group = properties
+            .get("ControlGroup")
+            .ok_or("owned unit cgroup evidence is missing")?;
+        return Ok((!group.is_empty()).then_some(*group));
+    }
+    ensure!(unit.ends_with(".automount"), "unknown owned unit type");
+    Ok(None)
+}
+
+fn stop_owned_child(child: &mut Child) -> Result<(), String> {
+    if child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        child.kill().map_err(|e| e.to_string())?;
+        child.wait().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn cleanup_stdout(program: &str, arguments: &[&str]) -> Result<String, String> {
+    let output = cleanup_command(program)
         .args(arguments)
         .output()
-        .map_err(|error| format!("cannot run {program}: {error}"))?;
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        output.status.success(),
+        "owned cleanup command failed or exceeded its deadline"
+    );
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn cleanup_status(program: &str, arguments: &[&str]) -> Result<(), String> {
+    cleanup_stdout(program, arguments).map(|_| ())
+}
+
+fn cleanup_status_allow_absent(program: &str, arguments: &[&str]) -> Result<(), String> {
+    let output = cleanup_command(program)
+        .args(arguments)
+        .output()
+        .map_err(|e| e.to_string())?;
     let error = String::from_utf8_lossy(&output.stderr);
-    if output.status.success()
-        || error.contains("not loaded")
-        || error.contains("not found")
-        || error.contains("No such")
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "{program} {:?} exited {}: {}",
-            arguments,
-            output.status,
-            error.chars().take(1000).collect::<String>()
-        ))
-    }
+    ensure!(
+        output.status.success()
+            || error.contains("not loaded")
+            || error.contains("not found")
+            || error.contains("No such"),
+        "owned cleanup command failed or exceeded its deadline"
+    );
+    Ok(())
+}
+
+fn cleanup_list_units(pattern: &str) -> Result<Vec<String>, String> {
+    Ok(cleanup_stdout(
+        "systemctl",
+        &["list-units", "--all", "--plain", "--no-legend", pattern],
+    )?
+    .lines()
+    .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+    .collect())
+}
+
+fn cleanup_container_ids(filter: &str) -> Result<Vec<String>, String> {
+    Ok(cleanup_stdout(
+        "docker",
+        &["ps", "--all", "--no-trunc", "--quiet", "--filter", filter],
+    )?
+    .lines()
+    .map(str::trim)
+    .filter(|line| !line.is_empty())
+    .map(str::to_owned)
+    .collect())
 }
 
 fn list_units(pattern: &str) -> Result<Vec<String>, String> {
@@ -7956,6 +8157,32 @@ fn sha256_hex(payload: &[u8]) -> String {
         .collect()
 }
 
+struct OwnedCaseResult {
+    result: Result<(), String>,
+    cleanup_failed: bool,
+}
+
+fn run_owned_case<T>(
+    owner: &mut T,
+    test: impl FnOnce(&mut T) -> Result<(), String>,
+    cleanup: impl FnOnce(&mut T, bool) -> Result<(), String>,
+) -> OwnedCaseResult {
+    let tested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| test(owner)))
+        .unwrap_or_else(|_| Err("root acceptance case panicked".into()));
+    let cleaned = cleanup(owner, tested.is_err());
+    let cleanup_failed = cleaned.is_err();
+    let result = match (tested, cleaned) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(cleanup)) => Err(format!("cleanup failed: {cleanup}")),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; cleanup failed: {cleanup}")),
+    };
+    OwnedCaseResult {
+        result,
+        cleanup_failed,
+    }
+}
+
 fn validate_run_inputs(
     daemon: &Path,
     executor: &Path,
@@ -8045,6 +8272,8 @@ fn run_suite(
     selected: Vec<String>,
     compose_subnet: Option<Ipv4Addr>,
     port_range: String,
+    host_admission_runtime: Option<PathBuf>,
+    admission_deadline_at: Option<time::OffsetDateTime>,
 ) -> Result<AcceptanceReport, String> {
     let ephemeral = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
         .map_err(|error| format!("cannot inspect host ephemeral ports: {error}"))?;
@@ -8072,10 +8301,42 @@ fn run_suite(
             "unknown root-acceptance case: {name}"
         );
     }
+    let mut host_admission = match (host_admission_runtime, admission_deadline_at) {
+        (None, None) => None,
+        (Some(directory), Some(deadline)) => {
+            let mut guard = host_admission::Guard::begin(&directory)?;
+            if let Err(error) = guard.wait(deadline) {
+                let released = guard.finish();
+                if let Some(parent) = report.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                write_private_json(
+                    &report,
+                    &json!({
+                        "schema": 1, "suite": "devcoordinator2-rust-root-acceptance",
+                        "status": "incomplete", "cases": 0, "passed": 0, "failed": 0,
+                        "results": [], "caller": &caller, "host_admission": &guard.receipt,
+                    }),
+                )?;
+                return match released {
+                    Ok(()) => Err(error),
+                    Err(release) => Err(format!("{error}; admission release failed: {release}")),
+                };
+            }
+            Some(guard)
+        }
+        _ => return Err("host admission runtime and deadline must be supplied together".into()),
+    };
     let mut results = Vec::new();
     for (name, test) in available {
         if !selected.is_empty() && !selected.contains(name) {
             continue;
+        }
+        if host_admission
+            .as_ref()
+            .is_some_and(|guard| guard.interrupted())
+        {
+            break;
         }
         let started = Instant::now();
         let mut world = match World::new(&harness, name) {
@@ -8091,17 +8352,35 @@ fn run_suite(
                 continue;
             }
         };
-        let tested = test(&mut world);
+        let outcome = run_owned_case(
+            &mut world,
+            |world| {
+                world.start_daemon(None, None, None)?;
+                test(world)
+            },
+            World::cleanup,
+        );
+        if outcome.cleanup_failed
+            && let Some(guard) = host_admission.as_mut()
+        {
+            host_admission::recover_owned_runtime(
+                guard,
+                &mut world,
+                |world| world.cleanup(true),
+                World::runtime_quiescent,
+                |receipt| {
+                    write_private_json(
+                        &report,
+                        &json!({
+                            "schema": 1, "suite": "devcoordinator2-rust-root-acceptance", "status": "incomplete",
+                            "cases": results.len(), "active_case": name, "cleanup": "held", "host_admission": receipt,
+                        }),
+                    )
+                },
+            );
+        }
         let measurements = std::mem::take(&mut world.measurements);
-        let preserve = tested.is_err();
-        let cleaned = world.cleanup(preserve);
-        let outcome = match (tested, cleaned) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) => Err(error),
-            (Ok(()), Err(cleanup)) => Err(format!("cleanup failed: {cleanup}")),
-            (Err(error), Err(cleanup)) => Err(format!("{error}; cleanup failed: {cleanup}")),
-        };
-        results.push(match outcome {
+        results.push(match outcome.result {
             Ok(()) => CaseResult {
                 name: name.to_owned(),
                 status: "passed",
@@ -8117,20 +8396,41 @@ fn run_suite(
                 measurements,
             },
         });
+        // Do not start another scenario after a cleanup failure. Dropping the
+        // retained World, including its last best-effort cleanup, happens while
+        // the admission lease is still held, before the final release below.
+        drop(world);
+        if outcome.cleanup_failed {
+            break;
+        }
     }
     let failed = results
         .iter()
         .filter(|result| result.status == "failed")
         .count();
+    let admission_result = host_admission
+        .as_mut()
+        .map(|guard| guard.finish())
+        .transpose();
+    let interrupted = host_admission
+        .as_ref()
+        .is_some_and(|guard| guard.interrupted());
     let acceptance = AcceptanceReport {
         schema: 1,
         suite: "devcoordinator2-rust-root-acceptance",
-        status: if failed == 0 { "passed" } else { "failed" },
+        status: if interrupted || admission_result.is_err() {
+            "incomplete"
+        } else if failed == 0 {
+            "passed"
+        } else {
+            "failed"
+        },
         cases: results.len(),
         passed: results.len() - failed,
         failed,
         caller,
         results,
+        host_admission: host_admission.as_ref().map(|guard| guard.receipt.clone()),
     };
     if let Some(parent) = report.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -8140,6 +8440,7 @@ fn run_suite(
         serde_json::to_vec_pretty(&acceptance).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
+    admission_result?;
     Ok(acceptance)
 }
 
@@ -8171,6 +8472,7 @@ fn main() -> ExitCode {
             case,
             compose_subnet,
             port_range,
+            host_admission,
         } => run_suite(
             daemon,
             executor,
@@ -8181,6 +8483,8 @@ fn main() -> ExitCode {
             case,
             compose_subnet,
             port_range,
+            host_admission.host_admission_runtime,
+            host_admission.admission_deadline_at,
         )
         .map(|result| {
             println!(
@@ -8195,7 +8499,11 @@ fn main() -> ExitCode {
                     "report": report,
                 })
             );
-            Some(result.failed)
+            Some(if result.status == "passed" {
+                0
+            } else {
+                result.failed.max(1)
+            })
         }),
     };
     match outcome {
@@ -8214,6 +8522,50 @@ mod tests {
 
     #[test]
     fn fixture_inputs_are_validated_before_runtime_work() {
+        let stopped =
+            "LoadState=loaded\nActiveState=inactive\nMainPID=0\nControlPID=0\nControlGroup=";
+        assert_eq!(stopped_unit_cgroup("owned.service", stopped).unwrap(), None);
+        for missing in [
+            "LoadState=loaded\n",
+            "ActiveState=inactive\n",
+            "MainPID=0\n",
+            "ControlPID=0\n",
+            "ControlGroup=",
+        ] {
+            assert!(
+                stopped_unit_cgroup("owned.service", &stopped.replace(missing, "")).is_err(),
+                "accepted missing {missing}"
+            );
+        }
+        for (from, to) in [
+            ("MainPID=0", "MainPID=42"),
+            ("ControlPID=0", "ControlPID=42"),
+            ("inactive", "active"),
+            ("loaded", "error"),
+        ] {
+            assert!(stopped_unit_cgroup("owned.service", &stopped.replace(from, to)).is_err());
+        }
+        assert_eq!(
+            stopped_unit_cgroup("owned.service", &stopped.replace("loaded", "not-found")).unwrap(),
+            None
+        );
+        assert_eq!(
+            stopped_unit_cgroup("owned.mount", &stopped.replace("MainPID=0\n", "")).unwrap(),
+            None
+        );
+        assert_eq!(
+            stopped_unit_cgroup("owned.automount", "LoadState=loaded\nActiveState=inactive")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            stopped_unit_cgroup(
+                "owned.service",
+                &format!("{stopped}/system.slice/owned.service")
+            )
+            .unwrap(),
+            Some("/system.slice/owned.service")
+        );
         for invalid in [
             "1-90",
             "4000-2000",
@@ -8263,6 +8615,8 @@ mod tests {
             Vec::new(),
             None,
             "31000-31999".into(),
+            None,
+            None,
         );
         assert_eq!(result.unwrap_err(), "fixture caller must not be root");
         assert!(!work.exists() && !report.exists());
@@ -8287,6 +8641,46 @@ mod tests {
         assert!(
             matches!(parsed.command, RootCommand::Run { caller_user: Some(user), .. } if user == "daemon")
         );
+        let base = [
+            "root-acceptance",
+            "run",
+            "--daemon",
+            "/daemon",
+            "--executor",
+            "/executor",
+            "--fixture",
+            "/fixture",
+            "--work-root",
+            "/scratch",
+            "--report",
+            "/report",
+        ];
+        for invalid in [
+            vec!["--host-admission-runtime", "/runtime"],
+            vec!["--admission-deadline-at", "2100-01-01T00:00:00Z"],
+            vec![
+                "--host-admission-runtime",
+                "/runtime",
+                "--admission-deadline-at",
+                "invalid",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(base.into_iter().chain(invalid)).is_err());
+        }
+        let configured = Cli::try_parse_from(base.into_iter().chain([
+            "--host-admission-runtime",
+            "/runtime",
+            "--admission-deadline-at",
+            "2100-01-01T00:00:00Z",
+        ]))
+        .unwrap();
+        assert!(matches!(
+            configured.command,
+            RootCommand::Run {
+                host_admission,
+                ..
+            } if host_admission.host_admission_runtime.is_some() && host_admission.admission_deadline_at.is_some()
+        ));
     }
 
     #[test]

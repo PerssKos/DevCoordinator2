@@ -215,6 +215,43 @@ that the selected subnet overlaps neither host routes nor existing Docker
 networks before running. This does not change Docker's global pools or reuse
 shared networks; each sequential scenario retains its owned-network cleanup.
 
+On a shared host, add `--host-admission-runtime /run/devcoordinator2` and
+`--admission-deadline-at <RFC3339 timestamp>` to the direct root command. The
+pair uses the existing installation admission lease, refuses a live foreign
+lease, and waits for already accepted tests through their activity events.
+The installed daemon remains available; it does not execute or validate the
+candidate. No fixture daemon, container or network starts before the drain.
+Missing activity is an error, never proof of an idle host.
+
+The lease remains held through the scenarios and their owned cleanup. SIGINT
+or SIGTERM stops admission waiting, or lets the current bounded case finish
+and clean up before skipping further cases. An interrupted suite is incomplete.
+The report distinguishes observed `reopened` admission from `foreign-drain`;
+a successful nonce-conditional release alone is not proof that admission opened.
+Any cleanup error stops later cases and preserves a failed result. The same
+harness retains its exact child, unit and container identities. If independent
+observation cannot prove those actors stopped, it makes one ordinary cleanup
+retry, with each external cleanup command bounded to 30 seconds plus a 5-second
+kill grace, then writes an incomplete `cleanup-held` receipt and keeps the real
+lease owner alive. SIGINT/SIGTERM do not release that hold. After the specific
+cleanup obstruction is repaired, send SIGUSR1 to that exact harness process to
+request another owned cleanup and quiescence check; the signal itself is never
+evidence of cleanup. Only a successful check permits release, and the original
+case remains failed. An artifact-only removal error with proven stopped actors
+does not hold admission, but still fails the case.
+
+Keep the supervisor's stop grace long enough for the current bounded case and
+cleanup; do not configure an automatic forced kill of a `cleanup-held` owner.
+Preserve its report, exact resource handles and observation path until recovery.
+A reopened admission observation alone is not a cleanup receipt.
+
+This test-only option preserves the existing schema-1 crash limitation: SIGKILL
+or machine failure can leave fixture units while the next start removes a dead
+owner's stale lease. Preserve that run as incomplete, reconcile its marker-bound
+fixtures through the reviewed host workflow, and do not claim crash protection.
+The option does not change production lease recovery, service permissions or
+the isolated harness's namespace and source requirements.
+
 ## Imported source provenance
 
 The reusable agent assets were imported as a current-tree snapshot from the
