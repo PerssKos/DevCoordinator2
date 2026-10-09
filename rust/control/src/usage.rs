@@ -3039,13 +3039,17 @@ pub(crate) fn run_probe_with_limit(
     let stdout = child.stdout.take().ok_or("source_unavailable")?;
     let stderr = child.stderr.take().ok_or("source_unavailable")?;
     let output_overflow = Arc::new(AtomicBool::new(false));
+    let stdout_complete = Arc::new(AtomicBool::new(false));
+    let stderr_complete = Arc::new(AtomicBool::new(false));
     let stdout = {
         let output_overflow = output_overflow.clone();
-        thread::spawn(move || read_capture(stdout, output_limit, output_overflow))
+        let complete = stdout_complete.clone();
+        thread::spawn(move || read_capture(stdout, output_limit, output_overflow, complete))
     };
     let stderr = {
         let output_overflow = output_overflow.clone();
-        thread::spawn(move || read_capture(stderr, output_limit, output_overflow))
+        let complete = stderr_complete.clone();
+        thread::spawn(move || read_capture(stderr, output_limit, output_overflow, complete))
     };
     let status = loop {
         if output_overflow.load(Ordering::Acquire) {
@@ -3054,8 +3058,20 @@ pub(crate) fn run_probe_with_limit(
             let _ = stderr.join();
             return Err("source_unavailable".into());
         }
-        if let Some(status) = child.try_wait().map_err(|_| "source_unavailable")? {
-            break status;
+        let child_status = match child.try_wait() {
+            Ok(status) => status,
+            Err(_) => {
+                kill_probe_group(&mut child);
+                let _ = stdout.join();
+                let _ = stderr.join();
+                return Err("source_unavailable".into());
+            }
+        };
+        if child_status.is_some()
+            && stdout_complete.load(Ordering::Acquire)
+            && stderr_complete.load(Ordering::Acquire)
+        {
+            break child_status.expect("child status was checked");
         }
         let now = Instant::now();
         if now >= deadline {
@@ -3103,6 +3119,7 @@ fn read_capture(
     mut source: impl Read,
     limit: usize,
     output_overflow: Arc<AtomicBool>,
+    complete: Arc<AtomicBool>,
 ) -> io::Result<(Vec<u8>, bool)> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
@@ -3110,6 +3127,7 @@ fn read_capture(
     loop {
         let read = source.read(&mut buffer)?;
         if read == 0 {
+            complete.store(true, Ordering::Release);
             return Ok((output, truncated));
         }
         let remaining = limit.saturating_sub(output.len());
@@ -3117,6 +3135,7 @@ fn read_capture(
         if read > remaining {
             truncated = true;
             output_overflow.store(true, Ordering::Release);
+            complete.store(true, Ordering::Release);
             return Ok((output, truncated));
         }
     }
@@ -4169,15 +4188,26 @@ pub(crate) mod tests {
         // A provider may leave a child holding its output pipe. Deadline and
         // output limits must terminate that probe rather than wait for the child.
         let mut failures = Vec::new();
-        for (name, output, budget, expected) in [
-            ("deadline", "", Duration::from_millis(150), "query_budget_exhausted"),
-            ("output", "head -c 4096 /dev/zero;", Duration::from_secs(2), "source_unavailable"),
+        for (name, tail, budget, expected) in [
+            ("deadline", "wait", Duration::from_millis(150), "query_budget_exhausted"),
+            (
+                "parent-exits",
+                "exit 0",
+                Duration::from_millis(150),
+                "query_budget_exhausted",
+            ),
+            (
+                "output",
+                "head -c 4096 /dev/zero; wait",
+                Duration::from_secs(2),
+                "source_unavailable",
+            ),
         ] {
             let child_file = temporary.path().join(format!("{name}.child"));
             let quoted = format!("'{}'", child_file.display().to_string().replace('\'', "'\"'\"'"));
             let mut command = Command::new("/bin/sh");
             command
-                .args(["-c", &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {output} wait")])
+                .args(["-c", &format!("sleep 1 & printf '%s' \"$!\" > {quoted}; {tail}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
