@@ -2446,6 +2446,43 @@ function refreshEvidenceSelection() {
   loadEvidenceThumbnails(state.evidenceRun, main); loadMainEvidenceImage(state.evidenceRun, screenshot);
 }
 
+function mergeEvidencePage(target, page) {
+  for (const bundle of page.bundles || []) {
+    const key = [bundle.formal_run_id, bundle.check, bundle.phase, bundle.case || ''].join('\u0000');
+    const existing = target.bundles.find((item) => [item.formal_run_id, item.check, item.phase, item.case || ''].join('\u0000') === key);
+    if (!existing) target.bundles.push({ ...bundle, cells: [...(bundle.cells || [])] });
+    else for (const cell of bundle.cells || []) if (!existing.cells.some((item) => item.cell_id === cell.cell_id)) existing.cells.push(cell);
+  }
+  for (const feedback of page.feedback || []) {
+    const existing = target.feedback.find((item) => item.feedback_id === feedback.feedback_id);
+    if (!existing) target.feedback.push({ ...feedback, comments: [...(feedback.comments || [])] });
+    else for (const comment of feedback.comments || []) if (!existing.comments.some((item) => item.comment_id === comment.comment_id)) existing.comments.push(comment);
+  }
+  for (const issue of page.issues || []) {
+    if (!target.issues.some((item) => item.check === issue.check && item.phase === issue.phase && item.case === issue.case && item.code === issue.code)) target.issues.push(issue);
+  }
+  target.status = page.status || target.status;
+  target.repository_id ||= page.repository_id;
+  target.worktree_id ||= page.worktree_id;
+  target.image_count = Math.max(target.image_count || 0, page.image_count || 0);
+  target.issues_truncated ||= !!page.issues_truncated;
+}
+
+async function loadAllTestEvidence(api, operation, params, first) {
+  const result = { ...first, bundles: [], feedback: [], issues: [], next_offset: null };
+  let page = first;
+  let offset = Number(params.offset || 0);
+  for (;;) {
+    mergeEvidencePage(result, page);
+    if (page.next_offset == null) break;
+    const next = Number(page.next_offset);
+    if (!Number.isInteger(next) || next <= offset) throw new Error('Visual evidence pagination did not advance. Refresh to retry.');
+    offset = next;
+    page = await api(operation, { ...params, offset, limit: 32 });
+  }
+  return result;
+}
+
 async function viewTestEvidence(reference) {
   const [runId, queryString] = reference.split('?');
   const requestedImage = new URLSearchParams(queryString || '').get('image');
@@ -2464,7 +2501,12 @@ async function viewTestEvidence(reference) {
     run = { ...retained.context, isEarlierEvidence: true };
   }
   if (state.evidenceRunId !== runId) resetEvidenceImages();
-  const data = retained?.evidence || await api('test.evidence.get', { path: run.worktree_path, run_id: run.run_id });
+  const operation = retained?.evidence ? 'test.evidence.lookup' : 'test.evidence.get';
+  const request = retained?.evidence
+    ? { run_id: runId, image_id: requestedImage || undefined, worktree_id: requestedWorktree || undefined, offset: 0, limit: 32 }
+    : { path: run.worktree_path, run_id: run.run_id, offset: 0, limit: 32 };
+  const first = retained?.evidence || await api(operation, request);
+  const data = await loadAllTestEvidence(api, operation, request, first.evidence || first);
   state.evidenceRunId = runId; state.evidenceRun = run; state.evidenceData = data;
   state.evidenceSteps = evidenceSteps(data);
   if (requestedImage) {

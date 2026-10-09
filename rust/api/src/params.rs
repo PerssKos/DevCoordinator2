@@ -582,6 +582,12 @@ pub struct EvidenceLookup {
     pub image_id: Option<String>,
     #[schemars(regex(pattern = r"^w[0-9a-f]{16}$"))]
     pub worktree_id: Option<String>,
+    #[serde(default)]
+    #[schemars(range(min = 0))]
+    pub offset: u32,
+    #[serde(default = "default_evidence_limit")]
+    #[schemars(range(min = 1, max = 32))]
+    pub limit: u8,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
