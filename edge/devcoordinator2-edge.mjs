@@ -29,6 +29,11 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const ROLE_RANK = { access: 0, viewer: 1, operator: 2, administrator: 3 };
 export const LOCAL_AGENT_HEADER = 'x-devcoordinator2-agent';
 export const LOCAL_AGENT_HEADER_VALUE = '1';
+const PUBLIC_PROJECT_ASSETS = new Set(['/sw.js', '/manifest.webmanifest']);
+
+export function isPublicProjectAsset(pathname) {
+  return PUBLIC_PROJECT_ASSETS.has(pathname);
+}
 
 function env(name, fallback = '') {
   const value = process.env[name];
@@ -313,19 +318,24 @@ export async function createEdge(config, { log = console } = {}) {
     const identity = identityOf(req);
     const expectedOrigin = `${scheme}://${String(req.headers.host || host).toLowerCase()}`;
     const localAgent = trustedLoopbackAgent(req, expectedOrigin, config.trustLocalAgent);
-    const decision = authorize(doc, route, identity?.email || null, localAgent);
+    const publicProjectAsset = isPublicProjectAsset(url.pathname)
+      && ['GET', 'HEAD'].includes(req.method || 'GET');
+    const decision = publicProjectAsset
+      ? { allowed: true, role: 'static-asset' }
+      : authorize(doc, route, identity?.email || null, localAgent);
     if (!decision.allowed) {
       if (!identity) return redirect(res, `/auth/login?rt=${encodeURIComponent(url.pathname + url.search)}`);
       return writePage(res, pages.forRequest(req).renderDenied({ email: identity.email, resource: host, sessionSet: true }));
     }
-    return proxy.forward(req, res, target(route, host, identity, localAgent));
+    return proxy.forward(req, res, target(route, host, identity, localAgent, publicProjectAsset));
   }
 
   // Authenticated routes tell the upstream who signed in (verified identity)
   // and which route it came through; public routes stay attribution-free.
-  function target(route, host, identity, localAgent = false) {
+  function target(route, host, identity, localAgent = false, publicProjectAsset = false) {
     return { port: route.port, publicHost: host, slug: route.label, route,
       localAgent,
+      publicProjectAsset,
       localAttribution: { routeId: `${route.deployment_id}/${route.component}`, email: identity?.email ?? null } };
   }
 
