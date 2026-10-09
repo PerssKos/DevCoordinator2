@@ -318,6 +318,7 @@ async function configurationFixtures() {
 async function sessionFixtures() {
   const config = full('/session-cell?identity=A');
   config.viewports.push({ name: 'mobile', width: 390, height: 900 }); config.maxPageCount = 4;
+  config.execution = { maxConcurrency: 4 };
   config.cookies = [{ name: 'sess', value: 'SESSION_PRIVATE_GLOBAL', url: target.url }];
   config.authProfiles = ['A', 'B'].map(identity => ({
     name: `session-${identity}`, url: new URL(`/session-login?identity=${identity}`, target.url).href,
@@ -328,6 +329,7 @@ async function sessionFixtures() {
   }));
   config.targets = ['A', 'B'].map(identity => ({ ...config.targets[0], name: `session-${identity}`,
     url: new URL(`/session-cell?identity=${identity}`, target.url).href, authProfile: `session-${identity}`,
+    execution: { parallelSafe: true, resourceLocks: [] },
     waitFor: { selector: '#heading[data-session="ready"]', timeoutMs: 500 },
   }));
   config.fixtureDataShapes = config.targets.map(row => ({ ...config.fixtureDataShapes[0], id: row.name, target: row.name, route: new URL(row.url).pathname + new URL(row.url).search }));
@@ -336,6 +338,8 @@ async function sessionFixtures() {
     assert.equal(receipt.formal.result, 'passed');
     assert.deepEqual(sessionObservations.slice(-4).map(row => [row.identity, row.present, row.cookie]).sort(), [['A','true','true'],['A','true','true'],['B','true','true'],['B','true','true']]);
     assert(report.pages.every(page => page.outcome === 'checked'));
+    assert(report.pages.every(page => page.execution.parallelSafe));
+    assert(report.pages.some((left, i) => report.pages.some((right, j) => i !== j && Date.parse(left.startedAt) < Date.parse(right.endedAt) && Date.parse(right.startedAt) < Date.parse(left.endedAt))), 'Parallel session cells must actually overlap');
     for (const file of ['report.json','report.md','journey-evidence.json','review-queue.json','formal-receipt.json','stdout.json','stderr.txt']) {
       assert(!(await readFile(join(directory,file),'utf8')).includes('SESSION_PRIVATE_'), file);
     }
