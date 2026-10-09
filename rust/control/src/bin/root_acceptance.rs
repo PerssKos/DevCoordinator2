@@ -4003,7 +4003,10 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     run_status("systemctl", &["stop", &api_unit])?;
     // Change the checkout after apply without applying it. Recovery must use
     // the committed generation's command/environment and continue serving v1.
-    setup_web(world, "v2", false)?;
+    // Change the declaration after apply while preserving the applied
+    // worktree source file. Restart recovery must use the committed
+    // generation, rather than the mutable checkout declaration.
+    world.write_config(&web_deployment_config(world, "v2", None)?)?;
     world.stop_daemon(true)?;
     world.start_daemon(None, None, None)?;
     let recovered =

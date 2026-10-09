@@ -75,13 +75,7 @@ pub(crate) fn restore_route(
         work: None,
         identity: None,
     };
-    let target = deployments.resolve_target_readonly(None, None, Some(deployment_id), &caller)?;
-    let Some(current) = target.specification.component(&component_name) else {
-        return Ok(Recovery::NotApplicable);
-    };
-    if current.is_finite_workload() || current.kind != ComponentKind::Process {
-        return Ok(Recovery::NotApplicable);
-    }
+    let mut target = deployments.resolve_target_readonly(None, None, Some(deployment_id), &caller)?;
     // Recovery is bound to the saved declaration. If the checkout changed,
     // leave the route for an explicit apply instead of replaying new config.
     let saved_spec: serde_json::Value = serde_json::from_str(&row.spec_json).map_err(|_| {
@@ -107,10 +101,15 @@ pub(crate) fn restore_route(
             )
         })?;
     if DeploymentStore::component_fingerprint(&saved) != stored.spec_fingerprint
-        || DeploymentStore::component_fingerprint(current) != stored.spec_fingerprint
+        || saved.is_finite_workload()
+        || saved.kind != ComponentKind::Process
     {
         return Ok(Recovery::NotApplicable);
     }
+    // Restart recovery is bound to the applied generation. The checkout may
+    // have changed since apply; do not reject recovery or prove health against
+    // the newer, unapplied declaration.
+    target.specification = stored_deployment_specification(&row)?;
     let identity = stored.binding_identity.clone().ok_or_else(|| {
         ProtocolError::new(
             ErrorCode::DeploymentActionFailed,
