@@ -1,0 +1,4 @@
+#!/bin/sh
+# Certbot supplies RENEWED_LINEAGE after a successful renewal.
+set -eu
+exec /usr/local/bin/devcoordinator2-tooling install tls-renewal-deploy
