@@ -3036,8 +3036,14 @@ pub(crate) fn run_probe_with_limit(
     }
     command.process_group(0);
     let mut child = command.spawn().map_err(|_| "source_unavailable")?;
-    let stdout = child.stdout.take().ok_or("source_unavailable")?;
-    let stderr = child.stderr.take().ok_or("source_unavailable")?;
+    let Some(stdout) = child.stdout.take() else {
+        kill_probe_group(&mut child);
+        return Err("source_unavailable".into());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        kill_probe_group(&mut child);
+        return Err("source_unavailable".into());
+    };
     let output_overflow = Arc::new(AtomicBool::new(false));
     let stdout_complete = Arc::new(AtomicBool::new(false));
     let stderr_complete = Arc::new(AtomicBool::new(false));
