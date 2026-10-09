@@ -383,11 +383,24 @@ fn snapshot_candidate(layout: &Layout, lineage: &Path) -> Result<(Vec<u8>, Vec<u
         .map_err(|_| "renewed private key is unavailable")?;
     Ok((
         read_file(&cert, layout.owner.0, false)?.bytes,
-        read_file(&key, layout.owner.0, true)?.bytes,
+        read_owner_group_private_file(&key, layout.owner)?.bytes,
     ))
 }
 
 fn read_file(path: &Path, owner: u32, private: bool) -> Result<SavedFile, String> {
+    read_file_with_group(path, owner, private, None)
+}
+
+fn read_owner_group_private_file(path: &Path, owner: (u32, u32)) -> Result<SavedFile, String> {
+    read_file_with_group(path, owner.0, true, Some(owner.1))
+}
+
+fn read_file_with_group(
+    path: &Path,
+    owner: u32,
+    private: bool,
+    allowed_group: Option<u32>,
+) -> Result<SavedFile, String> {
     ensure_real_parent(path.parent().ok_or("missing TLS file parent")?)?;
     let file = OpenOptions::new()
         .read(true)
@@ -397,10 +410,17 @@ fn read_file(path: &Path, owner: u32, private: bool) -> Result<SavedFile, String
     let metadata = file
         .metadata()
         .map_err(|_| "TLS maintenance file cannot be inspected")?;
+    let private_mode_ok = if private {
+        metadata.mode() & 0o007 == 0
+            && (metadata.mode() & 0o070 == 0
+                || allowed_group.is_some_and(|group| metadata.gid() == group))
+    } else {
+        metadata.mode() & 0o022 == 0
+    };
     if !metadata.is_file()
         || metadata.uid() != owner
         || metadata.len() > FILE_CAP
-        || metadata.mode() & if private { 0o077 } else { 0o022 } != 0
+        || !private_mode_ok
     {
         return Err("TLS maintenance file has an invalid owner, mode, type, or size".into());
     }

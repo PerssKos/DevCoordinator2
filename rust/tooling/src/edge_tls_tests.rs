@@ -956,3 +956,18 @@ fn existing_other_hook_and_nonprivate_key_are_preserved_and_rejected() {
     world.assert_routes();
     assert_eq!(world.runner.restarts.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn owner_group_readable_certbot_key_is_accepted_but_untrusted_group_is_rejected() {
+    let world = World::new();
+    let key = world.archive.join("renewed.key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let configured = configure_at(&world.layout, &world.lineage, COMMIT, &world.runner).unwrap();
+    assert_eq!(configured.status, "configured");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o604)).unwrap();
+    let error = match deploy_at(&world.layout, &world.lineage, COMMIT, &world.runner) {
+        Ok(_) => panic!("untrusted group key unexpectedly activated"),
+        Err(error) => error,
+    };
+    assert!(error.contains("invalid owner, mode, type, or size"));
+}
