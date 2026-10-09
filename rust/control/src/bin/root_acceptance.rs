@@ -3990,12 +3990,38 @@ command={independent}
         .map_err(|e| e.to_string())?
         .replace("pg_invalid_owner", "app");
     world.write_config(&corrected)?;
+    let evidence_path = world
+        .harness
+        .work_root
+        .join("shared-database-phase-selection-receipts.json");
+    let mut attempts = Vec::new();
+    let mut previous_run_id = retry["run_id"].clone();
     for phase in [setup, cleanup] {
-        data(&world.call(
+        let response = world.call(
             "test.start",
             json!({"path":world.repo,"targets":["broken","independent"],"checks":[phase]}),
-        )?)?;
+        )?;
+        let started = data(&response)?;
+        attempts.push(json!({"phase":phase,"started":started}));
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
+        ensure!(
+            started["attached"] == false && started["run_id"] != previous_run_id,
+            "selected database phase attached to its terminal predecessor"
+        );
         let focused = world.wait_status(&["passed", "failed"], Duration::from_secs(120))?;
+        let attempt = attempts.last_mut().expect("phase start receipt");
+        attempt["terminal"] = json!({
+            "run_id":focused["run_id"],"status":focused["status"],
+            "proof":focused["proof"],"selection":focused["selection"],
+            "readiness_eligible":focused["readiness_eligible"]
+        });
+        write_private_json(&evidence_path, &json!({"schema":1,"attempts":attempts}))?;
+        ensure!(
+            focused["run_id"] == started["run_id"]
+                && focused["proof"] == "selected"
+                && focused["selection"] == json!([phase]),
+            "selected database phase used another run's result or selection"
+        );
         ensure!(
             focused["status"] == "passed"
                 && focused["readiness_eligible"] == false
@@ -4008,6 +4034,7 @@ command={independent}
             !world.repo.join(".devcoordinator/must-not-run").exists(),
             "phase-only selection ran a consumer"
         );
+        previous_run_id = focused["run_id"].clone();
     }
     Ok(())
 }

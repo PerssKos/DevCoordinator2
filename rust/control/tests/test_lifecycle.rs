@@ -292,6 +292,12 @@ impl UnitProcess for FixtureProcess {
     }
 }
 
+struct FinalizationGate {
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+    resumed: std::sync::mpsc::Sender<()>,
+}
+
 struct FixtureSystemd {
     runs: Mutex<HashMap<String, SharedFixtureProcess>>,
     next_exit: AtomicI32,
@@ -304,6 +310,7 @@ struct FixtureSystemd {
     fail_stop: AtomicBool,
     timed_out: AtomicBool,
     report_inactive: AtomicBool,
+    finalization_gate: Mutex<Option<FinalizationGate>>,
 }
 
 impl FixtureSystemd {
@@ -320,6 +327,7 @@ impl FixtureSystemd {
             fail_stop: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),
             report_inactive: AtomicBool::new(false),
+            finalization_gate: Mutex::new(None),
         }
     }
 
@@ -569,6 +577,16 @@ impl SystemdControl for FixtureSystemd {
     }
 
     fn reset_failed(&self, _unit: &str) -> Result<(), SystemdError> {
+        let gate = self.finalization_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.entered.send(()).unwrap();
+            gate.release
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|_| {
+                    SystemdError::Operation("finalization fixture was not released".into())
+                })?;
+            gate.resumed.send(()).unwrap();
+        }
         Ok(())
     }
 
@@ -2115,7 +2133,17 @@ fn run_history_is_bounded_scoped_and_keeps_earlier_identity() {
 #[test]
 fn equivalent_start_attaches_to_the_active_run_by_default() {
     let world = LifecycleWorld::new();
+    // Keep the predecessor's supervisor alive after terminal publication.
+    // This is the real finalization boundary before its active-map removal.
+    let (entered, publication) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (resumed, resumption) = std::sync::mpsc::channel();
     let first = world.start();
+    *world.systemd.finalization_gate.lock().unwrap() = Some(FinalizationGate {
+        entered,
+        release: released,
+        resumed,
+    });
     let starts = world.systemd.starts.load(Ordering::SeqCst);
     let attached = world
         .lifecycle
@@ -2136,7 +2164,37 @@ fn equivalent_start_attaches_to_the_active_run_by_default() {
     assert!(attached.attached);
     assert_eq!(world.systemd.starts.load(Ordering::SeqCst), starts);
     world.systemd.finish(&first.unit);
-    world.wait_status(TestStatus::Passed);
+    publication.recv_timeout(Duration::from_secs(10)).unwrap();
+    let terminal = world.wait_status(TestStatus::Passed);
+    assert_eq!(terminal.run_id, first.run_id);
+    let successor = world.lifecycle.start(
+        StartTest {
+            targets: Vec::new(),
+            cases: Default::default(),
+            path: world.worktree.to_string_lossy().into_owned(),
+            test: Some("all".into()),
+            checks: vec!["unit".into()],
+            tier: ApiValidationTier::Release,
+            mode: devcoordinator2_api::params::StartMode::Attach,
+        },
+        &world.caller,
+    );
+    // Always release the held finalizer before evaluating the must-catch.
+    release.send(()).unwrap();
+    resumption.recv_timeout(Duration::from_secs(10)).unwrap();
+    let successor = successor.unwrap();
+    assert!(!successor.attached, "terminal run was returned as active");
+    assert_ne!(successor.run_id, first.run_id);
+    assert_eq!(successor.proof, ApiProofKind::Selected);
+    assert_eq!(successor.selection, vec!["unit"]);
+    assert!(!successor.readiness_eligible);
+    assert!(successor.superseded_run_id.is_none());
+    assert_eq!(world.systemd.starts.load(Ordering::SeqCst), starts + 1);
+    world.systemd.finish(&successor.unit);
+    assert_eq!(
+        world.wait_status(TestStatus::Passed).run_id,
+        successor.run_id
+    );
 }
 
 #[test]

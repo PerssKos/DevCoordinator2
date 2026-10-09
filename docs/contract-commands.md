@@ -96,6 +96,9 @@ Errors: `repository_not_found`, `repository_config_invalid`,
 Never `queued`.
 An equivalent active run is returned with `attached: true`. A different active
 run returns `worktree_busy` with attach, wait and explicit replacement choices.
+A run with a published terminal receipt is no longer eligible for attachment,
+even while its supervisor is completing bookkeeping. A following start gets
+its own run identity after the existing cleanup and admission checks.
 Pass `mode: "replace"` to retain latest-start-wins deliberately; a replacing
 start includes `superseded_run_id` with that exact active run. Compose
 independent same-worktree checks inside one schema-2 graph rather than

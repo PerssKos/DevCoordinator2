@@ -1225,6 +1225,17 @@ impl TestLifecycle {
         let Some(handle) = active else {
             return Ok(None);
         };
+        // A terminal receipt can precede the supervisor's active-map removal.
+        // It must never attach a new request to the already completed run.
+        if handle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .final_status
+            .is_some()
+        {
+            return Ok(None);
+        }
         if let Some(requested) = requested_test
             && requested != handle.test
         {
@@ -2322,6 +2333,13 @@ impl TestLifecycle {
                 .is_ok();
         }
         reconcile_terminal_checks(&mut summary);
+        // Publish the disk receipt and in-memory terminal state under the
+        // same lock used by attachment. A client that observed the terminal
+        // receipt cannot subsequently receive this handle as still running.
+        let mut state = handle
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let summary_written = self
             .inner
             .store
@@ -2342,10 +2360,6 @@ impl TestLifecycle {
                 handle.caller_gid,
             )
             .is_ok();
-        let mut state = handle
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.final_status = Some(status.clone());
         state.terminal_summary = Some(summary.clone());
         state.evidence_complete = summary_written && history_written && retry_evidence_written;
