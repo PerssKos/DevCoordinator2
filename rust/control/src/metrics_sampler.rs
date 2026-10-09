@@ -1519,10 +1519,19 @@ mod tests {
         cpu: AtomicU64,
         request_during_scan: Mutex<Option<MetricSampler>>,
         scans: AtomicU64,
+        observations: Mutex<Option<tokio::sync::mpsc::UnboundedSender<&'static str>>>,
+    }
+    impl FakeSource {
+        fn observe(&self, event: &'static str) {
+            if let Some(observer) = self.observations.lock().unwrap().as_ref() {
+                observer.send(event).expect("test observation receiver");
+            }
+        }
     }
     impl MetricSource for FakeSource {
         fn host_cpu_ticks(&self) -> (u64, u64) {
             let value = self.cpu.fetch_add(10, Ordering::SeqCst);
+            self.observe("sample");
             (value, value * 2 + 100)
         }
         fn host_memory(&self) -> HostMemory {
@@ -1564,6 +1573,7 @@ mod tests {
             if let Some(sampler) = self.request_during_scan.lock().unwrap().take() {
                 sampler.request_storage();
             }
+            self.observe("storage");
             BTreeMap::new()
         }
         fn docker_shared_sizes(&self, _: StdDuration) -> DockerStorage {
@@ -1609,6 +1619,7 @@ mod tests {
             cpu: AtomicU64::new(10),
             request_during_scan: Mutex::new(None),
             scans: AtomicU64::new(0),
+            observations: Mutex::new(None),
         });
         let sampler = MetricSampler::with_adapters(
             config,
@@ -1712,16 +1723,26 @@ mod tests {
         assert!(schedule.due(late_completion + StdDuration::from_secs(u64::from(STORAGE_SECONDS))));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn storage_service_coalesces_a_request_received_during_observation() {
         let (_temporary, sampler, source) = storage_fixture();
         *source.request_during_scan.lock().unwrap() = Some(sampler.clone());
+        let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+        *source.observations.lock().unwrap() = Some(observed);
         let (shutdown, receiver) = watch::channel(false);
         let service_sampler = sampler.clone();
         let service = tokio::spawn(async move { service_sampler.serve(receiver).await });
-        tokio::time::sleep(StdDuration::from_millis(250)).await;
+        assert_eq!(observations.recv().await, Some("sample"));
+        tokio::time::advance(StdDuration::from_millis(250)).await;
         let startup_scans = source.scans.load(Ordering::SeqCst);
-        tokio::time::sleep(StdDuration::from_millis(1500)).await;
+        tokio::time::advance(StdDuration::from_secs(STORAGE_START_DELAY_SECONDS)).await;
+        assert_eq!(observations.recv().await, Some("storage"));
+        // Observe later service cycles while remaining inside the storage
+        // throttle interval. Another scan would emit "storage" before "sample".
+        for _ in 0..2 {
+            tokio::time::advance(StdDuration::from_secs(u64::from(SAMPLE_SECONDS) + 1)).await;
+            assert_eq!(observations.recv().await, Some("sample"));
+        }
         let completed_scans = source.scans.load(Ordering::SeqCst);
         let request_retained = sampler.inner.storage_requested.load(Ordering::SeqCst);
         shutdown.send(true).unwrap();
