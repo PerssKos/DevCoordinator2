@@ -2957,7 +2957,7 @@ fn review_config(root: &Path, repo: &Path, base: &str) -> Value {
         root,
         json!({
             "repoRoot":repo,
-            "targets":[{"name":"dynamic-review","url":format!("{base}/dynamic-review.html"),"sourceBinding":{"expected":revision},"reviewInputs":[{"path":"ui/screen.css","kind":"style"}],
+            "targets":[{"name":"dynamic-review","url":format!("{base}/dynamic-review.html"),"sourceBinding":{"expected":revision},"reviewInputs":[{"path":"ui/screen.css","kind":"style"}],"reviewEnvironmentIdentity":"leased-static-fixture",
                 "geometryAssertions":[
                     {"id":"width","kind":"primary-content-width","selector":"main","minWidthRatio":0.8},
                     {"id":"heading","kind":"readable-heading","selector":"h1"},
@@ -3020,6 +3020,12 @@ fn run_review_phase(
     if first.pointer("/review/pendingCount") != Some(&json!(1)) {
         return Err("a newly covered cell did not enter visual review".to_owned());
     }
+    if first.pointer("/review/cells/0/reviewEnvironmentIdentity")
+        != Some(&json!("leased-static-fixture"))
+        || first.pointer("/review/cells/0/requestedOrigin").is_none()
+    {
+        return Err("review environment identity or origin provenance was not retained".to_owned());
+    }
     let cell = first
         .pointer("/review/cells/0")
         .ok_or_else(|| "first review cell is missing".to_owned())?;
@@ -3068,6 +3074,45 @@ fn run_review_phase(
         .unwrap_or("");
     if first_hash == second_hash {
         return Err("dynamic fixture did not prove pixel drift is ignored".to_owned());
+    }
+
+    let mut equivalent_origin = second_config.clone();
+    let original_url = equivalent_origin["targets"][0]["url"]
+        .as_str()
+        .ok_or_else(|| "review fixture target URL is missing".to_owned())?;
+    equivalent_origin["targets"][0]["url"] = json!(original_url.replace("127.0.0.1", "localhost"));
+    let equivalent = run_verifier(
+        root,
+        &equivalent_origin,
+        &work.join("equivalent-origin"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    if equivalent.pointer("/review/pendingCount") != Some(&json!(0))
+        || equivalent.pointer("/review/carriedPassCount") != Some(&json!(1))
+        || equivalent.pointer("/review/cells/0/reviewEnvironmentIdentity")
+            != Some(&json!("leased-static-fixture"))
+        || equivalent.pointer("/review/cells/0/requestedOrigin")
+            == second.pointer("/review/cells/0/requestedOrigin")
+    {
+        return Err("explicitly equivalent leased origins did not carry visual review safely".to_owned());
+    }
+    let mut unbound_origin = equivalent_origin.clone();
+    unbound_origin["targets"][0]
+        .as_object_mut()
+        .expect("target object")
+        .remove("reviewEnvironmentIdentity");
+    let unbound = run_verifier(
+        root,
+        &unbound_origin,
+        &work.join("unbound-origin"),
+        &[3],
+        timeout,
+        &[],
+    )?;
+    if unbound.pointer("/review/pendingCount") != Some(&json!(1)) {
+        return Err("unbound origin unexpectedly reused a prior visual review".to_owned());
     }
 
     write_bytes_nofollow(&repo.join("backend.txt"), b"unrelated backend v2\n", 0o600)

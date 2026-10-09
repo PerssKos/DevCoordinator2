@@ -522,6 +522,18 @@ function normalizeTheme(value, name) {
   return value;
 }
 
+function normalizeReviewEnvironmentIdentity(value, name) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${name} must be a non-empty string when present`);
+  }
+  const normalized = value.trim();
+  if (normalized.length > 240 || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new Error(`${name} must be a bounded printable string`);
+  }
+  return normalized;
+}
+
 function normalizeContinuation(value, name) {
   if (value === undefined || value === null) return null;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1178,6 +1190,10 @@ function normalizeTargetDefaults(value) {
       : String(value.priorityOverrideReason).trim(),
     regions: normalizeJourneyRegions(value.regions, "targetDefaults.regions"),
     theme: normalizeTheme(value.theme, "targetDefaults.theme"),
+    reviewEnvironmentIdentity: normalizeReviewEnvironmentIdentity(
+      value.reviewEnvironmentIdentity,
+      "targetDefaults.reviewEnvironmentIdentity",
+    ),
     reviewInputs: normalizeReviewInputs(value.reviewInputs, "targetDefaults.reviewInputs"),
     geometryAssertions: normalizeGeometry(value.geometryAssertions, "targetDefaults.geometryAssertions"),
     allowContrast: normalizeSelectorReasonList(value.allowContrast, "targetDefaults.allowContrast"),
@@ -1294,6 +1310,12 @@ function normalizeTargets(config, cli) {
           theme: item.theme === undefined
             ? (targetDefaults.theme || null)
             : normalizeTheme(item.theme, `targets[${targetIndex}].theme`),
+          reviewEnvironmentIdentity: item.reviewEnvironmentIdentity === undefined
+            ? (targetDefaults.reviewEnvironmentIdentity || null)
+            : normalizeReviewEnvironmentIdentity(
+              item.reviewEnvironmentIdentity,
+              `targets[${targetIndex}].reviewEnvironmentIdentity`,
+            ),
           reviewInputs: item.reviewInputs === undefined
             ? (targetDefaults.reviewInputs || [])
             : normalizeReviewInputs(item.reviewInputs, `targets[${targetIndex}].reviewInputs`),
@@ -4933,9 +4955,11 @@ async function verifyTarget(page, target, viewport, config, cellId) {
   await installRenderedPerformanceObserver(page);
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
   const requestedRoute = routeEvidence(target.url);
+  const reviewEnvironmentIdentity = target.reviewEnvironmentIdentity || null;
   const reviewCellKey = sha256(stableJson({
     target: target.name || target.url,
-    requestedOrigin: requestedRoute.origin,
+    requestedOrigin: reviewEnvironmentIdentity ? null : requestedRoute.origin,
+    reviewEnvironmentIdentity,
     requestedPath: requestedRoute.path,
     stateName: target.stateName || "base",
     viewport: { name: viewport.name, width: viewport.width, height: viewport.height },
@@ -4977,6 +5001,8 @@ async function verifyTarget(page, target, viewport, config, cellId) {
     timings: { stages: [] },
     review: {
       reviewCellKey,
+      requestedOrigin: requestedRoute.origin,
+      reviewEnvironmentIdentity,
       sourceFingerprint: target.reviewEvidence?.fingerprint || null,
       intentFingerprint: target.intentFingerprint || null,
     },
@@ -5425,8 +5451,17 @@ function buildChangedReviewQueue(pages, config, runId) {
     const prior = priorDecisions.get(reviewCellKey);
     const sourceFingerprint = page.review.sourceFingerprint;
     const intentFingerprint = page.review.intentFingerprint;
+    const reviewEnvironmentIdentity = page.review.reviewEnvironmentIdentity || null;
+    const requestedOrigin = page.review.requestedOrigin || null;
     const sourceUnchanged = Boolean(prior && prior.sourceFingerprint === sourceFingerprint);
     const intentUnchanged = Boolean(prior && prior.intentFingerprint === intentFingerprint);
+    const priorEnvironmentIdentity = prior?.reviewEnvironmentIdentity || null;
+    const environmentUnchanged = Boolean(
+      prior && (
+        (!reviewEnvironmentIdentity && !priorEnvironmentIdentity) ||
+        (reviewEnvironmentIdentity && priorEnvironmentIdentity === reviewEnvironmentIdentity)
+      ),
+    );
     const screenshots = {
       viewport: page.screenshots.viewport,
       fullPage: page.screenshots.fullPage,
@@ -5443,6 +5478,8 @@ function buildChangedReviewQueue(pages, config, runId) {
       theme: page.target.theme,
       sourceFingerprint,
       intentFingerprint,
+      requestedOrigin,
+      reviewEnvironmentIdentity,
       reviewInputs: page.target.reviewEvidence || null,
       screenshots,
       paletteRisks: (page.findings || [])
@@ -5454,7 +5491,7 @@ function buildChangedReviewQueue(pages, config, runId) {
         ].includes(finding.rule))
         .map((finding) => finding.rule),
     };
-    if (prior && sourceUnchanged && intentUnchanged) {
+    if (prior && sourceUnchanged && intentUnchanged && environmentUnchanged) {
       const cell = {
         ...common,
         status: prior.decision === "pass" ? "carried-pass" : `carried-${prior.decision}`,
@@ -5496,6 +5533,7 @@ function buildChangedReviewQueue(pages, config, runId) {
     else {
       if (!sourceUnchanged) reasons.push("declared-ui-inputs-changed");
       if (!intentUnchanged) reasons.push("journey-or-theme-intent-changed");
+      if (!environmentUnchanged) reasons.push("review-environment-changed-or-unbound");
     }
     const cell = { ...common, status: "review-required", decision: null, note: "", basis: reasons };
     cells.push(cell);
@@ -6526,6 +6564,8 @@ function syntheticCellResult(cell, outcome, reason) {
     timings: { stages: [], totalMs: 0 },
     review: {
       reviewCellKey: null,
+      requestedOrigin: requested.origin,
+      reviewEnvironmentIdentity: cell.target.reviewEnvironmentIdentity || null,
       sourceFingerprint: cell.target.reviewEvidence?.fingerprint || null,
       intentFingerprint: cell.target.intentFingerprint || null,
     },
