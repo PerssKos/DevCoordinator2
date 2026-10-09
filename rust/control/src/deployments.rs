@@ -967,11 +967,18 @@ impl Deployments {
         {
             return self.control_observed(action, deployment_id, component);
         }
-        let target = self.resolve_target(path, name, deployment_id, caller)?;
+        let mut target = self.resolve_target(path, name, deployment_id, caller)?;
         let row = target
             .row
             .clone()
             .ok_or_else(|| not_found(&target.deployment_id))?;
+        if matches!(action, "start" | "restart") {
+            // Runtime controls must use the exact specification recorded by
+            // the applied generation. The checkout may have changed since
+            // that generation was applied; reading it here would silently
+            // restart with new commands, ports, or environment values.
+            target.specification = stored_deployment_specification(&row)?;
+        }
         if action == "stop"
             && component.is_none()
             && let Some((requested, finished)) = self
@@ -1017,6 +1024,14 @@ impl Deployments {
             && let Some(blocker) = self.docker_preflight_blocker(&components)
         {
             return Err(ProtocolError::new(blocker.code, blocker.message));
+        }
+        if matches!(action, "start" | "restart") {
+            let generation = row.current_generation.unwrap_or(0);
+            for component in &components {
+                if DeploymentStore::is_owned(component) {
+                    self.saved_environment_path(&target, component, generation)?;
+                }
+            }
         }
         if matches!(action, "stop" | "restart") {
             let mut reverse = components.clone();
@@ -1629,6 +1644,7 @@ impl Deployments {
             if !DeploymentStore::is_owned(component) {
                 continue;
             }
+            self.saved_environment_path(target, component, generation)?;
             self.set_running_intent(target, std::slice::from_ref(component))?;
             let old = stored.get(&component.name);
             let started = (|| {
@@ -1667,7 +1683,14 @@ impl Deployments {
                     }
                     Ok(("compose".into(), project.to_owned()))
                 } else {
-                    self.start_component(target, component, generation, &generation_path, &port_map)
+                    self.start_component(
+                        target,
+                        component,
+                        generation,
+                        &generation_path,
+                        &port_map,
+                        true,
+                    )
                 }
             })();
             let binding = match started {
@@ -2427,7 +2450,14 @@ impl Deployments {
                         .map_err(runtime_error)?,
                 );
                 let restored = self
-                    .start_component(target, &component, old_generation, &old_path, &old_ports)
+                    .start_component(
+                        target,
+                        &component,
+                        old_generation,
+                        &old_path,
+                        &old_ports,
+                        true,
+                    )
                     .and_then(|binding| {
                         self.prove_health(target, &component, &binding, &old_ports, old_generation)
                     });
@@ -2914,7 +2944,14 @@ impl Deployments {
             return Ok(("none".into(), String::new()));
         }
         if DeploymentStore::is_generation_scoped(component) {
-            return self.start_component(target, component, generation, generation_path, port_map);
+            return self.start_component(
+                target,
+                component,
+                generation,
+                generation_path,
+                port_map,
+                false,
+            );
         }
         let old = old_components.get(&component.name);
         let unchanged = old.is_some_and(|old| {
@@ -2939,7 +2976,14 @@ impl Deployments {
                 return Ok(("container".into(), identity.to_string()));
             }
         }
-        self.start_component(target, component, generation, generation_path, port_map)
+        self.start_component(
+            target,
+            component,
+            generation,
+            generation_path,
+            port_map,
+            false,
+        )
     }
 
     fn start_component(
@@ -2949,36 +2993,41 @@ impl Deployments {
         generation: u32,
         generation_path: &Path,
         port_map: &BTreeMap<String, u16>,
+        reuse_environment: bool,
     ) -> Result<(String, String), ProtocolError> {
         self.files
             .ensure_layout(&target.deployment_id, target.caller_uid, target.caller_gid)
             .map_err(file_apply_error)?;
-        let environment = self.component_environment(target, component, generation, port_map)?;
         let process_environment = component.kind == ComponentKind::Process;
-        let environment_path = self
-            .files
-            .write_environment(
-                &target.deployment_id,
-                &component.name,
-                generation,
-                &environment,
-                if process_environment {
-                    EnvironmentFormat::Systemd
-                } else {
-                    EnvironmentFormat::Docker
-                },
-                if process_environment {
-                    target.caller_uid
-                } else {
-                    rustix::process::geteuid().as_raw()
-                },
-                if process_environment {
-                    target.caller_gid
-                } else {
-                    rustix::process::getegid().as_raw()
-                },
-            )
-            .map_err(file_apply_error)?;
+        let environment_path = if reuse_environment {
+            self.saved_environment_path(target, component, generation)?
+        } else {
+            let environment =
+                self.component_environment(target, component, generation, port_map)?;
+            self.files
+                .write_environment(
+                    &target.deployment_id,
+                    &component.name,
+                    generation,
+                    &environment,
+                    if process_environment {
+                        EnvironmentFormat::Systemd
+                    } else {
+                        EnvironmentFormat::Docker
+                    },
+                    if process_environment {
+                        target.caller_uid
+                    } else {
+                        rustix::process::geteuid().as_raw()
+                    },
+                    if process_environment {
+                        target.caller_gid
+                    } else {
+                        rustix::process::getegid().as_raw()
+                    },
+                )
+                .map_err(file_apply_error)?
+        };
         match component.kind {
             ComponentKind::Process => {
                 let unit = process_unit_name(
@@ -3040,6 +3089,7 @@ impl Deployments {
                     generation,
                     port_map,
                     environment_path,
+                    reuse_environment,
                 )?;
                 Ok(("container".into(), identity.to_string()))
             }
@@ -3092,6 +3142,35 @@ impl Deployments {
         }
     }
 
+    fn saved_environment_path(
+        &self,
+        target: &DeploymentTarget,
+        component: &ComponentSpec,
+        generation: u32,
+    ) -> Result<PathBuf, ProtocolError> {
+        let path = if component.kind == ComponentKind::Postgres {
+            self.files
+                .postgres_environment_path(&target.deployment_id, &component.name, generation)
+        } else {
+            self.files
+                .environment_path(&target.deployment_id, &component.name, generation)
+        }
+        .map_err(file_apply_error)?;
+        let metadata = std::fs::symlink_metadata(&path).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::DeploymentActionFailed,
+                "the applied generation environment is unavailable; reapply the deployment",
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentActionFailed,
+                "the applied generation environment is unavailable; reapply the deployment",
+            ));
+        }
+        Ok(path)
+    }
+
     fn start_container_component(
         &self,
         target: &DeploymentTarget,
@@ -3099,6 +3178,7 @@ impl Deployments {
         generation: u32,
         port_map: &BTreeMap<String, u16>,
         mut environment_path: PathBuf,
+        reuse_environment: bool,
     ) -> Result<ExactContainerId, ProtocolError> {
         let mut name = container_name(&target.deployment_id, &component.name);
         if DeploymentStore::is_generation_scoped(component) {
@@ -3128,24 +3208,26 @@ impl Deployments {
         let mut command = component.command.clone();
         let image = component.image.as_deref().unwrap_or("");
         if component.kind == ComponentKind::Postgres {
-            let credentials = self
-                .files
-                .postgres_credentials(
-                    &target.deployment_id,
-                    &component.name,
-                    component.user.as_deref().unwrap_or("app"),
-                    component.database.as_deref().unwrap_or("app"),
-                )
-                .map_err(file_apply_error)?;
-            environment_path = self
-                .files
-                .write_postgres_environment(
-                    &target.deployment_id,
-                    &component.name,
-                    generation,
-                    &credentials,
-                )
-                .map_err(file_apply_error)?;
+            if !reuse_environment {
+                let credentials = self
+                    .files
+                    .postgres_credentials(
+                        &target.deployment_id,
+                        &component.name,
+                        component.user.as_deref().unwrap_or("app"),
+                        component.database.as_deref().unwrap_or("app"),
+                    )
+                    .map_err(file_apply_error)?;
+                environment_path = self
+                    .files
+                    .write_postgres_environment(
+                        &target.deployment_id,
+                        &component.name,
+                        generation,
+                        &credentials,
+                    )
+                    .map_err(file_apply_error)?;
+            }
             let port = port_map.get(&component.name).copied().ok_or_else(|| {
                 ProtocolError::new(
                     ErrorCode::DeploymentApplyFailed,
@@ -4625,6 +4707,44 @@ impl Deployments {
                 )
             })
     }
+}
+
+fn stored_deployment_specification(row: &DeploymentRow) -> Result<DeploymentSpec, ProtocolError> {
+    #[derive(serde::Deserialize)]
+    struct SavedSpec {
+        name: String,
+        source: String,
+        domain: Option<String>,
+        build: Vec<String>,
+        ttl_seconds: Option<u64>,
+        public: bool,
+        components: Vec<ComponentSpec>,
+    }
+    let saved: SavedSpec = serde_json::from_str(&row.spec_json).map_err(|_| {
+        ProtocolError::new(
+            ErrorCode::DeploymentActionFailed,
+            "saved deployment specification is unavailable; reapply the deployment",
+        )
+    })?;
+    if saved.name != row.name || saved.source != row.source {
+        return Err(ProtocolError::new(
+            ErrorCode::DeploymentActionFailed,
+            "saved deployment specification does not match the deployment",
+        ));
+    }
+    Ok(DeploymentSpec {
+        name: saved.name,
+        sources: vec![saved.source.clone()],
+        domains: saved
+            .domain
+            .map(|domain| (saved.source, domain))
+            .into_iter()
+            .collect(),
+        build: saved.build,
+        ttl_seconds: saved.ttl_seconds,
+        public: saved.public,
+        components: saved.components,
+    })
 }
 
 fn live_health(row: &ComponentRow, state: &str) -> String {

@@ -4001,13 +4001,13 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     // Simulate a host restart that lost the managed process while preserving
     // the committed generation, desired-running intent and stable lease.
     run_status("systemctl", &["stop", &api_unit])?;
+    // Change the checkout after apply without applying it. Recovery must use
+    // the committed generation's command/environment and continue serving v1.
+    setup_web(world, "v2", false)?;
     world.stop_daemon(true)?;
     world.start_daemon(None, None, None)?;
-    let recovered = data(&world.call(
-        "deployment.status",
-        json!({"deployment_id": deployment_id}),
-    )?)?
-    .clone();
+    let recovered =
+        data(&world.call("deployment.status", json!({"deployment_id": deployment_id}))?)?.clone();
     ensure!(
         recovered["current_generation"] == 1
             && component(&recovered, "api")?["binding"]["identity"] == api_unit
@@ -4094,6 +4094,25 @@ fn case_worktree_apply_stop_start_reapply_remove(world: &mut World) -> Result<()
     ensure!(
         component(data(&restarted)?, "worker")?["state"] == "running",
         "component restart failed"
+    );
+    let worker_env = world
+        .base
+        .join("deployments")
+        .join(&deployment_id)
+        .join("env")
+        .join("worker-g1.env");
+    fs::remove_file(&worker_env).map_err(|error| error.to_string())?;
+    let missing_environment = world.call(
+        "deployment.restart",
+        json!({
+            "path": world.repo,
+            "name": "web@worktree",
+            "component": "worker",
+        }),
+    )?;
+    ensure!(
+        error_code(&missing_environment) == Some("deployment_action_failed"),
+        "restart unexpectedly regenerated a missing applied environment"
     );
     let old_port = component(&started, "api")?["port"]
         .as_u64()
