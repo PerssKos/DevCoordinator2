@@ -44,6 +44,9 @@ enum RootCommand {
         work_root: PathBuf,
         #[arg(long)]
         report: PathBuf,
+        /// Existing non-root account for fixture requests; never changes host permissions.
+        #[arg(long)]
+        caller_user: Option<String>,
         #[arg(long)]
         case: Vec<String>,
         #[arg(long, value_parser = parse_compose_subnet)]
@@ -106,7 +109,16 @@ struct AcceptanceReport {
     cases: usize,
     passed: usize,
     failed: usize,
+    caller: CallerIdentity,
     results: Vec<CaseResult>,
+}
+
+#[derive(Debug, Serialize)]
+struct CallerIdentity {
+    user: Option<String>,
+    uid: u32,
+    gid: u32,
+    source: &'static str,
 }
 
 type Case = (&'static str, fn(&mut World) -> Result<(), String>);
@@ -1115,7 +1127,33 @@ fn chown_path(path: &Path, uid: u32, gid: u32) -> Result<(), String> {
     }
 }
 
-fn caller_identity() -> Result<(u32, u32), String> {
+fn named_identity(user: &str) -> Result<(u32, u32), String> {
+    ensure!(!user.is_empty(), "caller user must not be empty");
+    let name = CString::new(user).map_err(|_| "caller user contains NUL".to_owned())?;
+    // SAFETY: this single-threaded harness copies the account fields before
+    // another account lookup can replace getpwnam's process-global record.
+    let entry = unsafe { libc::getpwnam(name.as_ptr()) };
+    ensure!(!entry.is_null(), "caller user does not exist: {user}");
+    // SAFETY: entry was checked for null.
+    Ok(unsafe { ((*entry).pw_uid, (*entry).pw_gid) })
+}
+
+fn caller_identity(selected_user: Option<&str>) -> Result<CallerIdentity, String> {
+    if let Some(user) = selected_user {
+        let (uid, gid) = named_identity(user)?;
+        let (edge_uid, _) = named_identity("nobody")?;
+        ensure!(uid != 0, "fixture caller must not be root");
+        ensure!(
+            uid != 65_534 && uid != edge_uid,
+            "fixture caller must differ from the edge fixture account"
+        );
+        return Ok(CallerIdentity {
+            user: Some(user.to_owned()),
+            uid,
+            gid,
+            source: "explicit_user",
+        });
+    }
     if let (Ok(uid), Ok(gid)) = (std::env::var("SUDO_UID"), std::env::var("SUDO_GID")) {
         let uid = uid
             .parse::<u32>()
@@ -1124,18 +1162,21 @@ fn caller_identity() -> Result<(u32, u32), String> {
             .parse::<u32>()
             .map_err(|_| "SUDO_GID is invalid".to_owned())?;
         if uid != 0 {
-            return Ok((uid, gid));
+            return Ok(CallerIdentity {
+                user: None,
+                uid,
+                gid,
+                source: "sudo_environment",
+            });
         }
     }
-    let name = CString::new("nobody").expect("static account");
-    // SAFETY: getpwnam returns process-global account metadata which is copied
-    // before this single-threaded harness proceeds.
-    let entry = unsafe { libc::getpwnam(name.as_ptr()) };
-    if entry.is_null() {
-        return Err("cannot resolve the nobody account".to_owned());
-    }
-    // SAFETY: entry was checked for null and points to a valid passwd record.
-    Ok(unsafe { ((*entry).pw_uid, (*entry).pw_gid) })
+    let (uid, gid) = named_identity("nobody")?;
+    Ok(CallerIdentity {
+        user: Some("nobody".into()),
+        uid,
+        gid,
+        source: "nobody_fallback",
+    })
 }
 
 fn command_json(command: &[String]) -> Result<String, String> {
@@ -7823,6 +7864,7 @@ fn run_suite(
     fixture: PathBuf,
     work_root: PathBuf,
     report: PathBuf,
+    caller_user: Option<String>,
     selected: Vec<String>,
     compose_subnet: Option<Ipv4Addr>,
     port_range: String,
@@ -7830,16 +7872,16 @@ fn run_suite(
     let ephemeral = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
         .map_err(|error| format!("cannot inspect host ephemeral ports: {error}"))?;
     reject_ephemeral_overlap(&port_range, &ephemeral)?;
+    let caller = caller_identity(caller_user.as_deref())?;
     validate_run_inputs(&daemon, &executor, &fixture, &work_root, &report)?;
-    let (caller_uid, caller_gid) = caller_identity()?;
     let harness = Harness {
         daemon,
         executor,
         fixture,
         executable: std::env::current_exe().map_err(|error| error.to_string())?,
         work_root,
-        caller_uid,
-        caller_gid,
+        caller_uid: caller.uid,
+        caller_gid: caller.gid,
         compose_subnet,
         port_range,
     };
@@ -7910,6 +7952,7 @@ fn run_suite(
         cases: results.len(),
         passed: results.len() - failed,
         failed,
+        caller,
         results,
     };
     if let Some(parent) = report.parent() {
@@ -7947,6 +7990,7 @@ fn main() -> ExitCode {
             fixture,
             work_root,
             report,
+            caller_user,
             case,
             compose_subnet,
             port_range,
@@ -7956,6 +8000,7 @@ fn main() -> ExitCode {
             fixture,
             work_root,
             report.clone(),
+            caller_user,
             case,
             compose_subnet,
             port_range,
@@ -7969,6 +8014,7 @@ fn main() -> ExitCode {
                     "cases": result.cases,
                     "passed": result.passed,
                     "failed": result.failed,
+                    "caller": &result.caller,
                     "report": report,
                 })
             );
@@ -7990,7 +8036,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fixture_ports_are_validated_before_runtime_work() {
+    fn fixture_inputs_are_validated_before_runtime_work() {
         for invalid in [
             "1-90",
             "4000-2000",
@@ -8005,6 +8051,65 @@ mod tests {
         assert!(reject_ephemeral_overlap("31000-32768", "32768 60999").is_err());
         assert!(reject_ephemeral_overlap("31000-31999", "32768 60999").is_ok());
         assert!(reject_ephemeral_overlap("61000-61999", "32768 60999").is_ok());
+
+        for user in [
+            "",
+            "root",
+            "nobody",
+            "dc2-no-such-fixture-account",
+            "bad\0name",
+        ] {
+            assert!(caller_identity(Some(user)).is_err(), "accepted {user:?}");
+        }
+        // Resolve a real existing unprivileged Linux account without creating
+        // one or changing permissions. This is lookup only, not execution.
+        let expected = named_identity("daemon").unwrap();
+        let caller = caller_identity(Some("daemon")).unwrap();
+        assert_eq!((caller.uid, caller.gid), expected);
+        assert_eq!(caller.user.as_deref(), Some("daemon"));
+        assert_eq!(caller.source, "explicit_user");
+        let serialized = serde_json::to_value(&caller).unwrap();
+        assert_eq!(serialized["uid"], expected.0);
+        assert_eq!(serialized["gid"], expected.1);
+        assert_eq!(serialized["source"], "explicit_user");
+
+        let temporary = tempfile::tempdir().unwrap();
+        let work = temporary.path().join("must-not-be-created");
+        let report = temporary.path().join("report.json");
+        let result = run_suite(
+            "/not/a/daemon".into(),
+            "/not/an/executor".into(),
+            "/not/a/fixture".into(),
+            work.clone(),
+            report.clone(),
+            Some("root".into()),
+            Vec::new(),
+            None,
+            "31000-31999".into(),
+        );
+        assert_eq!(result.unwrap_err(), "fixture caller must not be root");
+        assert!(!work.exists() && !report.exists());
+
+        let parsed = Cli::try_parse_from([
+            "root-acceptance",
+            "run",
+            "--daemon",
+            "/daemon",
+            "--executor",
+            "/executor",
+            "--fixture",
+            "/fixture",
+            "--work-root",
+            "/scratch",
+            "--report",
+            "/report",
+            "--caller-user",
+            "daemon",
+        ])
+        .unwrap();
+        assert!(
+            matches!(parsed.command, RootCommand::Run { caller_user: Some(user), .. } if user == "daemon")
+        );
     }
 
     #[test]

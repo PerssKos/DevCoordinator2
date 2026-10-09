@@ -184,13 +184,25 @@ sudo -n env DEVCOORDINATOR2_ROOT_ACCEPTANCE=1 \
   --daemon target/release/devcoordinator2 \
   --executor target/release/devcoordinator2-executor \
   --fixture target/release/devcoordinator2-executor-test-fixture \
-  --work-root /absolute/private/empty-root-acceptance-directory \
+  --work-root /var/tmp/dc2-root-unique \
   --report /absolute/private/root-acceptance-report.json
 ```
 
 Build this feature-gated daemon after ordinary workspace tests, which can replace
 the same output path with a daemon that ignores fixture executor overrides. Keep
 these binaries unchanged while root acceptance runs.
+
+For an already-authorized direct root invocation, `--caller-user NAME` selects an
+existing non-root fixture account through the system account database. It rejects
+root, unknown accounts, and the edge fixture identity; it does not grant sudo,
+change permissions, or affect production authorization. The report records the
+selected name, UID/GID and selection source. Without this option the harness keeps
+its existing real `SUDO_UID`/`SUDO_GID` or `nobody` fallback; the complete identity
+matrix needs a caller different from the `nobody` edge fixture. Do not fabricate
+sudo environment variables. Use a short, new external work-root because nested
+Docker Unix sockets have a bounded path length. The selected caller must already
+be able to traverse the candidate binaries and Playwright dependencies;
+`FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES` can name an existing readable dependency tree.
 
 The harness owns a unique socket, database, port range, systemd unit prefix,
 Docker label namespace, and marker-bound filesystem root. It runs all 30
