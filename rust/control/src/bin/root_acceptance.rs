@@ -6300,6 +6300,11 @@ health = {{ tcp = true, timeout_seconds = 30 }}
 }
 
 fn case_health_views_measure_real_workloads(world: &mut World) -> Result<(), String> {
+    // Storage refreshes coalesce until the next production sampling slot.
+    // Keep real numeric assertions; allow one declared interval plus probe time.
+    let storage_observation_deadline = Duration::from_secs(
+        u64::from(devcoordinator2_control::metrics_sampler::STORAGE_SECONDS) + 90,
+    );
     let api = fixture_command(world, &["http-server", "health"]);
     let config = format!(
         r#"schema = 2
@@ -6421,7 +6426,7 @@ health = {{ tcp = true, timeout_seconds = 30 }}
     );
     let storage = wait_for_value(
         "repository storage attribution",
-        Duration::from_secs(90),
+        storage_observation_deadline,
         || {
             let response = world.call("health.repositories", json!({}))?;
             let value = data(&response)?.clone();
@@ -6479,7 +6484,7 @@ health = {{ tcp = true, timeout_seconds = 30 }}
     let mut last_postgres_storage = Value::Null;
     wait_for_value(
         "PostgreSQL operational storage facts",
-        Duration::from_secs(90),
+        storage_observation_deadline,
         || {
             let detail =
                 data(&world.call("health.repository", json!({"path": world.repo}))?)?.clone();
