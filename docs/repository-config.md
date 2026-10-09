@@ -320,6 +320,9 @@ Validation rules:
   `retained_artifacts` tables. Names are unique check-style identifiers; paths
   are normalized repository-relative directories outside `.git` and
   `.devcoordinator`; `max_bytes` is a positive integer no greater than 1 GiB.
+  Each tree contains at most 8192 regular files; all declared trees together
+  remain bounded to 2 GiB, with a 4 MiB serialized manifest. These independent
+  byte bounds also apply when file names approach the path limit.
   Fan-out and event-completed checks cannot retain generic artifact trees.
 - `DEVCOORDINATOR_*` environment names are reserved for exact runner identity,
   scratch, artifact, diagnostic, log, manifest, and event delivery.

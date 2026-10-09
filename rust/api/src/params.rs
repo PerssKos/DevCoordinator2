@@ -727,7 +727,7 @@ pub struct ArtifactCatalog {
     #[serde(default)]
     pub manifest_sha256: Option<String>,
     #[serde(default)]
-    #[schemars(range(max = 4096))]
+    #[schemars(range(max = 8192))]
     pub offset: u32,
     #[serde(default = "default_catalog_limit")]
     #[schemars(range(min = 1, max = 100))]

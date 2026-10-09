@@ -14,8 +14,9 @@ use devcoordinator2_executor_core::{
     protocol::{
         CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
         DiagnosticReportFormat, DiagnosticReportSource, ErrorCategory, ExecutionPlan,
-        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream, ProofKind,
-        RetainedArtifactSpec, RunStatus, Schema2, TerminationReason, ValidationTier,
+        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream,
+        MAX_RETAINED_ARTIFACT_FILES, ProofKind, RetainedArtifactSpec, RunStatus, Schema2,
+        TerminationReason, ValidationTier,
     },
     source_digest,
 };
@@ -1479,29 +1480,58 @@ async fn successful_direct_check_snapshots_declared_retained_artifact_tree() {
     fs::write(repository.root.join(".gitignore"), b"browser-evidence/\n")
         .expect("ignore generated evidence");
     run_git(&repository.root, &["add", ".gitignore"]);
-    let mut check = direct("browser", fixture(&["write-artifact-tree"]));
-    check.retained_artifacts = vec![RetainedArtifactSpec {
-        name: "production".into(),
-        path: "browser-evidence".into(),
-        max_bytes: 1024,
-    }];
-    let report = execute(plan(&repository, "run-retained-artifact-tree", vec![check])).await;
-    assert_eq!(report.status, RunStatus::Passed);
-    assert_eq!(report.checks[0].retained_artifacts.len(), 1);
-    let receipt = &report.checks[0].retained_artifacts[0];
-    assert_eq!(receipt.name, "production");
-    assert_eq!(receipt.files, 2);
-    let retained = repository
-        .logs("run-retained-artifact-tree")
-        .join("checks/browser/check/evidence/retained/production");
-    assert_eq!(
-        fs::read_to_string(retained.join("result.json")).expect("result"),
-        "{\"ok\":true}\n"
-    );
-    assert_eq!(
-        fs::read(retained.join("nested/capture.png")).expect("capture"),
-        b"png"
-    );
+    for count in [4512, MAX_RETAINED_ARTIFACT_FILES] {
+        let mut check = direct(
+            "browser",
+            fixture(&["write-artifact-tree", &count.to_string()]),
+        );
+        check.retained_artifacts = vec![RetainedArtifactSpec {
+            name: "production".into(),
+            path: "browser-evidence".into(),
+            max_bytes: 1024 * 1024,
+        }];
+        let run_id = format!("run-retained-artifact-tree-{count}");
+        let report = execute(plan(&repository, &run_id, vec![check])).await;
+        assert_eq!(
+            report.status,
+            RunStatus::Passed,
+            "{:?}",
+            report.failure_index
+        );
+        assert_eq!(report.checks[0].retained_artifacts.len(), 1);
+        let receipt = &report.checks[0].retained_artifacts[0];
+        assert_eq!(receipt.name, "production");
+        assert_eq!(receipt.files as usize, count);
+        let evidence = repository
+            .logs(&run_id)
+            .join("checks/browser/check/evidence");
+        let retained = evidence.join("retained/production");
+        assert_eq!(
+            fs::read_to_string(retained.join("result.json")).expect("result"),
+            "{\"ok\":true}\n"
+        );
+        assert_eq!(
+            fs::read(retained.join("nested/capture.png")).expect("capture"),
+            b"png"
+        );
+        assert_eq!(
+            fs::read_to_string(retained.join(format!("nested/{:05}.txt", count - 1)))
+                .expect("last file"),
+            (count - 1).to_string()
+        );
+        let manifest_bytes = fs::read(evidence.join("retained-artifacts.json")).expect("manifest");
+        assert!(manifest_bytes.len() <= 4 * 1024 * 1024);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&manifest_bytes).expect("manifest JSON");
+        assert_eq!(
+            manifest["artifacts"][0]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            count
+        );
+        assert_eq!(manifest["artifacts"][0]["sha256"], receipt.sha256);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1582,6 +1612,39 @@ async fn oversized_retained_artifact_failure_preserves_named_reason() {
     assert_eq!(
         report_json["failure_index"][0]["actual"]["preview"],
         "retained artifact \"diagnostics\": retained artifact exceeds its 4 byte limit"
+    );
+    let count = MAX_RETAINED_ARTIFACT_FILES + 1;
+    let mut check = direct(
+        "browser",
+        fixture(&["write-artifact-tree", &count.to_string()]),
+    );
+    check.retained_artifacts = vec![RetainedArtifactSpec {
+        name: "diagnostics".into(),
+        path: "browser-evidence".into(),
+        max_bytes: 1024 * 1024,
+    }];
+    let run_id = "run-too-many-retained-artifact-files";
+    let report = execute(plan(&repository, run_id, vec![check])).await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].exit.code, Some(0));
+    assert!(report.checks[0].retained_artifacts.is_empty());
+    let diagnostic = failure(&report, Some("browser"), None);
+    assert_eq!(diagnostic.error_category, ErrorCategory::Artifact);
+    assert_eq!(diagnostic.actual.as_ref().and_then(|value| value.preview.as_deref()),
+        Some(format!("retained artifact \"diagnostics\": retained artifact exceeds {MAX_RETAINED_ARTIFACT_FILES} files").as_str()));
+    let evidence = repository
+        .logs(run_id)
+        .join("checks/browser/check/evidence");
+    assert!(!evidence.join("retained-artifacts.json").exists());
+    assert!(!evidence.join("retained").exists());
+    assert_eq!(
+        fs::read_to_string(
+            repository
+                .root
+                .join(format!("browser-evidence/nested/{:05}.txt", count - 1))
+        )
+        .expect("source preserved"),
+        (count - 1).to_string()
     );
 }
 

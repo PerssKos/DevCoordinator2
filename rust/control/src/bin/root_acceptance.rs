@@ -1688,7 +1688,19 @@ fn response_text(value: &Value) -> String {
 }
 
 fn case_pass_uid_and_catalogued_output(world: &mut World) -> Result<(), String> {
-    world.write_config(&unit_config(&["/usr/bin/id".to_owned()], Some(60))?)?;
+    let mut config = unit_config(
+        &[
+            "/bin/sh".into(),
+            "-c".into(),
+            "/usr/bin/id && exec \"$1\" write-artifact-tree 4512".into(),
+            "retained-artifact-fixture".into(),
+            world.harness.fixture.display().to_string(),
+        ],
+        Some(60),
+    )?;
+    config.push_str("[[test.unit.check.retained_artifacts]]\nname = \"browser\"\npath = \"browser-evidence\"\nmax_bytes = 1048576\n");
+    world.write_owned(".gitignore", "browser-evidence/\nmaterialized/\n")?;
+    world.write_config(&config)?;
     let started = world.call("test.start", json!({"path": world.repo}))?;
     let started = data(&started)?;
     ensure!(started["status"] == "running", "test did not start running");
@@ -1728,7 +1740,136 @@ fn case_pass_uid_and_catalogued_output(world: &mut World) -> Result<(), String> 
             == "passed",
         "summary did not retain passed status"
     );
+    retained_artifact_capacity_after_run(world, run_id)?;
     storage_cases::retained_evidence_after_run(world, run_id)
+}
+
+fn retained_artifact_capacity_after_run(world: &mut World, run_id: &str) -> Result<(), String> {
+    let started = Instant::now();
+    let catalog = world.call(
+        "test.artifact.catalog",
+        json!({"path":world.repo,"run_id":run_id,"check":"main"}),
+    )?;
+    let catalog = data(&catalog)?;
+    let artifact = &catalog["artifacts"][0];
+    ensure!(
+        artifact["files"] == 4512,
+        "retention omitted files above the former limit"
+    );
+    let tail = world.call("test.artifact.catalog", json!({"path":world.repo,"run_id":run_id,"check":"main","artifact":"browser","manifest_sha256":catalog["manifest_sha256"],"offset":4500,"limit":100}))?;
+    let tail = data(&tail)?;
+    ensure!(
+        tail["entries"]
+            .as_array()
+            .is_some_and(|rows| rows.len() == 12)
+            && tail["next_offset"].is_null(),
+        "catalogue did not reach the exact final page"
+    );
+    let destination = world.repo.join("materialized");
+    let output = command_stdout_as(
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+        &world.repo,
+        "/usr/bin/env",
+        &[
+            &format!("DEVCOORDINATOR2_SOCKET={}", world.socket.display()),
+            "DEVCOORDINATOR2_INSTANCE_ENV=/nonexistent",
+            world
+                .harness
+                .daemon
+                .to_str()
+                .ok_or("candidate path is not UTF-8")?,
+            "--client",
+            "codex",
+            "test",
+            "artifact",
+            "materialize",
+            world.repo.to_str().ok_or("repository path is not UTF-8")?,
+            "--run-id",
+            run_id,
+            "--check",
+            "main",
+            "--artifact",
+            "browser",
+            "--destination",
+            destination
+                .to_str()
+                .ok_or("destination path is not UTF-8")?,
+        ],
+        &world.base,
+    )?;
+    let receipt: Value = serde_json::from_str(&output).map_err(|error| error.to_string())?;
+    let receipt = data(&receipt)?;
+    for key in [
+        "run_id",
+        "manifest_sha256",
+        "source_sha256",
+        "config_sha256",
+        "proof",
+        "readiness_eligible",
+    ] {
+        ensure!(
+            receipt[key] == catalog[key],
+            "materialization changed {key}"
+        );
+    }
+    let mut expected = vec![
+        ("result.json".to_owned(), b"{\"ok\":true}\n".to_vec()),
+        ("nested/capture.png".to_owned(), b"png".to_vec()),
+    ];
+    expected.extend((2..4512).map(|index| {
+        (
+            format!("nested/{index:05}.txt"),
+            index.to_string().into_bytes(),
+        )
+    }));
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut digest = Sha256::new();
+    digest.update(b"devcoordinator2-retained-artifact-tree-v1\0");
+    let mut size = 0_u64;
+    for (path, bytes) in &expected {
+        let file = destination.join("browser").join(path);
+        ensure!(
+            fs::read(&file).map_err(|error| error.to_string())? == *bytes,
+            "materialized bytes differ at {path}"
+        );
+        let metadata = fs::metadata(file).map_err(|error| error.to_string())?;
+        ensure!(
+            metadata.uid() == world.harness.caller_uid
+                && metadata.permissions().mode() & 0o777 == 0o600,
+            "materialized file ownership or privacy changed"
+        );
+        size += bytes.len() as u64;
+        digest.update(path.as_bytes());
+        digest.update([0]);
+        digest.update(bytes.len().to_string().as_bytes());
+        digest.update([0]);
+        digest.update(sha256_hex(bytes).as_bytes());
+        digest.update([0]);
+    }
+    let digest: String = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    ensure!(
+        artifact["sha256"] == digest && receipt["artifacts"][0]["sha256"] == digest,
+        "complete tree hash differs"
+    );
+    ensure!(
+        artifact["size"] == size
+            && receipt["artifacts"][0]["files"] == 4512
+            && receipt["artifacts"][0]["size"] == size,
+        "materialized count or size differs"
+    );
+    world.measurements.insert(
+        "retained_artifact_materialization_ms".into(),
+        started.elapsed().as_millis(),
+    );
+    world
+        .measurements
+        .insert("retained_artifact_files".into(), expected.len() as u128);
+    Ok(())
 }
 
 fn case_broken_command_terminal_failure(world: &mut World) -> Result<(), String> {

@@ -79,7 +79,9 @@ impl TestArtifactService {
             validate_digest(digest, "manifest_sha256")?;
         }
         if params.offset as usize > MAX_RETAINED_ARTIFACT_FILES {
-            return Err(invalid_argument("'offset' must be an integer in 0..4096"));
+            return Err(invalid_argument(format!(
+                "'offset' must be an integer in 0..{MAX_RETAINED_ARTIFACT_FILES}"
+            )));
         }
         if params.limit == 0 || params.limit > MAX_PAGE {
             return Err(invalid_argument("'limit' must be an integer in 1..100"));
@@ -956,6 +958,16 @@ mod tests {
 
     impl World {
         fn new() -> Self {
+            Self::with_files(vec![
+                ("report.json".to_owned(), b"{\"ok\":true}\n".to_vec()),
+                (
+                    "nested/screenshot.png".to_owned(),
+                    b"fixture-png-bytes".to_vec(),
+                ),
+            ])
+        }
+
+        fn with_files(files: Vec<(String, Vec<u8>)>) -> Self {
             let temporary = tempfile::tempdir().expect("temporary directory");
             let repository = temporary.path().join("repo");
             fs::create_dir(&repository).expect("repository");
@@ -983,13 +995,6 @@ mod tests {
                 .join("check/evidence");
             let retained = evidence.join("retained/production");
             fs::create_dir_all(retained.join("nested")).expect("retained directories");
-            let files = vec![
-                ("report.json".to_owned(), b"{\"ok\":true}\n".to_vec()),
-                (
-                    "nested/screenshot.png".to_owned(),
-                    b"fixture-png-bytes".to_vec(),
-                ),
-            ];
             let mut entries = Vec::new();
             for (relative, payload) in &files {
                 let target = retained.join(relative);
@@ -1167,6 +1172,80 @@ mod tests {
             .expect("second page");
         assert_eq!(second.entries.len(), 1);
         assert_eq!(second.next_offset, None);
+        let operation =
+            devcoordinator2_api::operation("test.artifact.catalog").expect("catalog operation");
+        let schema = serde_json::to_value((operation.input_schema)()).expect("catalog schema");
+        assert_eq!(
+            schema["properties"]["offset"]["maximum"],
+            MAX_RETAINED_ARTIFACT_FILES
+        );
+        let files = (0..MAX_RETAINED_ARTIFACT_FILES)
+            .map(|index| (format!("{index:05}.txt"), vec![index as u8]))
+            .collect();
+        let world = World::with_files(files);
+        let root = world
+            .service
+            .catalog(world.catalog_params(None), &world.caller)
+            .expect("maximum count");
+        assert_eq!(
+            root.artifacts[0].files as usize,
+            MAX_RETAINED_ARTIFACT_FILES
+        );
+        for offset in [
+            4096,
+            MAX_RETAINED_ARTIFACT_FILES - 1,
+            MAX_RETAINED_ARTIFACT_FILES,
+        ] {
+            let mut params = world.catalog_params(Some("production"));
+            params.manifest_sha256 = Some(root.manifest_sha256.clone());
+            params.offset = offset as u32;
+            params.limit = 1;
+            let page = world
+                .service
+                .catalog(params, &world.caller)
+                .expect("later page");
+            assert_eq!(
+                page.entries.len(),
+                usize::from(offset < MAX_RETAINED_ARTIFACT_FILES)
+            );
+            if let Some(entry) = page.entries.first() {
+                assert_eq!(entry.path, format!("{offset:05}.txt"));
+            }
+        }
+        let mut params = world.catalog_params(Some("production"));
+        params.offset = MAX_RETAINED_ARTIFACT_FILES as u32 + 1;
+        let error = world
+            .service
+            .catalog(params, &world.caller)
+            .expect_err("offset overflow");
+        assert_eq!(error.code, ErrorCode::ParamsInvalid);
+        assert!(
+            error
+                .message
+                .contains(&MAX_RETAINED_ARTIFACT_FILES.to_string())
+        );
+        let mut manifest: RetainedManifest =
+            serde_json::from_slice(&fs::read(world.evidence.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let artifact = &mut manifest.artifacts[0];
+        let mut extra = artifact.entries.last().unwrap().clone();
+        extra.path = "last.txt".into();
+        artifact.size += extra.size;
+        artifact.entries.push(extra);
+        artifact.files += 1;
+        artifact.sha256 = retained_tree_digest(&artifact.entries);
+        fs::write(
+            world.evidence.join(MANIFEST_NAME),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            world
+                .service
+                .catalog(world.catalog_params(None), &world.caller)
+                .expect_err("manifest file count overflow")
+                .code,
+            ErrorCode::TestArtifactTampered
+        );
     }
 
     #[test]

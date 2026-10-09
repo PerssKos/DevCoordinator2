@@ -477,6 +477,16 @@ fn run() -> Result<i32, String> {
                 .map_err(|error| error.to_string())?;
             fs::write(root.join("nested/capture.png"), b"png")
                 .map_err(|error| error.to_string())?;
+            if let Some(count) = env::args().nth(2) {
+                let count = count.parse::<usize>().map_err(|error| error.to_string())?;
+                for index in 2..count {
+                    fs::write(
+                        root.join(format!("nested/{index:05}.txt")),
+                        index.to_string(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+            }
             Ok(if action == "write-failed-artifact-tree" {
                 7
             } else {

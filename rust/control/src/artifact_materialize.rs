@@ -12,6 +12,7 @@ use devcoordinator2_api::results::{
     ArtifactCatalog, ArtifactChunk, ArtifactEntry, ArtifactSummary, ProofKind,
 };
 use devcoordinator2_api::{ClientContext, ErrorCode, ProtocolError, ResponseEnvelope};
+use devcoordinator2_executor_core::protocol::MAX_RETAINED_ARTIFACT_FILES;
 use rustix::fs::{self as unix_fs, AtFlags, Dir, Mode, OFlags};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -20,7 +21,6 @@ use sha2::{Digest, Sha256};
 use crate::client;
 
 const MAX_ARTIFACTS: usize = 8;
-const MAX_FILES: usize = 4_096;
 const MAX_ARTIFACT_BYTES: u64 = 1_024 * 1_024 * 1_024;
 const MAX_TOTAL_BYTES: u64 = 2 * 1_024 * 1_024 * 1_024;
 const MAX_PAGE: usize = 100;
@@ -355,7 +355,7 @@ async fn page_entries<C: V2Call + ?Sized>(
                 "retained artifact page exceeds its public bound",
             ));
         }
-        if entries.len() + page.entries.len() > MAX_FILES {
+        if entries.len() + page.entries.len() > MAX_RETAINED_ARTIFACT_FILES {
             return Err(MaterializeError::tampered(
                 "retained artifact file count exceeds its public bound",
             ));
@@ -603,7 +603,7 @@ fn validate_summary(summary: &ArtifactSummary) -> Result<(), MaterializeError> {
     if !valid_simple_name(&summary.name, 64)
         || summary.size > MAX_ARTIFACT_BYTES
         || summary.files == 0
-        || summary.files as usize > MAX_FILES
+        || summary.files as usize > MAX_RETAINED_ARTIFACT_FILES
         || !valid_sha256(&summary.sha256)
     {
         return Err(MaterializeError::tampered(
@@ -1456,19 +1456,18 @@ mod tests {
     #[tokio::test]
     async fn pages_more_than_one_hundred_files_and_continues_large_chunks() {
         let temporary = tempdir().expect("tempdir");
-        let entries = (0..101)
-            .map(|index| entry(&format!("{index:03}.txt"), &[index as u8]))
+        let entries = (0..MAX_RETAINED_ARTIFACT_FILES)
+            .map(|index| entry(&format!("{index:05}.txt"), &[index as u8]))
             .collect::<Vec<_>>();
         let artifact = summary("many", &entries);
         let catalog = root(vec![artifact.clone()]);
-        let mut first_page = page(&catalog, &artifact, entries[..100].to_vec());
-        first_page.next_offset = Some(100);
-        let second_page = page(&catalog, &artifact, entries[100..].to_vec());
-        let mut responses = vec![
-            ("test.artifact.catalog", success(catalog.clone())),
-            ("test.artifact.catalog", success(first_page)),
-            ("test.artifact.catalog", success(second_page)),
-        ];
+        let mut responses = vec![("test.artifact.catalog", success(catalog.clone()))];
+        for (index, rows) in entries.chunks(MAX_PAGE).enumerate() {
+            let mut value = page(&catalog, &artifact, rows.to_vec());
+            let next = (index + 1) * MAX_PAGE;
+            value.next_offset = (next < entries.len()).then_some(next as u32);
+            responses.push(("test.artifact.catalog", success(value)));
+        }
         for (index, entry) in entries.iter().enumerate() {
             responses.push((
                 "test.artifact.file",
@@ -1477,13 +1476,68 @@ mod tests {
         }
         let caller = ScriptedCall::new(responses);
         let destination = temporary.path().join("paged");
-        materialize(request(destination.clone(), Vec::new()), &caller)
+        let receipt = materialize(request(destination.clone(), Vec::new()), &caller)
             .await
             .expect("paged materialization");
         assert_eq!(
-            std::fs::read(destination.join("many/100.txt")).unwrap(),
-            [100]
+            receipt.artifacts[0].files as usize,
+            MAX_RETAINED_ARTIFACT_FILES
         );
+        assert_eq!(receipt.artifacts[0].sha256, artifact.sha256);
+        assert_eq!(
+            std::fs::read_dir(destination.join("many")).unwrap().count(),
+            entries.len()
+        );
+        for index in [100, 4096, MAX_RETAINED_ARTIFACT_FILES - 1] {
+            assert_eq!(
+                std::fs::read(destination.join(format!("many/{index:05}.txt"))).unwrap(),
+                [index as u8]
+            );
+        }
+
+        // An oversized summary must fail before requesting files or creating a destination.
+        let mut oversized = catalog.clone();
+        oversized.artifacts[0].files = MAX_RETAINED_ARTIFACT_FILES as u32 + 1;
+        let caller = ScriptedCall::new(vec![("test.artifact.catalog", success(oversized))]);
+        let rejected = temporary.path().join("too-many");
+        assert_eq!(
+            materialize(request(rejected.clone(), Vec::new()), &caller)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::TestArtifactTampered
+        );
+        assert!(!rejected.exists());
+
+        // Losing or repeating the tail after the former limit cannot be called a complete tree.
+        for repeat in [false, true] {
+            let mut responses = vec![("test.artifact.catalog", success(catalog.clone()))];
+            for (index, rows) in entries.chunks(MAX_PAGE).enumerate() {
+                let mut rows = rows.to_vec();
+                let next = (index + 1) * MAX_PAGE;
+                if next >= entries.len() {
+                    if repeat {
+                        rows[0] = entries[index * MAX_PAGE - 1].clone();
+                    } else {
+                        rows.pop();
+                    }
+                }
+                let mut value = page(&catalog, &artifact, rows);
+                value.next_offset = (next < entries.len()).then_some(next as u32);
+                responses.push(("test.artifact.catalog", success(value)));
+            }
+            let caller = ScriptedCall::new(responses);
+            let rejected = temporary.path().join(format!("bad-tail-{repeat}"));
+            assert_eq!(
+                materialize(request(rejected.clone(), Vec::new()), &caller)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::TestArtifactTampered
+            );
+            assert!(!rejected.exists());
+            assert!(destination.join("many/00000.txt").is_file());
+        }
 
         let large = vec![7_u8; MAX_CHUNK_BYTES as usize + 17];
         let large_entry = entry("large.bin", &large);

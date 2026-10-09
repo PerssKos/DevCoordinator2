@@ -240,8 +240,9 @@ denies an exact selected-run query; the selected run itself remains strict.
 `catalog` requires `path`, `run_id`, and `check`. Without `artifact` it returns
 the bounded hash-bound tree summaries and run/source/config/proof identity.
 With an exact artifact name it verifies that entire retained tree and returns a
-stable file page using `offset` and `limit` (1..100); callers may bind later
-pages with `manifest_sha256`. Results contain only declared artifact names and
+stable file page using `offset` (0..8192) and `limit` (1..100); callers may
+bind later pages with `manifest_sha256`. A tree has at most 8192 regular files;
+its byte, path, privacy, and integrity limits remain independent. Results contain only declared artifact names and
 relative file names, sizes, counts, and SHA-256 values—never a private source or
 storage path.
 
