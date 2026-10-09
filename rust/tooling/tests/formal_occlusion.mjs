@@ -75,6 +75,29 @@ function occlusions(report) {
   return report.findings.filter((finding) => ["occluded", "partially-occluded"].includes(finding.rule));
 }
 
+for (const pattern of ['inset', 'legacy', 'nested', 'focus-revealed', 'ordinary-crop', 'partial-crop', 'covered-visible']) {
+  test(`visually hidden ancestor precision: ${pattern}`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      const hidden = ['inset', 'legacy', 'nested', 'focus-revealed'].includes(pattern);
+      const clip = pattern === 'legacy' ? 'clip:rect(0px,0px,0px,0px)' : 'clip-path:inset(50%)';
+      const style = hidden ? `position:absolute;width:1px;height:1px;overflow:hidden;${clip}`
+        : pattern === 'ordinary-crop' ? 'width:70px;height:24px;overflow:hidden'
+        : pattern === 'partial-crop' ? 'width:140px;height:24px;overflow:hidden' : '';
+      await page.setContent(`<!doctype html><style>body{margin:0;background:white;color:#111;font:16px sans-serif}main{padding:12px}.owner{${style}}#probe{display:block;width:220px;height:24px;white-space:nowrap}#cover{position:absolute;top:12px;left:12px;width:240px;height:30px;background:#fff}.owner:focus-within{${pattern === 'focus-revealed' ? 'position:static;width:240px;height:30px;overflow:visible;clip-path:none' : ''}}</style><main><div class="owner">${pattern === 'nested' ? '<div>' : ''}<span id="probe" tabindex="0">Recognizable source reference</span>${pattern === 'nested' ? '</div>' : ''}</div>${pattern === 'covered-visible' || hidden && pattern !== 'focus-revealed' ? '<div id="cover">Visible neighboring content</div>' : ''}</main>`);
+      if (pattern === 'focus-revealed') await page.locator('#probe').focus();
+      const before = await scrollCoordinates(page);
+      const report = await measure(page);
+      assert.deepEqual(await scrollCoordinates(page), before, 'measurement restores scroll positions');
+      const failures = occlusions(report).filter(row => row.selector === '#probe');
+      if (hidden) assert.deepEqual(failures, [], 'a fully clipped accessibility-only ancestor cannot create phantom covered text');
+      if (pattern === 'covered-visible') assert(failures.some(row => row.severity === 'critical'), 'visible content under a real cover is still checked');
+      if (pattern.endsWith('crop')) assert(report.findings.some(row => row.selector === '#probe' && row.severity === 'critical' && row.rule === 'clipped-by-ancestor'), 'ordinary cropped content is not an accessibility-only exception');
+      if (pattern === 'focus-revealed') assert(report.metrics.candidateCount > 0, 'focus reveal remains inspected');
+    } finally { await page.close(); }
+  });
+}
+
 for (const covered of [false, true]) {
   test(`fractional modal scroll edge checks reachable content: covered ${covered}`, async () => {
     const page = await browser.newPage({ viewport: { width: 927, height: 873 } });

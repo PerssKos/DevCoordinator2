@@ -37,6 +37,10 @@ unscrollable fixed controls and occlusion inside the active dialog still fail.
 Partially visible content at an inner scroll edge is scrolled into view before
 occlusion sampling. Fractional edge pixels must not turn a neighboring footer
 into a false blocker; actual covers remain checked and scroll positions are restored.
+Descendants of a positioned, at-most-one-pixel accessibility text container
+with zero-paint inset/legacy clipping are inventoried as fully clipped rather
+than sampled for phantom occlusion. Ordinary cropped content and explicitly
+declared geometry remain checked; a focus-revealed element is inspected normally.
 Deliberately temporary,
 positioned dialog/menu/listbox/tooltip/popover surfaces may declare
 `data-ui-contextual-overlay="reason"` so their coverage of outside content is
@@ -70,6 +74,10 @@ viewport before scrolling and checks that an activated in-page journey reveals
 a visible focused continuation without a document jump. Bare URL targets fail
 coverage because geometry without product intent cannot prove that the right
 content owns the page.
+When content removal shrinks the document's scroll range in an unchanged
+viewport, continuation evidence preserves the raw movement and separately checks
+movement beyond the unavoidable range clamp. Focus, recognizable visible anchors,
+horizontal movement, and additional vertical jumps retain their existing checks.
 
 The execution plan is safe-complete rather than fail-fast. Ordinary cell
 failures are collected while later independent work continues; browser-authority

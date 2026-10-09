@@ -24,6 +24,7 @@ const variants = new Map([
   ['/clipped', html.replace('button{min-height:32px}', 'button{min-height:32px;width:30px;overflow:hidden;white-space:nowrap}')],
   ['/overflow', html.replace('body{margin:0', 'body{width:2000px;margin:0')],
   ['/offscreen', html.replace('main{padding:20px;grid-column:2;min-width:0}', 'main{padding:20px;margin-top:1000px}')],
+  ['/visually-hidden-identity', html.replace('<button id="label">Edit signal</button>', '<div style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)"><button id="label">Edit signal</button></div>')],
 ]);
 const recoveryMarker = '<div id="recovery-clip"><div id="recovery-state" style="height:20px;line-height:20px">Loading the selected object</div></div>';
 const recoveryHtml = html.replace('</main>', recoveryMarker + '</main>');
@@ -59,6 +60,24 @@ for (const name of ['loading', 'access-denied', 'error', 'identity-visible', 'id
   variants.set('/recovery-' + name, document);
 }
 const uploadedRequests = [];
+const continuationObservations = new Map();
+for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand']) {
+  variants.set('/continuation-' + mode, `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:white;color:#111;font:16px sans-serif}main{padding:20px}#spacer{height:900px}#retained{height:130px}h1{font-size:24px}button{height:44px}#removed{height:${mode === 'expand' ? 0 : 600}px}footer{height:220px}</style><main id="primary"><div id="spacer">Expected delivery collection</div><section id="retained"><h1 id="heading">Parcel contents</h1><button id="label" data-ui-continuation-anchor>Parcel 20459000000021</button></section><div id="removed"></div><footer>More parcels remain</footer></main><script>
+  const read=()=>({x:scrollX,y:scrollY,maxY:Math.max(0,document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight),height:document.scrollingElement.clientHeight});
+  document.querySelector('#label').onclick=async event=>{
+    const before=read();
+    if('${mode}'!=='no-shrink-jump')document.querySelector('#removed').style.height='${mode === 'expand' ? 600 : 0}px';
+    void document.body.offsetHeight;
+    event.target.focus({preventScroll:true});
+    if('${mode}'==='collapse-extra-jump')scrollTo(0,Math.max(0,scrollY-60));
+    if('${mode}'==='no-shrink-jump')scrollTo(0,scrollY+60);
+    if('${mode}'==='collapse-focus-lost')event.target.blur();
+    if('${mode}'==='collapse-offscreen'){event.target.style.position='absolute';event.target.style.top='0px';}
+    const after=read();
+    await fetch('/continuation-observe?mode=${mode}',{method:'POST',body:JSON.stringify({before,after})});
+    document.documentElement.dataset.continued='true';
+  };</script>`);
+}
 let uploadMutation = null;
 const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
 let requestCount = 0;
@@ -104,6 +123,11 @@ document.querySelector('#label').onclick=()=>{window.name='session-return';sessi
     response.end(html.replace('</body>', `<script>${script}</script></body>`)); return;
   }
   if (pathname === '/upload' && uploadMutation) { uploadMutation(); uploadMutation = null; }
+  if (pathname === '/continuation-observe') {
+    const chunks = []; request.on('data', chunk => chunks.push(chunk));
+    request.on('end', () => { continuationObservations.set(new URL(request.url, 'http://fixture').searchParams.get('mode'), JSON.parse(Buffer.concat(chunks))); response.writeHead(200); response.end('observed'); });
+    return;
+  }
   if (pathname === '/uploaded') {
     const chunks = []; request.on('data', chunk => chunks.push(chunk));
     request.on('end', () => { uploadedRequests.push({ name: request.headers['x-upload-name'], type: request.headers['x-upload-type'], content: Buffer.concat(chunks).toString(), sha256: createHash('sha256').update(Buffer.concat(chunks)).digest('hex') }); response.writeHead(200); response.end('saved'); });
@@ -412,6 +436,47 @@ async function recoveryGeometryFixtures() {
     assert.equal(receipt.formal.result, positive ? 'passed' : 'failed');
   });
 }
+async function continuationPrecisionFixtures() {
+  for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand']) {
+    const config = full('/continuation-' + mode), row = config.targets[0];
+    config.viewports = [{ name: 'phone', width: 390, height: 664 }];
+    row.includeBase = false;
+    row.geometryAssertions = geometry('#retained', '#heading', '#label');
+    row.regions = [{ selector: '#retained', role: 'primary-content', journey: 'edit-signal' }];
+    row.states = [{ name: mode, actions: [{ action: 'focus', selector: '#label' }, { action: 'click', selector: '#label' }], waitFor: { selector: 'html[data-continued=true]' }, continuation: { kind: 'in-page', anchor: '#label', focusWithin: '#label', triggerActionIndex: 1 } }];
+    config.fixtureDataShapes[0] = { ...config.fixtureDataShapes[0], state: mode, conditionalDom: ['#retained', '#label'] };
+    config.requiredCoverage = [{ target: 'handoff', state: mode, viewport: 'phone', width: 390 }];
+    await verify('continuation-precision-' + mode, config, async ({ receipt, report, directory }) => {
+      const observation = continuationObservations.get(mode);
+      await writeFile(join(directory, 'fixture-scroll-observation.json'), JSON.stringify(observation, null, 2));
+      assert(observation, 'real click must record before and after scroll extent');
+      const { before, after } = observation;
+      const evidence = report.pages[0].continuation.evidence;
+      const findings = report.pages[0].findings.filter(row => row.rule.startsWith('continuation-'));
+      if (mode === 'collapse') {
+        assert(before.y > after.maxY + 8); assert(after.maxY < before.maxY); assert.equal(after.y, after.maxY);
+        assert.equal(evidence.focusSatisfied, true); assert.equal(evidence.anchorVisibleInViewport, true);
+        assert.deepEqual(findings, [], 'unavoidable document clamp preserves the focused continuation');
+        assert.equal(evidence.scrollDelta, before.y - after.y);
+        assert.equal(evidence.residualScrollDelta, 0);
+        assert.deepEqual(evidence.documentClamp, { beforeScrollY: before.y, beforeMaxScrollY: before.maxY, afterScrollY: after.y, afterMaxScrollY: after.maxY, expectedScrollY: after.maxY });
+        assert.equal(receipt.formal.result, 'passed');
+      } else if (mode === 'expand') {
+        assert(after.maxY > before.maxY); assert.equal(after.y, before.y);
+        assert.equal(evidence.documentClamp, null);
+        assert.deepEqual(findings, []); assert.equal(receipt.formal.result, 'passed');
+      } else {
+        const rule = mode.endsWith('focus-lost') ? 'continuation-focus-missing' : mode.endsWith('offscreen') ? 'continuation-anchor-offscreen' : 'continuation-document-jump';
+        assert(findings.some(row => row.rule === rule), 'real continuation defect remains blocking: ' + rule);
+        assert.equal(receipt.formal.result, 'failed');
+      }
+    });
+  }
+  await verify('visually-hidden-explicit-identity', full('/visually-hidden-identity'), ({ receipt, report }) => {
+    assert.equal(receipt.formal.result, 'failed', 'global hidden-text precision cannot waive a declared canonical identifier');
+    assert(report.pages[0].metrics.handoff.geometry.some(row => ['identifier', 'clipping'].includes(row.id) && row.status === 'failed'));
+  });
+}
 async function sessionFixtures() {
   const config = full('/session-cell?identity=A');
   config.viewports.push({ name: 'mobile', width: 390, height: 900 }); config.maxPageCount = 4;
@@ -594,7 +659,8 @@ async function uploadFixtures() {
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
 try {
-  if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
+  if (process.argv.includes('--continuation-precision-only')) await continuationPrecisionFixtures();
+  else if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
   else if (process.argv.includes('--session-only')) await sessionFixtures();
   else {
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only') && !process.argv.includes('--config-only-selftest')) await sessionFixtures();
@@ -604,6 +670,7 @@ try {
   if (!process.argv.includes('--upload-only')) await capturePrivacy();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) {
   await recoveryGeometryFixtures();
+  await continuationPrecisionFixtures();
   await Promise.all([
     verify('formal-receipt', base, ({ exitCode, receipt }) => {
       assert.equal(exitCode, 0); assert(receipt.formal, 'The verifier must emit its measured formal receipt');

@@ -2488,6 +2488,9 @@ async function applyInteractionState(page, state, target = null) {
         beforeContinuation = await page.evaluate(() => ({
           scrollX: window.scrollX,
           scrollY: window.scrollY,
+          maxScrollY: Math.max(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight),
+          clientWidth: document.scrollingElement.clientWidth,
+          clientHeight: document.scrollingElement.clientHeight,
           path: window.location.pathname,
           origin: window.location.origin,
         }));
@@ -2573,6 +2576,9 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
   const current = await page.evaluate(() => ({
     scrollX: window.scrollX,
     scrollY: window.scrollY,
+    maxScrollY: Math.max(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight),
+    clientWidth: document.scrollingElement.clientWidth,
+    clientHeight: document.scrollingElement.clientHeight,
     path: window.location.pathname,
     origin: window.location.origin,
     viewportWidth: window.innerWidth,
@@ -2681,9 +2687,25 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
         Math.abs(current.scrollY - beforeContinuation.scrollY),
       )
     : null;
+  // Removing content can make the former document offset impossible. Only
+  // account for that measured range clamp; any additional scroll remains a jump.
+  const rangeShrank = beforeContinuation &&
+    current.origin === beforeContinuation.origin && current.path === beforeContinuation.path &&
+    current.clientWidth === beforeContinuation.clientWidth && current.clientHeight === beforeContinuation.clientHeight &&
+    Number.isFinite(beforeContinuation.maxScrollY) && current.maxScrollY < beforeContinuation.maxScrollY &&
+    beforeContinuation.scrollY > current.maxScrollY;
+  const clampedScrollY = rangeShrank ? current.maxScrollY : beforeContinuation?.scrollY;
+  const residualScrollDelta = beforeContinuation
+    ? Math.max(Math.abs(current.scrollX - beforeContinuation.scrollX), Math.abs(current.scrollY - clampedScrollY))
+    : null;
+  const documentClamp = rangeShrank ? {
+    beforeScrollY: beforeContinuation.scrollY, beforeMaxScrollY: beforeContinuation.maxScrollY,
+    afterScrollY: current.scrollY, afterMaxScrollY: current.maxScrollY,
+    expectedScrollY: clampedScrollY,
+  } : null;
   if (
     continuation.kind === "in-page" &&
-    (scrollDelta === null || scrollDelta > continuation.maxScrollDelta)
+    (residualScrollDelta === null || residualScrollDelta > continuation.maxScrollDelta)
   ) {
     findings.push({
       severity: "critical",
@@ -2693,7 +2715,7 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
       textSnippet: "",
       rect: anchorRect,
       area: null,
-      evidence: { scrollDelta, maxScrollDelta: continuation.maxScrollDelta },
+      evidence: { scrollDelta, residualScrollDelta, documentClamp, maxScrollDelta: continuation.maxScrollDelta },
     });
   }
   return {
@@ -2708,6 +2730,8 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
       anchorRecognizable,
       focusSatisfied: focusWithin,
       scrollDelta,
+      residualScrollDelta,
+      documentClamp,
       maxScrollDelta: continuation.maxScrollDelta,
     },
   };
@@ -3089,7 +3113,7 @@ function pageVerifier() {
   const controlTextMeasurements = [];
   const controlContainmentMeasurements = [];
   const contentInsetMeasurements = [];
-  const hiddenTextLike = { displayNone: 0, visibilityHidden: 0, zeroOpacity: 0, zeroSize: 0 };
+  const hiddenTextLike = { displayNone: 0, visibilityHidden: 0, zeroOpacity: 0, zeroSize: 0, fullyClipped: 0 };
   let pendingMedia = 0;
   const allElements = [];
   const roots = [document];
@@ -3262,10 +3286,26 @@ function pageVerifier() {
   while (modalFocus?.shadowRoot?.activeElement) modalFocus = modalFocus.shadowRoot.activeElement;
   const nativeModals = allElements.filter((element) => element.matches('dialog:modal'));
   const activeModal = nativeModals.findLast((modal) => modalContains(modal, modalFocus)) || nativeModals.at(-1);
+  const visuallyHiddenAncestor = (el) => {
+    for (let node = el; node; node = composedParent(node)) {
+      const style = cs(node);
+      if (!["absolute", "fixed"].includes(style.position) ||
+          !["hidden", "clip"].includes(style.overflowX) || !["hidden", "clip"].includes(style.overflowY)) continue;
+      const rect = nowRect(node);
+      if (rect.width > 1 || rect.height > 1) continue;
+      // These computed, zero-paint clipping patterns preserve accessible text.
+      // Class names, aria-hidden, and ordinary cropped content are not exemptions.
+      const inset = /^inset\(50%(?:\s+50%){0,3}\)$/.test(style.clipPath);
+      const legacy = /^rect\(0px,?\s+0px,?\s+0px,?\s+0px\)$/.test(style.clip);
+      if (inset || legacy) return node;
+    }
+    return null;
+  };
   const rendered = (el) => {
     const style = cs(el);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (effectiveOpacity(el) <= 0.01) return false;
+    if (visuallyHiddenAncestor(el)) return false;
     // Closed <details> (and content-visibility: hidden subtrees) keep layout
     // boxes for content the browser does not render; checkVisibility() is the
     // only reliable signal that such content is not actually shown.
@@ -3384,6 +3424,7 @@ function pageVerifier() {
         if (style.display === "none") hiddenTextLike.displayNone += 1;
         else if (style.visibility === "hidden" || style.visibility === "collapse") hiddenTextLike.visibilityHidden += 1;
         else if (effectiveOpacity(el) <= 0.01) hiddenTextLike.zeroOpacity += 1;
+        else if (visuallyHiddenAncestor(el)) hiddenTextLike.fullyClipped += 1;
         else hiddenTextLike.zeroSize += 1;
       }
       continue;

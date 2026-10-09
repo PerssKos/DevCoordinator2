@@ -331,6 +331,12 @@ declares `continuation`.
   must be inside `focusWithin`, and document movement must stay within
   `maxScrollDelta` (8 CSS pixels by default). A modal, mobile sheet, or nearby
   expansion can pass; a form appended below a long collection fails.
+- If content removal measurably shrinks the same document's scroll range in
+  an unchanged viewport, a former offset beyond the new maximum is clamped by
+  the browser. Evidence retains `scrollDelta`, the before/after range in
+  `documentClamp`, and `residualScrollDelta` beyond that unavoidable clamp.
+  The same limit applies to the residual; horizontal movement, focus loss,
+  offscreen anchors, and extra scrolling are never excused by a shorter page.
 - The anchor is the revealed heading or first field. A custom component may
   mark an equivalent recognizable element with `data-ui-continuation-anchor`;
   using a broad container merely because it intersects the viewport fails.
