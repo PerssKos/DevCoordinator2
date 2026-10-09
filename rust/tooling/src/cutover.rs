@@ -1493,7 +1493,7 @@ fn wait_for_bridge_connections(directory: &Path) -> Result<(), String> {
 
 fn bridge_observation(value: &Value) -> bool {
     // Do not infer completion from age or from an arbitrary read-only label.
-    // These two operations only observe state. In particular a health snapshot
+    // Deferred waits and health snapshots only observe state. A health snapshot
     // stranded by ENOSPC cannot mutate authority during the cutover backup.
     let Ok(request) = serde_json::from_value::<devcoordinator2_api::RequestEnvelope>(value.clone())
     else {
@@ -1503,7 +1503,8 @@ fn bridge_observation(value: &Value) -> bool {
         && !request.id.is_empty()
         && request.id.len() <= 64
         && request.id.bytes().all(|byte| byte.is_ascii_hexdigit())
-        && matches!(request.operation.as_str(), "event.wait" | "health.summary")
+        && (devcoordinator2_api::is_deferred_wait(&request.operation)
+            || request.operation == "health.summary")
         && devcoordinator2_api::operation(&request.operation).is_some_and(|operation| {
             operation.policy.read_only() && (operation.validate_params)(&request.params).is_ok()
         })
@@ -1946,6 +1947,29 @@ mod tests {
                 "filters":[{"filter_id":"upgrade","categories":["health"]}]
             })
         )));
+        for (operation, params) in [
+            (
+                "test.admission.wait",
+                serde_json::json!({"deadline_at":"2100-01-01T00:00:00Z"}),
+            ),
+            (
+                "test.wait",
+                serde_json::json!({"path":"/fixture","run_id":"fixture-run","deadline_at":"2100-01-01T00:00:00Z"}),
+            ),
+            (
+                "deployment.wait",
+                serde_json::json!({"deployment_id":"fixture-deployment","state":"ready","deadline_at":"2100-01-01T00:00:00Z"}),
+            ),
+        ] {
+            assert!(
+                bridge_observation(&request(operation, params)),
+                "{operation}"
+            );
+            assert!(
+                !bridge_observation(&request(operation, serde_json::json!({"unexpected":true}))),
+                "invalid {operation} cannot bypass drain"
+            );
+        }
         for operation in [
             "deployment.apply",
             "task.create",

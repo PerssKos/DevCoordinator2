@@ -24,7 +24,7 @@ pub async fn call(
         operation.as_str(),
         "review.prepare" | "review.record" | "performance.overview" | "performance.review"
     );
-    let blocking_wait = operation == "event.wait";
+    let blocking_wait = devcoordinator2_api::is_deferred_wait(&operation);
     let long_running_action = matches!(
         operation.as_str(),
         "deployment.apply"
@@ -315,36 +315,46 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn deployment_waits_for_the_result_beyond_the_ordinary_deadline() {
-        let temporary = tempfile::tempdir().unwrap();
-        let socket = temporary.path().join("daemon.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let mut stream = BufReader::new(stream);
-            let mut encoded = String::new();
-            stream.read_line(&mut encoded).await.unwrap();
-            let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
-            let mut finished = Vec::new();
-            stream.read_to_end(&mut finished).await.unwrap();
-            tokio::time::advance(Duration::from_secs(11)).await;
-            let response =
-                ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
-                    .unwrap();
-            stream
-                .get_mut()
-                .write_all(&serde_json::to_vec(&response).unwrap())
-                .await
-                .unwrap();
-        });
-        let result = call(
-            &socket,
+        for operation in [
             "deployment.apply",
-            serde_json::json!({}),
-            ClientContext::default(),
-        )
-        .await;
-        server.await.unwrap();
-        assert!(result.unwrap().is_ok());
+            "event.wait",
+            "test.admission.wait",
+            "test.wait",
+            "deployment.wait",
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let socket = temporary.path().join("daemon.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut encoded = String::new();
+                stream.read_line(&mut encoded).await.unwrap();
+                let request: RequestEnvelope = serde_json::from_str(&encoded).unwrap();
+                let mut finished = Vec::new();
+                if operation == "deployment.apply" {
+                    stream.read_to_end(&mut finished).await.unwrap();
+                }
+                tokio::time::advance(Duration::from_secs(11)).await;
+                let response =
+                    ResponseEnvelope::success(request.id, serde_json::json!({"finished": true}))
+                        .unwrap();
+                stream
+                    .get_mut()
+                    .write_all(&serde_json::to_vec(&response).unwrap())
+                    .await
+                    .unwrap();
+            });
+            let result = call(
+                &socket,
+                operation,
+                serde_json::json!({}),
+                ClientContext::default(),
+            )
+            .await;
+            server.await.unwrap();
+            assert!(result.unwrap().is_ok());
+        }
     }
 
     #[tokio::test(start_paused = true)]

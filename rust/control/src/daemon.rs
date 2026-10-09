@@ -354,7 +354,7 @@ async fn serve_connection(
         match parse_request(&raw) {
             Ok(request) => {
                 let id = request.id.clone();
-                let observer = request.operation == "event.wait";
+                let observer = devcoordinator2_api::is_deferred_wait(&request.operation);
                 match app.deferred(&request, peer) {
                     Ok(Some(deferred)) => {
                         let mut unexpected = [0_u8; 1];
@@ -362,7 +362,7 @@ async fn serve_connection(
                             _ = interruptions.wait_for(|interrupted| *interrupted), if observer => {
                                 Some(ResponseEnvelope::failure(id.clone(), ProtocolError::new(
                                     ErrorCode::DaemonUnavailable,
-                                    "coordinator is restarting; reconnect the event wait using its last cursor",
+                                    "coordinator is restarting; re-query the wait after recovery, retaining any event cursor",
                                 )))
                             }
                             result = deferred => Some(response_from_result(id.clone(), result)),
@@ -372,7 +372,7 @@ async fn serve_connection(
                                     id.clone(),
                                     ProtocolError::new(
                                         ErrorCode::ProtocolInvalid,
-                                        "event wait connection sent data after its request frame",
+                                        "wait connection sent data after its request frame",
                                     ),
                                 )),
                             },
@@ -434,6 +434,39 @@ mod tests {
     struct WaitingExecutor {
         started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
         dropped: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Option<Arc<tokio::sync::Notify>>,
+    }
+
+    const WAIT_OPERATIONS: [&str; 4] = [
+        "event.wait",
+        "test.admission.wait",
+        "test.wait",
+        "deployment.wait",
+    ];
+
+    fn wait_params(operation: &str) -> Value {
+        let deadline = "2100-01-01T00:00:00Z";
+        match operation {
+            "event.wait" => {
+                serde_json::json!({"filters":[{"filter_id":"fixture","categories":["health"],"deadline_at":deadline}]})
+            }
+            "test.admission.wait" => serde_json::json!({"deadline_at":deadline}),
+            "test.wait" => {
+                serde_json::json!({"path":"/fixture","run_id":"fixture-run","deadline_at":deadline})
+            }
+            "deployment.wait" => {
+                serde_json::json!({"deployment_id":"fixture-deployment","state":"ready","deadline_at":deadline})
+            }
+            _ => panic!("unexpected wait fixture"),
+        }
+    }
+
+    fn wait_frame(operation: &str) -> Vec<u8> {
+        let mut frame = serde_json::to_vec(&serde_json::json!({
+            "protocol":2,"id":"wait","operation":operation,"params":wait_params(operation),"client":{}
+        })).unwrap();
+        frame.push(b'\n');
+        frame
     }
 
     struct EventExecutor {
@@ -503,16 +536,23 @@ mod tests {
             _params: Value,
             _caller: &Caller,
         ) -> Option<Result<DeferredOperation, ProtocolError>> {
-            if operation != "event.wait" {
+            if !WAIT_OPERATIONS.contains(&operation) {
                 return None;
             }
             if let Some(sender) = self.started.lock().unwrap().take() {
                 let _ = sender.send(());
             }
             let signal = self.dropped.lock().unwrap().take();
+            let release = self.release.clone();
             Some(Ok(Box::pin(async move {
                 let _signal = DropSignal(signal);
-                std::future::pending::<Result<Value, ProtocolError>>().await
+                match release {
+                    Some(release) => {
+                        release.notified().await;
+                        Ok(serde_json::json!({"completed":true}))
+                    }
+                    None => std::future::pending::<Result<Value, ProtocolError>>().await,
+                }
             })))
         }
     }
@@ -605,6 +645,7 @@ mod tests {
             Arc::new(WaitingExecutor {
                 started: Arc::new(Mutex::new(Some(started_tx))),
                 dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+                release: None,
             }),
         ));
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
@@ -708,15 +749,19 @@ mod tests {
 
     #[tokio::test]
     async fn installer_fence_releases_idle_observers() {
-        verify_observer_interruption(false).await;
+        for operation in WAIT_OPERATIONS {
+            verify_observer_interruption(false, operation).await;
+        }
     }
 
     #[tokio::test]
     async fn shutdown_releases_idle_observers() {
-        verify_observer_interruption(true).await;
+        for operation in WAIT_OPERATIONS {
+            verify_observer_interruption(true, operation).await;
+        }
     }
 
-    async fn verify_observer_interruption(shutdown: bool) {
+    async fn verify_observer_interruption(shutdown: bool, operation: &str) {
         let temporary = tempdir().unwrap();
         let socket = temporary.path().join("daemon.sock");
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
@@ -726,13 +771,14 @@ mod tests {
             Arc::new(WaitingExecutor {
                 started: Arc::new(Mutex::new(Some(started_tx))),
                 dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+                release: None,
             }),
         ));
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
         let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
         let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
         let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream.write_all(b"{\"protocol\":2,\"id\":\"observer\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"upgrade\",\"categories\":[\"health\"]}]},\"client\":{}}\n").await.unwrap();
+        stream.write_all(&wait_frame(operation)).await.unwrap();
         timeout(Duration::from_secs(2), started_rx)
             .await
             .unwrap()
@@ -829,45 +875,43 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_cancels_a_deferred_event_wait() {
-        let temporary = tempdir().expect("tempdir");
-        let socket = temporary.path().join("daemon.sock");
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
-        let app = Arc::new(App::with_executor(
-            None,
-            Arc::new(WaitingExecutor {
-                started: Arc::new(Mutex::new(Some(started_tx))),
-                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
-            }),
-        ));
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-        let server_socket = socket.clone();
-        let server =
-            tokio::spawn(
-                async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
-            );
-        while !socket.exists() {
-            tokio::task::yield_now().await;
+        for operation in WAIT_OPERATIONS {
+            let temporary = tempdir().expect("tempdir");
+            let socket = temporary.path().join("daemon.sock");
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+            let app = Arc::new(App::with_executor(
+                None,
+                Arc::new(WaitingExecutor {
+                    started: Arc::new(Mutex::new(Some(started_tx))),
+                    dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+                    release: None,
+                }),
+            ));
+            let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+            let server_socket = socket.clone();
+            let server =
+                tokio::spawn(
+                    async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
+                );
+            while !socket.exists() {
+                tokio::task::yield_now().await;
+            }
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            stream.write_all(&wait_frame(operation)).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(2), started_rx)
+                .await
+                .expect("deferred operation start deadline")
+                .expect("start signal");
+            stream.shutdown().await.unwrap();
+            drop(stream);
+            tokio::time::timeout(Duration::from_secs(2), dropped_rx)
+                .await
+                .expect("deferred operation drop deadline")
+                .expect("drop signal");
+            shutdown_tx.send(true).unwrap();
+            server.await.unwrap().unwrap();
         }
-        let mut stream = UnixStream::connect(&socket).await.unwrap();
-        stream
-            .write_all(
-                b"{\"protocol\":2,\"id\":\"wait\",\"operation\":\"event.wait\",\"params\":{\"filters\":[{\"filter_id\":\"disconnect\",\"categories\":[\"health\"]}]},\"client\":{}}\n",
-            )
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), started_rx)
-            .await
-            .expect("deferred operation start deadline")
-            .expect("start signal");
-        stream.shutdown().await.unwrap();
-        drop(stream);
-        tokio::time::timeout(Duration::from_secs(2), dropped_rx)
-            .await
-            .expect("deferred operation drop deadline")
-            .expect("drop signal");
-        shutdown_tx.send(true).unwrap();
-        server.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -933,6 +977,60 @@ mod tests {
             serde_json::from_value(data).unwrap();
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].filter_ids, ["health"]);
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        for operation in WAIT_OPERATIONS {
+            verify_client_wait_completion(operation).await;
+        }
+    }
+    async fn verify_client_wait_completion(operation: &'static str) {
+        let temporary = tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(WaitingExecutor {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+                release: Some(release.clone()),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
+        let mut client = tokio::spawn(async move {
+            crate::client::call(
+                &socket,
+                operation,
+                wait_params(operation),
+                ClientContext::default(),
+            )
+            .await
+        });
+        timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        if let Ok(result) = timeout(Duration::from_millis(25), &mut client).await {
+            shutdown_tx.send(true).unwrap();
+            server.await.unwrap().unwrap();
+            panic!("{operation} ended before the observed operation completed: {result:?}");
+        }
+        release.notify_one();
+        let response = timeout(Duration::from_secs(2), client)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(response, ResponseEnvelope::Success { data, .. } if data["completed"] == true)
+        );
+        timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
         shutdown_tx.send(true).unwrap();
         server.await.unwrap().unwrap();
     }

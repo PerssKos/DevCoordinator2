@@ -107,6 +107,13 @@ waits for admission to reopen until its RFC 3339 `deadline_at`. `test.wait`
 waits for one run to finish and returns `wait_deadline_reached` when it does
 not finish in time.
 
+All four passive waits (`event.wait`, `test.admission.wait`, `test.wait`, and
+`deployment.wait`) retain their connection until a result, their declared
+deadline, or caller cancellation. Installation and shutdown interrupt them with
+`daemon_unavailable` so an observer cannot hold the cutover open. Re-query the
+original operation after recovery, retaining the last event cursor where
+applicable; interruption and deadline expiry never establish readiness.
+
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
 `cases: {"target/check":["case-id"]}` selects exact cases. Responses retain

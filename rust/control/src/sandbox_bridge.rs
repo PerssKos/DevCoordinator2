@@ -192,20 +192,20 @@ async fn process_claimed(
     };
     let response = match parse_request(&raw) {
         Ok(request) if request.id == id => {
-            let event_wait = request.operation == "event.wait";
-            if event_wait {
+            let observation_wait = devcoordinator2_api::is_deferred_wait(&request.operation);
+            if observation_wait {
                 tokio::select! {
                     biased;
                     _ = shutdown.wait_for(|stopped| *stopped) => {
                         ResponseEnvelope::failure(id, ProtocolError::new(
                             ErrorCode::DaemonUnavailable,
-                            "coordinator is restarting; re-query the operation with its last cursor",
+                            "coordinator is restarting; re-query the wait after recovery, retaining any event cursor",
                         ))
                     }
                     _ = app.wait_for_installation_fence() => {
                         ResponseEnvelope::failure(id, ProtocolError::new(
                             ErrorCode::DaemonUnavailable,
-                            "installation in progress; reconnect the event wait with its last cursor",
+                            "installation in progress; re-query the wait after recovery, retaining any event cursor",
                         ))
                     }
                     response = app.dispatch(request, peer) => response,
@@ -404,7 +404,15 @@ mod tests {
             _: Value,
             _: &crate::access::Caller,
         ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
-            assert_eq!(operation, "event.wait");
+            assert!(
+                [
+                    "event.wait",
+                    "test.admission.wait",
+                    "test.wait",
+                    "deployment.wait"
+                ]
+                .contains(&operation)
+            );
             self.0.notify_one();
             Some(Ok(Box::pin(std::future::pending())))
         }
@@ -414,6 +422,13 @@ mod tests {
         let path = directory.join(format!("{id}.processing"));
         let params = match operation {
             "event.wait" => json!({"filters":[{"filter_id":"fixture","categories":["health"]}]}),
+            "test.admission.wait" => json!({"deadline_at":"2100-01-01T00:00:00Z"}),
+            "test.wait" => {
+                json!({"path":"/fixture","run_id":"fixture-run","deadline_at":"2100-01-01T00:00:00Z"})
+            }
+            "deployment.wait" => {
+                json!({"deployment_id":"fixture-deployment","state":"ready","deadline_at":"2100-01-01T00:00:00Z"})
+            }
             "task.create" => json!({"title":"fixture mutation","kind":"improvement"}),
             _ => json!({}),
         };
@@ -430,52 +445,61 @@ mod tests {
 
     #[tokio::test]
     async fn bridge_observer_receives_cutover_and_can_reconnect_after_fence_removal() {
-        let temporary = tempdir().unwrap();
-        let directory = temporary.path();
-        let endpoint = directory.join("daemon.sock");
-        let executor = Arc::new(PendingObserver(tokio::sync::Notify::new()));
-        let app =
-            Arc::new(App::with_executor(None, executor.clone()).with_installation_fence(endpoint));
-        let (shutdown_tx, shutdown) = watch::channel(false);
-        let processing = claimed_request(directory, "abcdef", "event.wait");
-        let dir = directory.to_owned();
-        let observer_app = app.clone();
-        let observer = tokio::spawn(async move {
-            process_claimed(&dir, "abcdef", &processing, observer_app, shutdown).await
-        });
-        tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
-            .await
-            .unwrap();
-        fs::write(directory.join("daemon.pre-cutover.sock"), "fixture fence").unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(2), observer).await;
-        // Ensure a failing baseline cannot leave an endless task behind.
-        let _ = shutdown_tx.send(true);
-        result
-            .expect("bridge observer was not interrupted by cutover")
-            .unwrap()
-            .unwrap();
-        let response: ResponseEnvelope =
-            serde_json::from_slice(&fs::read(directory.join("abcdef.response")).unwrap()).unwrap();
-        assert!(
-            matches!(response, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::DaemonUnavailable)
-        );
-        assert!(!directory.join("abcdef.processing").exists());
-        fs::remove_file(directory.join("daemon.pre-cutover.sock")).unwrap();
-        let (stop, shutdown) = watch::channel(false);
-        let processing = claimed_request(directory, "abcdee", "event.wait");
-        let dir = directory.to_owned();
-        let reconnected = tokio::spawn(async move {
-            process_claimed(&dir, "abcdee", &processing, app, shutdown).await
-        });
-        tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
-            .await
-            .unwrap();
-        stop.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), reconnected)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        for operation in [
+            "event.wait",
+            "test.admission.wait",
+            "test.wait",
+            "deployment.wait",
+        ] {
+            let temporary = tempdir().unwrap();
+            let directory = temporary.path();
+            let endpoint = directory.join("daemon.sock");
+            let executor = Arc::new(PendingObserver(tokio::sync::Notify::new()));
+            let app = Arc::new(
+                App::with_executor(None, executor.clone()).with_installation_fence(endpoint),
+            );
+            let (shutdown_tx, shutdown) = watch::channel(false);
+            let processing = claimed_request(directory, "abcdef", operation);
+            let dir = directory.to_owned();
+            let observer_app = app.clone();
+            let observer = tokio::spawn(async move {
+                process_claimed(&dir, "abcdef", &processing, observer_app, shutdown).await
+            });
+            tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
+                .await
+                .unwrap();
+            fs::write(directory.join("daemon.pre-cutover.sock"), "fixture fence").unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), observer).await;
+            // Ensure a failing baseline cannot leave an endless task behind.
+            let _ = shutdown_tx.send(true);
+            result
+                .expect("bridge observer was not interrupted by cutover")
+                .unwrap()
+                .unwrap();
+            let response: ResponseEnvelope =
+                serde_json::from_slice(&fs::read(directory.join("abcdef.response")).unwrap())
+                    .unwrap();
+            assert!(
+                matches!(response, ResponseEnvelope::Failure { error, .. } if error.code == ErrorCode::DaemonUnavailable)
+            );
+            assert!(!directory.join("abcdef.processing").exists());
+            fs::remove_file(directory.join("daemon.pre-cutover.sock")).unwrap();
+            let (stop, shutdown) = watch::channel(false);
+            let processing = claimed_request(directory, "abcdee", operation);
+            let dir = directory.to_owned();
+            let reconnected = tokio::spawn(async move {
+                process_claimed(&dir, "abcdee", &processing, app, shutdown).await
+            });
+            tokio::time::timeout(Duration::from_secs(2), executor.0.notified())
+                .await
+                .unwrap();
+            stop.send(true).unwrap();
+            tokio::time::timeout(Duration::from_secs(2), reconnected)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
     }
 
     struct CountingExecutor(std::sync::atomic::AtomicUsize);

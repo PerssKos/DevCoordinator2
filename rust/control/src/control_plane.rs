@@ -2046,10 +2046,7 @@ impl OperationExecutor for ControlPlane {
         params: Value,
         caller: &Caller,
     ) -> Option<Result<crate::daemon::DeferredOperation, ProtocolError>> {
-        if !matches!(
-            operation,
-            "event.wait" | "test.admission.wait" | "test.wait" | "deployment.wait"
-        ) {
+        if !devcoordinator2_api::is_deferred_wait(operation) {
             return None;
         }
         Some((|| {
@@ -2525,6 +2522,7 @@ mod tests {
             verify_composed_dispatch(base_domain);
         }
         verify_large_plan_pages();
+        verify_deferred_wait_deadlines_and_cancellation();
         let temporary = tempdir().expect("tempdir");
         let database = Database::open(temporary.path().join("authority.sqlite3")).expect("db");
         let mut configuration = config(temporary.path());
@@ -2533,6 +2531,177 @@ mod tests {
             .err()
             .expect("an invalid configured ticket origin must still be rejected");
         assert_eq!(error.code, ErrorCode::ParamsInvalid);
+    }
+
+    fn verify_deferred_wait_deadlines_and_cancellation() {
+        use crate::deployment_state::{DeploymentStore, ObservedDeploymentInput};
+        use crate::test_state::{TestRunStore, initial_summary};
+        use std::task::Poll;
+        use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+        let temporary = tempdir().unwrap();
+        let worktree = temporary.path().join("repository");
+        std::fs::create_dir(&worktree).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&worktree)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let database = Database::open(temporary.path().join("authority.sqlite3")).unwrap();
+        let plane = ControlPlane::with_adapters(
+            config(temporary.path()),
+            database.clone(),
+            Arc::new(|_: &crate::access::RouteAccessSection| Ok(())),
+            Arc::new(crate::platform::FixedClock(datetime!(2026-09-03 12:00 UTC))),
+        )
+        .unwrap();
+        let caller = Caller {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+            ..local()
+        };
+        let repository = plane
+            .registry
+            .register(&worktree, caller.uid, caller.gid)
+            .unwrap();
+        let run_id = "t20260904T000000Z-aabbcc";
+        let store = TestRunStore;
+        let prepared = store
+            .prepare(&worktree, run_id, caller.uid, caller.gid)
+            .unwrap();
+        let summary = initial_summary(
+            run_id,
+            "all",
+            "2026-09-04T00:00:00Z",
+            caller.uid,
+            "codex",
+            devcoordinator2_executor_protocol::ProofKind::Complete,
+            vec![],
+            None,
+            devcoordinator2_executor_protocol::ValidationTier::Release,
+        );
+        store
+            .write_summary(&prepared.current, &summary, caller.uid, caller.gid)
+            .unwrap();
+        let deployment_id = "d2222222222222222";
+        DeploymentStore::new(database)
+            .replace_observed_current(
+                &[ObservedDeploymentInput {
+                    deployment_id: deployment_id.into(),
+                    repository_id: repository.repository_id,
+                    name: "wait-fixture".into(),
+                    native_project: "wait-fixture".into(),
+                    state: "stopped".into(),
+                    health: "unknown".into(),
+                    evidence: serde_json::json!({"source": "isolated-wait-fixture"}),
+                }],
+                &[],
+                &[],
+                "2026-09-04T00:00:00Z",
+            )
+            .unwrap();
+        let lease = crate::test_admission::begin_drain(
+            plane.tests.admission_runtime_dir(),
+            "isolated wait fixture",
+        )
+        .unwrap();
+        let past = (OffsetDateTime::now_utc() - time::Duration::seconds(1))
+            .format(&Rfc3339)
+            .unwrap();
+        let future = (OffsetDateTime::now_utc() + time::Duration::hours(1))
+            .format(&Rfc3339)
+            .unwrap();
+        let parameters = |operation: &str, deadline: &str| match operation {
+            "event.wait" => {
+                serde_json::json!({"filters": [{"filter_id": "deadline", "categories": ["health"], "deadline_at": deadline}], "limit": 1})
+            }
+            "test.admission.wait" => serde_json::json!({"deadline_at": deadline}),
+            "test.wait" => {
+                serde_json::json!({"path": worktree, "run_id": run_id, "deadline_at": deadline})
+            }
+            "deployment.wait" => {
+                serde_json::json!({"deployment_id": deployment_id, "state": "ready", "deadline_at": deadline})
+            }
+            _ => unreachable!(),
+        };
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for operation in [
+                "event.wait",
+                "test.admission.wait",
+                "test.wait",
+                "deployment.wait",
+            ] {
+                let mut waiting = plane
+                    .defer(operation, parameters(operation, &future), &caller)
+                    .unwrap()
+                    .unwrap();
+                std::future::poll_fn(|context| {
+                    assert!(
+                        waiting.as_mut().poll(context).is_pending(),
+                        "{operation} must remain pending while its condition is unmet"
+                    );
+                    Poll::Ready(())
+                })
+                .await;
+                // Exercise cancellation of the actual admission watcher or event
+                // subscription, not only the socket fixture's stand-in future.
+                drop(waiting);
+                let expired = plane
+                    .defer(operation, parameters(operation, &past), &caller)
+                    .unwrap()
+                    .unwrap();
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), expired)
+                    .await
+                    .expect("the operation honors its declared deadline");
+                if operation == "event.wait" {
+                    let result = result.unwrap();
+                    assert_eq!(result["heartbeat_due"][0]["filter_id"], "deadline");
+                    assert_eq!(result["events"], serde_json::json!([]));
+                    assert!(
+                        result.get("completed").is_none(),
+                        "a heartbeat is not completion"
+                    );
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, ErrorCode::WaitDeadlineReached, "{operation}");
+                    let recovery = error.recovery.unwrap();
+                    assert!(recovery.waitable && recovery.safe_to_continue);
+                    assert!(!recovery.retryable);
+                }
+            }
+            assert!(plane.tests.admission_status().unwrap().lease_live);
+            assert_eq!(
+                plane
+                    .tests
+                    .status(worktree.to_str().unwrap(), &caller)
+                    .unwrap()
+                    .status,
+                results::TestStatus::Running
+            );
+            assert_eq!(
+                plane
+                    .deployments
+                    .status(None, None, Some(deployment_id), &caller)
+                    .unwrap()
+                    .state,
+                "stopped"
+            );
+            crate::test_admission::end_drain(&lease).unwrap();
+            let reopened = plane
+                .defer(
+                    "test.admission.wait",
+                    parameters("test.admission.wait", &future),
+                    &caller,
+                )
+                .unwrap()
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(reopened["state"], "open");
+        });
     }
 
     fn verify_large_plan_pages() {

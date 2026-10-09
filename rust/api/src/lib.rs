@@ -34,6 +34,15 @@ pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
 pub const READ_TIMEOUT_SECONDS: u64 = 5;
 pub const WRITE_TIMEOUT_SECONDS: u64 = 10;
 
+/// Passive operations whose own deadline governs the response. Keep their
+/// transport open until completion or cancellation, and release them at cutover.
+pub fn is_deferred_wait(operation: &str) -> bool {
+    matches!(
+        operation,
+        "event.wait" | "test.admission.wait" | "test.wait" | "deployment.wait"
+    )
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {

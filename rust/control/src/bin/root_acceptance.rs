@@ -853,7 +853,11 @@ fn request_over_socket_with_timeout(
     stream
         .write_all(&payload)
         .map_err(|error| error.to_string())?;
-    if request.get("operation").and_then(Value::as_str) != Some("event.wait") {
+    if !request
+        .get("operation")
+        .and_then(Value::as_str)
+        .is_some_and(devcoordinator2_api::is_deferred_wait)
+    {
         stream
             .shutdown(std::net::Shutdown::Write)
             .map_err(|error| error.to_string())?;
