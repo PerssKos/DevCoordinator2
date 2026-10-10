@@ -2808,7 +2808,7 @@ async function launchBrowser(chromium, executablePath) {
   for (const attempt of attempts) {
     try {
       const browser = await chromium.launch({ headless: true, ...attempt.options });
-      return { browser, browserLabel: attempt.label };
+      return { browser, browserLabel: attempt.label, launchOptions: { headless: true, ...attempt.options } };
     } catch (error) {
       const detail = String(error.message || error)
         .split("\n").slice(0, 8).join("\n");
@@ -2816,6 +2816,19 @@ async function launchBrowser(chromium, executablePath) {
     }
   }
   throw new Error(`Unable to launch a Chromium browser:\n${errors.join("\n")}`);
+}
+
+async function launchWorkerBrowsers(chromium, first, launchOptions, count) {
+  // PNG encoding blocks Chromium's browser thread. Context isolation alone
+  // lets one worker's evidence capture delay another worker's navigation.
+  // Keep the existing execution capacity; give each worker its own browser.
+  const results = await Promise.allSettled(Array.from({ length: count - 1 }, () => chromium.launch(launchOptions)));
+  const browsers = [first, ...results.filter(result => result.status === "fulfilled").map(result => result.value)];
+  if (results.some(result => result.status === "rejected")) {
+    await Promise.allSettled(browsers.map(browser => browser.close()));
+    throw new Error("Unable to launch isolated verification browsers");
+  }
+  return browsers;
 }
 
 function coordinatorTargets(config) {
@@ -7311,7 +7324,12 @@ async function executePlan(
   authStates,
   cacheRoot,
   cellRunner = runVerificationCell,
+  browserPool = null,
 ) {
+  if (browserPool && (new Set(browserPool).size !== browserPool.length || browserPool.length < Math.min(config.execution.maxConcurrency, cells.length))) {
+    throw new Error("Verification browser pool must have one distinct browser per worker");
+  }
+  const availableBrowsers = browserPool ? [...browserPool] : null;
   const pending = [...cells].sort((left, right) =>
     right.executionPriority - left.executionPriority || left.planIndex - right.planIndex
   );
@@ -7321,9 +7339,11 @@ async function executePlan(
   let unsafeStop = null;
   const startCell = (cell) => {
     executionCounter += 1;
-    const entry = { cell, promise: null };
+    const workerBrowser = availableBrowsers ? availableBrowsers.pop() : browser;
+    if (!workerBrowser) throw new Error("Verification browser worker is unavailable");
+    const entry = { cell, browser: workerBrowser, promise: null };
     entry.promise = cellRunner(
-      browser,
+      workerBrowser,
       cell,
       config,
       browserLabel,
@@ -7353,6 +7373,7 @@ async function executePlan(
     if (!launched || running.length >= config.execution.maxConcurrency || !pending.length) {
       const completed = await Promise.race(running.map((entry) => entry.promise));
       running.splice(running.indexOf(completed.entry), 1);
+      if (availableBrowsers) availableBrowsers.push(completed.entry.browser);
       results.set(completed.entry.cell.planIndex, completed.value.page);
       appendProgress(config, completed.value.page);
       if (completed.value.unsafeStop) unsafeStop = completed.value.unsafeStop;
@@ -7361,6 +7382,7 @@ async function executePlan(
   while (running.length) {
     const completed = await Promise.race(running.map((entry) => entry.promise));
     running.splice(running.indexOf(completed.entry), 1);
+    if (availableBrowsers) availableBrowsers.push(completed.entry.browser);
     results.set(completed.entry.cell.planIndex, completed.value.page);
     appendProgress(config, completed.value.page);
     if (completed.value.unsafeStop && !unsafeStop) unsafeStop = completed.value.unsafeStop;
@@ -7473,40 +7495,44 @@ async function main() {
     }
   }
   const cacheRoot = ensureExplicitCacheRoot(config);
-  const { browser, browserLabel } = await launchBrowser(chromium, config.browserExecutable);
-  const authentication = await prepareAuthentication(browser, config);
-  const report = {
-    schemaVersion: REPORT_SCHEMA_VERSION,
-    runId: `formal-web-ui-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`,
-    generatedAt: null,
-    startedAt: runStartedAt,
-    endedAt: null,
-    durationMs: null,
-    browser: browserLabel,
-    targets: targets.map(publicTarget),
-    plan: publicExecutionPlan(planCells, config.maxPageCount, selected.selection, requiredCoverage),
-    evidence: {
-      verifier: { algorithm: "sha256", sha256: verifierSha256, scope: "canonical verifier entrypoint and formal_handoff_contract.mjs" },
-      config: {
-        algorithm: "sha256",
-        sha256: activeConfigSha256,
-        scope: "privacy-safe normalized effective config; action, cookie, auth, and readback values redacted",
-      },
-    },
-    pages: [],
-    findings: [],
-    review: null,
-    authentication: authentication.report,
-    execution: {
-      maxConcurrency: config.execution.maxConcurrency,
-      readinessEligible: selected.selection.readinessEligible,
-      progressPath: config.progressOut,
-      unsafeStop: null,
-      executedCount: 0,
-    },
-  };
-  initializeProgress(config, report.runId, selected.selection);
+  const { browser, browserLabel, launchOptions } = await launchBrowser(chromium, config.browserExecutable);
+  const browsers = await launchWorkerBrowsers(chromium, browser, launchOptions, Math.max(1, Math.min(config.execution.maxConcurrency, planCells.length)));
+  let report;
   try {
+    const authentication = await prepareAuthentication(browser, config);
+    report = {
+      schemaVersion: REPORT_SCHEMA_VERSION,
+      runId: `formal-web-ui-${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`,
+      generatedAt: null,
+      startedAt: runStartedAt,
+      endedAt: null,
+      durationMs: null,
+      browser: browserLabel,
+      targets: targets.map(publicTarget),
+      plan: publicExecutionPlan(planCells, config.maxPageCount, selected.selection, requiredCoverage),
+      evidence: {
+        verifier: { algorithm: "sha256", sha256: verifierSha256, scope: "canonical verifier entrypoint and formal_handoff_contract.mjs" },
+        config: {
+          algorithm: "sha256",
+          sha256: activeConfigSha256,
+          scope: "privacy-safe normalized effective config; action, cookie, auth, and readback values redacted",
+        },
+      },
+      pages: [],
+      findings: [],
+      review: null,
+      authentication: authentication.report,
+      execution: {
+        maxConcurrency: config.execution.maxConcurrency,
+        browserIsolation: "worker-process",
+        browserCount: browsers.length,
+        readinessEligible: selected.selection.readinessEligible,
+        progressPath: config.progressOut,
+        unsafeStop: null,
+        executedCount: 0,
+      },
+    };
+    initializeProgress(config, report.runId, selected.selection);
     const execution = await executePlan(
       browser,
       planCells,
@@ -7514,12 +7540,14 @@ async function main() {
       browserLabel,
       authentication.states,
       cacheRoot,
+      undefined,
+      browsers,
     );
     report.pages = execution.pages;
     report.execution.unsafeStop = execution.unsafeStop;
     report.execution.executedCount = execution.executionCount;
   } finally {
-    await browser.close().catch(() => {});
+    await Promise.allSettled(browsers.map(worker => worker.close()));
   }
   const changedReview = buildChangedReviewQueue(report.pages, config, report.runId);
   const queueSha256 = writeReviewQueueArtifact(changedReview.queue, config.reviewQueueOut);

@@ -256,12 +256,19 @@ async function capturePrivacy() {
   } finally { await browser.close(); }
 }
 let measuredUserAgent;
-async function verify(name, config, check, setupError = null) {
+async function verify(name, config, check, setupError = null, browserLifecycle = false, launchFailure = null) {
   const directory = join(scratch, name); await mkdir(directory, { mode: 0o700 });
   const path = join(directory, 'config.json'); await writeFile(path, JSON.stringify(config));
   const args = [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', path, '--json-out', join(directory, 'report.json'), '--markdown-out', join(directory, 'report.md')];
   if (process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES) args.push('--playwright-module-dir', process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES);
-  const child = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const env = { ...process.env };
+  if (browserLifecycle) {
+    env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES ??= join(root, 'ci/playwright/node_modules');
+    env.FORMAL_BROWSER_LIFECYCLE_FILE = join(directory, 'browser-lifecycle.json');
+    if (launchFailure !== null) env.FORMAL_BROWSER_FAIL_LAUNCH = String(launchFailure);
+    env.NODE_OPTIONS = [env.NODE_OPTIONS ?? '', '--require', JSON.stringify(join(root, 'rust/tooling/tests/formal_browser_lifecycle.cjs'))].join(' ');
+  }
+  const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
   const [exitCode] = await once(child, 'exit');
   await writeFile(join(directory, 'stdout.json'), stdout); await writeFile(join(directory, 'stderr.txt'), stderr);
@@ -479,7 +486,7 @@ async function continuationPrecisionFixtures() {
 }
 async function sessionFixtures() {
   const config = full('/session-cell?identity=A');
-  config.viewports.push({ name: 'mobile', width: 390, height: 900 }); config.maxPageCount = 4;
+  config.viewports.push({ name: 'mobile', width: 390, height: 900 }, { name: 'intermediate', width: 900, height: 900 }); config.maxPageCount = 6;
   config.execution = { maxConcurrency: 4 };
   config.cookies = [{ name: 'sess', value: 'SESSION_PRIVATE_GLOBAL', url: target.url }];
   config.authProfiles = ['A', 'B'].map(identity => ({
@@ -498,14 +505,32 @@ async function sessionFixtures() {
   config.requiredCoverage = config.targets.flatMap(row => config.viewports.map(viewport => ({ target: row.name, state: 'base', viewport: viewport.name, width: viewport.width })));
   await verify('session-fresh-private-profiles', config, async ({ receipt, report, directory }) => {
     assert.equal(receipt.formal.result, 'passed');
-    assert.deepEqual(sessionObservations.slice(-4).map(row => [row.identity, row.present, row.cookie]).sort(), [['A','true','true'],['A','true','true'],['B','true','true'],['B','true','true']]);
+    assert.deepEqual(sessionObservations.slice(-6).map(row => [row.identity, row.present, row.cookie]).sort(), ['A','A','A','B','B','B'].map(identity => [identity,'true','true']));
     assert(report.pages.every(page => page.outcome === 'checked'));
     assert(report.pages.every(page => page.execution.parallelSafe));
     assert(report.pages.some((left, i) => report.pages.some((right, j) => i !== j && Date.parse(left.startedAt) < Date.parse(right.endedAt) && Date.parse(right.startedAt) < Date.parse(left.endedAt))), 'Parallel session cells must actually overlap');
+    const lifecycle = JSON.parse(await readFile(join(directory, 'browser-lifecycle.json'), 'utf8'));
+    const cells = lifecycle.contexts.filter(context => context.cell);
+    assert.equal(cells.length, 6);
+    assert.equal(new Set(cells.map(context => context.browser)).size, 4, 'Parallel measurement workers must use distinct actual browsers');
+    assert(lifecycle.browsers.every(browser => browser.closed), 'Every worker browser must close');
+    assert(lifecycle.contexts.every(context => context.end >= context.start), 'Every authentication and cell context must close');
+    for (const [index, left] of cells.entries()) for (const right of cells.slice(index + 1)) {
+      if (left.browser === right.browser) assert(left.end <= right.start || right.end <= left.start, 'A worker browser is reused only after its prior context closes');
+    }
     for (const file of ['report.json','report.md','journey-evidence.json','review-queue.json','formal-receipt.json','stdout.json','stderr.txt']) {
       assert(!(await readFile(join(directory,file),'utf8')).includes('SESSION_PRIVATE_'), file);
     }
-  });
+  }, null, true);
+  await verify('worker-launch-failure-cleanup', config, async ({ exitCode, receipt, report, directory }) => {
+    assert.equal(exitCode, 2); assert.equal(receipt.formal.result, 'blocked');
+    assert.match(report.error.message, /Unable to launch isolated verification browsers/);
+    const lifecycle = JSON.parse(await readFile(join(directory, 'browser-lifecycle.json'), 'utf8'));
+    assert.equal(lifecycle.attempts, 4); assert.equal(lifecycle.browsers.length, 3);
+    assert(lifecycle.browsers.every(browser => browser.closed));
+    assert.equal(lifecycle.contexts.length, 0, 'No page starts with an incomplete worker pool');
+  }, null, true, 2);
+  if (process.argv.includes('--browser-isolation-only')) return;
   const single = mode => {
     const result = structuredClone(config); result.targets = [result.targets[0]]; result.authProfiles = [result.authProfiles[0]];
     result.viewports = [result.viewports[0]]; result.maxPageCount = 2;
@@ -550,7 +575,7 @@ async function sessionFixtures() {
   }
   const broken = structuredClone(config); broken.authProfiles[0].cookies[0].value = 'SESSION_PRIVATE_INVALID';
   await verify('session-failed-profile-isolation', broken, async ({ report, directory }) => {
-    assert.deepEqual(report.pages.map(row => row.outcome).sort(), ['auth_setup_error','auth_setup_error','checked','checked']);
+    assert.deepEqual(report.pages.map(row => row.outcome).sort(), ['auth_setup_error','auth_setup_error','auth_setup_error','checked','checked','checked']);
     assert(!(await readFile(join(directory,'report.json'),'utf8')).includes('SESSION_PRIVATE_'));
   });
   const legacy = single('legacy');
@@ -661,7 +686,7 @@ async function uploadFixtures() {
 try {
   if (process.argv.includes('--continuation-precision-only')) await continuationPrecisionFixtures();
   else if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
-  else if (process.argv.includes('--session-only')) await sessionFixtures();
+  else if (process.argv.includes('--session-only') || process.argv.includes('--browser-isolation-only')) await sessionFixtures();
   else {
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only') && !process.argv.includes('--config-only-selftest')) await sessionFixtures();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) await configurationFixtures();
