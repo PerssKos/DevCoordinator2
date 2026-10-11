@@ -4963,6 +4963,33 @@ fn case_selection_and_failed_check_retry_remain_non_readiness_proof(
     Ok(())
 }
 
+fn assert_drain_preserves_active_run_and_rejects_replacement(
+    world: &mut World,
+) -> Result<(), String> {
+    let before = world.call("test.status", json!({"path": world.repo}))?;
+    let run_id = data(&before)?["run_id"]
+        .as_str()
+        .ok_or_else(|| "accepted run omitted identity".to_owned())?;
+    // The default mode attaches to an accepted run; it does not admit new work.
+    let attached = world.call("test.start", json!({"path": world.repo}))?;
+    ensure!(
+        data(&attached)?["attached"] == true && data(&attached)?["run_id"] == run_id,
+        "drain did not preserve attachment to the accepted run"
+    );
+    let refused = world.call("test.start", json!({"path": world.repo, "mode":"replace"}))?;
+    ensure!(
+        error_code(&refused) == Some("tests_draining"),
+        "drain did not reject replacement: {:?}",
+        error_code(&refused)
+    );
+    let after = world.call("test.status", json!({"path": world.repo}))?;
+    ensure!(
+        data(&after)?["run_id"] == run_id,
+        "refused replacement changed the accepted run"
+    );
+    Ok(())
+}
+
 fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
     world: &mut World,
 ) -> Result<(), String> {
@@ -4973,11 +5000,7 @@ fn case_upgrade_drain_rejects_new_starts_and_stop_reason_is_operational(
     data(&world.call("test.start", json!({"path": world.repo}))?)?;
     let lease = begin_drain(&world.base, "test upgrade").map_err(|error| error.to_string())?;
     let tested = (|| {
-        let refused = world.call("test.start", json!({"path": world.repo}))?;
-        ensure!(
-            error_code(&refused) == Some("tests_draining"),
-            "drain did not reject a new start"
-        );
+        assert_drain_preserves_active_run_and_rejects_replacement(world)?;
         let stopped = world.call(
             "test.stop",
             json!({
@@ -5023,11 +5046,7 @@ fn case_repository_installer_drain_waits_then_restarts_and_reconnects(
     let lease =
         begin_drain(&world.base, "repository install").map_err(|error| error.to_string())?;
     let tested = (|| {
-        let refused = world.call("test.start", json!({"path": world.repo}))?;
-        ensure!(
-            error_code(&refused) == Some("tests_draining"),
-            "installer drain did not close admission"
-        );
+        assert_drain_preserves_active_run_and_rejects_replacement(world)?;
         data(&world.call("plan.overview", json!({"path": world.repo}))?)?;
         let mut observer = UnixStream::connect(&world.socket).map_err(|error| error.to_string())?;
         observer
