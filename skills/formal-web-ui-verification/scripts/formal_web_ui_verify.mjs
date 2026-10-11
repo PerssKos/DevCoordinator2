@@ -2484,16 +2484,18 @@ async function applyInteractionState(page, state, target = null) {
       }
       if (index === triggerActionIndex) {
         armed = armWaitFor(page, state.waitFor || {});
-        if (action.action !== "setInputFiles" || controlVisible) await locator.scrollIntoViewIfNeeded(options);
-        beforeContinuation = await page.evaluate(() => ({
-          scrollX: window.scrollX,
-          scrollY: window.scrollY,
-          maxScrollY: Math.max(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight),
-          clientWidth: document.scrollingElement.clientWidth,
-          clientHeight: document.scrollingElement.clientHeight,
-          path: window.location.pathname,
-          origin: window.location.origin,
-        }));
+        if (state.continuation) {
+          if (action.action !== "setInputFiles" || controlVisible) await locator.scrollIntoViewIfNeeded(options);
+          beforeContinuation = await page.evaluate(() => ({
+            scrollX: window.scrollX,
+            scrollY: window.scrollY,
+            maxScrollY: Math.max(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight),
+            clientWidth: document.scrollingElement.clientWidth,
+            clientHeight: document.scrollingElement.clientHeight,
+            path: window.location.pathname,
+            origin: window.location.origin,
+          }));
+        }
       }
       if (action.action === "click") await locator.click(options);
       else if (action.action === "dblclick") await locator.dblclick(options);

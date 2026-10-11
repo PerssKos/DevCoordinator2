@@ -2069,7 +2069,7 @@ fn run_state_and_wait_phase(
                         {"name":"general-conditional","actions":[{"action":"click","selector":"#special","ownerJourney":"special","ownerState":"specialized"}]},
                         {"name":"specialized","primaryJourney":"special","priorityOverrideReason":"Specialized ownership fixture",
                          "regions":[{"selector":"main","role":"primary-content","journey":"special"}],
-                         "actions":[{"action":"click","selector":"#show-special"},{"action":"click","selector":"#special","ownerJourney":"special","ownerState":"specialized"}],
+                         "actions":[{"action":"click","selector":"#show-special"},{"action":"click","selector":"#special","ownerJourney":"special","ownerState":"specialized"},{"action":"focus","selector":"#special-name"}],
                          "continuation":{"kind":"in-page","anchor":"#special-form","focusWithin":"#special-form","triggerActionIndex":1}}
                     ]}],"viewports":[{"name":"desktop","width":1280,"height":800}]
             }),
@@ -2088,6 +2088,11 @@ fn run_state_and_wait_phase(
         .and_then(Value::as_array)
         .is_none_or(|items| items.len() != 1 || items[0].get("locatorWaitMs") != Some(&json!(0)))
         || specialized.get("outcome") != Some(&json!("checked"))
+        || specialized.pointer("/continuation/checked") != Some(&json!(true))
+        || specialized.pointer("/continuation/evidence/scrollDelta") != Some(&json!(0))
+        || specialized.pointer("/continuation/evidence/focusSatisfied") != Some(&json!(true))
+        || specialized.pointer("/continuation/evidence/anchorVisibleInViewport")
+            != Some(&json!(true))
     {
         return Err("conditional control ownership did not hand off immediately".to_owned());
     }
@@ -3155,6 +3160,42 @@ fn run_auth_phase(root: &Path, work: &Path, timeout: Duration) -> Result<usize, 
                 ));
                 response
             }
+            "/rerender-login" => HttpResponse::html(html_page(
+                r#"<h1 id="login-title">Sign in</h1><button id="login">Sign in</button><div id="heading-root"></div><div id="ready" hidden>Ready</div><script>
+document.querySelector('#login').onclick = () => fetch('/authenticate').then(() => {
+  document.querySelector('#login-title').remove();
+  let focused = false;
+  let renders = 0;
+  function renderHeading() {
+    if (focused) return;
+    const heading = document.createElement('h1');
+    heading.id = 'ready-heading';
+    heading.tabIndex = -1;
+    heading.textContent = 'Authenticated workspace';
+    heading.onfocus = () => {
+      focused = true;
+      localStorage.setItem('auth-heading-focus', 'received');
+      document.querySelector('#ready').hidden = false;
+    };
+    document.querySelector('#heading-root').replaceChildren(heading);
+    if (++renders < 120) requestAnimationFrame(renderHeading);
+  }
+  requestAnimationFrame(renderHeading);
+});
+</script>"#,
+                "",
+            )),
+            "/focused-protected"
+                if request
+                    .headers
+                    .get("cookie")
+                    .is_some_and(|value| value.contains("auth=ok")) =>
+            {
+                HttpResponse::html(html_page(
+                    "<h1>Authenticated workspace</h1><div id='focus-confirmed' hidden>Ready</div><script>if(localStorage.getItem('auth-heading-focus')==='received')document.querySelector('#focus-confirmed').hidden=false;</script>",
+                    "",
+                ))
+            }
             "/observe" => {
                 let value = query.strip_prefix("value=").unwrap_or("missing").to_owned();
                 observations_handler.lock().unwrap().push(value);
@@ -3273,7 +3314,36 @@ fn run_auth_phase(root: &Path, work: &Path, timeout: Duration) -> Result<usize, 
     {
         return Err("failed auth profile blocked an unrelated ready profile".to_owned());
     }
-    Ok(6)
+    // Authentication focus is a real readiness action, not a continuation
+    // trigger. Replacing its heading each frame deterministically invalidates
+    // the old scroll ElementHandle while a locator focus can resolve afresh.
+    let rerendered = run_verifier(
+        root,
+        &contracted_config(
+            root,
+            json!({
+                "authProfiles":[{"name":"rerender","url":format!("{auth_base}/rerender-login"),
+                    "actions":[{"action":"click","selector":"#login"},{"action":"focus","selector":"#ready-heading","timeoutMs":2000}],
+                    "waitFor":{"selector":"#ready","timeoutMs":2000}}],
+                "targets":[{"url":format!("{auth_base}/focused-protected"),"authProfile":"rerender",
+                    "waitFor":{"selector":"#focus-confirmed","timeoutMs":2000}}],
+                "viewports":[{"name":"desktop","width":1280,"height":800}]
+            }),
+        ),
+        &work.join("auth-rerender-focus"),
+        &[0],
+        timeout,
+        &[],
+    )?;
+    no_critical(&rerendered)?;
+    if rerendered.pointer("/authentication/0/status") != Some(&json!("ready"))
+        || rerendered.pointer("/pages/0/outcome") != Some(&json!("checked"))
+    {
+        return Err(
+            "authentication focus lost a replaced heading or its readiness proof".to_owned(),
+        );
+    }
+    Ok(7)
 }
 
 #[derive(Default)]
