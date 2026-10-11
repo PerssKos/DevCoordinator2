@@ -10,9 +10,13 @@ cadence and model.
   the Docker stats API (managed containers).
 - One-minute aggregates persisted (min/avg/max per series).
 - Storage sampled every 5 minutes (directory/volume/data-dir sizes).
-- Retention: **30 days** (owner extended the original 7-day proposal).
-  Expired rows are deleted directly; no downsampling tiers, no backup, no
-  migration of metric history.
+- Retention: **30 days** for low-cardinality host, repository, daemon and
+  shared trend series. High-cardinality component, container and test series
+  retain **7 days** of one-minute aggregates because they are disposable
+  runtime observations. Expired rows are deleted directly; no governed test
+  evidence or permanent planning history is stored here. The metric store is
+  rebuildable and does not contain a second backup or migration of metric
+  history.
 
 ## Series model (sketch)
 

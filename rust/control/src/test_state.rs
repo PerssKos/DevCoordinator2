@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use devcoordinator2_api::results::{
     LogCatalogReference, ProofKind as ApiProofKind, RunTerminationReason, TestStatus, TestSummary,
 };
+use devcoordinator2_api::test_containers::TestContainerRecord;
 use devcoordinator2_executor_protocol::{
     ArtifactReceipt, CheckReport, DiagnosticExit, ExecutionPlan, ExecutionReport, LogStreamSummary,
     ProofKind, RunStatus, Schema2, ValidationTier,
@@ -23,6 +24,7 @@ pub const REPORT_FILE: &str = "check-report.json";
 pub const SUMMARY_FILE: &str = "summary.json";
 pub const ENV_FILE: &str = "env";
 pub const CONTAINERS_FILE: &str = "containers.json";
+pub const CONTAINER_LIFECYCLE_FILE: &str = "container-lifecycle.json";
 const HISTORY_FILE: &str = "history.json";
 const EVIDENCE_FILE: &str = "evidence.json";
 const JSON_LIMIT: u64 = 2 * 1024 * 1024;
@@ -74,6 +76,15 @@ pub struct RetryCheckEvidence {
     pub exit: DiagnosticExit,
     pub artifacts: Vec<ArtifactReceipt>,
     pub streams: Vec<LogStreamSummary>,
+    /// Added by schema-2 diagnostic receipts. Keep these optional so an
+    /// upgraded daemon can recover a retained receipt written by a newer
+    /// executor without rejecting the whole worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_diagnostics: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_bytes_observed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_bytes_observed: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -386,6 +397,67 @@ impl TestRunStore {
         gid: u32,
     ) -> Result<(), TestStateError> {
         atomic_json(current, CONTAINERS_FILE, containers, 0o600, uid, gid)
+    }
+
+    /// Retain daemon-owned temporary-container records separately from the
+    /// legacy database-fixture ID list.  Keeping a typed record lets cleanup be
+    /// retried after a daemon restart without trusting a caller-supplied ID.
+    pub fn write_container_records(
+        &self,
+        current: &File,
+        records: &[TestContainerRecord],
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), TestStateError> {
+        if records.len() > 256
+            || records.iter().any(|record| {
+                record.container_id.len() != 64
+                    || !record
+                        .container_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                    || record.run_id.is_empty()
+                    || record.check.is_empty()
+                    || record.repository_id.is_empty()
+                    || record.worktree_id.is_empty()
+                    || record.owner_token.is_empty()
+            })
+        {
+            return Err(TestStateError::Invalid(
+                "temporary-container ownership records are invalid".into(),
+            ));
+        }
+        atomic_json(current, CONTAINER_LIFECYCLE_FILE, records, 0o600, uid, gid)
+    }
+
+    pub fn read_container_records(
+        &self,
+        current: &File,
+    ) -> Result<Vec<TestContainerRecord>, TestStateError> {
+        let Some(records) =
+            read_json::<Vec<TestContainerRecord>>(current, CONTAINER_LIFECYCLE_FILE)?
+        else {
+            return Ok(Vec::new());
+        };
+        if records.len() > 256
+            || records.iter().any(|record| {
+                record.container_id.len() != 64
+                    || !record
+                        .container_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                    || record.run_id.is_empty()
+                    || record.check.is_empty()
+                    || record.repository_id.is_empty()
+                    || record.worktree_id.is_empty()
+                    || record.owner_token.is_empty()
+            })
+        {
+            return Err(TestStateError::Invalid(
+                "temporary-container ownership records are invalid".into(),
+            ));
+        }
+        Ok(records)
     }
 
     pub fn read_history(&self, worktree: &Path) -> Result<Vec<TestHistoryEntry>, TestStateError> {
@@ -763,6 +835,10 @@ pub fn initial_summary(
         exit_code: None,
         stdout_bytes_observed: 0,
         stderr_bytes_observed: 0,
+        failed_diagnostics: None,
+        native_execution_started: None,
+        container_cleanup_status: None,
+        container_lifecycle_ref: None,
         caller_uid,
         execution_uid: None,
         client: client.into(),
@@ -813,6 +889,9 @@ fn retry_check(check: &CheckReport) -> RetryCheckEvidence {
         exit: check.exit,
         artifacts: check.artifacts.clone(),
         streams: check.streams.clone(),
+        failed_diagnostics: Some(check.failed_diagnostics),
+        stdout_bytes_observed: None,
+        stderr_bytes_observed: None,
     }
 }
 
@@ -835,6 +914,14 @@ fn validate_summary(summary: &TestSummary) -> Result<(), TestStateError> {
                 && summary.report_issue.is_none()
                 && !memory_stop)
         || (memory_stop && summary.status != TestStatus::Failed)
+        || (summary.status == TestStatus::Passed
+            && matches!(
+                summary.container_cleanup_status,
+                Some(
+                    devcoordinator2_api::test_containers::ContainerCleanupStatus::Pending
+                        | devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed
+                )
+            ))
     {
         return Err(TestStateError::Invalid("test summary is invalid".into()));
     }
@@ -1438,6 +1525,7 @@ mod tests {
                     "status": "failed",
                     "duration_seconds": 1.0,
                     "exit_code": 17,
+                    "stderr_bytes_observed": 23,
                     "artifacts": [],
                     "streams": []
                 }]
@@ -1452,6 +1540,7 @@ mod tests {
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].checks[0].exit.code, Some(17));
         assert_eq!(evidence[0].checks[0].exit.signal, None);
+        assert_eq!(evidence[0].checks[0].stderr_bytes_observed, Some(23));
     }
 
     #[test]

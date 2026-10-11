@@ -11,6 +11,10 @@ use crate::database::{Database, DatabaseError};
 use crate::platform::{Clock, HostClock};
 
 pub const RETENTION_DAYS: i64 = 30;
+/// High-cardinality runtime subjects are disposable observations. Keep their
+/// minute-level history for one dashboard week while preserving the full
+/// 30-day window for host and repository trend series.
+pub const HIGH_CARDINALITY_RETENTION_DAYS: i64 = 7;
 const MINUTE_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]Z");
 
@@ -82,17 +86,30 @@ impl MetricsStore {
     }
 
     pub fn expire(&self) -> Result<u64, ProtocolError> {
-        let cutoff = (self.clock.now_utc() - Duration::days(RETENTION_DAYS))
+        let now = self.clock.now_utc();
+        let cutoff = (now - Duration::days(RETENTION_DAYS))
             .format(MINUTE_FORMAT)
             .map_err(|error| {
                 ProtocolError::new(ErrorCode::InternalError, "cannot format metric cutoff")
                     .with_detail(error.to_string())
             })?;
+        let high_cardinality_cutoff = (now - Duration::days(HIGH_CARDINALITY_RETENTION_DAYS))
+        .format(MINUTE_FORMAT)
+        .map_err(|error| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "cannot format high-cardinality metric cutoff",
+            )
+            .with_detail(error.to_string())
+        })?;
         self.database
             .transaction(move |transaction| {
                 Ok(u64::try_from(
                     transaction
-                        .execute("DELETE FROM metric_minutes WHERE minute_utc < ?1", [cutoff])?,
+                        .execute(
+                            "DELETE FROM metric_minutes WHERE minute_utc < ?1 OR (subject_kind IN ('component','container','test') AND minute_utc < ?2)",
+                            rusqlite::params![cutoff, high_cardinality_cutoff],
+                        )?,
                 )
                 .unwrap_or(u64::MAX))
             })
@@ -260,12 +277,75 @@ mod tests {
         );
         assert_eq!(store.table_size().unwrap(), 1);
         assert_eq!(store.expire().unwrap(), 0);
+        store
+            .flush(
+                "2026-08-27T12:00Z",
+                &BTreeMap::from([
+                    (
+                        ("component".into(), "c-old".into(), "cpu_percent".into()),
+                        Aggregate {
+                            min: 1.0,
+                            sum: 1.0,
+                            max: 1.0,
+                            samples: 1,
+                        },
+                    ),
+                    (
+                        (
+                            "repository".into(),
+                            "r-retained".into(),
+                            "cpu_percent".into(),
+                        ),
+                        Aggregate {
+                            min: 1.0,
+                            sum: 1.0,
+                            max: 1.0,
+                            samples: 1,
+                        },
+                    ),
+                ]),
+            )
+            .unwrap();
+        store
+            .flush(
+                "2026-08-01T12:00Z",
+                &BTreeMap::from([(
+                    ("repository".into(), "r-old".into(), "cpu_percent".into()),
+                    Aggregate {
+                        min: 1.0,
+                        sum: 1.0,
+                        max: 1.0,
+                        samples: 1,
+                    },
+                )]),
+            )
+            .unwrap();
+        store
+            .flush(
+                "2026-08-30T12:00Z",
+                &BTreeMap::from([(
+                    (
+                        "container".into(),
+                        "container-retained".into(),
+                        "cpu_percent".into(),
+                    ),
+                    Aggregate {
+                        min: 1.0,
+                        sum: 1.0,
+                        max: 1.0,
+                        samples: 1,
+                    },
+                )]),
+            )
+            .unwrap();
+        assert_eq!(store.expire().unwrap(), 2);
+        assert_eq!(store.table_size().unwrap(), 3);
         drop(store);
         let reopened = MetricsStore::with_clock(
             Database::open(database_path).unwrap(),
             Arc::new(FixedClock(datetime!(2026-09-04 12:05 UTC))),
         );
-        assert_eq!(reopened.table_size().unwrap(), 1);
+        assert_eq!(reopened.table_size().unwrap(), 3);
         assert_eq!(
             reopened
                 .series("repository", "r1", "cpu_percent", 60)

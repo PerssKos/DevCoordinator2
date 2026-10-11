@@ -568,6 +568,17 @@ pub struct RepositoryList {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RetiredRepository {
+    pub repository_id: String,
+    pub receipt_id: String,
+    pub removed: bool,
+    pub removed_worktree_ids: Vec<String>,
+    pub removed_worktree_count: u32,
+    pub logs_removed: bool,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RepositoryPresentation {
     pub repository_id: String,
     pub display_name: Option<String>,
@@ -794,6 +805,8 @@ pub struct CheckProjection {
     pub tier: crate::params::ValidationTier,
     pub role: CheckRole,
     pub status: LeafStatus,
+    #[serde(default)]
+    pub failed_diagnostics: u32,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
@@ -853,6 +866,64 @@ pub struct FailureIndexEntry {
     pub occurrences: u32,
     pub log_refs: Vec<LogReference>,
     pub origin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator: Option<CoordinatorDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorDiagnosticClass {
+    Solver,
+    ContainerStart,
+    ContainerCleanup,
+    CoordinatorInfrastructure,
+}
+
+#[derive(Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorCleanupStatus {
+    NotRequired,
+    Completed,
+    Pending,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, JsonSchema, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorNextAction {
+    None,
+    Retry,
+    RetryCleanup,
+    Inspect,
+    Reconnect,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatorDiagnostic {
+    pub class: CoordinatorDiagnosticClass,
+    pub command_phase: String,
+    pub status: LeafStatus,
+    pub exit: DiagnosticExit,
+    pub native_execution_started: bool,
+    pub cleanup_status: CoordinatorCleanupStatus,
+    pub retryable: bool,
+    pub next_action: CoordinatorNextAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_name: Option<String>,
+    #[serde(default)]
+    pub container_labels: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout_ref: Option<LogReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_ref: Option<LogReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_stderr_ref: Option<LogReference>,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub cleanup_stderr_bytes: u64,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
@@ -884,6 +955,18 @@ pub struct TestSummary {
     pub exit_code: Option<i32>,
     pub stdout_bytes_observed: u64,
     pub stderr_bytes_observed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_diagnostics: Option<u32>,
+    /// Whether a governed native solver/container execution actually began.
+    /// `None` means this run did not use the temporary-container capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_execution_started: Option<bool>,
+    /// Cleanup is a separate terminal gate. A pending or failed value keeps
+    /// the run from being reported as passed even when the command exited 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_cleanup_status: Option<crate::test_containers::ContainerCleanupStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_lifecycle_ref: Option<String>,
     pub caller_uid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1))]

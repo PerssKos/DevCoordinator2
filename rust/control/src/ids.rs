@@ -97,6 +97,10 @@ pub fn agent_message_id() -> Result<String, IdError> {
     random_id('q')
 }
 
+pub fn retirement_receipt_id() -> Result<String, IdError> {
+    random_id('z')
+}
+
 pub fn bug_id() -> Result<String, IdError> {
     Ok(format!("b{}", random_hex(6)?))
 }

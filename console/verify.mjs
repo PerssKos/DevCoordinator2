@@ -1008,6 +1008,17 @@ async function main() {
       await page.waitForSelector('.usage-phase-chart');
       check('usage-only: scope control renders for the canonical repository', await page.locator('[data-usage-worktree-scope-toggle]').innerText() === 'Worktree scope · All worktrees');
       check('usage-only: phase chart fits without horizontal scrolling', await page.locator('.usage-chart-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+      await page.setViewportSize({ width: 810, height: 867 });
+      await page.reload();
+      await page.waitForSelector('[data-usage-worktree-scope-toggle]');
+      check('usage-only: narrow workspace keeps scope control beside the title', await page.evaluate(() => {
+        const heading = document.querySelector('.usage-title h1')?.getBoundingClientRect();
+        const scope = document.querySelector('[data-usage-worktree-scope-toggle]')?.getBoundingClientRect();
+        return Boolean(heading && scope && (scope.right <= heading.left || scope.left >= heading.right || scope.bottom <= heading.top || scope.top >= heading.bottom));
+      }));
+      await page.setViewportSize(VIEWPORTS.wide);
+      await page.reload();
+      await page.waitForSelector('.usage-phase-chart');
       await page.click('[data-usage-worktree-scope-toggle]');
       check('usage-only: all registered worktrees are checked', await page.locator('[data-usage-worktree-id]:checked').count() === 3);
       await page.locator('[data-usage-worktree-id="wfeature"]').uncheck();

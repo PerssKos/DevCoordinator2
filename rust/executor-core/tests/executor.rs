@@ -1720,6 +1720,43 @@ async fn dedicated_diagnostic_event_is_parsed_without_console_scraping() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coordinator_json_diagnostic_cannot_be_swallowed_by_a_zero_exit_script() {
+    let repository = Repository::new("coordinator-json-diagnostic");
+    let mut check = direct("solver", fixture(&["coordinator-diagnostic", "failure"]));
+    check.diagnostic_sources = vec![DiagnosticReportSource {
+        format: DiagnosticReportFormat::CoordinatorJson,
+        path: "coordinator.json".into(),
+    }];
+    let report = execute(plan(
+        &repository,
+        "run-coordinator-json-diagnostic",
+        vec![check],
+    ))
+    .await;
+    assert_eq!(report.status, RunStatus::Failed);
+    assert_eq!(report.checks[0].status, LeafStatus::Failed);
+    assert_eq!(report.checks[0].exit.code, Some(0));
+    assert_eq!(report.checks[0].failed_diagnostics, 1);
+    assert_eq!(report.failed_diagnostics, 1);
+    assert!(report.failure_index.iter().any(|entry| {
+        entry.origin == DiagnosticOrigin::ExplicitEvent
+            && entry.error_category == ErrorCategory::ProcessExit
+    }));
+
+    let repository = Repository::new("coordinator-json-clean");
+    let mut check = direct("solver", fixture(&["coordinator-diagnostic", "clean"]));
+    check.diagnostic_sources = vec![DiagnosticReportSource {
+        format: DiagnosticReportFormat::CoordinatorJson,
+        path: "coordinator.json".into(),
+    }];
+    let report = execute(plan(&repository, "run-coordinator-json-clean", vec![check])).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(report.checks[0].status, LeafStatus::Passed);
+    assert_eq!(report.checks[0].failed_diagnostics, 0);
+    assert_eq!(report.failed_diagnostics, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn declared_junit_source_is_confined_to_the_leaf_diagnostics_directory() {
     let repository = Repository::new("declared-junit");
     let mut check = direct("unit", fixture(&["junit", "valid"]));

@@ -24,7 +24,12 @@ pub async fn call(
         operation.as_str(),
         "review.prepare" | "review.record" | "performance.overview" | "performance.review"
     );
-    let blocking_wait = devcoordinator2_api::is_deferred_wait(&operation);
+    // Passive waits keep the request half open until Coordinator returns a
+    // terminal result.  Closing the write side immediately after submitting a
+    // test/admission/deployment wait is indistinguishable from a client
+    // disconnect to the daemon and used to cancel the accepted wait before it
+    // could produce a response.
+    let blocking_wait = is_passive_wait_operation(&operation);
     let long_running_action = matches!(
         operation.as_str(),
         "deployment.apply"
@@ -99,7 +104,16 @@ pub async fn call(
     let mut response = Vec::new();
     let mut limited = (&mut stream).take((MAX_RESPONSE_BYTES + 1) as u64);
     let read = limited.read_to_end(&mut response);
-    if blocking_wait || long_running_action {
+    if blocking_wait {
+        if let Err(error) = read.await {
+            return Err(reconnectable_wait_error(
+                &request,
+                &format!(
+                    "Coordinator wait connection failed before returning a result: {error}; reconnect the same wait using its original identity"
+                ),
+            ));
+        }
+    } else if long_running_action {
         read.await.map_err(transport_error)?;
     } else {
         let reply_seconds = if review_action { 20 } else { 10 };
@@ -109,6 +123,12 @@ pub async fn call(
                 ProtocolError::new(ErrorCode::DaemonUnavailable, "daemon response timed out")
             })?
             .map_err(transport_error)?;
+    }
+    if blocking_wait && response.iter().all(u8::is_ascii_whitespace) {
+        return Err(reconnectable_wait_error(
+            &request,
+            "Coordinator closed the wait connection before returning a result; reconnect the same wait using its original identity",
+        ));
     }
     if response.len() > MAX_RESPONSE_BYTES {
         return Err(ProtocolError::new(
@@ -120,6 +140,56 @@ pub async fn call(
         ProtocolError::new(ErrorCode::ProtocolInvalid, "daemon response is invalid")
             .with_detail(error.to_string())
     })
+}
+
+pub(crate) fn is_passive_wait_operation(operation: &str) -> bool {
+    devcoordinator2_api::is_deferred_wait(operation)
+}
+
+pub(crate) fn reconnectable_wait_error(request: &RequestEnvelope, reason: &str) -> ProtocolError {
+    let run_id = request
+        .params
+        .get("run_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let deployment_id = request
+        .params
+        .get("deployment_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    ProtocolError::new(ErrorCode::DaemonUnavailable, "wait connection was interrupted")
+        .with_detail(reason)
+        .with_recovery(devcoordinator2_api::recovery::Guidance {
+            class: devcoordinator2_api::recovery::Class::Transient,
+            retryable: true,
+            waitable: true,
+            safe_to_continue: true,
+            state: Some("reconnect_required".into()),
+            reason: reason.into(),
+            run_id,
+            deployment_id,
+            generation: None,
+            repository_id: None,
+            options: vec![devcoordinator2_api::recovery::RecoveryOption {
+                id: "reconnect-wait".into(),
+                action: devcoordinator2_api::recovery::Action::Retry,
+                operation: Some(request.operation.clone()),
+                effect: "Reconnect the same wait with its original run or deployment identity; do not submit a duplicate start.".into(),
+                target: request
+                    .params
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .or_else(|| request.params.get("deployment_id").and_then(Value::as_str))
+                    .map(str::to_owned),
+                cost: Some("bounded by the original wait deadline".into()),
+                risk: Some("none".into()),
+                prerequisites: vec!["reuse the accepted request identity".into()],
+                independent_work_safe: true,
+                user_action_required: false,
+            }],
+            field_errors: vec![],
+            example: None,
+        })
 }
 
 async fn call_via_sandbox_bridge(
@@ -154,6 +224,12 @@ async fn call_via_sandbox_bridge(
         match read_bridge_response(&response_path) {
             Ok(bytes) => {
                 let _ = tokio::fs::remove_file(&response_path).await;
+                if blocking_wait && bytes.iter().all(u8::is_ascii_whitespace) {
+                    return Err(reconnectable_wait_error(
+                        request,
+                        "Coordinator returned an empty wait response; reconnect the same wait using its original identity",
+                    ));
+                }
                 return decode_bridge_response(&bytes, id);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -431,6 +507,40 @@ mod tests {
         .unwrap();
         tokio::time::resume();
         assert!(pending.await.unwrap().unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn passive_wait_eof_returns_reconnectable_error_with_the_run_id() {
+        let temporary = tempfile::tempdir().unwrap();
+        let socket = temporary.path().join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut encoded = String::new();
+            stream.read_line(&mut encoded).await.unwrap();
+            // Model a daemon restart before it can publish a wait response.
+            drop(stream);
+        });
+        let result = call(
+            &socket,
+            "test.wait",
+            serde_json::json!({
+                "path":"/worktree",
+                "run_id":"accepted-run",
+                "deadline_at":"2099-01-01T00:00:00Z"
+            }),
+            ClientContext::default(),
+        )
+        .await
+        .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(result.code, ErrorCode::DaemonUnavailable);
+        let recovery = result.recovery.expect("reconnectable wait guidance");
+        assert!(recovery.retryable);
+        assert!(recovery.waitable);
+        assert_eq!(recovery.run_id.as_deref(), Some("accepted-run"));
+        assert_eq!(recovery.options[0].operation.as_deref(), Some("test.wait"));
     }
 
     #[tokio::test]

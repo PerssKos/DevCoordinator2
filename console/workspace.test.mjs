@@ -46,6 +46,17 @@ test('governed test scratch repositories stay under their owning project', () =>
   assert.ok(groups[0].paths.includes('/srv/projects/kaizen/.devcoordinator/test/current/scratch/replay/failed-replay-abc'));
 });
 
+test('a registered scratch row does not mask its canonical scratch owner', () => {
+  const source = { key: 'kaizen-origin', name: 'Kaizen' };
+  const groups = catalogue([
+    { repository_id: 'kaizen', display_name: 'Kaizen', root_path: '/srv/projects/kaizen', repository_source: source },
+    { repository_id: 'replay', display_name: 'failed-replay', root_path: '/srv/projects/kaizen/.runtime/deployments/run/worktrees/1/.devcoordinator/test/current/scratch/replay/failed-replay', repository_group_key: 'replay', repository_group_name: 'failed-replay', worktree_path: '/srv/projects/kaizen/.runtime/deployments/run/worktrees/1/.devcoordinator/test/current/scratch/replay/failed-replay' },
+  ], [], []);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, 'Kaizen');
+  assert.deepEqual(new Set(groups[0].records.map(record => record.repository_id)), new Set(['kaizen', 'replay']));
+});
+
 test('ordinary nested repositories remain separate from their parent', () => {
   const groups = catalogue([
     { repository_id: 'parent', display_name: 'Parent', root_path: '/srv/projects/parent' },

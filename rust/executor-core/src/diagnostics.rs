@@ -10,10 +10,11 @@ use std::fmt;
 use std::path::{Component, Path};
 
 use devcoordinator2_executor_protocol::{
-    DiagnosticEvent, DiagnosticExit, DiagnosticOrigin, DiagnosticReportFormat,
-    DiagnosticReportSource, DiagnosticValue, DiagnosticValueType, ErrorCategory, FailureIndexEntry,
-    LeafStatus, LogPhase, LogRef, LogStream, MAX_DIAGNOSTIC_EVENTS, MAX_DIAGNOSTIC_NAME_BYTES,
-    MAX_DIAGNOSTIC_PREVIEW_BYTES, MAX_FAILURE_INDEX, SourceLocation, TerminationReason,
+    CoordinatorDiagnosticClass, CoordinatorDiagnosticReport, DiagnosticEvent, DiagnosticExit,
+    DiagnosticOrigin, DiagnosticReportFormat, DiagnosticReportSource, DiagnosticValue,
+    DiagnosticValueType, ErrorCategory, FailureIndexEntry, LeafStatus, LogPhase, LogRef, LogStream,
+    MAX_DIAGNOSTIC_EVENTS, MAX_DIAGNOSTIC_NAME_BYTES, MAX_DIAGNOSTIC_PREVIEW_BYTES,
+    MAX_FAILURE_INDEX, SourceLocation, TerminationReason,
 };
 use quick_xml::Reader;
 use quick_xml::encoding::Decoder;
@@ -26,6 +27,7 @@ const MAX_XML_NODES: usize = 65_536;
 const MAX_XML_ATTRIBUTE_BYTES: usize = 4096;
 const MAX_RUST_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_RUST_RECORDS: usize = 65_536;
+const MAX_COORDINATOR_REPORT_BYTES: usize = 256 * 1024;
 
 /// Identity supplied by the executor, never inferred from report content.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,8 +109,54 @@ pub fn parse_declared_report(
         DiagnosticReportFormat::Junit => parse_junit(input, context)?,
         DiagnosticReportFormat::PlaywrightJson => parse_playwright(input, context)?,
         DiagnosticReportFormat::RustJson => parse_rust_json(input, context)?,
+        DiagnosticReportFormat::CoordinatorJson => parse_coordinator_json(input, context)?,
     };
     normalize_diagnostics(entries)
+}
+
+fn parse_coordinator_json(
+    input: &[u8],
+    context: &DiagnosticContext,
+) -> Result<Vec<FailureIndexEntry>, DiagnosticParseError> {
+    if input.len() > MAX_COORDINATOR_REPORT_BYTES {
+        return Err(DiagnosticParseError::LimitExceeded);
+    }
+    let report: CoordinatorDiagnosticReport =
+        serde_json::from_slice(input).map_err(|_| DiagnosticParseError::InvalidReport)?;
+    report
+        .validate(
+            &context.run_id,
+            &context.check,
+            context.case.as_deref(),
+            context.phase,
+        )
+        .map_err(|_| DiagnosticParseError::InvalidReport)?;
+    Ok(report
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            let category = match diagnostic.class {
+                CoordinatorDiagnosticClass::Solver => ErrorCategory::ProcessExit,
+                CoordinatorDiagnosticClass::ContainerStart => ErrorCategory::Dependency,
+                CoordinatorDiagnosticClass::ContainerCleanup => ErrorCategory::Artifact,
+                CoordinatorDiagnosticClass::CoordinatorInfrastructure => ErrorCategory::Internal,
+            };
+            let mut entry = new_entry(
+                context,
+                None,
+                diagnostic.status,
+                diagnostic.exit,
+                None,
+                None,
+                category,
+                None,
+                None,
+                DiagnosticOrigin::ExplicitEvent,
+            );
+            entry.coordinator = Some(diagnostic);
+            entry
+        })
+        .collect())
 }
 
 pub fn parse_diagnostic_event(
@@ -142,6 +190,7 @@ pub fn parse_diagnostic_event(
         occurrences: 1,
         log_refs,
         origin: DiagnosticOrigin::ExplicitEvent,
+        coordinator: None,
     };
     entry.fingerprint = diagnostic_fingerprint(&entry);
     entry
@@ -260,6 +309,30 @@ pub fn diagnostic_fingerprint(entry: &FailureIndexEntry) -> String {
     ] {
         hasher.update((field.len() as u64).to_be_bytes());
         hasher.update(field.as_bytes());
+    }
+    if let Some(coordinator) = &entry.coordinator {
+        for field in [
+            format!("{:?}", coordinator.class),
+            format!("{:?}", coordinator.command_phase),
+            format!("{:?}", coordinator.cleanup_status),
+            coordinator.container_id.clone().unwrap_or_default(),
+            coordinator.container_name.clone().unwrap_or_default(),
+            coordinator.native_execution_started.to_string(),
+            coordinator.retryable.to_string(),
+            format!("{:?}", coordinator.next_action),
+            coordinator.stdout_bytes.to_string(),
+            coordinator.stderr_bytes.to_string(),
+            coordinator.cleanup_stderr_bytes.to_string(),
+        ] {
+            hasher.update((field.len() as u64).to_be_bytes());
+            hasher.update(field.as_bytes());
+        }
+        for (key, value) in &coordinator.container_labels {
+            hasher.update((key.len() as u64).to_be_bytes());
+            hasher.update(key.as_bytes());
+            hasher.update((value.len() as u64).to_be_bytes());
+            hasher.update(value.as_bytes());
+        }
     }
     format!("sha256:{}", lower_hex(&hasher.finalize()))
 }
@@ -422,6 +495,7 @@ fn new_entry(
         occurrences: 1,
         log_refs: context.log_refs(),
         origin,
+        coordinator: None,
     };
     entry.fingerprint = diagnostic_fingerprint(&entry);
     entry
@@ -1179,6 +1253,134 @@ mod tests {
                 &context()
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn coordinator_json_requires_typed_count_and_identity() {
+        let report = serde_json::json!({
+            "schema": 2,
+            "run_id": "run-1",
+            "check": "unit",
+            "case": null,
+            "phase": "check",
+            "failed_diagnostics": 1,
+            "diagnostics": [{
+                "class": "container_cleanup",
+                "command_phase": "cleanup",
+                "status": "failed",
+                "exit": {"code": 1, "signal": null},
+                "native_execution_started": true,
+                "cleanup_status": "failed",
+                "retryable": true,
+                "next_action": "retry_cleanup",
+                "container_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "container_name": "airfoilfoam-command-run-1",
+                "container_labels": {"devcoordinator2.run":"run-1","devcoordinator2.check":"unit","devcoordinator2.repository":"repo","devcoordinator2.owner":"coordinator"},
+                "stderr_ref": {"run_id":"run-1","check":"unit","phase":"check","case":null,"stream":"stderr"},
+                "stdout_bytes": 0,
+                "stderr_bytes": 37,
+                "cleanup_stderr_bytes": 0
+            }]
+        });
+        let parsed = parse_declared_report(
+            &source(DiagnosticReportFormat::CoordinatorJson),
+            &serde_json::to_vec(&report).expect("report"),
+            &context(),
+        )
+        .expect("valid coordinator report");
+        assert_eq!(parsed.total_unique, 1);
+        assert_eq!(parsed.entries[0].error_category, ErrorCategory::Artifact);
+        assert_eq!(parsed.entries[0].status, LeafStatus::Failed);
+        assert_eq!(
+            parsed.entries[0]
+                .coordinator
+                .as_ref()
+                .map(|entry| entry.stderr_bytes),
+            Some(37)
+        );
+
+        let clean = serde_json::json!({
+            "schema": 2,
+            "run_id": "run-1",
+            "check": "unit",
+            "case": null,
+            "phase": "check",
+            "failed_diagnostics": 0,
+            "diagnostics": []
+        });
+        let clean = parse_declared_report(
+            &source(DiagnosticReportFormat::CoordinatorJson),
+            &serde_json::to_vec(&clean).expect("clean report"),
+            &context(),
+        )
+        .expect("zero diagnostics is valid");
+        assert!(clean.entries.is_empty());
+
+        let mut malformed = report.clone();
+        malformed["failed_diagnostics"] = serde_json::json!(0);
+        assert!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &serde_json::to_vec(&malformed).expect("malformed report"),
+                &context(),
+            )
+            .is_err()
+        );
+        let mut wrong_phase = report.clone();
+        wrong_phase["diagnostics"][0]["command_phase"] = serde_json::json!("check");
+        assert!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &serde_json::to_vec(&wrong_phase).expect("wrong phase"),
+                &context(),
+            )
+            .is_err()
+        );
+        let mut wrong_label = report.clone();
+        wrong_label["diagnostics"][0]["container_labels"]["devcoordinator2.run"] =
+            serde_json::json!("other-run");
+        assert!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &serde_json::to_vec(&wrong_label).expect("wrong owner label"),
+                &context(),
+            )
+            .is_err()
+        );
+
+        let mut missing = serde_json::json!({
+            "schema": 2,
+            "run_id": "run-1",
+            "check": "unit",
+            "case": null,
+            "phase": "check",
+            "diagnostics": []
+        });
+        assert!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &serde_json::to_vec(&missing).expect("missing count"),
+                &context(),
+            )
+            .is_err()
+        );
+        missing["run_id"] = serde_json::json!("other-run");
+        assert!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &serde_json::to_vec(&missing).expect("wrong identity"),
+                &context(),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            parse_declared_report(
+                &source(DiagnosticReportFormat::CoordinatorJson),
+                &vec![b' '; MAX_COORDINATOR_REPORT_BYTES + 1],
+                &context(),
+            ),
+            Err(DiagnosticParseError::LimitExceeded)
         );
     }
 

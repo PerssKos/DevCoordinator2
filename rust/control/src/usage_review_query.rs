@@ -8,7 +8,7 @@ pub(super) fn selection(connection: &Connection) -> Result<(String, bool), Strin
             |row| row.get(0),
         )
         .map_err(|_| "source_unavailable")?;
-    let cached = exists && connection.query_row("SELECT schema_version = 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1", [], |row| row.get::<_, bool>(0)).unwrap_or(false);
+    let cached = exists && connection.query_row("SELECT schema_version >= 1 AND ready = 1 FROM _usage_report_cache_meta WHERE singleton = 1", [], |row| row.get::<_, bool>(0)).unwrap_or(false);
     let (classification, provenance) = if cached {
         ("_usage_report_operations", "attribution_provenance")
     } else {

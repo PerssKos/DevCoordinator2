@@ -23,11 +23,12 @@ pub mod review;
 pub mod review_policy;
 pub mod runtime_recovery;
 pub mod storage;
+pub mod test_containers;
 pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 32;
+pub const DATABASE_SCHEMA_VERSION: u32 = 33;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -117,6 +118,7 @@ pub enum ErrorCode {
     RepositoryNotFound,
     RepositoryArchived,
     RepositoryArchiveBlocked,
+    RepositoryRetirementBlocked,
     RepositoryConfigInvalid,
     AuthorizationRequired,
     ConfigurationConflict,
@@ -1066,6 +1068,15 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         results::Repository
     ),
     operation!(
+        "repository.retire",
+        "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.",
+        DESTRUCTIVE_SERVER_ADMIN,
+        Protocol["repository retire"],
+        ["repository_retire"],
+        params::RetireRepository,
+        results::RetiredRepository
+    ),
+    operation!(
         "server.register",
         "Adopt one systemd-supervised local listener into the server inventory.",
         IDEMPOTENT_APPEND_SERVER_ADMIN,
@@ -1100,6 +1111,51 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         ["test_start"],
         params::StartTest,
         results::TestStarted
+    ),
+    operation!(
+        "test.container.create",
+        "Create one daemon-owned temporary container for a running governed check.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test container create"],
+        ["test_container_create"],
+        test_containers::ContainerCreate,
+        test_containers::ContainerOperationResult
+    ),
+    operation!(
+        "test.container.start",
+        "Start one exact daemon-owned temporary test container.",
+        DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test container start"],
+        ["test_container_start"],
+        test_containers::ContainerReference,
+        test_containers::ContainerOperationResult
+    ),
+    operation!(
+        "test.container.inspect",
+        "Inspect one exact daemon-owned temporary test container.",
+        READ_REPOSITORY_ADMIN,
+        Protocol["test container inspect"],
+        ["test_container_inspect"],
+        test_containers::ContainerReference,
+        test_containers::ContainerOperationResult
+    ),
+    operation!(
+        "test.container.remove",
+        "Force-remove one exact daemon-owned temporary test container and verify absence.",
+        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test container remove"],
+        ["test_container_remove"],
+        test_containers::ContainerReference,
+        test_containers::ContainerOperationResult
+    ),
+    operation!(
+        "test.container.retry",
+        "Retry cleanup for one exact daemon-owned temporary test container.",
+        IDEMPOTENT_DESTRUCTIVE_REPOSITORY_ADMIN,
+        Protocol["test container retry"],
+        ["test_container_retry"],
+        test_containers::ContainerReference,
+        test_containers::ContainerOperationResult
     ),
     operation!(
         "test.admission.status",
@@ -2475,9 +2531,9 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 162);
-        assert_eq!(tools.len(), 133);
-        assert_eq!(cli_routes.len(), 127);
+        assert_eq!(OPERATIONS.len(), 168);
+        assert_eq!(tools.len(), 139);
+        assert_eq!(cli_routes.len(), 133);
     }
 
     #[test]

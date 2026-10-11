@@ -52,7 +52,7 @@ live in root-only 0600 files under the instance secrets directory.
 
 | Table | Fields | Status |
 |---|---|---|
-| `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly | done |
+| `metric_minutes` | (subject_kind, subject_id, metric, minute_utc) PK, min/avg/max, samples; index on minute_utc; rows older than 30 days deleted directly; high-cardinality component/container/test rows expire after 7 days | done |
 | `alerts` | alert_key PK, kind, subject_kind, subject_id, severity, message, opened_at, last_seen_at — current alerts only; resolved rows are deleted | done |
 
 ## Schema version 4 (Phase 5) — control data, always preserved
@@ -265,3 +265,13 @@ cannot authorize a new spawn target.
 Automatic Codex and Antigravity discovery updates this same latest catalog;
 the database does not retain raw CLI output or source configuration. A failed
 refresh leaves the prior value in place and the existing expiry marks it stale.
+
+## Schema version 33 — repository retirement receipts
+
+`repository_retirement_receipts` is an append-only, compact record of governed
+source retirement. It stores the repository identity, idempotency key, started
+or terminal status, actor UID, timestamp, removed linked-worktree identities,
+counts, root/log removal flags, note, and a bounded error code. Immutable
+triggers prevent edits or deletion. Source folders and their local test logs
+may be removed, but planning, decision, review, delivery, and owned-event
+history remains in the Coordinator database.

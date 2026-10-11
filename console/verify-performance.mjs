@@ -19,9 +19,14 @@ export function performanceFixture(operation, params, scenario = {}) {
       ['p1111111111111101', 'Faster usage queries', 'improvement', 2400000], ['p1111111111111102', 'Reliable route recovery', 'improvement', 1600000],
       ['p1111111111111103', 'Console chart improvements', 'user_feedback', 1600000], ['p1111111111111104', 'Verification coverage', 'goal', 640000],
     ].map(([outcomeId, title, kind, tokens]) => ({ outcomeId, title, kind, workstreamId: null, effort: effort(tokens * base) }));
-    const totals = effort(total); totals.activities = { coding: metric(3744000 * base), integration_testing: metric(2496000 * base), unknown: metric(160000 * base) };
+    const activityRows = [
+      ['coding', 3744000, 4],
+      ['integration_testing', 2496000, 4],
+      ['unknown', 160000, 1],
+    ].map(([activity, tokens, operations]) => ({ activity, total_tokens: tokens * base, operations, cost: cost(tokens * base) }));
+    const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
     return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: { mapping_unavailable: 1, query_budget_exhausted: 1 } } : coverage,
-      totals: { total_tokens: scenario.usageUnavailable ? null : total }, activities: [], time: {}, tools: {}, semantics: {},
+      totals: { total_tokens: scenario.usageUnavailable ? null : total }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
   if (operation === 'performance.overview') { const total = params.totals_only ? 32000000 : 6400000; const u = usage(total, !!params.outcome_cursor); return { repository_id: repo, window_start_ms: start, window_end_ms: end, generated_at_ms: end, total_tokens: u.outcomes.totals.providerTotalTokens, totals: { total_tokens: total, input_tokens: total, cached_input_tokens: total * .1, output_tokens: total * .35, reasoning_tokens: total * .12, model_requests: 4, tool_calls: 2, operations: 4, cost: cost(total) }, cost: cost(total), coverage: u.coverage, usage: params.totals_only ? null : u }; }
@@ -53,7 +58,7 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('outcome pagination keeps full totals', (await page.locator('.performance-outcome-table tfoot').innerText()).includes('6.4') && await page.locator('.performance-outcome-table tbody tr').count() === 5);
   await page.locator('[data-performance-select]').first().click();
   await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
-  verify('selecting review changes only scoped usage', (await page.locator('[data-performance-scope-total]').innerText()).includes('1.0M') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && (await page.locator('[data-performance-lifetime]').innerText()).includes('32'));
+  verify('selecting review changes only scoped usage', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && (await page.locator('[data-performance-lifetime]').innerText()).includes('32'));
   verify('comparison and rationale are present', (await page.locator('[data-performance-reader]').innerText()).includes('25.0%') && (await page.locator('[data-performance-reader]').innerText()).includes('Alternatives considered'));
   verify('review selection moves focus to its reader', await page.locator('[data-performance-reader]').evaluate(e => document.activeElement === e));
   await page.locator('[data-performance-revisions] summary').click();

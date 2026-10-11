@@ -60,6 +60,13 @@ pub enum DockerError {
     Admission(&'static str),
     #[error("{0}")]
     Command(String),
+    #[error("{message}")]
+    CommandFailure {
+        message: String,
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+        stderr: String,
+    },
     #[error("{0}")]
     NetworkUnavailable(String),
     #[error("{0}")]
@@ -78,10 +85,23 @@ impl DockerError {
             Self::Timeout { .. } => DockerErrorKind::TimedOut,
             Self::Cancelled { .. } => DockerErrorKind::Cancelled,
             Self::Admission(_) | Self::Command(_) => DockerErrorKind::CommandFailed,
+            Self::CommandFailure { .. } => DockerErrorKind::CommandFailed,
             Self::NetworkUnavailable(_) => DockerErrorKind::NetworkUnavailable,
             Self::InvalidOutput(_) => DockerErrorKind::InvalidOutput,
             Self::InvalidTarget(_) => DockerErrorKind::InvalidTarget,
             Self::InvalidRequest(_) => DockerErrorKind::InvalidRequest,
+        }
+    }
+
+    pub fn command_details(&self) -> (Option<i32>, Option<i32>, Option<&str>) {
+        match self {
+            Self::CommandFailure {
+                exit_code,
+                signal,
+                stderr,
+                ..
+            } => (*exit_code, *signal, Some(stderr.as_str())),
+            _ => (None, None, None),
         }
     }
 }
@@ -170,6 +190,11 @@ pub struct ManagedLabelContext {
     pub repository_id: String,
     pub worktree_id: String,
     pub run_id: Option<String>,
+    /// Optional governed-check identity.  Test containers always set this;
+    /// deployment containers leave it absent for backwards compatibility.
+    pub check: Option<String>,
+    /// Opaque daemon-generated ownership token for temporary test containers.
+    pub owner: Option<String>,
     pub deployment_id: Option<String>,
     pub component: Option<String>,
     pub generation: Option<u64>,
@@ -203,6 +228,12 @@ pub fn managed_labels(
     insert("worktree", context.worktree_id.clone());
     if let Some(run_id) = &context.run_id {
         insert("run", run_id.clone());
+    }
+    if let Some(check) = &context.check {
+        insert("check", check.clone());
+    }
+    if let Some(owner) = &context.owner {
+        insert("owner", owner.clone());
     }
     if let Some(deployment_id) = &context.deployment_id {
         insert("deployment", deployment_id.clone());
@@ -809,11 +840,16 @@ fn first_error(output: &DockerOutput, limit: usize, fallback: &str) -> DockerErr
     if let Some(reason) = classify_network_failure(&detail) {
         return DockerError::NetworkUnavailable(reason);
     }
-    DockerError::Command(if detail.is_empty() {
-        fallback.to_owned()
-    } else {
-        detail
-    })
+    DockerError::CommandFailure {
+        message: if detail.is_empty() {
+            fallback.to_owned()
+        } else {
+            detail.clone()
+        },
+        exit_code: Some(output.exit_code),
+        signal: None,
+        stderr: detail,
+    }
 }
 
 const DOCKER_BRIDGE_RECOVERY: &str = "repair the Docker bridge through the authorized host maintenance path, then rerun deployment preflight";
@@ -907,6 +943,41 @@ fn ensure_exact_output(output: &DockerOutput, operation: &str) -> Result<(), Doc
         )));
     }
     Ok(())
+}
+
+/// Complete the ownership labels for daemon-created test containers.  The
+/// older PostgreSQL fixture path supplies a run and component scope but not a
+/// check or opaque owner; fill those fields at this single Docker boundary so
+/// every temporary test container has the same attribution contract.
+fn normalized_test_label_context(
+    context: &ManagedLabelContext,
+) -> Result<ManagedLabelContext, DockerError> {
+    if context.purpose != "test" {
+        return Ok(context.clone());
+    }
+    let mut context = context.clone();
+    if context.run_id.is_none() {
+        return Err(DockerError::InvalidRequest(
+            "test containers require a governed run identity".into(),
+        ));
+    }
+    if context.check.is_none() {
+        context.check = Some(
+            context
+                .component
+                .clone()
+                .unwrap_or_else(|| "fixture".into()),
+        );
+    }
+    if context.owner.is_none() {
+        let mut bytes = [0_u8; 12];
+        getrandom::fill(&mut bytes).map_err(|error| DockerError::Spawn {
+            operation: "allocate test container owner token",
+            source: io::Error::other(error.to_string()),
+        })?;
+        context.owner = Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect());
+    }
+    Ok(context)
 }
 
 pub trait DockerControl: Send + Sync {
@@ -1053,7 +1124,8 @@ pub trait DockerControl: Send + Sync {
     }
 
     fn run_detached(&self, request: &RunDetachedRequest) -> Result<ExactContainerId, DockerError> {
-        let labels = managed_labels(&request.label_context, &request.labels)?;
+        let label_context = normalized_test_label_context(&request.label_context)?;
+        let labels = managed_labels(&label_context, &request.labels)?;
         let names = request.env_names.iter().cloned().collect::<BTreeSet<_>>();
         if names.len() != request.env_names.len()
             || names
@@ -1075,7 +1147,7 @@ pub trait DockerControl: Send + Sync {
         ];
         append_labels(&mut argv, labels);
         #[cfg(feature = "root-acceptance")]
-        append_fixture_network(&mut argv, &request.label_context)?;
+        append_fixture_network(&mut argv, &label_context)?;
         for name in &request.env_names {
             argv.push("--env".into());
             argv.push(name.into());
@@ -1203,7 +1275,8 @@ pub trait DockerControl: Send + Sync {
         &self,
         request: &CreateContainerRequest,
     ) -> Result<ExactContainerId, DockerError> {
-        let labels = managed_labels(&request.label_context, &request.labels)?;
+        let label_context = normalized_test_label_context(&request.label_context)?;
+        let labels = managed_labels(&label_context, &request.labels)?;
         let mut argv = vec![
             "create".into(),
             "--name".into(),
@@ -1212,7 +1285,7 @@ pub trait DockerControl: Send + Sync {
         ];
         append_labels(&mut argv, labels);
         #[cfg(feature = "root-acceptance")]
-        append_fixture_network(&mut argv, &request.label_context)?;
+        append_fixture_network(&mut argv, &label_context)?;
         if let Some(env_file) = &request.env_file {
             argv.push("--env-file".into());
             argv.push(env_file.as_os_str().to_owned());
@@ -1526,6 +1599,108 @@ pub trait DockerControl: Send + Sync {
         } else {
             Err(first_error(&output, 512, "docker rm failed"))
         }
+    }
+
+    /// Query one exact full ID and distinguish a confirmed absent container
+    /// from Docker/daemon errors.  Lifecycle cleanup must use this boundary;
+    /// a successful `rm` command alone is not proof that the target vanished.
+    fn container_present(&self, container_id: &ExactContainerId) -> Result<bool, DockerError> {
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "inspect".into(),
+                "--format".into(),
+                "{{.Id}}".into(),
+                container_id.as_str().into(),
+            ],
+            Duration::from_secs(30),
+        )?)?;
+        if output.success() {
+            ensure_exact_output(&output, "inspect")?;
+            let identity = output.stdout.trim();
+            let inspected = ExactContainerId::parse(identity.to_owned()).map_err(|_| {
+                DockerError::InvalidOutput(
+                    "docker inspect returned a non-exact container identity".into(),
+                )
+            })?;
+            if inspected != *container_id {
+                return Err(DockerError::InvalidOutput(
+                    "docker inspect returned a different container identity".into(),
+                ));
+            }
+            return Ok(true);
+        }
+        let stderr = output.stderr.to_ascii_lowercase();
+        if stderr.contains("no such container") || stderr.contains("no such object") {
+            return Ok(false);
+        }
+        Err(first_error(&output, 1_024, "docker inspect failed"))
+    }
+
+    /// Force-remove one exact target and prove the exact ID is absent.
+    fn remove_container_verified(
+        &self,
+        container_id: &ExactContainerId,
+        delete_volumes: bool,
+    ) -> Result<(), DockerError> {
+        self.remove_container(container_id, delete_volumes)?;
+        if self.container_present(container_id)? {
+            return Err(DockerError::Command(
+                "docker rm completed but the exact container is still present".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Force-remove one exact ID and prove both the ID and its owned name are
+    /// absent.  A name may be reused after removal; seeing it again therefore
+    /// keeps cleanup pending instead of risking an unrelated mutation.
+    fn remove_container_verified_named(
+        &self,
+        container_id: &ExactContainerId,
+        name: &str,
+        delete_volumes: bool,
+    ) -> Result<(), DockerError> {
+        self.remove_container_verified(container_id, delete_volumes)?;
+        if self.container_name_present(name)? {
+            return Err(DockerError::Command(
+                "docker rm completed but the exact container name is still present".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn container_name_present(&self, name: &str) -> Result<bool, DockerError> {
+        if name.is_empty()
+            || name.len() > 255
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        {
+            return Err(DockerError::InvalidRequest(
+                "container name is not an exact safe Docker name".into(),
+            ));
+        }
+        let output = self.invoke(DockerInvocation::new(
+            vec![
+                "ps".into(),
+                "--all".into(),
+                "--no-trunc".into(),
+                "--format".into(),
+                "{{.ID}}\\t{{.Names}}".into(),
+                "--filter".into(),
+                format!("name=^{name}$").into(),
+            ],
+            Duration::from_secs(30),
+        )?)?;
+        if !output.success() {
+            return Err(first_error(&output, 1_024, "docker name inspection failed"));
+        }
+        ensure_exact_output(&output, "ps")?;
+        Ok(output.stdout.lines().any(|line| {
+            line.trim()
+                .split_once('\t')
+                .is_some_and(|(_, actual_name)| actual_name == name)
+        }))
     }
 
     fn remove_volume(&self, volume: &ManagedVolumeName) -> Result<(), DockerError> {
@@ -2757,6 +2932,55 @@ mod tests {
     }
 
     #[test]
+    fn governed_labels_bind_check_and_opaque_owner() {
+        let mut context = labels();
+        context.check = Some("solver".into());
+        context.owner = Some("b0123456789abcdef".into());
+        let labels = managed_labels(&context, &BTreeMap::new()).unwrap();
+        assert_eq!(labels["devcoordinator2.check"], "solver");
+        assert_eq!(labels["devcoordinator2.owner"], "b0123456789abcdef");
+    }
+
+    #[test]
+    fn verified_remove_requires_exact_absence_after_force_rm() {
+        let fake = FakeDocker::new(vec![
+            output(0, "", ""),
+            output(1, "", "Error: No such container: deadbeef\n"),
+        ]);
+        fake.remove_container_verified(&id('d'), true).unwrap();
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].args[0], "rm");
+        assert!(calls[0].args.contains(&"--force".into()));
+        assert_eq!(calls[1].args[0], "inspect");
+        assert_eq!(calls[1].args[3], "d".repeat(64));
+    }
+
+    #[test]
+    fn verified_remove_rejects_inspection_of_a_different_container() {
+        let fake = FakeDocker::new(vec![
+            output(0, "", ""),
+            output(0, format!("{}\n", "e".repeat(64)), ""),
+        ]);
+        assert!(fake.remove_container_verified(&id('d'), true).is_err());
+    }
+
+    #[test]
+    fn verified_named_remove_checks_name_after_exact_id_absence() {
+        let fake = FakeDocker::new(vec![
+            output(0, "", ""),
+            output(1, "", "Error: No such container\n"),
+            output(0, "", ""),
+        ]);
+        fake.remove_container_verified_named(&id('d'), "owned-test", true)
+            .unwrap();
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2].args[0], "ps");
+        assert!(calls[2].args.iter().any(|arg| arg == "name=^owned-test$"));
+    }
+
+    #[test]
     fn private_output_log_preserves_complete_stream_beyond_the_capture_cap() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("private.log");
@@ -2844,6 +3068,8 @@ mod tests {
             repository_id: "r1".into(),
             worktree_id: "w1".into(),
             run_id: Some("run".into()),
+            check: None,
+            owner: None,
             deployment_id: Some("d1".into()),
             component: Some("api".into()),
             generation: Some(2),
@@ -3077,6 +3303,22 @@ mod tests {
             vec![container.clone()]
         );
         assert_eq!(fake.container_logs(&container, 20).unwrap(), "stdoutstderr");
+    }
+
+    #[test]
+    fn forced_remove_requires_exact_absence_and_preserves_target_identity() {
+        let container = id('d');
+        let fake = FakeDocker::new(vec![
+            output(0, "removed\n", ""),
+            output(1, "", "Error: No such container: d\n"),
+        ]);
+        fake.remove_container_verified(&container, true)
+            .expect("exact container is absent after forced removal");
+        let calls = fake.calls();
+        assert_eq!(&calls[0].args[..3], ["rm", "--force", "--volumes"]);
+        assert_eq!(calls[0].args[3], container.to_string());
+        assert_eq!(&calls[1].args[..3], ["inspect", "--format", "{{.Id}}"]);
+        assert_eq!(calls[1].args[3], container.to_string());
     }
 
     #[test]

@@ -164,7 +164,7 @@ fn source_api_serves_whole_collection_once_and_keeps_missing_counts_unknown() {
 }
 
 #[test]
-fn initial_repository_detail_uses_the_bounded_fast_projection() {
+fn repository_fast_projection_uses_the_bounded_api_summary() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("collector");
     let (_, now) = super::super::tests::source_database(&home, 5);
@@ -198,6 +198,11 @@ fn initial_repository_detail_uses_the_bounded_fast_projection() {
         registry: Registry::new(db),
         usage,
     };
+    let repository = RepositoryRecord {
+        repository_id: "project-alpha".into(),
+        display_name: "Alpha".into(),
+        root_path: "/alpha".into(),
+    };
     let (server, calls) = peer(&socket, &home, 1, |_| {});
     assert!(
         service.usage.config.codex_usage_sources[0]
@@ -205,28 +210,143 @@ fn initial_repository_detail_uses_the_bounded_fast_projection() {
             .is_some()
     );
     let _initial = service
-        .repository(UsageRepositoryParams {
-            wait_for_refresh: false,
-            repository_id: "project-alpha".into(),
-            range: UsageRange::Hours24,
-            worktree_ids: None,
-            include_unassigned: true,
-        })
+        .usage
+        .repository_fast(&repository, UsageRange::Hours24)
         .unwrap();
     service.usage.wait_for_refresh(Some("project-alpha"));
     let report = service
-        .repository(UsageRepositoryParams {
-            wait_for_refresh: false,
-            repository_id: "project-alpha".into(),
-            range: UsageRange::Hours24,
-            worktree_ids: None,
-            include_unassigned: true,
-        })
+        .usage
+        .repository_fast(&repository, UsageRange::Hours24)
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(report.totals.total_tokens, Some(120));
     assert_eq!(report.coverage.database_schemas, vec![99]);
     server.join().unwrap();
+}
+
+#[test]
+fn initial_repository_detail_preserves_full_measurements() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("collector");
+    let (canonical, now) = super::super::tests::source_database(&home, 8);
+    let config = super::super::tests::config(dir.path(), home.clone());
+    let source = Connection::open(home.join("usage/usage.sqlite3")).unwrap();
+    source
+        .execute_batch(
+            "ALTER TABLE operations ADD COLUMN retry_of_operation_id TEXT;
+             ALTER TABLE operations ADD COLUMN rework_of_operation_id TEXT;
+             ALTER TABLE operation_events ADD COLUMN duration_ns INTEGER;
+             ALTER TABLE tool_invocations ADD COLUMN covering_model_request_id TEXT;
+             ALTER TABLE activity_spans ADD COLUMN activity_state TEXT NOT NULL DEFAULT 'external_wait';
+             ALTER TABLE model_requests ADD COLUMN provider_kind TEXT;
+             ALTER TABLE model_requests ADD COLUMN model TEXT;
+             UPDATE model_requests SET provider_kind='openai', model='gpt-6-sol';
+             UPDATE operation_events
+                SET duration_ns = (occurred_at_ms -
+                    (SELECT started_at_ms FROM operations
+                     WHERE operations.id = operation_events.operation_id)) * 1000000;
+             ALTER TABLE token_observations RENAME TO legacy_token_observations;
+             CREATE TABLE token_observations(
+                 source_event_id TEXT,
+                 model_request_id TEXT,
+                 tool_invocation_id TEXT,
+                 category_path TEXT,
+                 token_count INTEGER,
+                 measurement_provenance TEXT,
+                 coverage_state TEXT,
+                 observed_at_ms INTEGER,
+                 repository_bucket TEXT
+             );
+             INSERT INTO token_observations
+                 SELECT CASE WHEN model_request_id IS NOT NULL
+                             THEN 'event-model' ELSE 'event-tool' END,
+                        model_request_id, tool_invocation_id,
+                        category_path, token_count, measurement_provenance,
+                        coverage_state, observed_at_ms, repository_bucket
+                 FROM legacy_token_observations;
+             DROP TABLE legacy_token_observations;
+             CREATE INDEX token_model_lookup
+                 ON token_observations(model_request_id, source_event_id, category_path);
+             CREATE INDEX token_tool_lookup
+                 ON token_observations(tool_invocation_id, source_event_id, category_path);
+             CREATE INDEX operation_events_terminal_observed_idx
+                 ON operation_events(occurred_at_ms, operation_id) WHERE terminal = 1;
+             CREATE TABLE operation_work_contexts(
+                 operation_id TEXT,
+                 native_project_id TEXT,
+                 workstream_id TEXT,
+                 outcome_id TEXT
+             );",
+        )
+        .unwrap();
+    source
+        .execute(
+            "INSERT INTO operation_work_contexts VALUES('model-op','project-alpha','implementation','outcome-1')",
+            [],
+        )
+        .unwrap();
+    drop(source);
+
+    let db = Database::open(dir.path().join("authority.sqlite3")).unwrap();
+    let uid = config.codex_usage_sources[0].uid;
+    db.transaction(move |tx| {
+        tx.execute(
+            "INSERT INTO repositories(repository_id,root_path,display_name,registered_at,registered_by_uid,last_seen_at) VALUES('project-alpha','/alpha','Alpha','t',1,'t')",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO codex_usage_repository_links VALUES(?1,'project-alpha',?2,8,1,'t')",
+            rusqlite::params![uid, canonical],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let usage = CodexUsage::with_probe(
+        config,
+        db.clone(),
+        Arc::new(FixedClock(
+            OffsetDateTime::from_unix_timestamp_nanos(i128::from(now) * 1_000_000).unwrap(),
+        )),
+        Arc::new(DetailProbe),
+    );
+    let service = UsageService {
+        registry: Registry::new(db),
+        usage,
+    };
+    let params = UsageRepositoryParams {
+        wait_for_refresh: false,
+        repository_id: "project-alpha".into(),
+        range: UsageRange::Hours24,
+        worktree_ids: None,
+        include_unassigned: true,
+    };
+    let _initial = service.repository(params.clone()).unwrap();
+    service.usage.wait_for_refresh(Some("project-alpha"));
+    let report = service.repository(params).unwrap();
+    assert_eq!(report.totals.total_tokens, Some(100));
+    assert_eq!(report.totals.model_requests, 1);
+    assert_eq!(report.totals.tool_calls, 1);
+    assert_eq!(report.totals.cost.status, "complete");
+    assert_eq!(report.time.request_to_delivery.measured_ms, 10_000);
+    assert_eq!(report.time.request_to_delivery.unknown_intervals, 0);
+    assert!(
+        report
+            .activities
+            .iter()
+            .any(|activity| activity.activity == "coding" && activity.total_tokens == 100)
+    );
+    assert!(report.outcomes.iter().any(|outcome| {
+        outcome.outcome_id == "outcome-1"
+            && outcome.total_tokens == 100
+            && outcome.cost.status == "complete"
+    }));
+    assert!(
+        report
+            .tools
+            .outcomes
+            .iter()
+            .any(|outcome| outcome.outcome == "completed" && outcome.count == 1)
+    );
 }
 
 #[test]

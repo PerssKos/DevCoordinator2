@@ -17,7 +17,7 @@ multi-filter event/heartbeat tool described below.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 32, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 33, "socket": "<path>"}`
 
 ## event.wait
 
@@ -117,6 +117,23 @@ deadline, or caller cancellation. Installation and shutdown interrupt them with
 original operation after recovery, retaining the last event cursor where
 applicable; interruption and deadline expiry never establish readiness.
 
+## test.container.create | start | inspect | remove | retry
+
+These operations are the only supported Docker boundary for temporary solver
+containers. Requests carry the registered worktree `path`, accepted `run_id`,
+`check`, and (for create) an image plus argv; they do not accept a Docker
+socket, host path, privilege flag, or raw Docker option. The daemon adds exact
+run, check, repository, worktree, purpose, and opaque owner labels, persists
+the container identity, and verifies both the full ID and exact name are absent
+after forced removal. `inspect` returns the bounded state, exit code/signal,
+labels, native-start flag, cleanup attempts, retryability, and next action.
+
+Cleanup results use `cleanup_pending`, `cleanup_complete`, or
+`cleanup_failed`. Pending cleanup is retried by the Coordinator reconciliation
+worker and by `retry`; failed or pending cleanup keeps the governed run from
+being reported as passed. Unrelated containers are never selected by name or
+prefix alone.
+
 Additive `targets: ["api","ui"]` selects multiple declarations for one invocation,
 instead of `test`. `checks` accepts qualified `target/check` names, and
 `cases: {"target/check":["case-id"]}` selects exact cases. Responses retain
@@ -178,6 +195,9 @@ summary.json fields (result schema 2; schema 1 is not read or translated):
 `stderr_bytes_observed`, `caller_uid`, `client`, `check_report_ref`, and
 `log_catalog_ref`. Retained-byte and truncation compatibility fields are not
 accepted; complete per-leaf metadata lives in the log catalogue.
+When a check declares `coordinator-json`, the summary also carries
+`failed_diagnostics`, native execution state, and cleanup status. A nonzero
+diagnostic count is terminal failure even if the reporting command exits zero.
 
 ## test.capacity.get | test.capacity.set
 
@@ -334,6 +354,18 @@ historical plan, task-history, and decision reads remain available.
 Args: `path`.
 Result: one repository object as above plus, when present, the current test
 summary reference (`summary_path`, `status`).
+
+## repository.retire
+
+Args: `{repository_id, note, idempotency_key}`. A trusted local agent or
+administrator may use this destructive operation after all planning, release,
+deployment, test, lease, and Git safety blockers are clear. It removes the
+exact registered repository checkout, every linked worktree, and their
+`.devcoordinator` test logs. It never creates a whole-checkout archive and does
+not delete Coordinator-owned planning, decision, review, delivery, or event
+history. The result returns a compact receipt ID and removed worktree count;
+the immutable receipt remains in the authority database. Dirty work, unique
+commits, active use, changed identities, and unknown ownership remain blocked.
 
 ## config.*
 
@@ -513,7 +545,9 @@ and recorded bindings only — never names, ports, images, or paths.
   `pg_temp_bytes`, `pg_database_bytes` (numbers only, never content).
 - `health.history {subject_kind, subject_id, metric, minutes<=43200,
   points?}` → one-minute `{minute, min, avg, max, samples}` points, at most
-  1440 per call (`truncated` flag), from the 30-day bounded store. With
+  1440 per call (`truncated` flag), from the 30-day bounded store. Component,
+  container and test subjects may have only the most recent 7 days because
+  those high-cardinality runtime observations expire sooner. With
   `points` (2..1440) the daemon downsamples server-side into that many
   buckets preserving the min/max envelope and sample-weighted averages —
   the Console's 24h/7d/30d charts use this. Host storage

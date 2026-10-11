@@ -168,6 +168,7 @@ pub enum DiagnosticReportFormat {
     Junit,
     PlaywrightJson,
     RustJson,
+    CoordinatorJson,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -175,6 +176,290 @@ pub enum DiagnosticReportFormat {
 pub struct DiagnosticReportSource {
     pub format: DiagnosticReportFormat,
     pub path: String,
+}
+
+/// Typed failure classes emitted by a governed diagnostic script.  The
+/// coordinator-json report is intentionally separate from framework output so
+/// a script cannot turn arbitrary stdout/stderr prose into a passed result.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorDiagnosticClass {
+    Solver,
+    ContainerStart,
+    ContainerCleanup,
+    CoordinatorInfrastructure,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorCleanupStatus {
+    NotRequired,
+    Completed,
+    Pending,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinatorNextAction {
+    None,
+    Retry,
+    RetryCleanup,
+    Inspect,
+    Reconnect,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatorDiagnosticEntry {
+    pub class: CoordinatorDiagnosticClass,
+    pub command_phase: CheckPhase,
+    pub status: LeafStatus,
+    pub exit: DiagnosticExit,
+    pub native_execution_started: bool,
+    pub cleanup_status: CoordinatorCleanupStatus,
+    pub retryable: bool,
+    pub next_action: CoordinatorNextAction,
+    #[serde(default)]
+    pub container_id: Option<String>,
+    #[serde(default)]
+    pub container_name: Option<String>,
+    #[serde(default)]
+    pub container_labels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub stdout_ref: Option<LogRef>,
+    #[serde(default)]
+    pub stderr_ref: Option<LogRef>,
+    #[serde(default)]
+    pub cleanup_stderr_ref: Option<LogRef>,
+    pub stdout_bytes: u64,
+    pub stderr_bytes: u64,
+    pub cleanup_stderr_bytes: u64,
+}
+
+impl CoordinatorDiagnosticEntry {
+    pub fn validate(&self) -> Result<(), ContractError> {
+        self.exit.validate()?;
+        if self.retryable && self.next_action == CoordinatorNextAction::None {
+            return Err(ContractError::new(
+                "retryable coordinator diagnostics require a next action",
+            ));
+        }
+        if self
+            .container_id
+            .as_ref()
+            .is_some_and(|id| id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            return Err(ContractError::new(
+                "coordinator container id must be a full 64-character hex id",
+            ));
+        }
+        if self.container_name.as_ref().is_some_and(|name| {
+            let name = name.strip_prefix('/').unwrap_or(name);
+            name.is_empty() || name.len() > 128 || name.contains(['/', '\\', '\n', '\r'])
+        }) {
+            return Err(ContractError::new(
+                "coordinator container name is invalid or unbounded",
+            ));
+        }
+        if self.container_labels.len() > 16 {
+            return Err(ContractError::new(
+                "coordinator container labels exceed their bound",
+            ));
+        }
+        for (key, value) in &self.container_labels {
+            if key.is_empty()
+                || key.len() > 128
+                || value.is_empty()
+                || value.len() > 256
+                || key.chars().any(char::is_control)
+                || value.chars().any(char::is_control)
+            {
+                return Err(ContractError::new(
+                    "coordinator container label is invalid or unbounded",
+                ));
+            }
+        }
+        for reference in [&self.stdout_ref, &self.stderr_ref, &self.cleanup_stderr_ref]
+            .into_iter()
+            .flatten()
+        {
+            reference.validate()?;
+        }
+        if self
+            .stdout_ref
+            .as_ref()
+            .is_some_and(|reference| reference.stream != LogStream::Stdout)
+            || self
+                .stderr_ref
+                .as_ref()
+                .is_some_and(|reference| reference.stream != LogStream::Stderr)
+            || self.cleanup_stderr_ref.as_ref().is_some_and(|reference| {
+                reference.stream != LogStream::Stderr || reference.phase != LogPhase::Cleanup
+            })
+        {
+            return Err(ContractError::new(
+                "coordinator diagnostic log reference has the wrong stream or phase",
+            ));
+        }
+        if self.stdout_ref.is_none() && self.stdout_bytes != 0
+            || self.stderr_ref.is_none() && self.stderr_bytes != 0
+            || self.cleanup_stderr_ref.is_none() && self.cleanup_stderr_bytes != 0
+        {
+            return Err(ContractError::new(
+                "coordinator diagnostic byte counts require bounded log references",
+            ));
+        }
+        match self.class {
+            CoordinatorDiagnosticClass::Solver
+                if !self.native_execution_started
+                    || self.cleanup_status == CoordinatorCleanupStatus::NotRequired =>
+            {
+                return Err(ContractError::new(
+                    "solver diagnostics require native execution and cleanup state",
+                ));
+            }
+            CoordinatorDiagnosticClass::ContainerStart
+            | CoordinatorDiagnosticClass::ContainerCleanup
+                if self.container_labels.is_empty() =>
+            {
+                return Err(ContractError::new(
+                    "container diagnostics require ownership labels",
+                ));
+            }
+            CoordinatorDiagnosticClass::ContainerStart
+            | CoordinatorDiagnosticClass::ContainerCleanup
+                if ["run_id", "check", "repository", "owner"]
+                    .iter()
+                    .any(|key| {
+                        let managed = match *key {
+                            "run_id" => "devcoordinator2.run",
+                            "check" => "devcoordinator2.check",
+                            "repository" => "devcoordinator2.repository",
+                            "owner" => "devcoordinator2.owner",
+                            _ => unreachable!(),
+                        };
+                        !self.container_labels.contains_key(managed)
+                    }) =>
+            {
+                return Err(ContractError::new(
+                    "container diagnostics require run_id, check, repository, and owner labels",
+                ));
+            }
+            CoordinatorDiagnosticClass::ContainerCleanup
+                if !matches!(
+                    self.cleanup_status,
+                    CoordinatorCleanupStatus::Pending | CoordinatorCleanupStatus::Failed
+                ) =>
+            {
+                return Err(ContractError::new(
+                    "container cleanup diagnostics require pending or failed cleanup",
+                ));
+            }
+            CoordinatorDiagnosticClass::ContainerCleanup
+                if self.command_phase != CheckPhase::Cleanup =>
+            {
+                return Err(ContractError::new(
+                    "container cleanup diagnostics require the cleanup command phase",
+                ));
+            }
+            CoordinatorDiagnosticClass::ContainerCleanup if self.container_id.is_none() => {
+                return Err(ContractError::new(
+                    "container cleanup diagnostics require the exact container id",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatorDiagnosticReport {
+    pub schema: Schema2,
+    pub run_id: String,
+    pub check: String,
+    pub case: Option<String>,
+    pub phase: LogPhase,
+    pub failed_diagnostics: u32,
+    pub diagnostics: Vec<CoordinatorDiagnosticEntry>,
+}
+
+impl CoordinatorDiagnosticReport {
+    pub fn validate(
+        &self,
+        expected_run_id: &str,
+        expected_check: &str,
+        expected_case: Option<&str>,
+        expected_phase: LogPhase,
+    ) -> Result<(), ContractError> {
+        validate_identity("coordinator diagnostic run_id", &self.run_id, 128)?;
+        validate_name("coordinator diagnostic check", &self.check, 64)?;
+        if self.run_id != expected_run_id
+            || self.check != expected_check
+            || self.case.as_deref() != expected_case
+            || self.phase != expected_phase
+        {
+            return Err(ContractError::new(
+                "coordinator diagnostic identity does not match its execution leaf",
+            ));
+        }
+        if let Some(case) = &self.case {
+            validate_case_id(case)?;
+        }
+        if self.diagnostics.len() > MAX_DIAGNOSTIC_EVENTS
+            || usize::try_from(self.failed_diagnostics).unwrap_or(usize::MAX)
+                != self.diagnostics.len()
+        {
+            return Err(ContractError::new(
+                "coordinator diagnostic count does not match its entries",
+            ));
+        }
+        for diagnostic in &self.diagnostics {
+            if !matches!(
+                diagnostic.status,
+                LeafStatus::Failed
+                    | LeafStatus::TimedOut
+                    | LeafStatus::Cancelled
+                    | LeafStatus::Unsafe
+            ) {
+                return Err(ContractError::new(
+                    "coordinator diagnostics require a terminal failure status",
+                ));
+            }
+            diagnostic.validate()?;
+            if matches!(
+                diagnostic.class,
+                CoordinatorDiagnosticClass::ContainerStart
+                    | CoordinatorDiagnosticClass::ContainerCleanup
+            ) && (diagnostic.container_labels.get("devcoordinator2.run") != Some(&self.run_id)
+                || diagnostic.container_labels.get("devcoordinator2.check") != Some(&self.check))
+            {
+                return Err(ContractError::new(
+                    "container diagnostic ownership labels do not match its run or check",
+                ));
+            }
+            for reference in [
+                &diagnostic.stdout_ref,
+                &diagnostic.stderr_ref,
+                &diagnostic.cleanup_stderr_ref,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if reference.run_id != self.run_id
+                    || reference.check.as_deref() != Some(self.check.as_str())
+                    || reference.case.as_deref() != self.case.as_deref()
+                {
+                    return Err(ContractError::new(
+                        "coordinator diagnostic log reference belongs to another leaf",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1611,6 +1896,11 @@ pub struct CheckReport {
     #[serde(default)]
     pub consumed_artifacts: Vec<ArtifactReceipt>,
     pub status: LeafStatus,
+    /// Number of normalized, structured diagnostic occurrences attributed to
+    /// this check.  Process/Coordinator failures are represented separately
+    /// in the failure index and do not contribute to this count.
+    #[serde(default)]
+    pub failed_diagnostics: u32,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
@@ -1649,6 +1939,8 @@ pub struct FailureIndexEntry {
     pub occurrences: u32,
     pub log_refs: Vec<LogRef>,
     pub origin: DiagnosticOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordinator: Option<CoordinatorDiagnosticEntry>,
 }
 
 impl FailureIndexEntry {
@@ -1705,6 +1997,9 @@ impl FailureIndexEntry {
                 return Err(ContractError::new("diagnostic repeats a log reference"));
             }
         }
+        if let Some(coordinator) = &self.coordinator {
+            coordinator.validate()?;
+        }
         Ok(())
     }
 }
@@ -1729,6 +2024,10 @@ pub struct ExecutionReport {
     pub source_changed: bool,
     pub capacity: CapacityReport,
     pub counts: BTreeMap<String, u32>,
+    /// Sum of `CheckReport.failed_diagnostics` for this report.  A terminal
+    /// passed report must always carry zero diagnostic failures.
+    #[serde(default)]
+    pub failed_diagnostics: u32,
     pub checks: Vec<CheckReport>,
     #[serde(default)]
     pub phase_durations: Vec<PhaseDuration>,
@@ -1833,6 +2132,36 @@ impl ExecutionReport {
                 "report counts do not match check states",
             ));
         }
+        let calculated_failed_diagnostics = self
+            .checks
+            .iter()
+            .map(|check| u64::from(check.failed_diagnostics))
+            .sum::<u64>();
+        if calculated_failed_diagnostics != u64::from(self.failed_diagnostics) {
+            return Err(ContractError::new(
+                "report failed_diagnostics does not match check summaries",
+            ));
+        }
+        let indexed_failed_diagnostics = self
+            .failure_index
+            .iter()
+            .filter(|failure| failure.origin != DiagnosticOrigin::Executor)
+            .map(|failure| u64::from(failure.occurrences))
+            .sum::<u64>();
+        if (!self.failure_index_truncated
+            && indexed_failed_diagnostics != calculated_failed_diagnostics)
+            || (self.status == RunStatus::Passed
+                && (self.failed_diagnostics > 0 || !self.failure_index.is_empty()))
+        {
+            return Err(ContractError::new(
+                "passed report contains diagnostic failures or a non-zero failure index",
+            ));
+        }
+        if self.status == RunStatus::Passed && self.failed_diagnostics > 0 {
+            return Err(ContractError::new(
+                "passed report cannot contain failed diagnostics",
+            ));
+        }
         let mut phase_names = BTreeSet::new();
         for phase in &self.phase_durations {
             if !phase.duration_seconds.is_finite()
@@ -1879,12 +2208,60 @@ impl ExecutionReport {
         }
         for failure in &self.failure_index {
             failure.validate()?;
+            if let Some(coordinator) = &failure.coordinator {
+                if failure.origin != DiagnosticOrigin::ExplicitEvent {
+                    return Err(ContractError::new(
+                        "coordinator diagnostic evidence requires an explicit origin",
+                    ));
+                }
+                if matches!(
+                    coordinator.class,
+                    CoordinatorDiagnosticClass::ContainerStart
+                        | CoordinatorDiagnosticClass::ContainerCleanup
+                ) && (coordinator.container_labels.get("devcoordinator2.run")
+                    != Some(&self.run_id)
+                    || coordinator.container_labels.get("devcoordinator2.check")
+                        != failure.check.as_ref())
+                {
+                    return Err(ContractError::new(
+                        "coordinator diagnostic ownership labels do not match its failure",
+                    ));
+                }
+                for reference in [
+                    &coordinator.stdout_ref,
+                    &coordinator.stderr_ref,
+                    &coordinator.cleanup_stderr_ref,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if reference.run_id != self.run_id
+                        || reference.check != failure.check
+                        || reference.case != failure.case
+                    {
+                        return Err(ContractError::new(
+                            "coordinator diagnostic reference belongs to another failure",
+                        ));
+                    }
+                }
+            }
             if failure
                 .check
                 .as_deref()
                 .is_some_and(|check| !names.contains(check))
             {
                 return Err(ContractError::new("failure entry names an unknown check"));
+            }
+            if failure.origin != DiagnosticOrigin::Executor
+                && failure
+                    .check
+                    .as_deref()
+                    .and_then(|name| self.checks.iter().find(|check| check.name == name))
+                    .is_some_and(|check| check.status.is_success())
+            {
+                return Err(ContractError::new(
+                    "successful check contains a structured diagnostic failure",
+                ));
             }
             for log_ref in &failure.log_refs {
                 if log_ref.run_id != self.run_id
@@ -1945,6 +2322,11 @@ fn validate_report_check(run_id: &str, check: &CheckReport) -> Result<(), Contra
         }
     }
     validate_name("report check", &check.name, 64)?;
+    if check.failed_diagnostics > 0 && check.status.is_success() {
+        return Err(ContractError::new(
+            "successful check cannot contain failed diagnostics",
+        ));
+    }
     if !check.fingerprint.is_empty() {
         validate_digest("report check fingerprint", &check.fingerprint)?;
     }
@@ -2341,6 +2723,7 @@ mod tests {
             cache_inputs: Vec::new(),
             consumed_artifacts: Vec::new(),
             status: LeafStatus::Passed,
+            failed_diagnostics: 0,
             started_at: Some("2026-09-04T00:00:00Z".into()),
             finished_at: Some("2026-09-04T00:00:01Z".into()),
             duration_seconds: Some(1.0),
@@ -2375,6 +2758,7 @@ mod tests {
             source_changed: false,
             capacity: CapacityReport::default(),
             counts,
+            failed_diagnostics: 0,
             checks: vec![check],
             phase_durations: vec![PhaseDuration {
                 phase: CheckPhase::Check,
@@ -2402,6 +2786,67 @@ mod tests {
             .expect("object")
             .insert("raw_output".into(), serde_json::json!("private"));
         assert!(ExecutionReport::from_json(&serde_json::to_vec(&unknown).unwrap()).is_err());
+    }
+
+    #[test]
+    fn reports_reject_swallowed_diagnostics_and_missing_summary_counts() {
+        let mut swallowed = report();
+        swallowed.status = RunStatus::Passed;
+        swallowed.checks[0].status = LeafStatus::Failed;
+        swallowed.checks[0].failed_diagnostics = 1;
+        swallowed.failed_diagnostics = 1;
+        swallowed.counts.insert("passed".into(), 0);
+        swallowed.counts.insert("failed".into(), 1);
+        swallowed.failure_index.push(FailureIndexEntry {
+            check: Some("unit".into()),
+            case: None,
+            status: LeafStatus::Failed,
+            exit: DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            termination_reason: None,
+            source: None,
+            error_category: ErrorCategory::Assertion,
+            expected: None,
+            actual: None,
+            fingerprint: format!("sha256:{}", "a".repeat(64)),
+            occurrences: 1,
+            log_refs: Vec::new(),
+            origin: DiagnosticOrigin::ExplicitEvent,
+            coordinator: None,
+        });
+        assert!(swallowed.validate().is_err());
+
+        let mut missing = swallowed;
+        missing.status = RunStatus::Failed;
+        missing.failed_diagnostics = 0;
+        missing.checks[0].failed_diagnostics = 0;
+        assert!(missing.validate().is_err());
+
+        let mut truncated = report();
+        truncated.status = RunStatus::Failed;
+        truncated.failure_index_truncated = true;
+        truncated.failure_index.push(FailureIndexEntry {
+            check: Some("unit".into()),
+            case: None,
+            status: LeafStatus::Failed,
+            exit: DiagnosticExit {
+                code: Some(0),
+                signal: None,
+            },
+            termination_reason: None,
+            source: None,
+            error_category: ErrorCategory::Assertion,
+            expected: None,
+            actual: None,
+            fingerprint: format!("sha256:{}", "b".repeat(64)),
+            occurrences: 1,
+            log_refs: Vec::new(),
+            origin: DiagnosticOrigin::ExplicitEvent,
+            coordinator: None,
+        });
+        assert!(truncated.validate().is_err());
     }
 
     #[test]

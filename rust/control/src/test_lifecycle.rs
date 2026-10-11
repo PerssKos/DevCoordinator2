@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::{Notify, watch};
 use tokio::time::sleep;
 
+use devcoordinator2_api::ClientKind;
 use devcoordinator2_api::params::{RetryTest, StartTest};
 use devcoordinator2_api::results::{
     ArtifactReceipt as ApiArtifactReceipt, CaseProjection, CheckProjection,
@@ -42,6 +43,7 @@ use crate::repository_config::{TestSpec, load_composed_test_spec, load_test_spec
 use crate::systemd::{SystemdCli, SystemdControl, TransientUnitSpec, UnitProcess};
 use crate::test_admission::{AdmissionError, TestAdmission};
 use crate::test_command::{HostTestCommand, TestCommand};
+use crate::test_containers::TestContainerService;
 use crate::test_databases::{DatabasePool, FixtureRun, add_shared_phases};
 use crate::test_logs::TestLogService;
 use crate::test_state::{
@@ -100,6 +102,7 @@ struct Inner {
     logs: TestLogService,
     systemd: Arc<dyn SystemdControl>,
     docker: Arc<dyn DockerControl>,
+    container_service: TestContainerService,
     command: Arc<dyn TestCommand>,
     store: TestRunStore,
     clock: Arc<dyn Clock>,
@@ -217,6 +220,12 @@ enum LaunchState {
 }
 
 impl TestLifecycle {
+    /// Share the daemon-owned Docker boundary with other governed-test
+    /// services. Callers never receive this trait object over the protocol.
+    pub fn docker_control(&self) -> Arc<dyn DockerControl> {
+        Arc::clone(&self.inner.docker)
+    }
+
     pub fn new(
         config: Config,
         database: Database,
@@ -266,10 +275,17 @@ impl TestLifecycle {
             )
         })?;
         let admission = TestAdmission::new(runtime).map_err(admission_error)?;
+        let config = Arc::new(config);
+        let container_service = TestContainerService::new(
+            config.as_ref(),
+            database.clone(),
+            docker.clone(),
+            clock.clone(),
+        );
         let lifecycle = Self {
             inner: Arc::new(Inner {
                 databases: Arc::new(DatabasePool::new(docker.clone(), random.clone())),
-                config: Arc::new(config),
+                config,
                 database,
                 registry,
                 admission,
@@ -277,6 +293,7 @@ impl TestLifecycle {
                 logs,
                 systemd,
                 docker,
+                container_service,
                 command,
                 store,
                 clock,
@@ -448,6 +465,34 @@ impl TestLifecycle {
             return Ok(());
         };
         if summary.status != TestStatus::Running {
+            if let Ok(Some(current)) = self.inner.store.open_current(worktree)
+                && let Ok((uid, gid)) = self.inner.store.owner(&current)
+            {
+                let caller = Caller {
+                    via_edge: false,
+                    pid: 0,
+                    uid,
+                    gid,
+                    client_kind: ClientKind::Other,
+                    model: None,
+                    effort: None,
+                    client_session: None,
+                    work: summary.work.clone(),
+                    identity: None,
+                };
+                if let Ok(cleanup) = self.inner.container_service.cleanup_run(
+                    &worktree.to_string_lossy(),
+                    &summary.run_id,
+                    &caller,
+                ) && !cleanup.records.is_empty()
+                {
+                    summary.native_execution_started = Some(cleanup.native_execution_started);
+                    summary.container_cleanup_status = Some(cleanup.cleanup_status);
+                    summary.container_lifecycle_ref =
+                        Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+                    let _ = self.inner.store.write_summary(&current, &summary, uid, gid);
+                }
+            }
             return Ok(());
         }
         let unit = crate::ids::unit_name(
@@ -472,6 +517,29 @@ impl TestLifecycle {
             return Ok(());
         };
         let (uid, gid) = self.inner.store.owner(&current).map_err(state_error)?;
+        let cleanup_caller = Caller {
+            via_edge: false,
+            pid: 0,
+            uid,
+            gid,
+            client_kind: ClientKind::Other,
+            model: None,
+            effort: None,
+            client_session: None,
+            work: summary.work.clone(),
+            identity: None,
+        };
+        if let Ok(cleanup) = self.inner.container_service.cleanup_run(
+            &worktree.to_string_lossy(),
+            &summary.run_id,
+            &cleanup_caller,
+        ) && !cleanup.records.is_empty()
+        {
+            summary.native_execution_started = Some(cleanup.native_execution_started);
+            summary.container_cleanup_status = Some(cleanup.cleanup_status);
+            summary.container_lifecycle_ref =
+                Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+        }
         if let Ok(Some(report)) = self.inner.store.read_report(&current)
             && report.run_id == summary.run_id
             && report.test == summary.test
@@ -616,8 +684,12 @@ impl TestLifecycle {
         }
         let worktree = PathBuf::from(&registered.worktree_path);
         if mode == devcoordinator2_api::params::StartMode::Attach {
-            // Admission is checked before attachment so an upgrade drain
-            // cannot be bypassed by an already-running equivalent test.
+            // An already accepted run remains attachable while admission is
+            // draining. This preserves its identity for inspection and wait
+            // operations without admitting a new run through the drain gate.
+            if let Some(active) = self.active_started(&registered.worktree_id, test_name)? {
+                return Ok(active);
+            }
             let admission = self
                 .inner
                 .admission
@@ -1024,6 +1096,8 @@ impl TestLifecycle {
                 repository_id: registered.repository_id.clone(),
                 worktree_id: registered.worktree_id.clone(),
                 run_id: Some(run_id.clone()),
+                check: None,
+                owner: None,
                 deployment_id: None,
                 component: None,
                 generation: None,
@@ -2276,7 +2350,27 @@ impl TestLifecycle {
             )
         };
         let fixtures_cleaned = handle.fixtures.finish();
-        if !fixtures_cleaned && status == TestStatus::Passed {
+        let cleanup_caller = Caller {
+            via_edge: false,
+            pid: 0,
+            uid: handle.caller_uid,
+            gid: handle.caller_gid,
+            client_kind: ClientKind::Other,
+            model: None,
+            effort: None,
+            client_session: None,
+            work: handle.work.clone(),
+            identity: None,
+        };
+        let container_cleanup = self.inner.container_service.cleanup_run(
+            &handle.worktree.to_string_lossy(),
+            &handle.run_id,
+            &cleanup_caller,
+        );
+        let container_cleanup_complete = container_cleanup
+            .as_ref()
+            .is_ok_and(|summary| summary.cleanup_completed && summary.failed_operations == 0);
+        if (!fixtures_cleaned || !container_cleanup_complete) && status == TestStatus::Passed {
             status = TestStatus::Failed;
         }
         self.remove_containers(
@@ -2313,6 +2407,19 @@ impl TestLifecycle {
         );
         summary.stdout_bytes_observed = handle.stdout_bytes.load(Ordering::SeqCst);
         summary.stderr_bytes_observed = handle.stderr_bytes.load(Ordering::SeqCst);
+        if let Ok(cleanup) = &container_cleanup {
+            if !cleanup.records.is_empty() {
+                summary.native_execution_started = Some(cleanup.native_execution_started);
+                summary.container_cleanup_status = Some(cleanup.cleanup_status);
+                summary.container_lifecycle_ref =
+                    Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+            }
+        } else if !container_cleanup_complete {
+            summary.container_cleanup_status =
+                Some(devcoordinator2_api::test_containers::ContainerCleanupStatus::Failed);
+            summary.container_lifecycle_ref =
+                Some(crate::test_state::CONTAINER_LIFECYCLE_FILE.into());
+        }
         let mut retry_evidence_written = true;
         if let Some(report) = report
             .as_ref()
@@ -2398,7 +2505,7 @@ impl TestLifecycle {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.cleanup_complete = fixtures_cleaned;
+        state.cleanup_complete = fixtures_cleaned && container_cleanup_complete;
         handle.finalized.notify_all();
     }
 
@@ -2920,6 +3027,7 @@ fn apply_report(
     summary.proof = api_proof(report.proof);
     summary.selection = report.selection.clone();
     summary.check_summary = Some(report.counts.clone());
+    summary.failed_diagnostics = Some(report.failed_diagnostics);
     summary.checks = Some(
         all_checks
             .iter()
@@ -2971,6 +3079,7 @@ fn api_check(check: &CheckReport) -> Result<CheckProjection, crate::test_state::
         tier: api_tier(check.tier),
         role: convert(&check.role)?,
         status: convert(&check.status)?,
+        failed_diagnostics: check.failed_diagnostics,
         started_at: check.started_at.clone(),
         finished_at: check.finished_at.clone(),
         duration_seconds: check.duration_seconds,

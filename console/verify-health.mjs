@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {createHash} from 'node:crypto';
 
 // Deterministic resource samples isolate the incident acceptance from host
 // load. Incident reads/writes/permissions and SQLite are never mocked here.
@@ -85,6 +86,7 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
     await page.setViewportSize({width:390,height:844});
     await page.locator('[data-hi-row] #hi-selected-detail').waitFor({state:'attached',timeout:1500});
     assert.equal(await page.locator('[data-hi-row] #hi-selected-detail').count(),1);
+    assert.equal(await page.locator('[data-hi-disposition]').evaluate(e=>e===document.activeElement),true);
   },page);
   await check('Search filters the inbox without replacing the focused control',async()=>{
     const field=page.locator('[data-hi-search]');await field.fill('unmatched condition');assert.equal(await page.locator('[data-hi-row]:visible').count(),0);assert.ok(await page.getByText('No incidents match your search.').isVisible());
@@ -129,18 +131,38 @@ export async function verifyHealth({ page, browser, base, call, request, check, 
     await page.locator('.hi-attribution summary').click();assert.equal(await page.locator('.hi-storage-breakdown>div').count(),5);
   },page);
   if(process.env.HEALTH_FORMAL === '1') {
+    const geometry=(primary,heading,identifier=heading)=>[
+      {id:'content-width',kind:'primary-content-width',selector:primary,minWidth:280},
+      {id:'heading',kind:'readable-heading',selector:heading},
+      {id:'identifier',kind:'readable-canonical-identifier',selector:identifier},
+      {id:'word-wrapping',kind:'no-character-wrapping',selector:identifier},
+      {id:'page-width',kind:'document-horizontal-overflow',selector:'html'},
+      {id:'content-arrival',kind:'initial-viewport-placement',selector:primary},
+      {id:'content-clipping',kind:'clipping',selector:primary},
+    ];
+    const reviewInputs=['console/health.js','console/health.css','console/app.js','console/app.css','console/bootstrap.mjs','console/index.html','console/design-system.css','console/locales/en/health.json'].map(file=>({path:file,kind:file.endsWith('.css')?'style':'ui-code'}));
+    const index=await page.request.get(base);assert.equal(index.status(),200);
+    assert.ok((await index.body()).equals(await fs.readFile(path.join(root,'console/index.html'))));
+    const sourceBinding={expected:index.headers().etag,responseHeader:'etag',metaName:null};
+    const observed=[];
+    for(const file of reviewInputs){const response=await page.request.get(new URL(file.path.slice('console/'.length),base).href);const bytes=await response.body();assert.equal(response.status(),200);assert.ok(bytes.equals(await fs.readFile(path.join(root,file.path))),file.path);observed.push({path:file.path,sha256:createHash('sha256').update(bytes).digest('hex')});}
+    await fs.writeFile(path.join(out,'served-ui-inputs.json'),JSON.stringify({sourceBinding,files:observed},null,2));
     for(const theme of ['light','dark']) await check(`Formal ${theme} incident journeys`,async()=>{
       const formalOut=path.join(out,`formal-${theme}`);await fs.mkdir(formalOut,{recursive:true});
       const target={name:`health-${theme}`,url:`${base}#/health`,theme,
         journeys:[{id:'health',name:'Inspect current health',frequencyPercent:80,risk:'normal'},{id:'incident',name:'Understand and act on an escalation',frequencyPercent:20,risk:'normal'}],primaryJourney:'health',
         regions:[{selector:'.hi-host',role:'primary-content',journey:'health'},{selector:'.hi-incidents',role:'supporting'}],
-        reviewInputs:[{path:'console/health.js',kind:'ui-code'},{path:'console/health.css',kind:'style'},{path:'console/index.html',kind:'ui-code'},{path:'console/design-system.css',kind:'tokens'}],
+        reviewInputs,sourceBinding,geometryAssertions:geometry('.hi-host','.hi-heading h1'),
         waitFor:{selector:'#hi-history svg',renderFrames:2},
         states:[{name:'expanded-incident',actions:[{action:'click',selector:'#hi-incidents-toggle'},{action:'click',selector:`[data-hi-select="${web.incident_id}"]`}],primaryJourney:'incident',priorityOverrideReason:'The owner selected an incident',regions:[{selector:'#hi-selected-detail',role:'primary-content',journey:'incident'}],continuation:{kind:'in-page',anchor:'#hi-selected-detail .hi-answer h3',focusWithin:'#hi-selected-detail',maxScrollDelta:8},waitFor:{selector:'#hi-selected-detail .hi-answer',renderFrames:2}}]};
-      const viewports=[{name:'phone',width:390,height:844,colorScheme:theme},{name:'inline-boundary',width:760,height:1024,colorScheme:theme},{name:'pane-boundary',width:761,height:1024,colorScheme:theme},{name:'desktop',width:1440,height:1024,colorScheme:theme}];
-      const config={repoRoot:root,playwrightModuleDir:'/home/DevCoordinator2/ci/playwright/node_modules',cookies:[`dc2_session=${cookieFor('owner@example.test').value}`],targets:[target],viewports,requiredCoverage:['base','expanded-incident'].flatMap(state=>viewports.map(v=>({target:target.name,state,viewport:v.name,width:v.width}))),maxPageCount:8};
+      target.states[0].geometryAssertions=geometry('#hi-selected-detail','#hi-selected-detail .hi-answer:first-of-type h3','.hi-inbox-row.selected .hi-row-copy strong');
+      const viewports=[{name:'phone',width:390,height:844,colorScheme:theme},{name:'before-inline-boundary',width:759,height:1024,colorScheme:theme},{name:'inline-boundary',width:760,height:1024,colorScheme:theme},{name:'intermediate',width:761,height:1024,colorScheme:theme},{name:'desktop',width:1440,height:1024,colorScheme:theme},{name:'wide',width:1487,height:1058,colorScheme:theme}];
+      const fixtureDataShapes=['base','expanded-incident'].map(state=>({id:`health-${state}`,revision:'health-focus-v1',target:target.name,route:'/',state,conditionalDom:[state==='base'?'.hi-host':'#hi-selected-detail .hi-answer'],layoutEffect:'Real persisted incident responses and repository groups populate the existing responsive Health layout.'}));
+      const config={fixtureDataShapes,repoRoot:root,playwrightModuleDir:process.env.CONSOLE_VERIFY_PLAYWRIGHT?path.join(process.env.CONSOLE_VERIFY_PLAYWRIGHT,'node_modules'):'/opt/holyskills-validation-runtime/node_modules',cookies:[`dc2_session=${cookieFor('owner@example.test').value}`],targets:[target],viewports,requiredCoverage:['base','expanded-incident'].flatMap(state=>viewports.map(v=>({target:target.name,state,viewport:v.name,width:v.width}))),maxPageCount:12,performance:{ttfbMs:50,lcpMs:800,ttfbLocalOnly:true},screenshotMasks:[{selector:'#who-email',reason:'Account identity is private'}]};
       const input=path.join(formalOut,'input.private.json');await fs.writeFile(input,JSON.stringify(config),{mode:0o600});
       try {const result=await promisify(execFile)(process.execPath,[path.join(root,'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'),'--config',input,'--json-out',path.join(formalOut,'report.json'),'--markdown-out',path.join(formalOut,'report.md'),'--screenshot-dir',path.join(formalOut,'screenshots')],{cwd:root,maxBuffer:1024*1024});await fs.writeFile(path.join(formalOut,'receipt.json'),result.stdout);}finally{await fs.rm(input);}
+      const report=JSON.parse(await fs.readFile(path.join(formalOut,'report.json'),'utf8'));
+      assert.equal(report.formal.result,'passed',JSON.stringify({result:report.formal.result,gaps:report.formal.gaps}));
     },page);
   }
   await fs.writeFile(path.join(out,'health-fixture-identities.json'),JSON.stringify({web:web.incident_id,disk:disk.incident_id}));

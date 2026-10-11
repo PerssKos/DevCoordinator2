@@ -111,6 +111,13 @@
       const target = phone.matches ? main().querySelector(`[data-hi-row="${CSS.escape(i.incident_id)}"]`) : main().querySelector('.hi-detail-host');
       target?.insertAdjacentHTML('beforeend', incidentDetail(i));
       const detail = main().querySelector('#hi-selected-detail');
+      // CSS can hide the desktop host before the media-query callback runs.
+      // Retain the last focused action so that this transition does not turn
+      // that browser-generated blur into a loss of keyboard position.
+      detail?.addEventListener('focusin', event => { s.detailFocus = event.target; });
+      detail?.addEventListener('focusout', event => {
+        if (event.relatedTarget && !detail.contains(event.relatedTarget)) s.detailFocus = null;
+      });
       detail?.querySelector('[data-hi-disposition]')?.addEventListener('click', async e => {
         const button = e.currentTarget;
         button.disabled = true;
@@ -132,7 +139,8 @@
     phone.addEventListener('change', () => {
       const detail = main()?.querySelector('#hi-selected-detail');
       if (!detail) return;
-      const focused = detail.contains(document.activeElement) ? document.activeElement : null;
+      const focused = detail.contains(document.activeElement) ? document.activeElement
+        : document.activeElement === document.body && detail.contains(s.detailFocus) ? s.detailFocus : null;
       const target = phone.matches ? main().querySelector(`[data-hi-row="${CSS.escape(s.selected)}"]`) : main().querySelector('.hi-detail-host');
       target?.append(detail);
       focused?.focus({ preventScroll: true });

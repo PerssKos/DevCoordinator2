@@ -1037,7 +1037,11 @@ impl DatabasePool {
         let manager = format!("dc2_owner_{}", &fingerprint[..16]);
         let seed = format!("dc2_seed_{}", &fingerprint[..16]);
         let mut labels = context.clone();
-        labels.run_id = None;
+        // Template containers are daemon-owned disposable resources too. Use
+        // a stable template identity so the Docker boundary can enforce the
+        // same run/check/owner label contract as per-run fixtures.
+        labels.run_id = Some(format!("template-{}", &fingerprint[..16]));
+        labels.check = Some("database-template".into());
         labels.component = Some("database-template".into());
         let nonce = self.secret()?;
         let container = self

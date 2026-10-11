@@ -146,7 +146,13 @@ covered.
 
 `diagnostic_sources` optionally declares structured reports written below the
 leaf-specific `DEVCOORDINATOR_DIAGNOSTICS_DIR`. A declaration contains exactly
-`format` and `path`; formats are `junit`, `playwright-json`, and `rust-json`.
+`format` and `path`; formats are `junit`, `playwright-json`, `rust-json`, and
+`coordinator-json`. The Coordinator format is a strict schema-2 report for
+native solver/container diagnostics: it carries the exact run/check/phase,
+typed failure class, process exit or signal, bounded stream references and
+byte counts, ownership labels, cleanup state, native-start state, retryability,
+and the next supported action. A nonzero `failed_diagnostics` count always
+fails the check, even when the reporting command exits zero.
 Paths are normalized relative paths below that diagnostics directory, never
 repository or host paths. The Rust executor extracts only bounded typed failure
 fields for ordinary completion; raw report messages, stacks, stdout, and stderr

@@ -82,16 +82,24 @@ window.DevCoordinatorWorkspace = (() => {
     const add = (row) => {
       if (!row.repository_id) return;
       const previous = records.get(row.repository_id);
-      const registeredOwner = registeredWorktreeOwners.get(row.worktree_path || row.root_path);
+      const registeredOwnerCandidate = registeredWorktreeOwners.get(row.worktree_path || row.root_path);
+      // The registry also returns a row for the worktree's own repository
+      // record. That self-reference is not an owning group; allow the
+      // explicit scratch/source relation to resolve the canonical parent.
+      const registeredOwner = registeredOwnerCandidate?.repository_id === row.repository_id
+        ? null
+        : registeredOwnerCandidate;
       const owner = registeredOwner || scratchOwner(row) || registeredRootOwner(row) || generatedStateOwner(row);
       const ownerSource = owner?.repository_source;
+      const ownerGroupKey = owner ? (ownerSource?.key || owner.repository_id) : row.repository_group_key;
+      const ownerGroupName = owner ? (ownerSource?.name || owner.display_name) : row.repository_group_name;
       records.set(row.repository_id, {
         ...previous, ...row,
         display_name: previous?.display_name || row.display_name || 'Repository',
         root_path: previous?.root_path || row.root_path,
         repository_source: previous?.repository_source || row.repository_source,
-        repository_group_key: previous?.repository_group_key || row.repository_group_key || ownerSource?.key || owner?.repository_id,
-        repository_group_name: previous?.repository_group_name || row.repository_group_name || ownerSource?.name || owner?.display_name,
+        repository_group_key: previous?.repository_group_key || ownerGroupKey,
+        repository_group_name: previous?.repository_group_name || ownerGroupName,
         paths: [...new Set([...(previous?.paths || []), row.root_path, row.worktree_path].filter(Boolean))],
       });
     };

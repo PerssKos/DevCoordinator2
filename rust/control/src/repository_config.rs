@@ -1392,17 +1392,19 @@ fn validate_diagnostic_sources(
             RepositoryConfigError::new(format!("{item_label} must contain exactly format and path"))
         })?;
         reject_exact(table, &["format", "path"], &item_label)?;
-        let format =
-            match required_string(table, "format", &format!("{item_label}.format"))?.as_str() {
-                "junit" => DiagnosticReportFormat::Junit,
-                "playwright-json" => DiagnosticReportFormat::PlaywrightJson,
-                "rust-json" => DiagnosticReportFormat::RustJson,
-                _ => {
-                    return Err(RepositoryConfigError::new(format!(
-                        "{item_label}.format must be 'junit', 'playwright-json', or 'rust-json'"
-                    )));
-                }
-            };
+        let format = match required_string(table, "format", &format!("{item_label}.format"))?
+            .as_str()
+        {
+            "junit" => DiagnosticReportFormat::Junit,
+            "playwright-json" => DiagnosticReportFormat::PlaywrightJson,
+            "rust-json" => DiagnosticReportFormat::RustJson,
+            "coordinator-json" => DiagnosticReportFormat::CoordinatorJson,
+            _ => {
+                return Err(RepositoryConfigError::new(format!(
+                    "{item_label}.format must be 'junit', 'playwright-json', 'rust-json', or 'coordinator-json'"
+                )));
+            }
+        };
         let path = required_string(table, "path", &format!("{item_label}.path"))?;
         if path.len() > 512 || validate_normalized_relative(&path).is_err() {
             return Err(RepositoryConfigError::new(format!(

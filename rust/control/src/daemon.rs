@@ -354,16 +354,19 @@ async fn serve_connection(
         match parse_request(&raw) {
             Ok(request) => {
                 let id = request.id.clone();
-                let observer = devcoordinator2_api::is_deferred_wait(&request.operation);
+                let observer = crate::client::is_passive_wait_operation(&request.operation);
                 match app.deferred(&request, peer) {
                     Ok(Some(deferred)) => {
                         let mut unexpected = [0_u8; 1];
                         let result = tokio::select! {
                             _ = interruptions.wait_for(|interrupted| *interrupted), if observer => {
-                                Some(ResponseEnvelope::failure(id.clone(), ProtocolError::new(
-                                    ErrorCode::DaemonUnavailable,
-                                    "coordinator is restarting; re-query the wait after recovery, retaining any event cursor",
-                                )))
+                                Some(ResponseEnvelope::failure(
+                                    id.clone(),
+                                    crate::client::reconnectable_wait_error(
+                                        &request,
+                                        "coordinator is restarting; reconnect the same wait using its original identity",
+                                    ),
+                                ))
                             }
                             result = deferred => Some(response_from_result(id.clone(), result)),
                             read = stream.read(&mut unexpected) => match read {
@@ -473,6 +476,11 @@ mod tests {
         events: crate::events::EventService,
     }
 
+    struct CompletingWaitExecutor {
+        started: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        release: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    }
+
     impl OperationExecutor for EventExecutor {
         fn execute(
             &self,
@@ -536,7 +544,7 @@ mod tests {
             _params: Value,
             _caller: &Caller,
         ) -> Option<Result<DeferredOperation, ProtocolError>> {
-            if !WAIT_OPERATIONS.contains(&operation) {
+            if !crate::client::is_passive_wait_operation(operation) {
                 return None;
             }
             if let Some(sender) = self.started.lock().unwrap().take() {
@@ -553,6 +561,39 @@ mod tests {
                     }
                     None => std::future::pending::<Result<Value, ProtocolError>>().await,
                 }
+            })))
+        }
+    }
+
+    impl OperationExecutor for CompletingWaitExecutor {
+        fn execute(
+            &self,
+            _operation: &str,
+            _params: Value,
+            _caller: &Caller,
+        ) -> Result<Value, ProtocolError> {
+            unreachable!("wait operations are deferred")
+        }
+
+        fn defer(
+            &self,
+            operation: &str,
+            _params: Value,
+            _caller: &Caller,
+        ) -> Option<Result<DeferredOperation, ProtocolError>> {
+            if !crate::client::is_passive_wait_operation(operation) {
+                return None;
+            }
+            let started = self.started.lock().unwrap().take();
+            let release = self.release.lock().unwrap().take();
+            Some(Ok(Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+                Ok(serde_json::json!({"completed": true}))
             })))
         }
     }
@@ -912,6 +953,110 @@ mod tests {
             shutdown_tx.send(true).unwrap();
             server.await.unwrap().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn passive_test_wait_keeps_the_socket_open_until_the_result() {
+        let temporary = tempdir().expect("tempdir");
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(CompletingWaitExecutor {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+                release: Arc::new(Mutex::new(Some(release_rx))),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let server_socket = socket.clone();
+        let server =
+            tokio::spawn(
+                async move { serve_with_app(&server_socket, &mut shutdown_rx, app).await },
+            );
+        while !socket.exists() {
+            assert!(!server.is_finished());
+            tokio::task::yield_now().await;
+        }
+        let waiting_socket = socket.clone();
+        let waiting = tokio::spawn(async move {
+            crate::client::call(
+                &waiting_socket,
+                "test.wait",
+                serde_json::json!({
+                    "path":"/worktree",
+                    "run_id":"accepted-run",
+                    "deadline_at":"2099-01-01T00:00:00Z"
+                }),
+                ClientContext::default(),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        release_tx.send(()).unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("wait response");
+        assert!(matches!(response, ResponseEnvelope::Success { .. }));
+        shutdown_tx.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn passive_wait_interruption_returns_reconnectable_run_identity() {
+        let temporary = tempdir().expect("tempdir");
+        let socket = temporary.path().join("daemon.sock");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, _dropped_rx) = tokio::sync::oneshot::channel();
+        let app = Arc::new(App::with_executor(
+            None,
+            Arc::new(WaitingExecutor {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+                dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+            }),
+        ));
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let endpoint = DaemonEndpoint::bind(&socket).await.unwrap();
+        let server = tokio::spawn(async move { endpoint.serve(&mut shutdown_rx, app).await });
+        let mut stream = UnixStream::connect(&socket).await.unwrap();
+        stream
+            .write_all(
+                br#"{"protocol":2,"id":"wait-run","operation":"test.wait","params":{"path":"/worktree","run_id":"accepted-run","deadline_at":"2099-01-01T00:00:00Z"},"client":{}}
+"#,
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        shutdown_tx.send(true).unwrap();
+        let response: ResponseEnvelope = serde_json::from_slice(
+            &tokio::time::timeout(Duration::from_secs(2), read_frame(&mut stream))
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let ResponseEnvelope::Failure { error, .. } = response else {
+            panic!("interrupted wait unexpectedly succeeded");
+        };
+        assert_eq!(error.code, ErrorCode::DaemonUnavailable);
+        let recovery = error.recovery.expect("reconnectable wait guidance");
+        assert!(recovery.retryable);
+        assert!(recovery.waitable);
+        assert_eq!(recovery.run_id.as_deref(), Some("accepted-run"));
+        assert_eq!(recovery.options[0].operation.as_deref(), Some("test.wait"));
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

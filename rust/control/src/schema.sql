@@ -436,6 +436,31 @@ CREATE TABLE IF NOT EXISTS repository_events (
   note TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS repository_events_repository ON repository_events(repository_id,event_id);
+CREATE TABLE IF NOT EXISTS repository_retirement_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+  idempotency_key TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+  actor_uid INTEGER NOT NULL,
+  occurred_at TEXT NOT NULL,
+  removed_worktree_ids_json TEXT NOT NULL CHECK(length(removed_worktree_ids_json) <= 8192),
+  removed_worktree_count INTEGER NOT NULL,
+  root_removed INTEGER NOT NULL CHECK(root_removed IN (0,1)),
+  logs_removed INTEGER NOT NULL CHECK(logs_removed IN (0,1)),
+  note TEXT NOT NULL CHECK(length(note) <= 500),
+  error_code TEXT CHECK(error_code IS NULL OR length(error_code) <= 128),
+  UNIQUE(repository_id,idempotency_key,status)
+);
+CREATE INDEX IF NOT EXISTS repository_retirement_receipts_repository
+  ON repository_retirement_receipts(repository_id,occurred_at);
+CREATE TRIGGER IF NOT EXISTS repository_retirement_receipts_no_update
+  BEFORE UPDATE ON repository_retirement_receipts BEGIN
+  SELECT RAISE(ABORT, 'repository retirement receipts are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS repository_retirement_receipts_no_delete
+  BEFORE DELETE ON repository_retirement_receipts BEGIN
+  SELECT RAISE(ABORT, 'repository retirement receipts are permanent');
+END;
 CREATE TABLE IF NOT EXISTS test_capacity_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1),
   learned_capacity INTEGER NOT NULL CHECK(learned_capacity>=1),

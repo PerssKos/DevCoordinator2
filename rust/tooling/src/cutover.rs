@@ -827,7 +827,11 @@ impl CutoverAdapter for HostCutover {
 
     fn verify_live(&mut self) -> Result<Vec<String>, String> {
         let binary = self.installed_binary("devcoordinator2")?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // A cold daemon may need to open and integrity-check a large authority
+        // database before it can answer the first ping. Keep the readiness
+        // bound finite, but do not turn that legitimate startup work into a
+        // rollback on hosts with multi-gigabyte state.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         loop {
             let output = self.runner.run(&CommandRequest {
                 program: binary.clone(),

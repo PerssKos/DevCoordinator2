@@ -3325,6 +3325,8 @@ impl Deployments {
             repository_id: target.repository_id.clone(),
             worktree_id: target.worktree_id.clone(),
             run_id: None,
+            check: None,
+            owner: None,
             deployment_id: Some(target.deployment_id.clone()),
             component: Some(component.name.clone()),
             generation: Some(u64::from(generation)),

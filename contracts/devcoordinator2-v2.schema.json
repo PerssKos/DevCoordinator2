@@ -8606,6 +8606,123 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "repository retire"
+          }
+        ]
+      },
+      "description": "Remove one exact repository and its linked worktrees while retaining a compact Coordinator receipt.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "idempotency_key": {
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "type": "string"
+          },
+          "note": {
+            "maxLength": 500,
+            "minLength": 3,
+            "type": "string"
+          },
+          "repository_id": {
+            "pattern": "^r[0-9a-f]{16}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "note",
+          "idempotency_key"
+        ],
+        "title": "RetireRepository",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+                "type": "string"
+              },
+              "note": {
+                "maxLength": 500,
+                "minLength": 3,
+                "type": "string"
+              },
+              "repository_id": {
+                "pattern": "^r[0-9a-f]{16}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository_id",
+              "note",
+              "idempotency_key"
+            ],
+            "title": "RetireRepository",
+            "type": "object"
+          },
+          "name": "repository_retire",
+          "transform": "identity"
+        }
+      ],
+      "name": "repository.retire",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "logs_removed": {
+            "type": "boolean"
+          },
+          "receipt_id": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "removed_worktree_count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "removed_worktree_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "repository_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository_id",
+          "receipt_id",
+          "removed",
+          "removed_worktree_ids",
+          "removed_worktree_count",
+          "logs_removed"
+        ],
+        "title": "RetiredRepository",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "server register"
           }
         ]
@@ -9537,6 +9654,1880 @@
         "routes": [
           {
             "dispatch": "protocol",
+            "route": "test container create"
+          }
+        ]
+      },
+      "description": "Create one daemon-owned temporary container for a running governed check.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array"
+          },
+          "image": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "image",
+          "command"
+        ],
+        "title": "ContainerCreate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "minItems": 1,
+                "type": "array"
+              },
+              "image": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "image",
+              "command"
+            ],
+            "title": "ContainerCreate",
+            "type": "object"
+          },
+          "name": "test_container_create",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.create",
+      "outputSchema": {
+        "$defs": {
+          "ContainerCleanupAttempt": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attempted_at": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "default": false,
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "stderr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attempt",
+              "attempted_at",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "ContainerInspection": {
+            "additionalProperties": false,
+            "properties": {
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "image",
+              "state",
+              "status",
+              "labels",
+              "native_execution_began",
+              "cleanup_status",
+              "retryable",
+              "next_action"
+            ],
+            "type": "object"
+          },
+          "TestContainerRecord": {
+            "additionalProperties": false,
+            "description": "The daemon-owned record for one temporary container.  This is retained in\nthe governed run directory so cleanup can be retried after a daemon\nrestart; callers cannot provide or replace the owner token.",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus",
+                "default": "cleanup_pending"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "default": false,
+                "type": "boolean"
+              },
+              "operation_failed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner_token": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "solver_exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "solver_signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "run_id",
+              "check",
+              "repository_id",
+              "worktree_id",
+              "owner_token",
+              "labels",
+              "image",
+              "command",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/TestContainerRecord"
+          }
+        },
+        "required": [
+          "operation",
+          "record"
+        ],
+        "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test container start"
+          }
+        ]
+      },
+      "description": "Start one exact daemon-owned temporary test container.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "container_id"
+        ],
+        "title": "ContainerReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "container_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "container_id"
+            ],
+            "title": "ContainerReference",
+            "type": "object"
+          },
+          "name": "test_container_start",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.start",
+      "outputSchema": {
+        "$defs": {
+          "ContainerCleanupAttempt": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attempted_at": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "default": false,
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "stderr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attempt",
+              "attempted_at",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "ContainerInspection": {
+            "additionalProperties": false,
+            "properties": {
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "image",
+              "state",
+              "status",
+              "labels",
+              "native_execution_began",
+              "cleanup_status",
+              "retryable",
+              "next_action"
+            ],
+            "type": "object"
+          },
+          "TestContainerRecord": {
+            "additionalProperties": false,
+            "description": "The daemon-owned record for one temporary container.  This is retained in\nthe governed run directory so cleanup can be retried after a daemon\nrestart; callers cannot provide or replace the owner token.",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus",
+                "default": "cleanup_pending"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "default": false,
+                "type": "boolean"
+              },
+              "operation_failed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner_token": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "solver_exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "solver_signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "run_id",
+              "check",
+              "repository_id",
+              "worktree_id",
+              "owner_token",
+              "labels",
+              "image",
+              "command",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/TestContainerRecord"
+          }
+        },
+        "required": [
+          "operation",
+          "record"
+        ],
+        "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": false,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test container inspect"
+          }
+        ]
+      },
+      "description": "Inspect one exact daemon-owned temporary test container.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "container_id"
+        ],
+        "title": "ContainerReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "container_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "container_id"
+            ],
+            "title": "ContainerReference",
+            "type": "object"
+          },
+          "name": "test_container_inspect",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.inspect",
+      "outputSchema": {
+        "$defs": {
+          "ContainerCleanupAttempt": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attempted_at": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "default": false,
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "stderr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attempt",
+              "attempted_at",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "ContainerInspection": {
+            "additionalProperties": false,
+            "properties": {
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "image",
+              "state",
+              "status",
+              "labels",
+              "native_execution_began",
+              "cleanup_status",
+              "retryable",
+              "next_action"
+            ],
+            "type": "object"
+          },
+          "TestContainerRecord": {
+            "additionalProperties": false,
+            "description": "The daemon-owned record for one temporary container.  This is retained in\nthe governed run directory so cleanup can be retried after a daemon\nrestart; callers cannot provide or replace the owner token.",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus",
+                "default": "cleanup_pending"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "default": false,
+                "type": "boolean"
+              },
+              "operation_failed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner_token": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "solver_exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "solver_signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "run_id",
+              "check",
+              "repository_id",
+              "worktree_id",
+              "owner_token",
+              "labels",
+              "image",
+              "command",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/TestContainerRecord"
+          }
+        },
+        "required": [
+          "operation",
+          "record"
+        ],
+        "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test container remove"
+          }
+        ]
+      },
+      "description": "Force-remove one exact daemon-owned temporary test container and verify absence.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "container_id"
+        ],
+        "title": "ContainerReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "container_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "container_id"
+            ],
+            "title": "ContainerReference",
+            "type": "object"
+          },
+          "name": "test_container_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.remove",
+      "outputSchema": {
+        "$defs": {
+          "ContainerCleanupAttempt": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attempted_at": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "default": false,
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "stderr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attempt",
+              "attempted_at",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "ContainerInspection": {
+            "additionalProperties": false,
+            "properties": {
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "image",
+              "state",
+              "status",
+              "labels",
+              "native_execution_began",
+              "cleanup_status",
+              "retryable",
+              "next_action"
+            ],
+            "type": "object"
+          },
+          "TestContainerRecord": {
+            "additionalProperties": false,
+            "description": "The daemon-owned record for one temporary container.  This is retained in\nthe governed run directory so cleanup can be retried after a daemon\nrestart; callers cannot provide or replace the owner token.",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus",
+                "default": "cleanup_pending"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "default": false,
+                "type": "boolean"
+              },
+              "operation_failed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner_token": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "solver_exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "solver_signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "run_id",
+              "check",
+              "repository_id",
+              "worktree_id",
+              "owner_token",
+              "labels",
+              "image",
+              "command",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/TestContainerRecord"
+          }
+        },
+        "required": [
+          "operation",
+          "record"
+        ],
+        "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "test container retry"
+          }
+        ]
+      },
+      "description": "Retry cleanup for one exact daemon-owned temporary test container.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "container_id"
+        ],
+        "title": "ContainerReference",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "container_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "container_id"
+            ],
+            "title": "ContainerReference",
+            "type": "object"
+          },
+          "name": "test_container_retry",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.retry",
+      "outputSchema": {
+        "$defs": {
+          "ContainerCleanupAttempt": {
+            "additionalProperties": false,
+            "properties": {
+              "attempt": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "attempted_at": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "default": false,
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "stderr": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "attempt",
+              "attempted_at",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "ContainerInspection": {
+            "additionalProperties": false,
+            "properties": {
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "finished_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "image",
+              "state",
+              "status",
+              "labels",
+              "native_execution_began",
+              "cleanup_status",
+              "retryable",
+              "next_action"
+            ],
+            "type": "object"
+          },
+          "TestContainerRecord": {
+            "additionalProperties": false,
+            "description": "The daemon-owned record for one temporary container.  This is retained in\nthe governed run directory so cleanup can be retried after a daemon\nrestart; callers cannot provide or replace the owner token.",
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "cleanup_attempts": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/ContainerCleanupAttempt"
+                },
+                "type": "array"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/ContainerCleanupStatus",
+                "default": "cleanup_pending"
+              },
+              "command": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "container_id": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "image": {
+                "type": "string"
+              },
+              "labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              },
+              "native_execution_began": {
+                "default": false,
+                "type": "boolean"
+              },
+              "operation_failed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "owner_token": {
+                "type": "string"
+              },
+              "repository_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "solver_exit_code": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "solver_signal": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stderr_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stdout_bytes": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "worktree_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "container_id",
+              "name",
+              "run_id",
+              "check",
+              "repository_id",
+              "worktree_id",
+              "owner_token",
+              "labels",
+              "image",
+              "command",
+              "created_at"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation": {
+            "type": "string"
+          },
+          "record": {
+            "$ref": "#/$defs/TestContainerRecord"
+          }
+        },
+        "required": [
+          "operation",
+          "record"
+        ],
+        "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
             "route": "test admission-status"
           }
         ]
@@ -10100,6 +12091,12 @@
               "exit": {
                 "$ref": "#/$defs/DiagnosticExit"
               },
+              "failed_diagnostics": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "finished_at": {
                 "type": [
                   "string",
@@ -10175,6 +12172,149 @@
             "enum": [
               "work",
               "preflight"
+            ],
+            "type": "string"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorCleanupStatus": {
+            "enum": [
+              "not_required",
+              "completed",
+              "pending",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorDiagnostic": {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/$defs/CoordinatorDiagnosticClass"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/CoordinatorCleanupStatus"
+              },
+              "cleanup_stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cleanup_stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "command_phase": {
+                "type": "string"
+              },
+              "container_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "container_labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "container_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "native_execution_started": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "$ref": "#/$defs/CoordinatorNextAction"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stdout_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "class",
+              "command_phase",
+              "status",
+              "exit",
+              "native_execution_started",
+              "cleanup_status",
+              "retryable",
+              "next_action",
+              "stdout_bytes",
+              "stderr_bytes",
+              "cleanup_stderr_bytes"
+            ],
+            "type": "object"
+          },
+          "CoordinatorDiagnosticClass": {
+            "enum": [
+              "solver",
+              "container_start",
+              "container_cleanup",
+              "coordinator_infrastructure"
+            ],
+            "type": "string"
+          },
+          "CoordinatorNextAction": {
+            "enum": [
+              "none",
+              "retry",
+              "retry_cleanup",
+              "inspect",
+              "reconnect"
             ],
             "type": "string"
           },
@@ -10419,6 +12559,16 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "coordinator": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CoordinatorDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "error_category": {
@@ -10769,6 +12919,23 @@
               "client": {
                 "type": "string"
               },
+              "container_cleanup_status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerCleanupStatus"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Cleanup is a separate terminal gate. A pending or failed value keeps\nthe run from being reported as passed even when the command exited 0."
+              },
+              "container_lifecycle_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "duration_seconds": {
                 "format": "double",
                 "type": [
@@ -10801,6 +12968,14 @@
                   "null"
                 ]
               },
+              "failed_diagnostics": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "failure_index": {
                 "items": {
                   "$ref": "#/$defs/FailureIndexEntry"
@@ -10824,6 +12999,13 @@
               },
               "log_catalog_ref": {
                 "$ref": "#/$defs/LogCatalogReference"
+              },
+              "native_execution_started": {
+                "description": "Whether a governed native solver/container execution actually began.\n`None` means this run did not use the temporary-container capability.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "origin_run_id": {
                 "type": [
@@ -11666,6 +13848,12 @@
               "exit": {
                 "$ref": "#/$defs/DiagnosticExit"
               },
+              "failed_diagnostics": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "finished_at": {
                 "type": [
                   "string",
@@ -11741,6 +13929,149 @@
             "enum": [
               "work",
               "preflight"
+            ],
+            "type": "string"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorCleanupStatus": {
+            "enum": [
+              "not_required",
+              "completed",
+              "pending",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorDiagnostic": {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/$defs/CoordinatorDiagnosticClass"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/CoordinatorCleanupStatus"
+              },
+              "cleanup_stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cleanup_stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "command_phase": {
+                "type": "string"
+              },
+              "container_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "container_labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "container_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "native_execution_started": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "$ref": "#/$defs/CoordinatorNextAction"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stdout_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "class",
+              "command_phase",
+              "status",
+              "exit",
+              "native_execution_started",
+              "cleanup_status",
+              "retryable",
+              "next_action",
+              "stdout_bytes",
+              "stderr_bytes",
+              "cleanup_stderr_bytes"
+            ],
+            "type": "object"
+          },
+          "CoordinatorDiagnosticClass": {
+            "enum": [
+              "solver",
+              "container_start",
+              "container_cleanup",
+              "coordinator_infrastructure"
+            ],
+            "type": "string"
+          },
+          "CoordinatorNextAction": {
+            "enum": [
+              "none",
+              "retry",
+              "retry_cleanup",
+              "inspect",
+              "reconnect"
             ],
             "type": "string"
           },
@@ -11985,6 +14316,16 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "coordinator": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CoordinatorDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "error_category": {
@@ -12463,6 +14804,23 @@
           "client": {
             "type": "string"
           },
+          "container_cleanup_status": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ContainerCleanupStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cleanup is a separate terminal gate. A pending or failed value keeps\nthe run from being reported as passed even when the command exited 0."
+          },
+          "container_lifecycle_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "duration_seconds": {
             "format": "double",
             "type": [
@@ -12495,6 +14853,14 @@
               "null"
             ]
           },
+          "failed_diagnostics": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "failure_index": {
             "items": {
               "$ref": "#/$defs/FailureIndexEntry"
@@ -12518,6 +14884,13 @@
           },
           "log_catalog_ref": {
             "$ref": "#/$defs/LogCatalogReference"
+          },
+          "native_execution_started": {
+            "description": "Whether a governed native solver/container execution actually began.\n`None` means this run did not use the temporary-container capability.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "origin_run_id": {
             "type": [
@@ -14226,6 +16599,141 @@
       "name": "test.log.failure_context",
       "outputSchema": {
         "$defs": {
+          "CoordinatorCleanupStatus": {
+            "enum": [
+              "not_required",
+              "completed",
+              "pending",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorDiagnostic": {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/$defs/CoordinatorDiagnosticClass"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/CoordinatorCleanupStatus"
+              },
+              "cleanup_stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cleanup_stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "command_phase": {
+                "type": "string"
+              },
+              "container_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "container_labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "container_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "native_execution_started": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "$ref": "#/$defs/CoordinatorNextAction"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stdout_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "class",
+              "command_phase",
+              "status",
+              "exit",
+              "native_execution_started",
+              "cleanup_status",
+              "retryable",
+              "next_action",
+              "stdout_bytes",
+              "stderr_bytes",
+              "cleanup_stderr_bytes"
+            ],
+            "type": "object"
+          },
+          "CoordinatorDiagnosticClass": {
+            "enum": [
+              "solver",
+              "container_start",
+              "container_cleanup",
+              "coordinator_infrastructure"
+            ],
+            "type": "string"
+          },
+          "CoordinatorNextAction": {
+            "enum": [
+              "none",
+              "retry",
+              "retry_cleanup",
+              "inspect",
+              "reconnect"
+            ],
+            "type": "string"
+          },
           "DiagnosticExit": {
             "additionalProperties": false,
             "properties": {
@@ -14315,6 +16823,16 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "coordinator": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CoordinatorDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "error_category": {
@@ -17559,6 +20077,19 @@
               "null"
             ]
           },
+          "limit": {
+            "default": 10,
+            "format": "uint8",
+            "maximum": 32,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "run_id": {
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
             "type": "string"
@@ -17590,6 +20121,19 @@
                   "string",
                   "null"
                 ]
+              },
+              "limit": {
+                "default": 10,
+                "format": "uint8",
+                "maximum": 32,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
               },
               "run_id": {
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
@@ -21391,6 +23935,12 @@
               "exit": {
                 "$ref": "#/$defs/DiagnosticExit"
               },
+              "failed_diagnostics": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
               "finished_at": {
                 "type": [
                   "string",
@@ -21466,6 +24016,149 @@
             "enum": [
               "work",
               "preflight"
+            ],
+            "type": "string"
+          },
+          "ContainerCleanupStatus": {
+            "enum": [
+              "cleanup_pending",
+              "cleanup_complete",
+              "cleanup_failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorCleanupStatus": {
+            "enum": [
+              "not_required",
+              "completed",
+              "pending",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "CoordinatorDiagnostic": {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/$defs/CoordinatorDiagnosticClass"
+              },
+              "cleanup_status": {
+                "$ref": "#/$defs/CoordinatorCleanupStatus"
+              },
+              "cleanup_stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cleanup_stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "command_phase": {
+                "type": "string"
+              },
+              "container_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "container_labels": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {},
+                "type": "object"
+              },
+              "container_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exit": {
+                "$ref": "#/$defs/DiagnosticExit"
+              },
+              "native_execution_started": {
+                "type": "boolean"
+              },
+              "next_action": {
+                "$ref": "#/$defs/CoordinatorNextAction"
+              },
+              "retryable": {
+                "type": "boolean"
+              },
+              "status": {
+                "$ref": "#/$defs/LeafStatus"
+              },
+              "stderr_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stderr_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stdout_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "stdout_ref": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/LogReference"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "class",
+              "command_phase",
+              "status",
+              "exit",
+              "native_execution_started",
+              "cleanup_status",
+              "retryable",
+              "next_action",
+              "stdout_bytes",
+              "stderr_bytes",
+              "cleanup_stderr_bytes"
+            ],
+            "type": "object"
+          },
+          "CoordinatorDiagnosticClass": {
+            "enum": [
+              "solver",
+              "container_start",
+              "container_cleanup",
+              "coordinator_infrastructure"
+            ],
+            "type": "string"
+          },
+          "CoordinatorNextAction": {
+            "enum": [
+              "none",
+              "retry",
+              "retry_cleanup",
+              "inspect",
+              "reconnect"
             ],
             "type": "string"
           },
@@ -21734,6 +24427,16 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "coordinator": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CoordinatorDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "error_category": {
@@ -22062,6 +24765,23 @@
               "client": {
                 "type": "string"
               },
+              "container_cleanup_status": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerCleanupStatus"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Cleanup is a separate terminal gate. A pending or failed value keeps\nthe run from being reported as passed even when the command exited 0."
+              },
+              "container_lifecycle_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "display_name": {
                 "type": "string"
               },
@@ -22107,6 +24827,14 @@
                   "null"
                 ]
               },
+              "failed_diagnostics": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "failure_index": {
                 "items": {
                   "$ref": "#/$defs/FailureIndexEntry"
@@ -22130,6 +24858,13 @@
               },
               "log_catalog_ref": {
                 "$ref": "#/$defs/LogCatalogReference"
+              },
+              "native_execution_started": {
+                "description": "Whether a governed native solver/container execution actually began.\n`None` means this run did not use the temporary-container capability.",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "origin_run_id": {
                 "type": [
@@ -23525,6 +26260,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -24183,6 +26919,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -25056,6 +27793,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -25791,6 +28529,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -26456,6 +29195,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -27135,6 +29875,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -27814,6 +30555,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",
@@ -28493,6 +31235,7 @@
               "repository_not_found",
               "repository_archived",
               "repository_archive_blocked",
+              "repository_retirement_blocked",
               "repository_config_invalid",
               "authorization_required",
               "configuration_conflict",

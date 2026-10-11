@@ -455,8 +455,13 @@ impl Executor {
         };
         let status = if source_changed
             || abort.is_some()
-            || checks.iter().any(|check| !check.report.status.is_success())
-        {
+            || checks.iter().any(|check| {
+                !check.report.status.is_success()
+                    || check
+                        .failures
+                        .iter()
+                        .any(|failure| failure.origin != DiagnosticOrigin::Executor)
+            }) {
             RunStatus::Failed
         } else {
             RunStatus::Passed
@@ -823,6 +828,7 @@ fn failure_entry(
         occurrences: 1,
         log_refs,
         origin: DiagnosticOrigin::Executor,
+        coordinator: None,
     };
     entry.fingerprint = diagnostic_fingerprint(&entry);
     entry
@@ -968,6 +974,7 @@ fn initialize_checks(
                 cache_inputs: artifact_receipts(root, &check.cache_inputs)?,
                 consumed_artifacts: Vec::new(),
                 status,
+                failed_diagnostics: 0,
                 started_at: (reused.is_some() || reused_qualification)
                     .then(|| started_at.to_owned()),
                 finished_at: (reused.is_some() || reused_qualification)
@@ -3130,6 +3137,41 @@ fn write_report(
         .map_err(|error| ExecutorError::new(format!("cannot normalize diagnostics: {error}")))?;
     let failure_index_truncated = candidate_truncated || normalized.truncated;
     let failures = normalized.entries;
+    let mut failed_diagnostics_by_check = BTreeMap::<String, u32>::new();
+    for failure in &failures {
+        if failure.origin != DiagnosticOrigin::Executor
+            && let Some(check) = &failure.check
+        {
+            let count = failed_diagnostics_by_check
+                .entry(check.clone())
+                .or_default();
+            *count = count.saturating_add(failure.occurrences);
+        }
+    }
+    let check_reports: Vec<_> = checks
+        .iter()
+        .map(|check| {
+            let mut report = check.report.clone();
+            report.phase_durations = aggregate_phase_times(timing_nodes(check).into_iter());
+            report.failed_diagnostics = failed_diagnostics_by_check
+                .get(&report.name)
+                .copied()
+                .unwrap_or(0);
+            if report.failed_diagnostics > 0 && report.status.is_success() {
+                report.status = LeafStatus::Failed;
+            }
+            report
+        })
+        .collect();
+    let failed_diagnostics = check_reports
+        .iter()
+        .map(|check| check.failed_diagnostics)
+        .sum::<u32>();
+    let status = if status == RunStatus::Passed && failed_diagnostics > 0 {
+        RunStatus::Failed
+    } else {
+        status
+    };
     let mut counts: BTreeMap<String, u32> = [
         "pending",
         "running",
@@ -3145,8 +3187,8 @@ fn write_report(
     .into_iter()
     .map(|name| (name.to_owned(), 0))
     .collect();
-    for check in checks {
-        let key = status_key(check.report.status).to_owned();
+    for check in &check_reports {
+        let key = status_key(check.status).to_owned();
         *counts.entry(key).or_insert(0) += 1;
     }
     let phase_durations = aggregate_phase_times(checks.iter().flat_map(timing_nodes));
@@ -3179,14 +3221,8 @@ fn write_report(
         source_changed,
         capacity: observed_capacity,
         counts,
-        checks: checks
-            .iter()
-            .map(|check| {
-                let mut report = check.report.clone();
-                report.phase_durations = aggregate_phase_times(timing_nodes(check).into_iter());
-                report
-            })
-            .collect(),
+        failed_diagnostics,
+        checks: check_reports,
         phase_durations,
         failure_index: failures,
         failure_index_truncated,

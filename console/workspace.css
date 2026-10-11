@@ -393,3 +393,4 @@ body.evidence-fullscreen-mode { overflow: hidden !important; }
     height: 58px;
   }
 }
+@media (max-width:1000px){.repository-scoped .usage-context{display:grid;grid-template-columns:1fr;grid-template-rows:auto auto auto;align-items:start;gap:10px}.repository-scoped .usage-title{grid-column:1;grid-row:1}.repository-scoped .usage-range{grid-column:1;grid-row:2}.repository-scoped .usage-coverage{grid-column:1;grid-row:3}}

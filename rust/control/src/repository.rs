@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use devcoordinator2_api::results::{
     RegisteredRepository, Repository, RepositoryList, RepositoryListRow, RepositoryPresentation,
-    RepositoryStatus, Worktree,
+    RepositoryStatus, RetiredRepository, Worktree,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError};
 use rusqlite::{Connection, OptionalExtension, Row};
@@ -538,6 +538,370 @@ impl Registry {
         }
     }
 
+    /// Remove one exact repository checkout and all of its linked worktrees.
+    ///
+    /// Coordinator-owned planning and event history remains in the authority
+    /// database; only the source folders and their local test logs are removed.
+    pub fn retire(
+        &self,
+        repository_id: &str,
+        note: &str,
+        idempotency_key: &str,
+        actor_uid: u32,
+        actor_gid: u32,
+    ) -> Result<RetiredRepository, ProtocolError> {
+        validate_repository_id(repository_id, "repository_id")?;
+        validate_note(note)?;
+        if idempotency_key.is_empty()
+            || idempotency_key.len() > 160
+            || !idempotency_key.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+            })
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "'idempotency_key' must contain 1..160 safe identifier characters",
+            ));
+        }
+
+        if let Some(existing) =
+            self.retirement_receipt(repository_id, idempotency_key, "completed")?
+        {
+            return Ok(existing);
+        }
+        if self
+            .retirement_receipt(repository_id, idempotency_key, "started")?
+            .is_some()
+        {
+            return Err(retirement_blocked(
+                "a repository retirement with this idempotency key is already in progress",
+            ));
+        }
+        if self
+            .retirement_receipt(repository_id, idempotency_key, "failed")?
+            .is_some()
+        {
+            return Err(retirement_blocked(
+                "a prior retirement attempt failed; use a new idempotency key after diagnosis",
+            ));
+        }
+        let repository_id_owned = repository_id.to_owned();
+        let target = self
+            .database
+            .call(move |connection| {
+                let repository = connection
+                    .query_row(
+                        "SELECT root_path,registered_by_uid,archived_at FROM repositories WHERE repository_id=?1",
+                        [&repository_id_owned],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, u32>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .optional()?;
+                let Some((root_path, registered_by_uid, archived_at)) = repository else {
+                    return Ok(None);
+                };
+                let mut statement = connection.prepare(
+                    "SELECT worktree_id,worktree_path FROM worktrees WHERE repository_id=?1 ORDER BY worktree_id",
+                )?;
+                let worktrees = statement
+                    .query_map([&repository_id_owned], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Some((root_path, registered_by_uid, archived_at, worktrees)))
+            })
+            .map_err(database_error)?
+            .ok_or_else(|| repository_not_found("repository is not registered"))?;
+        if target.2.is_some() {
+            return Err(retirement_blocked(
+                "repository is already archived or retired",
+            ));
+        }
+        if let Some(blocker) = self.persistent_retirement_blocker(repository_id)? {
+            return Err(retirement_blocked(blocker));
+        }
+        for (_, path) in &target.3 {
+            if let Some(blocker) = self
+                .additional_archive_blockers
+                .first_blocker(repository_id, Path::new(path))?
+            {
+                return Err(retirement_blocked(blocker));
+            }
+        }
+        if target.3.is_empty() {
+            return Err(retirement_blocked("repository has no registered worktree"));
+        }
+
+        let owner_uid = target.1;
+        let owner_gid = if owner_uid == actor_uid {
+            actor_gid
+        } else {
+            crate::systemd::primary_gid(owner_uid)
+                .map_err(|_| retirement_blocked("registered repository owner is unavailable"))?
+        };
+        let root = PathBuf::from(&target.0);
+        let root_id = ids::repository_id(&root).map_err(id_error)?;
+        if root_id != repository_id {
+            return Err(retirement_blocked("repository identity changed"));
+        }
+        let mut worktree_targets = target.3.clone();
+        let discovered = run_git_arguments(
+            &root,
+            Some((owner_uid, owner_gid)),
+            &["worktree", "list", "--porcelain"],
+            Duration::from_secs(30),
+        )
+        .map_err(|error| retirement_blocked(format!("Git worktree inventory failed: {error}")))?;
+        if !discovered.status.success() {
+            return Err(retirement_blocked(
+                "Git worktree inventory could not be verified",
+            ));
+        }
+        for line in String::from_utf8_lossy(&discovered.stdout).lines() {
+            let Some(path) = line.strip_prefix("worktree ") else {
+                continue;
+            };
+            let path = PathBuf::from(path);
+            if !worktree_targets.iter().any(|(_, known)| known == &path) {
+                let id = ids::worktree_id(&path).map_err(id_error)?;
+                worktree_targets.push((id, path.to_string_lossy().into_owned()));
+            }
+        }
+        for (_, path) in &worktree_targets {
+            if let Some(blocker) = self
+                .additional_archive_blockers
+                .first_blocker(repository_id, Path::new(path))?
+            {
+                return Err(retirement_blocked(blocker));
+            }
+        }
+        let mut worktrees = Vec::with_capacity(worktree_targets.len());
+        for (worktree_id, path) in &worktree_targets {
+            let path = PathBuf::from(path);
+            validate_retirement_worktree(
+                repository_id,
+                worktree_id,
+                &root,
+                &path,
+                owner_uid,
+                owner_gid,
+            )?;
+            worktrees.push((worktree_id.clone(), path));
+        }
+
+        let started_receipt = ids::retirement_receipt_id().map_err(id_error)?;
+        let started_at = timestamp()?;
+        self.insert_retirement_receipt(
+            &started_receipt,
+            repository_id,
+            idempotency_key,
+            "started",
+            actor_uid,
+            &started_at,
+            &[],
+            0,
+            false,
+            false,
+            note,
+            None,
+        )?;
+
+        let mut removed_worktree_ids = Vec::new();
+        let mut failure: Option<ProtocolError> = None;
+        for (worktree_id, path) in worktrees
+            .iter()
+            .filter(|(_, path)| path.as_path() != root.as_path())
+        {
+            let output = run_git_arguments(
+                &root,
+                Some((owner_uid, owner_gid)),
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    path.to_str()
+                        .ok_or_else(|| retirement_blocked("worktree path is not valid UTF-8"))?,
+                ],
+                Duration::from_secs(120),
+            )
+            .map_err(|error| retirement_blocked(format!("worktree removal failed: {error}")))?;
+            if !output.status.success() || path.exists() {
+                failure = Some(retirement_blocked("worktree removal could not be verified"));
+                break;
+            }
+            removed_worktree_ids.push(worktree_id.clone());
+        }
+        let mut root_removed = false;
+        if failure.is_none() {
+            let identity = crate::storage::fs::identity(&root)?;
+            if let Err(error) = crate::storage::fs::remove_tree(&root, identity, true, false) {
+                failure = Some(error);
+            } else {
+                root_removed = true;
+            }
+        }
+        let completed_at = timestamp()?;
+        let status = if failure.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        let logs_removed = status == "completed";
+        let error_code = failure.as_ref().map(|error| error.code.to_string());
+        let terminal_receipt = ids::retirement_receipt_id().map_err(id_error)?;
+        if let Some(error) = failure {
+            self.insert_retirement_receipt(
+                &terminal_receipt,
+                repository_id,
+                idempotency_key,
+                status,
+                actor_uid,
+                &completed_at,
+                &removed_worktree_ids,
+                removed_worktree_ids.len() as u32,
+                root_removed,
+                logs_removed,
+                note,
+                error_code.as_deref(),
+            )?;
+            return Err(error);
+        }
+        self.complete_retirement(
+            &terminal_receipt,
+            repository_id,
+            idempotency_key,
+            actor_uid,
+            &completed_at,
+            &removed_worktree_ids,
+            note,
+        )?;
+        let removed_worktree_count = removed_worktree_ids.len() as u32;
+        Ok(RetiredRepository {
+            repository_id: repository_id.to_owned(),
+            receipt_id: terminal_receipt,
+            removed: true,
+            removed_worktree_ids,
+            removed_worktree_count,
+            logs_removed,
+        })
+    }
+
+    fn retirement_receipt(
+        &self,
+        repository_id: &str,
+        idempotency_key: &str,
+        status: &str,
+    ) -> Result<Option<RetiredRepository>, ProtocolError> {
+        let repository_id = repository_id.to_owned();
+        let idempotency_key = idempotency_key.to_owned();
+        let status = status.to_owned();
+        self.database
+            .call(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT receipt_id,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed FROM repository_retirement_receipts WHERE repository_id=?1 AND idempotency_key=?2 AND status=?3 ORDER BY occurred_at DESC LIMIT 1",
+                        rusqlite::params![repository_id, idempotency_key, status],
+                        |row| {
+                            let ids: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?)
+                                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                            Ok(RetiredRepository {
+                                repository_id: repository_id.clone(),
+                                receipt_id: row.get(0)?,
+                                removed: row.get::<_, i64>(3)? == 1,
+                                removed_worktree_ids: ids,
+                                removed_worktree_count: row.get::<_, u32>(2)?,
+                                logs_removed: row.get::<_, i64>(4)? == 1,
+                            })
+                        },
+                    )
+                    .optional()
+                    .map_err(DatabaseError::from)
+            })
+            .map_err(database_error)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_retirement_receipt(
+        &self,
+        receipt_id: &str,
+        repository_id: &str,
+        idempotency_key: &str,
+        status: &str,
+        actor_uid: u32,
+        occurred_at: &str,
+        removed_worktree_ids: &[String],
+        removed_worktree_count: u32,
+        root_removed: bool,
+        logs_removed: bool,
+        note: &str,
+        error_code: Option<&str>,
+    ) -> Result<(), ProtocolError> {
+        let ids_json = serde_json::to_string(removed_worktree_ids).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "could not encode retirement receipt",
+            )
+        })?;
+        let receipt_id = receipt_id.to_owned();
+        let repository_id = repository_id.to_owned();
+        let idempotency_key = idempotency_key.to_owned();
+        let status = status.to_owned();
+        let occurred_at = occurred_at.to_owned();
+        let note = note.to_owned();
+        let error_code = error_code.map(str::to_owned);
+        self.database
+            .transaction(move |connection| {
+                connection.execute(
+                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    rusqlite::params![receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,ids_json,removed_worktree_count,root_removed as i64,logs_removed as i64,note,error_code],
+                )?;
+                Ok(())
+            })
+            .map_err(database_error)
+    }
+
+    fn complete_retirement(
+        &self,
+        receipt_id: &str,
+        repository_id: &str,
+        idempotency_key: &str,
+        actor_uid: u32,
+        occurred_at: &str,
+        removed_worktree_ids: &[String],
+        note: &str,
+    ) -> Result<(), ProtocolError> {
+        let ids_json = serde_json::to_string(removed_worktree_ids).map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "could not encode retirement receipt",
+            )
+        })?;
+        let receipt_id = receipt_id.to_owned();
+        let repository_id = repository_id.to_owned();
+        let idempotency_key = idempotency_key.to_owned();
+        let occurred_at = occurred_at.to_owned();
+        let note = note.to_owned();
+        let removed_worktree_count = removed_worktree_ids.len() as u32;
+        self.database
+            .transaction(move |connection| {
+                connection.execute(
+                    "UPDATE repositories SET archived_at=?1,archived_by_uid=?2,archive_note=?3,merged_into_repository_id=NULL WHERE repository_id=?4",
+                    rusqlite::params![occurred_at, actor_uid, note, repository_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO repository_retirement_receipts(receipt_id,repository_id,idempotency_key,status,actor_uid,occurred_at,removed_worktree_ids_json,removed_worktree_count,root_removed,logs_removed,note,error_code) VALUES(?1,?2,?3,'completed',?4,?5,?6,?7,1,1,?8,NULL)",
+                    rusqlite::params![receipt_id,repository_id,idempotency_key,actor_uid,occurred_at,ids_json,removed_worktree_count,note],
+                )?;
+                Ok(())
+            })
+            .map_err(database_error)
+    }
+
     pub fn update_presentation(
         &self,
         params: devcoordinator2_api::params::RepositoryPresentationUpdate,
@@ -626,6 +990,16 @@ impl Registry {
         let repository_id = repository_id.to_owned();
         self.database
             .call(move |connection| persistent_archive_blocker(connection, &repository_id))
+            .map_err(database_error)
+    }
+
+    fn persistent_retirement_blocker(
+        &self,
+        repository_id: &str,
+    ) -> Result<Option<String>, ProtocolError> {
+        let repository_id = repository_id.to_owned();
+        self.database
+            .call(move |connection| persistent_retirement_blocker(connection, &repository_id))
             .map_err(database_error)
     }
 }
@@ -1166,6 +1540,125 @@ fn persistent_archive_blocker(
     Ok(None)
 }
 
+fn persistent_retirement_blocker(
+    connection: &Connection,
+    repository_id: &str,
+) -> Result<Option<String>, DatabaseError> {
+    if let Some(blocker) = persistent_archive_blocker(connection, repository_id)? {
+        return Ok(Some(blocker));
+    }
+    for (label, sql) in [
+        (
+            "registered deployments",
+            "SELECT 1 FROM deployments WHERE repository_id=?1 LIMIT 1",
+        ),
+        (
+            "observed deployments",
+            "SELECT 1 FROM observed_deployments WHERE repository_id=?1 LIMIT 1",
+        ),
+        (
+            "active storage leases",
+            "SELECT 1 FROM storage_leases l JOIN json_each(l.lease_json,'$.artifact_ids') a JOIN storage_artifacts s ON s.artifact_id=a.value WHERE s.repository_id=?1 AND l.expires_at_ms > CAST(strftime('%s','now') AS INTEGER)*1000 LIMIT 1",
+        ),
+    ] {
+        if connection
+            .query_row(sql, [repository_id], |_| Ok(()))
+            .optional()?
+            .is_some()
+        {
+            return Ok(Some(format!("repository still has {label}")));
+        }
+    }
+    Ok(None)
+}
+
+fn validate_retirement_worktree(
+    repository_id: &str,
+    worktree_id: &str,
+    repository_root: &Path,
+    worktree: &Path,
+    owner_uid: u32,
+    owner_gid: u32,
+) -> Result<(), ProtocolError> {
+    let metadata = std::fs::symlink_metadata(worktree).map_err(|_| {
+        retirement_blocked("registered repository or worktree directory is missing")
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(retirement_blocked(
+            "registered repository or worktree is not a directory",
+        ));
+    }
+    let resolved = resolve_worktree(worktree, Some((owner_uid, owner_gid)))?;
+    if resolved.repository_root != repository_root || resolved.worktree_root != worktree {
+        return Err(retirement_blocked(
+            "repository or worktree identity changed",
+        ));
+    }
+    if ids::repository_id(repository_root).map_err(id_error)? != repository_id
+        || ids::worktree_id(worktree).map_err(id_error)? != worktree_id
+    {
+        return Err(retirement_blocked(
+            "repository or worktree identity changed",
+        ));
+    }
+    let status = run_git_arguments(
+        worktree,
+        Some((owner_uid, owner_gid)),
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ":(exclude).devcoordinator",
+        ],
+        Duration::from_secs(30),
+    )
+    .map_err(|error| retirement_blocked(format!("Git status failed: {error}")))?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        let detail = String::from_utf8_lossy(&status.stdout);
+        return Err(retirement_blocked(format!(
+            "worktree has uncommitted or untracked source changes: {}",
+            truncate_text(detail.trim(), 256)
+        )));
+    }
+    let head = run_git_arguments(
+        worktree,
+        Some((owner_uid, owner_gid)),
+        &["rev-parse", "HEAD"],
+        Duration::from_secs(30),
+    )
+    .map_err(|error| retirement_blocked(format!("Git baseline check failed: {error}")))?;
+    let remote = run_git_arguments(
+        repository_root,
+        Some((owner_uid, owner_gid)),
+        &["ls-remote", "origin", "HEAD"],
+        Duration::from_secs(30),
+    )
+    .map_err(|error| retirement_blocked(format!("Git remote baseline check failed: {error}")))?;
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    let remote = String::from_utf8_lossy(&remote.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    if head.is_empty() || remote.is_empty() {
+        return Err(retirement_blocked("Git remote baseline is unavailable"));
+    }
+    let ancestor = run_git_arguments(
+        repository_root,
+        Some((owner_uid, owner_gid)),
+        &["merge-base", "--is-ancestor", &head, &remote],
+        Duration::from_secs(30),
+    )
+    .map_err(|error| retirement_blocked(format!("Git unique-commit check failed: {error}")))?;
+    if !ancestor.status.success() {
+        return Err(retirement_blocked(
+            "worktree contains commits not in the verified remote baseline",
+        ));
+    }
+    Ok(())
+}
+
 fn select_repository(
     connection: &Connection,
     repository_id: &str,
@@ -1309,6 +1802,10 @@ fn repository_not_found(message: impl Into<String>) -> ProtocolError {
 
 fn archive_blocked(message: impl Into<String>) -> ProtocolError {
     ProtocolError::new(ErrorCode::RepositoryArchiveBlocked, message)
+}
+
+fn retirement_blocked(message: impl Into<String>) -> ProtocolError {
+    ProtocolError::new(ErrorCode::RepositoryRetirementBlocked, message)
 }
 
 fn database_error(error: DatabaseError) -> ProtocolError {
@@ -1601,7 +2098,16 @@ mod tests {
         std::fs::create_dir_all(root).expect("repository directory");
         git(root, &[OsStr::new("init"), OsStr::new("-q")]);
         std::fs::write(root.join("tracked.txt"), b"fixture").expect("fixture file");
-        git(root, &[OsStr::new("add"), OsStr::new("tracked.txt")]);
+        std::fs::write(root.join(".gitignore"), b".devcoordinator/\n")
+            .expect("fixture ignore file");
+        git(
+            root,
+            &[
+                OsStr::new("add"),
+                OsStr::new("tracked.txt"),
+                OsStr::new(".gitignore"),
+            ],
+        );
         git(
             root,
             &[
@@ -1781,6 +2287,133 @@ mod tests {
             .expect_err("open task blocks archive");
         assert_eq!(error.code, ErrorCode::RepositoryArchiveBlocked);
         assert_eq!(error.message, "repository still has open planning work");
+    }
+
+    #[test]
+    fn retire_removes_repository_worktrees_and_local_test_logs_with_receipt() {
+        let fixture = RepositoryFixture::new();
+        let (uid, gid) = identity();
+        let bare = fixture._temporary.path().join("origin.git");
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("init"),
+                OsStr::new("--bare"),
+                OsStr::new("-q"),
+                bare.as_os_str(),
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("remote"),
+                OsStr::new("add"),
+                OsStr::new("origin"),
+                bare.as_os_str(),
+            ],
+        );
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("push"),
+                OsStr::new("-q"),
+                OsStr::new("origin"),
+                OsStr::new("HEAD:master"),
+            ],
+        );
+        let linked_root = fixture._temporary.path().join("linked");
+        git(
+            &fixture.root,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("add"),
+                OsStr::new("-q"),
+                linked_root.as_os_str(),
+            ],
+        );
+        let source = fixture
+            .registry
+            .register(&fixture.root, uid, gid)
+            .expect("register source");
+        let linked = fixture
+            .registry
+            .register(&linked_root, uid, gid)
+            .expect("register linked worktree");
+        let log = linked_root.join(".devcoordinator/test/logs/runs/run-1/stdout.log");
+        std::fs::create_dir_all(log.parent().unwrap()).expect("test log directory");
+        std::fs::write(&log, b"owned test output").expect("test log");
+
+        let retired = fixture
+            .registry
+            .retire(
+                &source.repository_id,
+                "Retire disposable checkout",
+                "retire-test-1",
+                uid,
+                gid,
+            )
+            .expect("retire repository");
+        assert!(retired.removed);
+        assert_eq!(retired.removed_worktree_ids, vec![linked.worktree_id]);
+        assert!(retired.logs_removed);
+        assert!(!fixture.root.exists());
+        assert!(!linked_root.exists());
+        assert!(!log.exists());
+        let repeated = fixture
+            .registry
+            .retire(
+                &source.repository_id,
+                "Retire disposable checkout",
+                "retire-test-1",
+                uid,
+                gid,
+            )
+            .expect("idempotent retirement");
+        assert_eq!(repeated.receipt_id, retired.receipt_id);
+        let receipt_count: i64 = fixture
+            .database
+            .call(|connection| {
+                Ok(connection.query_row(
+                    "SELECT COUNT(*) FROM repository_retirement_receipts WHERE repository_id=?1 AND status='completed'",
+                    [source.repository_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("receipt count");
+        assert_eq!(receipt_count, 1);
+    }
+
+    #[test]
+    fn retire_refuses_open_planning_work_before_touching_source() {
+        let fixture = RepositoryFixture::new();
+        let (uid, gid) = identity();
+        let source = fixture
+            .registry
+            .register(&fixture.root, uid, gid)
+            .expect("register source");
+        let repository_id = source.repository_id.clone();
+        fixture
+            .database
+            .transaction(move |connection| {
+                connection.execute(
+                    "INSERT INTO tasks(task_id,repository_id,seq,position,title,outcome,kind,status,created_at,created_by,updated_at) VALUES('p-retire',?1,1,1,'Open work','Open work','improvement','planned','t','fixture','t')",
+                    [repository_id],
+                )?;
+                Ok(())
+            })
+            .expect("open task");
+        let error = fixture
+            .registry
+            .retire(
+                &source.repository_id,
+                "Do not remove active work",
+                "retire-blocked-1",
+                uid,
+                gid,
+            )
+            .expect_err("open planning work blocks retirement");
+        assert_eq!(error.code, ErrorCode::RepositoryRetirementBlocked);
+        assert!(fixture.root.exists());
     }
 
     #[test]

@@ -192,21 +192,28 @@ async fn process_claimed(
     };
     let response = match parse_request(&raw) {
         Ok(request) if request.id == id => {
-            let observation_wait = devcoordinator2_api::is_deferred_wait(&request.operation);
-            if observation_wait {
+            let passive_wait = crate::client::is_passive_wait_operation(&request.operation);
+            let reconnect_request = request.clone();
+            if passive_wait {
                 tokio::select! {
                     biased;
                     _ = shutdown.wait_for(|stopped| *stopped) => {
-                        ResponseEnvelope::failure(id, ProtocolError::new(
-                            ErrorCode::DaemonUnavailable,
-                            "coordinator is restarting; re-query the wait after recovery, retaining any event cursor",
-                        ))
+                        ResponseEnvelope::failure(
+                            id,
+                            crate::client::reconnectable_wait_error(
+                                &reconnect_request,
+                                "coordinator is restarting; reconnect the same wait using its original identity",
+                            ),
+                        )
                     }
                     _ = app.wait_for_installation_fence() => {
-                        ResponseEnvelope::failure(id, ProtocolError::new(
-                            ErrorCode::DaemonUnavailable,
-                            "installation in progress; re-query the wait after recovery, retaining any event cursor",
-                        ))
+                        ResponseEnvelope::failure(
+                            id,
+                            crate::client::reconnectable_wait_error(
+                                &reconnect_request,
+                                "installation in progress; reconnect the same wait using its original identity",
+                            ),
+                        )
                     }
                     response = app.dispatch(request, peer) => response,
                 }
@@ -324,27 +331,42 @@ fn recover_processing(directory: &Path) -> io::Result<()> {
             let _ = fs::remove_file(path);
             continue;
         }
-        let owner = match read_claimed(&path) {
+        let (owner, request) = match read_claimed(&path) {
             Ok((owner, raw)) => {
                 let request_id = serde_json::from_slice::<Value>(&raw)
                     .ok()
                     .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned));
                 if request_id.as_deref() == Some(id) {
-                    owner
+                    (owner, parse_request(&raw).ok())
                 } else {
-                    (0, 0)
+                    ((0, 0), None)
                 }
             }
-            Err(_) => (0, 0),
+            Err(_) => ((0, 0), None),
         };
         if owner != (0, 0) && !directory.join(format!("{id}.response")).exists() {
-            let response = ResponseEnvelope::failure(
-                id,
-                ProtocolError::new(
-                    ErrorCode::DaemonUnavailable,
-                    "request was interrupted by daemon restart; re-query the operation status",
-                ),
+            let error = request.as_ref().map_or_else(
+                || {
+                    ProtocolError::new(
+                        ErrorCode::DaemonUnavailable,
+                        "request was interrupted by daemon restart; re-query the operation status",
+                    )
+                },
+                |request| {
+                    if crate::client::is_passive_wait_operation(&request.operation) {
+                        crate::client::reconnectable_wait_error(
+                            request,
+                            "request was interrupted by daemon restart; reconnect the same wait using its original identity",
+                        )
+                    } else {
+                        ProtocolError::new(
+                            ErrorCode::DaemonUnavailable,
+                            "request was interrupted by daemon restart; re-query the operation status",
+                        )
+                    }
+                },
             );
+            let response = ResponseEnvelope::failure(id, error);
             // Do not discard the only accepted-request receipt if recovery is
             // still unable to persist its reconnectable failure response.
             write_response(directory, id, owner, &response)?;

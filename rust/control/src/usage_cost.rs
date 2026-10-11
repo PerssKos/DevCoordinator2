@@ -209,6 +209,110 @@ pub(super) fn request_cost(
     }
 }
 
+/// Price an indexed dimension aggregate. The producer's hourly dimension
+/// rollup preserves model/provider and token components, but it deliberately
+/// does not retain one row per request. Use the short-context card as the
+/// conservative default for the aggregate and mark the result partial when
+/// request-level context or component coverage cannot be recovered.
+pub(super) fn aggregate_cost(
+    provider: &str,
+    model: &str,
+    values: &BTreeMap<String, u64>,
+    observations: u64,
+    incomplete: bool,
+    at: u64,
+    cards: &[RateCard],
+) -> CostBuckets {
+    let input = values.get("input_tokens").copied();
+    let cached = values.get("input_tokens_details.cached_tokens").copied();
+    let written = values
+        .get("input_tokens_details.cache_write_tokens")
+        .copied();
+    let output = values.get("output_tokens").copied();
+    let total = values.get("total_tokens").copied().unwrap_or(0);
+    let mut row = CostModel {
+        tokens: total,
+        requests: observations,
+        ..Default::default()
+    };
+    let mut reason = None;
+    if let Some(card) = select_card(cards, provider, model, 0, at) {
+        row.cards
+            .insert(format!("{}@{}", card.card_id, card.version), card.clone());
+        let valid = input
+            .zip(cached.zip(written))
+            .is_some_and(|(i, (c, w))| c.checked_add(w).is_some_and(|sum| sum <= i))
+            && output.is_some_and(|o| {
+                values
+                    .get("output_tokens_details.reasoning_tokens")
+                    .is_none_or(|reasoning| *reasoning <= o)
+            })
+            && input
+                .zip(output)
+                .zip(values.get("total_tokens"))
+                .is_some_and(|((i, o), t)| i.checked_add(o) == Some(*t));
+        if valid {
+            let input = input.expect("validated input");
+            let cached = cached.expect("validated cached input");
+            let written = written.expect("validated cache write");
+            let output = output.expect("validated output");
+            let uncached = input - cached - written;
+            let rates = [
+                card.input_usd_micros_per_million,
+                card.cached_input_usd_micros_per_million,
+                card.cache_write_usd_micros_per_million,
+                card.output_usd_micros_per_million,
+            ];
+            for (index, count) in [uncached, cached, written, output].into_iter().enumerate() {
+                row.amounts[index] = u128::from(count) * u128::from(rates[index]);
+                row.known_components[index] = true;
+            }
+            for (index, count) in [
+                input,
+                cached,
+                written,
+                uncached,
+                output,
+                values
+                    .get("output_tokens_details.reasoning_tokens")
+                    .copied()
+                    .unwrap_or(0),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                row.token_components[index] = count;
+                row.known_token_components[index] = true;
+            }
+        } else {
+            reason = Some("missing_token_components");
+        }
+    } else {
+        reason = Some(if model.is_empty() {
+            "missing_model"
+        } else {
+            "rate_not_covered"
+        });
+    }
+    if incomplete {
+        reason = Some("aggregated_context_or_incomplete_observations");
+    }
+    if values.get("total_tokens").is_none() {
+        reason = Some("missing_provider_total");
+    }
+    if let Some(reason) = reason {
+        row.unknown_requests = observations;
+        row.unknown_tokens = total;
+        row.reasons.insert(reason.into(), observations);
+    }
+    CostBuckets {
+        models: BTreeMap::from([(format!("{provider}/{model}"), row)]),
+        tokens: total,
+        operations: observations,
+        ..Default::default()
+    }
+}
+
 pub(super) fn cost_from_buckets(buckets: &CostBuckets) -> UsageCost {
     let mut amounts = [0u128; 4];
     let mut known = [false; 4];

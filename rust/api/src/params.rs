@@ -316,6 +316,17 @@ pub struct UnarchiveRepository {
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RetireRepository {
+    #[schemars(regex(pattern = r"^r[0-9a-f]{16}$"))]
+    pub repository_id: String,
+    #[schemars(length(min = 3, max = 500))]
+    pub note: String,
+    #[schemars(regex(pattern = r"^[A-Za-z0-9._:-]{1,160}$"))]
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartTest {
     #[schemars(length(min = 1))]
     pub path: String,

@@ -517,6 +517,40 @@ fn run() -> Result<i32, String> {
             write_descriptor("DEVCOORDINATOR_DIAGNOSTIC_FD", &payload)?;
             Ok(0)
         }
+        "coordinator-diagnostic" => {
+            let kind = argument(2, "coordinator diagnostic kind")?;
+            let failed = i32::from(kind != "clean");
+            let diagnostics = if failed == 0 {
+                Vec::new()
+            } else {
+                vec![json!({
+                    "class": "solver",
+                    "command_phase": "check",
+                    "status": "failed",
+                    "exit": {"code": 0, "signal": null},
+                    "native_execution_started": true,
+                    "cleanup_status": "completed",
+                    "retryable": false,
+                    "next_action": "none",
+                    "stdout_bytes": 0,
+                    "stderr_bytes": 0,
+                    "cleanup_stderr_bytes": 0,
+                })]
+            };
+            let payload = serde_json::to_vec(&json!({
+                "schema": 2,
+                "run_id": environment("DEVCOORDINATOR_RUN_ID")?,
+                "check": environment("DEVCOORDINATOR_CHECK_NAME")?,
+                "case": null,
+                "phase": "check",
+                "failed_diagnostics": failed,
+                "diagnostics": diagnostics,
+            }))
+            .map_err(|error| error.to_string())?;
+            fs::write(diagnostics_path("coordinator.json")?, payload)
+                .map_err(|error| error.to_string())?;
+            Ok(0)
+        }
         "junit" => {
             let kind = argument(2, "JUnit kind")?;
             let path = diagnostics_path("junit.xml")?;
