@@ -52,6 +52,7 @@ image = "postgres:16-alpine"   # official postgres:<tag> (default), or a compati
                                 # image pinned as name@sha256:<64 lowercase hex>
 database = "test"              # [a-z_][a-z0-9_]{0,62}
 user = "test"
+# max_locks_per_transaction = 128  # optional PostgreSQL startup setting
 
 [test.complete]
 timeout_seconds = 21600
@@ -266,11 +267,20 @@ cases = [
 ]
 ```
 
+`max_locks_per_transaction`, when present, must be an integer in PostgreSQL's
+range [10, 2147483647]. It supplies `postgres -c max_locks_per_transaction=N`
+to both test-scoped and template containers. When absent, the image's original
+startup command and default setting remain unchanged. This sizes the shared
+object-lock table; it is not a limit on rows or concurrent checks. Choose a value
+from measured workload requirements and verify it against the real fixture.
+It takes effect only for newly provisioned instances, without restarting an
+active fixture. Explicitly different values have separate template identities.
+
 Only selected cases request their fixture. Each gets its own writable database
 and private connection environment. The Coordinator owns the template instance,
 initializes it from the declared SQL, analyzes it and disables connections before
 cloning. Case credentials cannot unlock the template. The cache binds repository,
-image identity, configured user and exact initialization bytes; invalid template
+image identity, configured user, explicit startup setting and exact initialization bytes; invalid template
 state forces creation. Idle templates expire after an hour, excess idle entries
 are evicted, and active leases prevent automatic eviction. Restart recovery
 removes only the instance's disposable fixtures. Each case retains separate

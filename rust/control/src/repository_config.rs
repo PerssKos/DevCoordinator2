@@ -51,7 +51,21 @@ pub struct PostgresSpec {
     pub image: String,
     pub database: String,
     pub user: String,
+    pub max_locks_per_transaction: Option<u32>,
     pub templates: BTreeMap<String, PostgresTemplateSpec>,
+}
+
+impl PostgresSpec {
+    pub fn startup_command(&self) -> Vec<String> {
+        self.max_locks_per_transaction
+            .map_or_else(Vec::new, |value| {
+                vec![
+                    "postgres".into(),
+                    "-c".into(),
+                    format!("max_locks_per_transaction={value}"),
+                ]
+            })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1190,7 +1204,14 @@ fn validate_test_postgres(
         .ok_or_else(|| RepositoryConfigError::new(format!("{label} must be a table")))?;
     reject_unknown(
         table,
-        &["image", "database", "user", "templates", "cases_only"],
+        &[
+            "image",
+            "database",
+            "user",
+            "templates",
+            "cases_only",
+            "max_locks_per_transaction",
+        ],
         &label,
     )?;
     let image = optional_string(table, "image", &format!("{label}.image"))?
@@ -1216,6 +1237,19 @@ fn validate_test_postgres(
         image,
         database,
         user,
+        max_locks_per_transaction: table
+            .get("max_locks_per_transaction")
+            .map(|value| {
+                bounded_integer(
+                    Some(value),
+                    64,
+                    10,
+                    i32::MAX as u64,
+                    &format!("{label}.max_locks_per_transaction"),
+                )
+                .map(|value| value as u32)
+            })
+            .transpose()?,
         templates: {
             let templates: BTreeMap<String, PostgresTemplateSpec> =
                 decode_optional(table, "templates", &label)?.unwrap_or_default();
@@ -2870,6 +2904,63 @@ tcp = "127.0.0.1:25"
 
     #[test]
     fn retained_diagnostic_postgres_and_symlink_rejections_are_exact() {
+        for (setting, expected) in [
+            ("", None),
+            ("max_locks_per_transaction=10", Some(10)),
+            ("max_locks_per_transaction=128", Some(128)),
+            (
+                "max_locks_per_transaction=2147483647",
+                Some(i32::MAX as u32),
+            ),
+        ] {
+            let temporary = tempdir().expect("tempdir");
+            write(
+                temporary.path(),
+                &format!(
+                    "schema=2\n[test.u]\n[[test.u.check]]\nname='main'\ntier='release'\ncommand=['x']\n[test.u.postgres]\n{setting}"
+                ),
+            );
+            let postgres = load_test_spec(temporary.path(), None)
+                .unwrap()
+                .postgres
+                .unwrap();
+            assert_eq!(postgres.max_locks_per_transaction, expected);
+            assert_eq!(
+                postgres.startup_command(),
+                expected.map_or_else(Vec::new, |value| vec![
+                    "postgres".to_owned(),
+                    "-c".to_owned(),
+                    format!("max_locks_per_transaction={value}")
+                ])
+            );
+        }
+        for value in [
+            "-1",
+            "0",
+            "9",
+            "2147483648",
+            "128.0",
+            "'128'",
+            "true",
+            "[128]",
+            "{value=128}",
+        ] {
+            let temporary = tempdir().expect("tempdir");
+            write(
+                temporary.path(),
+                &format!(
+                    "schema=2\n[test.u]\n[[test.u.check]]\nname='main'\ntier='release'\ncommand=['x']\n[test.u.postgres]\nmax_locks_per_transaction={value}"
+                ),
+            );
+            let error = load_test_spec(temporary.path(), None).expect_err(value);
+            assert!(
+                error
+                    .message
+                    .contains("max_locks_per_transaction must be an integer in [10, 2147483647]"),
+                "{}",
+                error.message
+            );
+        }
         for (declaration, fragment) in [
             (
                 "retained_artifacts=[{name='same',path='artifacts',max_bytes=1},{name='nested',path='artifacts/nested',max_bytes=1}]",

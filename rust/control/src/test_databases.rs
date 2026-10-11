@@ -620,16 +620,20 @@ fn template_fingerprint(
     repository: &str,
     image: &str,
     user: &str,
+    max_locks_per_transaction: Option<u32>,
     inputs: &[(String, Vec<u8>)],
 ) -> String {
     let receipts = inputs
         .iter()
         .map(|(path, bytes)| (path, hash(bytes)))
         .collect::<Vec<_>>();
-    hash(
-        &serde_json::to_vec(&(1, repository, image, user, receipts))
-            .expect("template receipt serialization"),
-    )
+    // Preserve existing default-template identities; explicit startup settings
+    // must never reuse a container started with a different lock budget.
+    let identity = match max_locks_per_transaction {
+        None => serde_json::to_vec(&(1, repository, image, user, receipts)),
+        Some(value) => serde_json::to_vec(&(2, repository, image, user, value, receipts)),
+    };
+    hash(&identity.expect("template receipt serialization"))
 }
 
 pub(crate) fn read_sql_inputs(
@@ -747,7 +751,7 @@ impl DatabasePool {
                 ]),
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
-                command: Vec::new(),
+                command: spec.startup_command(),
             })
             .map_err(shared_start_failure)?;
         let mut database = SharedDatabase {
@@ -837,8 +841,13 @@ impl DatabasePool {
             .docker
             .image_identity(&specification.image)
             .map_err(|_| "database image identity is unavailable")?;
-        let fingerprint =
-            template_fingerprint(&context.repository_id, &image, &specification.user, inputs);
+        let fingerprint = template_fingerprint(
+            &context.repository_id,
+            &image,
+            &specification.user,
+            specification.max_locks_per_transaction,
+            inputs,
+        );
         let slot = self
             .templates
             .lock()
@@ -1057,7 +1066,7 @@ impl DatabasePool {
                 ]),
                 publish: vec!["127.0.0.1::5432".into()],
                 tmpfs: vec!["/var/lib/postgresql/data:rw,size=1g,mode=0700".into()],
-                command: Vec::new(),
+                command: specification.startup_command(),
             })
             .map_err(|_| "cannot start owned database template")?;
         let mut template = Template {
@@ -1245,39 +1254,52 @@ mod tests {
             ("schema.sql".into(), b"CREATE TABLE t(x int);".to_vec()),
             ("seed.sql".into(), b"INSERT INTO t VALUES(1);".to_vec()),
         ];
-        let key = template_fingerprint("repo", "sha256:image1", "app", &inputs);
+        let key = template_fingerprint("repo", "sha256:image1", "app", None, &inputs);
         assert_eq!(
             key,
-            template_fingerprint("repo", "sha256:image1", "app", &inputs)
+            template_fingerprint("repo", "sha256:image1", "app", None, &inputs)
         );
         for (repository, image, user) in [
             ("other", "sha256:image1", "app"),
             ("repo", "sha256:image2", "app"),
             ("repo", "sha256:image1", "other"),
         ] {
-            assert_ne!(key, template_fingerprint(repository, image, user, &inputs));
+            assert_ne!(
+                key,
+                template_fingerprint(repository, image, user, None, &inputs)
+            );
         }
+        let configured = template_fingerprint("repo", "sha256:image1", "app", Some(128), &inputs);
+        assert_ne!(key, configured);
+        assert_eq!(
+            configured,
+            template_fingerprint("repo", "sha256:image1", "app", Some(128), &inputs)
+        );
+        assert_ne!(
+            configured,
+            template_fingerprint("repo", "sha256:image1", "app", Some(192), &inputs)
+        );
         let mut changed = inputs.clone();
         changed[0].0 = "new-schema.sql".into();
         assert_ne!(
             key,
-            template_fingerprint("repo", "sha256:image1", "app", &changed)
+            template_fingerprint("repo", "sha256:image1", "app", None, &changed)
         );
         changed = inputs.clone();
         changed[0].1.push(b' ');
         assert_ne!(
             key,
-            template_fingerprint("repo", "sha256:image1", "app", &changed)
+            template_fingerprint("repo", "sha256:image1", "app", None, &changed)
         );
         changed = inputs.clone();
         changed.reverse();
         assert_ne!(
             key,
-            template_fingerprint("repo", "sha256:image1", "app", &changed)
+            template_fingerprint("repo", "sha256:image1", "app", None, &changed)
         );
         assert_ne!(
             key,
-            template_fingerprint("repo", "sha256:image1", "app", &inputs[..1])
+            template_fingerprint("repo", "sha256:image1", "app", None, &inputs[..1])
         );
     }
 

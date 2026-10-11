@@ -2370,7 +2370,8 @@ fn case_root_caller_rejected(world: &mut World) -> Result<(), String> {
 }
 
 fn case_postgres_real_query_labels_secrecy_and_cleanup(world: &mut World) -> Result<(), String> {
-    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:16-alpine")
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:16-alpine", None)?;
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:16-alpine", Some(128))
 }
 
 fn case_selected_database_templates_are_reused_without_sharing_writes(
@@ -2560,11 +2561,110 @@ cases=[{{id="first",args=[],postgres="seed"}},{{id="second",args=[],postgres="se
         current.lines().count() == 1 && current.trim() != before,
         "invalid frozen template was silently reused"
     );
+    let mut fingerprints = BTreeMap::from([(None, last_fingerprint)]);
+    for setting in [Some(128), Some(192), Some(128), None] {
+        let expected = setting.unwrap_or(64);
+        let sql = format!(
+            "DO $$ BEGIN IF current_setting('max_locks_per_transaction')::int <> {expected} THEN RAISE EXCEPTION 'incorrect startup lock setting'; END IF; END $$; CREATE TABLE case_write (id integer); INSERT INTO case_write VALUES (1); SELECT count(*) FROM seeded;"
+        );
+        let command = command_json(&[
+            "/usr/bin/psql".into(),
+            "--no-psqlrc".into(),
+            "--set=ON_ERROR_STOP=1".into(),
+            "-tA".into(),
+            "-c".into(),
+            sql,
+        ])?;
+        let declaration = setting.map_or_else(String::new, |value| {
+            format!("max_locks_per_transaction={value}\n")
+        });
+        world.write_config(&format!(
+            r#"schema=2
+[test.database]
+timeout_seconds=120
+[test.database.postgres]
+image="postgres:16-alpine"
+cases_only=true
+{declaration}[test.database.postgres.templates.seed]
+init_sql=["seed.sql"]
+[[test.database.check]]
+name="database-cases"
+tier="release"
+timeout_seconds=45
+case_command={command}
+cases=[{{id="setting",args=[],postgres="seed"}}]
+"#
+        ))?;
+        let started = world.call("test.start", json!({"path":world.repo,"test":"database"}))?;
+        let run = data(&started)?["run_id"]
+            .as_str()
+            .ok_or("missing setting run")?
+            .to_owned();
+        let status =
+            world.wait_status(&["passed", "failed", "timed-out"], Duration::from_secs(90))?;
+        ensure!(
+            status["status"] == "passed",
+            "template startup setting or case cleanup failed"
+        );
+        let log = world.call("test.log.tail", json!({"path":world.repo,"run_id":run,"check":"database-cases","phase":"fixture","case":"setting","stream":"stderr","lines":20,"max_bytes":8192}))?;
+        let receipt = response_text(data(&log)?)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|value| value.get("template_reused").is_some())
+            .ok_or("setting template receipt missing")?;
+        let fingerprint = receipt["fingerprint"]
+            .as_str()
+            .ok_or("setting fingerprint missing")?
+            .to_owned();
+        ensure!(
+            receipt["template_reused"] == fingerprints.contains_key(&setting),
+            "template reuse ignored the startup setting"
+        );
+        if let Some(previous) = fingerprints.get(&setting) {
+            ensure!(
+                *previous == fingerprint,
+                "unchanged startup setting changed template identity"
+            );
+        } else {
+            ensure!(
+                !fingerprints.values().any(|value| value == &fingerprint),
+                "different startup settings shared a template identity"
+            );
+            fingerprints.insert(setting, fingerprint);
+        }
+        let containers = command_stdout(
+            "docker",
+            &[
+                "ps",
+                "-aq",
+                "--no-trunc",
+                "--filter",
+                &format!("label=devcoordinator2.instance={}", world.unit_prefix),
+                "--filter",
+                "label=devcoordinator2.component=database-template",
+            ],
+        )?;
+        ensure!(
+            containers.lines().count() == fingerprints.len(),
+            "unexpected template instance count"
+        );
+        for container in containers.lines() {
+            let remaining = docker_exec(
+                container,
+                &[
+                    "sh",
+                    "-c",
+                    "psql -U \"$POSTGRES_USER\" -d postgres -Atc \"select count(*) from pg_database where datname like 'dc2_case_%'\"",
+                ],
+            )?;
+            ensure!(remaining == "0", "setting case database survived cleanup");
+        }
+    }
     Ok(())
 }
 
 fn case_postgres_18_data_directory_query_and_cleanup(world: &mut World) -> Result<(), String> {
-    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:18-alpine")
+    postgres_real_query_labels_secrecy_and_cleanup(world, "postgres:18-alpine", None)
 }
 
 fn template_containers(world: &World) -> Result<Vec<String>, String> {
@@ -4237,23 +4337,22 @@ fn case_console_test_requests_use_registered_source_without_edge_git_access(
 fn postgres_real_query_labels_secrecy_and_cleanup(
     world: &mut World,
     image: &str,
+    max_locks_per_transaction: Option<u32>,
 ) -> Result<(), String> {
     let (listener, gate) = database_case_gate(world)?;
     let command = fixture_command(
         world,
         &[
             "postgres-query-gate",
-            "create table t(x int); insert into t values (42); select x from t",
+            "create table t(x int); insert into t values (42); select x from t; SELECT 'max_locks=' || current_setting('max_locks_per_transaction')",
             gate.to_str().ok_or("invalid gate path")?,
         ],
     );
-    world.write_config(&unit_config_postgres(
-        &command,
-        120,
-        image,
-        Some("app_test"),
-        Some("app"),
-    )?)?;
+    let mut config = unit_config_postgres(&command, 120, image, Some("app_test"), Some("app"))?;
+    if let Some(value) = max_locks_per_transaction {
+        config.push_str(&format!("max_locks_per_transaction={value}\n"));
+    }
+    world.write_config(&config)?;
     let started = world.call("test.start", json!({"path": world.repo}))?;
     let started = data(&started)?;
     let run_id = started["run_id"]
@@ -4323,6 +4422,12 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
     );
     ensure!(stdout.contains("42"), "real SQL result was missing");
     ensure!(
+        stdout
+            .lines()
+            .any(|line| line == format!("max_locks={}", max_locks_per_transaction.unwrap_or(64))),
+        "shared PostgreSQL startup setting was not applied"
+    );
+    ensure!(
         !final_status.to_string().contains("PGPASSWORD"),
         "status disclosed the PostgreSQL password"
     );
@@ -4330,6 +4435,8 @@ fn postgres_real_query_labels_secrecy_and_cleanup(
         docker_ids("run", &run_id)?.is_empty(),
         "test PostgreSQL container survived completion"
     );
+    drop(listener);
+    fs::remove_file(gate).map_err(|error| error.to_string())?;
     Ok(())
 }
 
