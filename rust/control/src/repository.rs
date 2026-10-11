@@ -865,6 +865,8 @@ impl Registry {
             .map_err(database_error)
     }
 
+    // Keep the explicit receipt fields aligned with insert_retirement_receipt.
+    #[allow(clippy::too_many_arguments)]
     fn complete_retirement(
         &self,
         receipt_id: &str,

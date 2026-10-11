@@ -1991,6 +1991,8 @@ fn source_report(
     Ok(report)
 }
 
+// Match the bounded source-report readers' window and pricing parameters.
+#[allow(clippy::too_many_arguments)]
 fn cached_dimension_token_report(
     connection: &Connection,
     family: &[String],

@@ -1018,6 +1018,7 @@ mod tests {
             Arc::new(WaitingExecutor {
                 started: Arc::new(Mutex::new(Some(started_tx))),
                 dropped: Arc::new(Mutex::new(Some(dropped_tx))),
+                release: None,
             }),
         ));
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
