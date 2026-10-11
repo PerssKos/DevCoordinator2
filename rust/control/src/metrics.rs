@@ -94,14 +94,14 @@ impl MetricsStore {
                     .with_detail(error.to_string())
             })?;
         let high_cardinality_cutoff = (now - Duration::days(HIGH_CARDINALITY_RETENTION_DAYS))
-        .format(MINUTE_FORMAT)
-        .map_err(|error| {
-            ProtocolError::new(
-                ErrorCode::InternalError,
-                "cannot format high-cardinality metric cutoff",
-            )
-            .with_detail(error.to_string())
-        })?;
+            .format(MINUTE_FORMAT)
+            .map_err(|error| {
+                ProtocolError::new(
+                    ErrorCode::InternalError,
+                    "cannot format high-cardinality metric cutoff",
+                )
+                .with_detail(error.to_string())
+            })?;
         self.database
             .transaction(move |transaction| {
                 Ok(u64::try_from(
