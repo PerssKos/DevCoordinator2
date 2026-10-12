@@ -2062,9 +2062,16 @@ pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String
 }
 
 pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String> {
-    world.write_config("schema = 2\n")?;
-    world.write_owned(".gitignore", "cache/\n")?;
+    world.write_config(&unit_config(&["/usr/bin/true".into()], None)?)?;
+    world.write_owned(
+        ".gitignore",
+        "cache/\nnode_modules/\nartifacts/\n.devcoordinator/\n",
+    )?;
     world.write_owned("source.txt", "valuable tracked source\n")?;
+    world.write_owned(
+        "package.json",
+        "{\"name\":\"storage-fixture\",\"private\":true}\n",
+    )?;
     world.git(&["add", "."])?;
     world.git(&[
         "-c",
@@ -2075,16 +2082,102 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
         "-qm",
         "storage fixture",
     ])?;
-    let registration = world.call("repository.register", json!({"path":world.repo}))?;
+    // Metadata may have been registered by root before the first real local
+    // run. A later non-root registration must not rewrite that historic owner.
+    let registration = world.call_root("repository.register", json!({"path":world.repo}))?;
     let repo = data(&registration)?["repository_id"]
         .as_str()
         .ok_or("repository id missing")?
         .to_owned();
+    let local = world.call("repository.register", json!({"path":world.repo}))?;
+    ensure!(
+        data(&local)?["repository_id"] == repo,
+        "registration changed repository identity"
+    );
     world.write_owned("cache/disposable/output.bin", vec![73_u8; 16384])?;
     world.write_owned("cache/changed/output.bin", vec![91_u8; 16384])?;
     world.write_owned("cache/interrupted/output.bin", vec![33_u8; 16384])?;
+    world.write_owned("cache/root-guard/output.bin", vec![44_u8; 16384])?;
+    let before = world.call("storage.history", json!({"limit":50}))?;
+    let prior_jobs = data(&before)?["jobs"]
+        .as_array()
+        .ok_or("storage history missing")?
+        .iter()
+        .map(|job| job["job_id"].clone())
+        .collect::<Vec<_>>();
     let root=world.call("storage.roots.set",json!({"repository_id":repo,"expected_revision":0,"label":"Isolated build cache","path":world.repo.join("cache"),"kind":"dependency_cache"}))?;
     data(&root)?;
+    // Finish the real roots-change discovery before reviewing manual revisions.
+    // Its root-owned observation is deliberately different in this fixture.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let history = world.call("storage.history", json!({"limit":50}))?;
+        if let Some(job) = data(&history)?["jobs"].as_array().and_then(|jobs| {
+            jobs.iter().find(|job| {
+                job["kind"] == "scan"
+                    && job["actor"] == "uid:0"
+                    && !prior_jobs.contains(&job["job_id"])
+            })
+        }) {
+            let finished = wait_job(world, job["job_id"].as_str().ok_or("scan id missing")?)?;
+            ensure!(
+                finished["state"] == "completed",
+                "initial root discovery failed"
+            );
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "initial root discovery did not start"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    data(&world.call("test.start", json!({"path":world.repo}))?)?;
+    let run = world.wait_status(&["passed", "failed"], Duration::from_secs(60))?;
+    ensure!(
+        run["status"] == "passed"
+            && run["caller_uid"] == world.harness.caller_uid
+            && run.get("execution_uid").is_none(),
+        "root-first registration did not permit the real non-root governed check"
+    );
+    for field in ["caller_uid", "execution_uid"] {
+        let mut params = json!({"repository_id":repo,"idempotency_key":"reject-request-identity"});
+        params[field] = json!(world.harness.caller_uid);
+        let refused = world.call("storage.scan", params)?;
+        ensure!(
+            error_code(&refused) == Some("params_invalid"),
+            "request selected a storage execution identity"
+        );
+    }
+    let root_scan = world.call_root(
+        "storage.scan",
+        json!({"repository_id":repo,"idempotency_key":"root-owner-scan"}),
+    )?;
+    let root_scan = wait_job(
+        world,
+        data(&root_scan)?["job_id"]
+            .as_str()
+            .ok_or("root scan id missing")?,
+    )?;
+    ensure!(
+        root_scan["state"] == "completed",
+        "root scan did not complete its observations"
+    );
+    let root_inventory = world.call(
+        "storage.inventory",
+        json!({"repository_id":repo,"limit":100}),
+    )?;
+    let root_target = data(&root_inventory)?["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["name"] == "disposable"))
+        .ok_or("root cache observation missing")?;
+    ensure!(
+        root_target["deletable"] == false
+            && root_target["reasons"]
+                .as_array()
+                .is_some_and(|r| r.contains(&json!("git_execution_owner_unverified"))),
+        "root scan inferred a non-root Git owner"
+    );
     let began = Instant::now();
     let started = cli(
         world,
@@ -2139,6 +2232,45 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let id = target["artifact_id"]
         .as_str()
         .ok_or("artifact id missing")?;
+    for automatic in [false, true] {
+        let guarded = world.call_root(
+            "storage.cleanup.plan",
+            json!({"artifact_ids":[id],"automatic":automatic}),
+        )?;
+        let guarded = data(&guarded)?;
+        ensure!(
+            guarded["ready"] == false
+                && guarded["items"][0]["blockers"]
+                    .as_array()
+                    .is_some_and(|r| r.contains(&json!("git_execution_owner_unverified"))),
+            "root/automatic plan borrowed a manual scan identity"
+        );
+    }
+    let root_guard = rows
+        .iter()
+        .find(|r| r["name"] == "root-guard")
+        .ok_or("root guard cache missing")?;
+    let local_plan = world.call(
+        "storage.cleanup.plan",
+        json!({"artifact_ids":[root_guard["artifact_id"]]}),
+    )?;
+    ensure!(
+        data(&local_plan)?["ready"] == true,
+        "manual guard plan was not ready"
+    );
+    let root_job = world.call_root("storage.cleanup.start", json!({"plan_id":data(&local_plan)?["plan_id"],"idempotency_key":"root-cannot-borrow-plan"}))?;
+    let root_job = wait_job(
+        world,
+        data(&root_job)?["job_id"]
+            .as_str()
+            .ok_or("root cleanup id missing")?,
+    )?;
+    ensure!(
+        root_job["state"] == "failed"
+            && root_job["receipts"][0]["code"] == "git_execution_owner_unverified"
+            && world.repo.join("cache/root-guard/output.bin").is_file(),
+        "root cleanup borrowed a ready manual plan"
+    );
     let protected = world.call(
         "storage.protection.set",
         json!({"artifact_id":id,"expected_revision":target["revision"],"protected":true}),
@@ -2331,6 +2463,453 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     );
     stale_discovery_order(world, &repo)?;
     generated_output_safety(world, &repo)?;
+    linked_manual_caller(world, &repo)?;
+    Ok(())
+}
+
+fn linked_manual_caller(world: &mut World, repository: &str) -> Result<(), String> {
+    let linked = world.base.join("caller-worktree");
+    fs::create_dir(&linked).map_err(|e| e.to_string())?;
+    chown_path(&linked, world.harness.caller_uid, world.harness.caller_gid)?;
+    world.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "storage-caller-linked",
+        linked.to_str().ok_or("non-UTF8 fixture path")?,
+        "HEAD",
+    ])?;
+    let primary = std::mem::replace(&mut world.repo, linked);
+    let result = (|| {
+        let registration = world.call("repository.register", json!({"path":world.repo}))?;
+        ensure!(
+            data(&registration)?["repository_id"] == repository,
+            "linked worktree lost its common repository"
+        );
+        data(&world.call("test.start", json!({"path":world.repo}))?)?;
+        let run = world.wait_status(&["passed", "failed"], Duration::from_secs(60))?;
+        ensure!(
+            run["status"] == "passed"
+                && run["caller_uid"] == world.harness.caller_uid
+                && run.get("execution_uid").is_none(),
+            "linked worktree execution did not use the physical caller"
+        );
+        world.write_owned(
+            "node_modules/.package-lock.json",
+            "{\"lockfileVersion\":3,\"packages\":{}}\n",
+        )?;
+        world.write_owned("node_modules/fixture/index.js", "module.exports = 42;\n")?;
+        world.write_owned("artifacts/retained.json", "{\"preserve\":true}\n")?;
+        // A cosmetic protocol client name cannot grant Console identity.
+        let scan = call_as(
+            &world.harness.executable,
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+            &world.socket,
+            request(
+                "storage.scan",
+                json!({"repository_id":repository,"idempotency_key":"physical-caller-cosmetic-edge"}),
+                "edge",
+                None,
+            ),
+        )?;
+        let scan = wait_job(
+            world,
+            data(&scan)?["job_id"]
+                .as_str()
+                .ok_or("linked scan id missing")?,
+        )?;
+        ensure!(scan["state"] == "completed", "linked manual scan failed");
+        let inventory = world.call(
+            "storage.inventory",
+            json!({"repository_id":repository,"limit":100}),
+        )?;
+        let target = data(&inventory)?["artifacts"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["name"] == "node_modules"))
+            .ok_or("linked modules missing")?
+            .clone();
+        ensure!(
+            target["deletable"] == true,
+            "linked manual source was not verified: {}",
+            bounded_json(&target)
+        );
+        let registered = world.call("storage.register", json!({"artifact_id":target["artifact_id"],"expected_revision":target["revision"],"repository_id":repository,"effect":"rebuildable","reason":"Disposable locked fixture modules"}))?;
+        ensure!(
+            data(&registered)?["deletable"] == true,
+            "manual disposal registration lost its caller"
+        );
+        let permission_path = primary.join(".git");
+        let permissions = fs::metadata(&permission_path)
+            .map_err(|e| e.to_string())?
+            .permissions();
+        fs::set_permissions(&permission_path, fs::Permissions::from_mode(0o000))
+            .map_err(|e| e.to_string())?;
+        let inaccessible = world.call(
+            "storage.cleanup.plan",
+            json!({"artifact_ids":[target["artifact_id"]]}),
+        );
+        fs::set_permissions(&permission_path, permissions).map_err(|e| e.to_string())?;
+        let inaccessible = inaccessible?;
+        ensure!(
+            data(&inaccessible)?["ready"] == false
+                && data(&inaccessible)?["items"][0]["blockers"]
+                    .as_array()
+                    .is_some_and(|r| r.contains(&json!("git_baseline_unverified"))),
+            "manual cleanup ignored unavailable Git permissions"
+        );
+        let other = world.base.join("different-repository");
+        fs::create_dir(&other).map_err(|e| e.to_string())?;
+        chown_path(&other, world.harness.caller_uid, world.harness.caller_gid)?;
+        run_as(
+            world.harness.caller_uid,
+            world.harness.caller_gid,
+            &other,
+            "/usr/bin/git",
+            &["init", "-q"],
+            &world.base,
+        )?;
+        let git_file = world.repo.join(".git");
+        let original_git = fs::read(&git_file).map_err(|e| e.to_string())?;
+        fs::write(
+            &git_file,
+            format!("gitdir: {}\n", other.join(".git").display()),
+        )
+        .map_err(|e| e.to_string())?;
+        let changed = world.call(
+            "storage.cleanup.plan",
+            json!({"artifact_ids":[target["artifact_id"]]}),
+        );
+        fs::write(&git_file, original_git).map_err(|e| e.to_string())?;
+        let changed = changed?;
+        ensure!(
+            data(&changed)?["ready"] == false
+                && data(&changed)?["items"][0]["blockers"]
+                    .as_array()
+                    .is_some_and(|r| r.contains(&json!("git_baseline_unverified"))),
+            "manual cleanup accepted a different common repository"
+        );
+        let plan = world.call(
+            "storage.cleanup.plan",
+            json!({"artifact_ids":[target["artifact_id"]]}),
+        )?;
+        ensure!(
+            data(&plan)?["ready"] == true,
+            "linked manual plan was not ready"
+        );
+        let barrier = world.state.join("storage-pause-before-cleanup");
+        fs::write(
+            &barrier,
+            data(&plan)?["plan_id"]
+                .as_str()
+                .ok_or("linked plan id missing")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let started = world.call(
+            "storage.cleanup.start",
+            json!({"plan_id":data(&plan)?["plan_id"],"idempotency_key":"linked-modules-manual"}),
+        )?;
+        let job_id = data(&started)?["job_id"]
+            .as_str()
+            .ok_or("linked cleanup id missing")?
+            .to_owned();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !barrier.with_extension("ready").exists() {
+            ensure!(
+                Instant::now() < deadline,
+                "cleanup did not reach the pre-mutation restart boundary"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        ensure!(
+            fs::read_to_string(barrier.with_extension("ready")).map_err(|e| e.to_string())?
+                == job_id
+                && world.repo.join("node_modules/fixture/index.js").is_file(),
+            "restart fixture did not retain the exact unexecuted job"
+        );
+        world.stop_daemon(true)?;
+        fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+        world.start_daemon(Some(65_534), None, None)?;
+        let completed = wait_job(world, &job_id)?;
+        ensure!(
+            completed["state"] == "completed" && !world.repo.join("node_modules").exists(),
+            "persisted manual caller was not retained across restart"
+        );
+        // An independent remaining cache proves the configured edge cannot
+        // borrow the local caller, even after that local job was recovered.
+        let helper = world.base.join("storage-edge-request");
+        fs::copy(&world.harness.executable, &helper).map_err(|e| e.to_string())?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755))
+            .map_err(|e| e.to_string())?;
+        let remaining = scanned(world, repository, "manual-after-job-recovery")?;
+        let guard = remaining["artifacts"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["name"] == "root-guard"))
+            .ok_or("remaining guard missing")?;
+        ensure!(
+            guard["deletable"] == true,
+            "manual rescan did not restore its own source proof"
+        );
+        let edge_plan = call_as(
+            &helper,
+            65_534,
+            65_534,
+            &world.socket,
+            request(
+                "storage.cleanup.plan",
+                json!({"artifact_ids":[guard["artifact_id"]]}),
+                "other",
+                None,
+            ),
+        )?;
+        ensure!(
+            data(&edge_plan)?["ready"] == false
+                && data(&edge_plan)?["items"][0]["blockers"]
+                    .as_array()
+                    .is_some_and(|r| r.contains(&json!("git_execution_owner_unverified"))),
+            "configured edge borrowed a manual source identity"
+        );
+        ensure!(
+            fs::read_to_string(world.repo.join("source.txt")).map_err(|e| e.to_string())?
+                == "valuable tracked source\n"
+                && fs::read_to_string(world.repo.join("artifacts/retained.json"))
+                    .map_err(|e| e.to_string())?
+                    == "{\"preserve\":true}\n"
+                && world.repo.join(".devcoordinator").is_dir(),
+            "module cleanup removed source or retained evidence"
+        );
+        queued_origin_survives_restart(world, repository, &helper, &primary)?;
+        console_owned_cache(world, &helper)?;
+        Ok(())
+    })();
+    world.repo = primary;
+    result
+}
+
+fn queued_origin_survives_restart(
+    world: &mut World,
+    repository: &str,
+    helper: &Path,
+    primary: &Path,
+) -> Result<(), String> {
+    for origin in [
+        "edge",
+        "legacy",
+        "unknown-version",
+        "malformed-origin",
+        "null-parameters",
+        "wrong-parameter-type",
+        "mismatched-plan",
+    ] {
+        let local = origin != "edge";
+        let inventory = scanned(world, repository, &format!("{origin}-origin-rescan"))?;
+        let guard = inventory["artifacts"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["name"] == "root-guard"))
+            .ok_or("queued origin guard missing")?;
+        let plan = world.call(
+            "storage.cleanup.plan",
+            json!({"artifact_ids":[guard["artifact_id"]]}),
+        )?;
+        ensure!(
+            data(&plan)?["ready"] == true,
+            "origin fixture has no valid manual plan"
+        );
+        let parameters = json!({"plan_id":data(&plan)?["plan_id"],"idempotency_key":format!("{origin}-origin-job")});
+        let barrier = world.state.join("storage-pause-before-cleanup");
+        fs::write(
+            &barrier,
+            data(&plan)?["plan_id"]
+                .as_str()
+                .ok_or("origin plan missing")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let started = if local {
+            world.call("storage.cleanup.start", parameters.clone())?
+        } else {
+            call_as(
+                helper,
+                65_534,
+                65_534,
+                &world.socket,
+                request("storage.cleanup.start", parameters.clone(), "other", None),
+            )?
+        };
+        let job_id = data(&started)?["job_id"]
+            .as_str()
+            .ok_or("origin job missing")?
+            .to_owned();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while fs::read_to_string(barrier.with_extension("ready"))
+            .ok()
+            .as_deref()
+            != Some(job_id.as_str())
+        {
+            ensure!(
+                Instant::now() < deadline,
+                "origin job missed the pre-mutation boundary"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        world.stop_daemon(true)?;
+        if local {
+            // Model legacy and invalid private formats for this isolated pending
+            // request only. Preserve its UID, digest, actor, plan and state.
+            let db =
+                Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+            let id = job_id.clone();
+            let expression = match origin {
+                "legacy" => "json_extract(request_json,'$.parameters')",
+                "unknown-version" => "json_set(request_json,'$.storage_request_version','2')",
+                "malformed-origin" => "json_set(request_json,'$.local_manual','true')",
+                "null-parameters" => "json_set(request_json,'$.parameters',NULL)",
+                "wrong-parameter-type" => "json_set(request_json,'$.parameters.plan_id',1)",
+                "mismatched-plan" => {
+                    "json_set(request_json,'$.parameters.plan_id','different-plan')"
+                }
+                _ => unreachable!(),
+            };
+            let changed = db.call(move |c| {
+                c.execute(&format!("UPDATE storage_jobs SET request_json={expression} WHERE job_id=?1 AND json_extract(request_json,'$.storage_request_version')='1'"), [id]).map_err(devcoordinator2_control::database::DatabaseError::from)
+            }).map_err(|e|e.to_string())?;
+            ensure!(
+                changed == 1,
+                "origin fixture did not replace exactly its own request format"
+            );
+        }
+        fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+        // A formerly configured anonymous edge is now a physical local caller;
+        // its already-queued Console job must still use its original context.
+        world.start_daemon(None, None, None)?;
+        let completed = wait_job(world, &job_id)?;
+        let refused = if matches!(origin, "edge" | "legacy") {
+            completed["receipts"][0]["code"] == "git_execution_owner_unverified"
+        } else {
+            completed["error_code"] == "stored_storage_record_invalid"
+                && completed["receipts"].as_array().is_some_and(Vec::is_empty)
+        };
+        ensure!(
+            completed["state"] == "failed"
+                && refused
+                && primary.join("cache/root-guard/output.bin").is_file(),
+            "restart accepted an invalid origin or reclassified a Console or legacy job"
+        );
+        let replay = if local {
+            world.call("storage.cleanup.start", parameters)?
+        } else {
+            call_as(
+                helper,
+                65_534,
+                65_534,
+                &world.socket,
+                request("storage.cleanup.start", parameters, "other", None),
+            )?
+        };
+        ensure!(
+            data(&replay)? == &completed,
+            "request digest or origin changed on idempotent replay"
+        );
+    }
+    world.stop_daemon(false)?;
+    world.start_daemon(Some(65_534), None, None)?;
+    Ok(())
+}
+
+fn console_owned_cache(world: &mut World, helper: &Path) -> Result<(), String> {
+    world.repo = world.base.join("console-owner");
+    fs::create_dir(&world.repo).map_err(|e| e.to_string())?;
+    chown_path(
+        &world.repo,
+        world.harness.caller_uid,
+        world.harness.caller_gid,
+    )?;
+    fs::set_permissions(&world.repo, fs::Permissions::from_mode(0o700))
+        .map_err(|e| e.to_string())?;
+    world.git(&["init", "-q"])?;
+    world.write_owned(".gitignore", "node_modules/\n")?;
+    world.write_owned(
+        "package.json",
+        "{\"name\":\"console-owner\",\"private\":true}\n",
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&[
+        "-c",
+        "user.name=Storage fixture",
+        "-c",
+        "user.email=storage@example.invalid",
+        "commit",
+        "-qm",
+        "console owned cache",
+    ])?;
+    let registered = world.call("repository.register", json!({"path":world.repo}))?;
+    let repository = data(&registered)?["repository_id"]
+        .as_str()
+        .ok_or("console repository missing")?;
+    world.write_owned(
+        "node_modules/.package-lock.json",
+        "{\"lockfileVersion\":3,\"packages\":{}}\n",
+    )?;
+    world.write_owned("node_modules/fixture/index.js", "module.exports=7;\n")?;
+    let edge = |operation, params| {
+        call_as(
+            helper,
+            65_534,
+            65_534,
+            &world.socket,
+            request(operation, params, "other", None),
+        )
+    };
+    let scan = edge(
+        "storage.scan",
+        json!({"repository_id":repository,"idempotency_key":"console-registered-owner"}),
+    )?;
+    let completed = wait_job(
+        world,
+        data(&scan)?["job_id"]
+            .as_str()
+            .ok_or("console scan missing")?,
+    )?;
+    ensure!(
+        completed["state"] == "completed",
+        "Console scan did not complete"
+    );
+    let inventory = edge(
+        "storage.inventory",
+        json!({"repository_id":repository,"limit":100}),
+    )?;
+    let row = data(&inventory)?["artifacts"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["name"] == "node_modules"))
+        .ok_or("Console modules missing")?;
+    ensure!(
+        row["deletable"] == true,
+        "Console used inaccessible edge identity instead of its registered owner"
+    );
+    let plan = edge(
+        "storage.cleanup.plan",
+        json!({"artifact_ids":[row["artifact_id"]]}),
+    )?;
+    ensure!(
+        data(&plan)?["ready"] == true,
+        "Console registered-owner plan was blocked"
+    );
+    let started = edge(
+        "storage.cleanup.start",
+        json!({"plan_id":data(&plan)?["plan_id"],"idempotency_key":"console-registered-owner-remove"}),
+    )?;
+    let completed = wait_job(
+        world,
+        data(&started)?["job_id"]
+            .as_str()
+            .ok_or("Console cleanup missing")?,
+    )?;
+    ensure!(
+        completed["state"] == "completed"
+            && !world.repo.join("node_modules").exists()
+            && world.repo.join("package.json").is_file(),
+        "Console cleanup did not preserve registered-owner behavior"
+    );
     Ok(())
 }
 

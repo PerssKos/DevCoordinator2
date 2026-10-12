@@ -1,6 +1,6 @@
 use super::{
     StorageService, blocked, conflict, db_error, hash, json,
-    model::{Context, Discovery, Repository, atom},
+    model::{Context, Discovery, Repository, StoredJobRequest, atom},
     parse,
 };
 use crate::{access::Caller, database::DatabaseError, events::NewEvent};
@@ -160,6 +160,23 @@ impl StorageService {
     }
 
     pub(crate) fn context(&self) -> Result<Context, ProtocolError> {
+        self.context_for_uid(None)
+    }
+
+    pub(crate) fn manual_caller_uid(&self, caller: &Caller) -> Option<u32> {
+        (!caller.is_console())
+            .then(|| self.local_execution_uid(caller.uid))
+            .flatten()
+    }
+
+    fn local_execution_uid(&self, uid: u32) -> Option<u32> {
+        (uid != 0 && self.config.edge_uid != Some(uid)).then_some(uid)
+    }
+
+    pub(crate) fn context_for_uid(
+        &self,
+        manual_caller_uid: Option<u32>,
+    ) -> Result<Context, ProtocolError> {
         let now = self.now_ms();
         let (repositories,worktrees,deployments,generations,components,observed,containers,leases)=self.database.call(move|c|{
             let repositories={let mut q=c.prepare("SELECT repository_id,display_name,root_path,registered_by_uid FROM repositories ORDER BY repository_id")?;q.query_map([],|r|Ok(Repository {id:r.get(0)?,name:r.get(1)?,root:PathBuf::from(r.get::<_,String>(2)?),execution_uid:r.get(3)?}))?.collect::<Result<Vec<_>,_>>()?};
@@ -173,6 +190,7 @@ impl StorageService {
             Ok((repositories,worktrees,deployments,generations,components,observed,containers,leases))
         }).map_err(db_error)?;
         let mut context = Context {
+            manual_caller_uid,
             repositories,
             worktrees,
             roots: self.root_records()?,
@@ -182,7 +200,7 @@ impl StorageService {
             ..Context::default()
         };
         // Git also knows linked worktrees that have never run a Coordinator
-        // command. Inspect it under the registered repository owner's identity.
+        // command. Inspect it under this operation's non-root execution identity.
         for repository in context.repositories.clone() {
             if let Ok(bytes) = super::native::git_bytes(
                 &repository.root,
@@ -322,7 +340,7 @@ impl StorageService {
                 let now = self.now_ms();
                 last_scan_started = Some(now);
                 let caller = system_caller();
-                let scanning = self.database.call(|c| c.query_row("SELECT EXISTS(SELECT 1 FROM storage_jobs WHERE kind='scan' AND state IN ('queued','running') AND json_extract(request_json,'$.repository_id') IS NULL)",[],|r|r.get::<_,bool>(0)).map_err(DatabaseError::from)).unwrap_or(true);
+                let scanning = self.database.call(|c| c.query_row("SELECT EXISTS(SELECT 1 FROM storage_jobs WHERE kind='scan' AND state IN ('queued','running') AND COALESCE(json_extract(request_json,'$.parameters.repository_id'),json_extract(request_json,'$.repository_id')) IS NULL)",[],|r|r.get::<_,bool>(0)).map_err(DatabaseError::from)).unwrap_or(true);
                 if scanning {
                     rescan_requested = true;
                 } else {
@@ -497,17 +515,34 @@ impl StorageService {
     pub fn execute_job(&self, id: &str) -> Result<(), ProtocolError> {
         let job = self.job(id)?;
         let key = id.to_owned();
-        let raw = self
+        let (raw, caller_uid) = self
             .database
             .call(move |c| {
                 c.query_row(
-                    "SELECT request_json FROM storage_jobs WHERE job_id=?1",
+                    "SELECT request_json,caller_uid FROM storage_jobs WHERE job_id=?1",
                     [key],
-                    |r| r.get::<_, String>(0),
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?)),
                 )
                 .map_err(DatabaseError::from)
             })
             .map_err(db_error)?;
+        let stored: serde_json::Value = parse(&raw)?;
+        let (raw, local_manual) = if stored.get("storage_request_version").is_some() {
+            let StoredJobRequest::V1 {
+                parameters,
+                local_manual,
+            } = parse(&raw)?;
+            (json(&parameters)?, local_manual)
+        } else {
+            // Legacy jobs cannot prove whether their anonymous peer was the
+            // Console edge before a config change. Preserve their old behavior.
+            (raw, false)
+        };
+        // The kernel UID and original transport classification are both durable;
+        // neither request fields nor a later edge UID change can replace them.
+        let manual_caller_uid = local_manual
+            .then(|| self.local_execution_uid(caller_uid))
+            .flatten();
         match job.kind.as_str() {
             "scan" => {
                 let request: api::Scan = parse(&raw)?;
@@ -515,7 +550,7 @@ impl StorageService {
                     .database
                     .transaction(super::next_sequence)
                     .map_err(db_error)?;
-                let mut context = self.context()?;
+                let mut context = self.context_for_uid(manual_caller_uid)?;
                 context.scan_repository_id = request.repository_id;
                 let result = match self.backend.discover(&context) {
                     Ok(result) => result,
@@ -527,6 +562,7 @@ impl StorageService {
                                 ..Discovery::default()
                             },
                             sequence,
+                            manual_caller_uid,
                         )?;
                         return Err(error);
                     }
@@ -552,13 +588,13 @@ impl StorageService {
                         }
                     }
                 }
-                self.merge_discovery(result, sequence)?;
+                self.merge_discovery(result, sequence, manual_caller_uid)?;
                 self.finish(id, api::JobState::Completed, None)?;
                 self.queue_due_cleanup()?;
             }
             "legacy_registration" => {
                 let request: api::LegacyRegister = parse(&raw)?;
-                let context = self.context()?;
+                let context = self.context_for_uid(manual_caller_uid)?;
                 let records = self.records()?.into_values().collect::<Vec<_>>();
                 let ids = self
                     .backend
@@ -568,7 +604,7 @@ impl StorageService {
                     .map(|id| self.record(id))
                     .collect::<Result<Vec<_>, _>>()?;
                 let _resources = self.lock_resources(&job.job_id, &owned)?;
-                let context = self.context()?;
+                let context = self.context_for_uid(manual_caller_uid)?;
                 for r in &owned {
                     self.backend.validate(r, &context, &ids)?;
                 }
@@ -595,23 +631,55 @@ impl StorageService {
                 }).map_err(db_error)?;
                 self.finish(id, api::JobState::Completed, None)?;
             }
-            "cleanup" => self.execute_cleanup(&job)?,
+            "cleanup" => {
+                let request: api::Start = parse(&raw)?;
+                if job.plan_id.as_deref() != Some(request.plan_id.as_str()) {
+                    return Err(blocked("stored_storage_record_invalid"));
+                }
+                self.execute_cleanup(&job, manual_caller_uid)?;
+            }
             _ => return Err(blocked("unknown_storage_job")),
         }
         Ok(())
     }
 
-    fn execute_cleanup(&self, job: &api::Job) -> Result<(), ProtocolError> {
+    fn execute_cleanup(
+        &self,
+        job: &api::Job,
+        manual_caller_uid: Option<u32>,
+    ) -> Result<(), ProtocolError> {
         let plan = self.stored_plan(
             job.plan_id
                 .as_deref()
                 .ok_or_else(|| blocked("cleanup_plan_missing"))?,
         )?;
+        #[cfg(feature = "root-acceptance")]
+        if self
+            .config
+            .unit_prefix
+            .starts_with("devcoordinator2-rustint-")
+        {
+            let barrier = self.config.state_dir.join("storage-pause-before-cleanup");
+            if std::fs::read_to_string(&barrier).ok().as_deref()
+                == Some(plan.public.plan_id.as_str())
+            {
+                std::fs::write(barrier.with_extension("ready"), &job.job_id)
+                    .map_err(|_| blocked("fixture_cleanup_barrier_unavailable"))?;
+                let deadline = std::time::Instant::now() + Duration::from_secs(90);
+                while barrier.exists() {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(blocked("fixture_cleanup_barrier_timeout"));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
         let selected = plan
             .records
             .iter()
             .map(|r| r.artifact.artifact_id.clone())
             .collect::<Vec<_>>();
+        let manual_caller_uid = manual_caller_uid.filter(|_| !plan.public.automatic);
         let _resources = self.lock_resources(&job.job_id, &plan.records)?;
         let mut failed = BTreeSet::new();
         let prior = self.job(&job.job_id)?;
@@ -673,7 +741,7 @@ impl StorageService {
                 {
                     return Err(conflict("artifact_changed"));
                 }
-                let context = self.context()?;
+                let context = self.context_for_uid(manual_caller_uid)?;
                 if (completed_resources.contains(&record.resource_key)
                     || record
                         .ancestor_keys
@@ -854,10 +922,11 @@ impl StorageService {
         &self,
         mut discovery: Discovery,
         sequence: u64,
+        manual_caller_uid: Option<u32>,
     ) -> Result<(), ProtocolError> {
         let now = self.now_ms();
         let existing = self.records()?;
-        let context = self.context()?;
+        let context = self.context_for_uid(manual_caller_uid)?;
         // A slow scan may finish after a newer scan, protection change or
         // cleanup. Its observations cannot replace those later facts, even
         // when an unchanged scan did not advance the public artifact revision.

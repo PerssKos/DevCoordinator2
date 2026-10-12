@@ -475,7 +475,7 @@ pub(super) fn git_bytes(
     args: &[&str],
     context: &Context,
 ) -> Result<Vec<u8>, ProtocolError> {
-    let uid = context
+    let repository = context
         .repositories
         .iter()
         .find(|r| {
@@ -485,9 +485,21 @@ pub(super) fn git_bytes(
                     .iter()
                     .any(|(id, p)| id == &r.id && p == root)
         })
-        .map(|r| r.execution_uid)
+        .ok_or_else(|| blocked("git_execution_owner_unverified"))?;
+    let uid = context
+        .manual_caller_uid
+        .or(Some(repository.execution_uid))
         .filter(|uid| *uid != 0)
         .ok_or_else(|| blocked("git_execution_owner_unverified"))?;
+    if context.manual_caller_uid.is_some() {
+        let gid = crate::systemd::primary_gid(uid)
+            .map_err(|_| blocked("git_execution_owner_unverified"))?;
+        let resolved = crate::repository::resolve_worktree(root, Some((uid, gid)))
+            .map_err(|_| blocked("git_baseline_unverified"))?;
+        if resolved.worktree_root != root || resolved.repository_root != repository.root {
+            return Err(blocked("git_baseline_unverified"));
+        }
+    }
     let mut arguments = vec![
         OsString::from("--no-optional-locks"),
         OsString::from("-C"),

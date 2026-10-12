@@ -74,6 +74,18 @@ pub struct StoredPlan {
     pub policies: BTreeMap<String, u64>,
 }
 
+/// Private job metadata. Public request parameters and their idempotency digest
+/// are unchanged; origin is captured once from the authenticated transport.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "storage_request_version", deny_unknown_fields)]
+pub(crate) enum StoredJobRequest {
+    #[serde(rename = "1")]
+    V1 {
+        parameters: serde_json::Value,
+        local_manual: bool,
+    },
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Discovery {
     pub repository_id: Option<String>,
@@ -93,6 +105,9 @@ pub struct Repository {
 
 #[derive(Clone, Debug, Default)]
 pub struct Context {
+    /// Kernel-authenticated local caller for this manual operation only.
+    /// Root, automatic work and Console keep the registered execution owner.
+    pub manual_caller_uid: Option<u32>,
     pub discovering: bool,
     pub docker_snapshot: Option<std::sync::Arc<Vec<serde_json::Value>>>,
     pub docker_unavailable: bool,

@@ -15,7 +15,7 @@ use crate::{
     platform::Clock,
 };
 use devcoordinator2_api::{ErrorCode, ProtocolError, storage as api};
-use model::{Locator, Record, RootRecord, StoredPlan, atom};
+use model::{Locator, Record, RootRecord, StoredJobRequest, StoredPlan, atom};
 use rusqlite::OptionalExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -392,7 +392,7 @@ impl StorageService {
         if p.effect == api::Effect::Unknown {
             return Err(invalid("disposal_effect_required"));
         }
-        let context = self.context()?;
+        let context = self.context_for_uid(self.manual_caller_uid(caller))?;
         self.backend.validate(&r, &context, &[])?;
         if let Some(repo) = p.repository_id {
             let owner = context
@@ -535,6 +535,9 @@ impl StorageService {
             )?;
         }
         order_contained_directories(&mut ordered, &records)?;
+        let context =
+            self.context_for_uid(self.manual_caller_uid(caller).filter(|_| !p.automatic))?;
+        let selected = ordered.clone();
         let mut items = Vec::new();
         let mut policies = BTreeMap::new();
         policies.insert(String::new(), self.policy(api::Scope::default())?.revision);
@@ -549,6 +552,13 @@ impl StorageService {
             } else {
                 row.reasons.clone()
             };
+            // A safe observation made by another caller is not proof that this
+            // operation can verify the same source. Execution repeats the check.
+            if blockers.is_empty()
+                && let Err(error) = self.backend.validate(r, &context, &selected)
+            {
+                blockers.push(error.message);
+            }
             if !p.include_persistent_data && model::persistent(row.effect) {
                 blockers.push("persistent_data_not_selected".into());
             }
@@ -818,6 +828,10 @@ impl StorageService {
         text(key, 200)?;
         let encoded = json(request)?;
         let digest = hash(encoded.as_bytes());
+        let stored_request = json(&StoredJobRequest::V1 {
+            parameters: parse(&encoded)?,
+            local_manual: self.manual_caller_uid(caller).is_some(),
+        })?;
         let actor = caller.actor();
         let kind = kind.to_owned();
         let key = key.to_owned();
@@ -843,7 +857,7 @@ impl StorageService {
                 if prior_digest!=digest {return Err(DatabaseError::Domain(conflict("idempotency_key_reused")));}
                 return parse(&prior).map_err(DatabaseError::Domain);
             }
-            c.execute("INSERT INTO storage_jobs VALUES(?1,?2,'queued',?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![job.job_id,kind,key,digest,actor,uid,value,encoded,now as i64])?;Ok(job)
+            c.execute("INSERT INTO storage_jobs VALUES(?1,?2,'queued',?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![job.job_id,kind,key,digest,actor,uid,value,stored_request,now as i64])?;Ok(job)
         }).map_err(db_error)?;
         self.wake.notify_one();
         Ok(result)
