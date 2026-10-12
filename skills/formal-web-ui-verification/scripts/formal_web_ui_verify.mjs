@@ -2418,18 +2418,108 @@ function prepareTargetContracts(targets, config) {
   return prepared;
 }
 
+// Observe the actual trusted pointer action, after Playwright's actionability
+// retries. Keep DOM identities inside this short-lived browser handle only.
+async function armContinuationContext(locator, action) {
+  if (!['click', 'dblclick'].includes(action)) return null;
+  return locator.evaluateHandle(element => {
+    const hook = globalThis.__FORMAL_WEB_UI_CONTINUATION__;
+    if (typeof hook?.arm !== 'function') return { finish: () => ({ before: null,
+      context: { observed: false, reason: 'early-pointer-hook-unavailable' } }) };
+    const documentState = () => ({
+      scrollX, scrollY,
+      maxScrollY: Math.max(0, document.scrollingElement.scrollHeight - document.scrollingElement.clientHeight),
+      clientWidth: document.scrollingElement.clientWidth, clientHeight: document.scrollingElement.clientHeight,
+      path: location.pathname, origin: location.origin,
+    });
+    const chain = () => {
+      const nodes = [];
+      for (let node = element; node; node = node.parentElement) nodes.push(node);
+      return nodes;
+    };
+    const measure = nodes => {
+      const box = element.getBoundingClientRect();
+      const styles = nodes.map(node => {
+        const style = getComputedStyle(node);
+        return [style.position, style.top, style.right, style.bottom, style.left,
+          style.transform, style.translate, style.rotate, style.scale, style.perspective,
+          style.zoom, style.writingMode, style.marginTop, style.marginRight, style.marginBottom,
+          style.marginLeft, style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft,
+          style.display, style.float, style.order, style.overflowX, style.overflowY,
+          style.opacity, style.visibility, style.contentVisibility, style.clip, style.clipPath];
+      });
+      const normalFlow = element.isConnected && element.getRootNode() === document &&
+        nodes.at(-1) === document.documentElement && nodes.every((node, index) => {
+          const style = styles[index];
+          return ['static', 'relative'].includes(style[0]) && style[5] === 'none' &&
+            style.slice(6, 10).every(value => !value || value === 'none') &&
+            ['1', 'normal', ''].includes(style[10]) &&
+            (node === document.scrollingElement || (node.scrollTop === 0 && node.scrollLeft === 0 &&
+              !(/^(auto|scroll)$/.test(style[24]) && node.scrollHeight > node.clientHeight) &&
+              !(/^(auto|scroll)$/.test(style[23]) && node.scrollWidth > node.clientWidth)));
+        });
+      // Unsupported shape clipping cannot establish a visible reference. For
+      // ordinary overflow clips, require the whole trigger inside each actual
+      // ancestor padding box (not merely one intersecting pixel).
+      const clippingSupported = styles.every(style => style[28] === 'auto' && style[29] === 'none');
+      const withinAncestorClipBounds = nodes.slice(1).every((node, index) => {
+        const style = styles[index + 1];
+        // display:contents/inline do not create an overflow clipping box. The
+        // document viewport retains the existing independent visibility rule.
+        if (node === document.scrollingElement || ['contents', 'inline'].includes(style[20])) return true;
+        const clipsX = /^(hidden|clip|auto|scroll)$/.test(style[23]);
+        const clipsY = /^(hidden|clip|auto|scroll)$/.test(style[24]);
+        if (!clipsX && !clipsY) return true;
+        const bounds = node.getBoundingClientRect();
+        const left = bounds.left + node.clientLeft, top = bounds.top + node.clientTop;
+        return (!clipsX || (box.left >= left - 0.5 && box.right <= left + node.clientWidth + 0.5)) &&
+          (!clipsY || (box.top >= top - 0.5 && box.bottom <= top + node.clientHeight + 0.5));
+      });
+      return { rect: { x: box.x, y: box.y, width: box.width, height: box.height }, styles, normalFlow,
+        clippingSupported, withinAncestorClipBounds,
+        visible: box.width > 1 && box.height > 1 && box.right > 0 && box.bottom > 0 &&
+          box.x < innerWidth && box.y < innerHeight &&
+          clippingSupported && withinAncestorClipBounds &&
+          styles.every(style => Number(style[25]) > 0 && style[26] === 'visible' && style[27] !== 'hidden') &&
+          element.checkVisibility({ opacityProperty: true, visibilityProperty: true }) };
+    };
+    let before = null, nodes = null, reference = null;
+    const onPointer = event => {
+      if (before || !event.isTrusted || !event.composedPath().includes(element) ||
+          element.matches(':disabled,[aria-disabled="true"]')) return;
+      before = documentState(); nodes = chain(); reference = measure(nodes);
+    };
+    const disarm = hook.arm(onPointer);
+    return { finish() {
+      disarm();
+      if (!before) return { before: null, context: { observed: false, reason: 'no-matching-trusted-pointer-action' } };
+      const afterNodes = chain(), after = measure(afterNodes);
+      const sameChain = element.isConnected && nodes.length === afterNodes.length && nodes.every((node, i) => node === afterNodes[i]);
+      return { before, context: { observed: true, baseline: 'trusted-pointerdown', observerOrder: 'init-window-capture-before-page-scripts',
+        sameNodeAndAncestors: sameChain, normalFlowBefore: reference.normalFlow, normalFlowAfter: after.normalFlow,
+        stylesUnchanged: JSON.stringify(reference.styles) === JSON.stringify(after.styles),
+        visibleBefore: reference.visible, visibleAfter: after.visible,
+        clippingSupportedBefore: reference.clippingSupported, clippingSupportedAfter: after.clippingSupported,
+        withinAncestorClipBoundsBefore: reference.withinAncestorClipBounds, withinAncestorClipBoundsAfter: after.withinAncestorClipBounds,
+        beforeRect: reference.rect, afterRect: after.rect, afterDocument: documentState() } };
+    } };
+  });
+}
+
 async function applyInteractionState(page, state, target = null) {
   if (!state) return { beforeContinuation: null, waitEvidence: [], actionTimings: [], handoff: null, failure: null };
   const triggerActionIndex = state.continuation
     ? (state.continuation.triggerActionIndex ?? state.actions.length - 1)
     : state.actions.length - 1;
   let beforeContinuation = null;
+  let contextProbe = null;
   const actionTimings = [];
   const waitEvidence = [];
   let armed = null;
   const failureArmed = Object.keys(state.afterFailureWaitFor || {}).length
     ? armWaitFor(page, state.afterFailureWaitFor)
     : null;
+  try {
   for (const [index, action] of state.actions.entries()) {
     const locator = page.locator(action.selector);
     const options = { timeout: action.timeoutMs };
@@ -2495,6 +2585,7 @@ async function applyInteractionState(page, state, target = null) {
             path: window.location.pathname,
             origin: window.location.origin,
           }));
+          contextProbe = await armContinuationContext(locator, action.action);
         }
       }
       if (action.action === "click") await locator.click(options);
@@ -2570,6 +2661,18 @@ async function applyInteractionState(page, state, target = null) {
     };
   }
   return { beforeContinuation, waitEvidence, actionTimings, handoff: null, failure: null };
+  } finally {
+    if (contextProbe) {
+      try {
+        const observation = await contextProbe.evaluate(probe => probe.finish());
+        if (observation.before) Object.assign(beforeContinuation, observation.before);
+        beforeContinuation.contextReference = observation.context;
+      } catch {
+        // Navigation/detachment cannot establish a compensation allowance.
+        beforeContinuation.contextReference = { observed: false, reason: "context-unavailable" };
+      } finally { await contextProbe.dispose().catch(() => {}); }
+    }
+  }
 }
 
 async function verifyContinuation(page, continuation, beforeContinuation) {
@@ -2697,8 +2800,39 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
     Number.isFinite(beforeContinuation.maxScrollY) && current.maxScrollY < beforeContinuation.maxScrollY &&
     beforeContinuation.scrollY > current.maxScrollY;
   const clampedScrollY = rangeShrank ? current.maxScrollY : beforeContinuation?.scrollY;
+  const signedScrollDelta = beforeContinuation ? {
+    x: current.scrollX - beforeContinuation.scrollX, y: current.scrollY - beforeContinuation.scrollY,
+  } : null;
+  const reference = beforeContinuation?.contextReference;
+  const sameDocument = beforeContinuation && current.origin === beforeContinuation.origin &&
+    current.path === beforeContinuation.path && current.clientWidth === beforeContinuation.clientWidth &&
+    current.clientHeight === beforeContinuation.clientHeight;
+  const rangeDelta = beforeContinuation ? current.maxScrollY - beforeContinuation.maxScrollY : null;
+  const referenceDocumentDelta = reference?.observed ? {
+    x: reference.afterRect.x + reference.afterDocument.scrollX - reference.beforeRect.x - beforeContinuation.scrollX,
+    y: reference.afterRect.y + reference.afterDocument.scrollY - reference.beforeRect.y - beforeContinuation.scrollY,
+  } : null;
+  // Content removed above a control can be compensated while new content below
+  // grows the total page. Measure that control, not the net page-height change.
+  // Require the same node/ancestor chain and unchanged
+  // layout styles; fixed overlays or a replacement cannot prove page stability.
+  // The after-reference and document samples must describe the same state.
+  const contextCompensated = !rangeShrank && sameDocument &&
+    reference?.observed && reference.sameNodeAndAncestors && reference.stylesUnchanged &&
+    reference.normalFlowBefore && reference.normalFlowAfter && reference.visibleBefore && reference.visibleAfter &&
+    ['scrollX', 'scrollY', 'maxScrollY', 'clientWidth', 'clientHeight', 'path', 'origin'].every(key =>
+      reference.afterDocument[key] === current[key]) &&
+    Math.abs(reference.afterRect.width - reference.beforeRect.width) <= 0.5 &&
+    Math.abs(reference.afterRect.height - reference.beforeRect.height) <= 0.5 &&
+    Math.abs(referenceDocumentDelta.x) <= 0.5 && referenceDocumentDelta.y < -0.5;
+  const contextCompensation = contextCompensated ? {
+    beforeRect: reference.beforeRect, afterRect: reference.afterRect,
+    documentDelta: referenceDocumentDelta, rangeDelta,
+    expectedScrollY: beforeContinuation.scrollY + referenceDocumentDelta.y,
+  } : null;
+  const expectedScrollY = contextCompensation?.expectedScrollY ?? clampedScrollY;
   const residualScrollDelta = beforeContinuation
-    ? Math.max(Math.abs(current.scrollX - beforeContinuation.scrollX), Math.abs(current.scrollY - clampedScrollY))
+    ? Math.max(Math.abs(signedScrollDelta.x), Math.abs(current.scrollY - expectedScrollY))
     : null;
   const documentClamp = rangeShrank ? {
     beforeScrollY: beforeContinuation.scrollY, beforeMaxScrollY: beforeContinuation.maxScrollY,
@@ -2717,7 +2851,7 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
       textSnippet: "",
       rect: anchorRect,
       area: null,
-      evidence: { scrollDelta, residualScrollDelta, documentClamp, maxScrollDelta: continuation.maxScrollDelta },
+      evidence: { scrollDelta, signedScrollDelta, residualScrollDelta, documentClamp, contextCompensation, contextReference: reference ?? null, maxScrollDelta: continuation.maxScrollDelta },
     });
   }
   return {
@@ -2732,8 +2866,11 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
       anchorRecognizable,
       focusSatisfied: focusWithin,
       scrollDelta,
+      signedScrollDelta,
       residualScrollDelta,
       documentClamp,
+      contextCompensation,
+      contextReference: reference ?? null,
       maxScrollDelta: continuation.maxScrollDelta,
     },
   };
@@ -5239,7 +5376,24 @@ function performanceThresholdStatus(value, threshold, assessed = true) {
   return value < threshold ? "pass" : "fail";
 }
 
+async function installContinuationContextObserver(page) {
+  await page.addInitScript(() => {
+    // Registered before application scripts, including their window/document
+    // capture handlers. Arming later changes only the callback, never ordering.
+    let armed = null;
+    Object.defineProperty(globalThis, "__FORMAL_WEB_UI_CONTINUATION__", {
+      configurable: true,
+      value: { arm(callback) {
+        armed = callback;
+        return () => { if (armed === callback) armed = null; };
+      } },
+    });
+    window.addEventListener("pointerdown", event => armed?.(event), { capture: true, passive: true });
+  });
+}
+
 async function installRenderedPerformanceObserver(page) {
+  await installContinuationContextObserver(page);
   await page.addInitScript(() => {
     const state = {
       lcpSupported: false,
@@ -6907,6 +7061,7 @@ async function prepareAuthentication(browser, config) {
       await applyConfiguredCookies(context, config.cookies, profile.url);
       if (profile.cookies !== undefined) await applyConfiguredCookies(context, profile.cookies, profile.url);
       const page = await context.newPage();
+      await installContinuationContextObserver(page);
       await page.goto(profile.url, { waitUntil: "domcontentloaded", timeout: 15000 });
       const execution = await applyInteractionState(page, {
         name: `auth:${profile.name}`,

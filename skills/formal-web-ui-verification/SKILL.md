@@ -76,8 +76,21 @@ coverage because geometry without product intent cannot prove that the right
 content owns the page.
 When content removal shrinks the document's scroll range in an unchanged
 viewport, continuation evidence preserves the raw movement and separately checks
-movement beyond the unavoidable range clamp. Focus, recognizable visible anchors,
-horizontal movement, and additional vertical jumps retain their existing checks.
+movement beyond the unavoidable range clamp. A trusted pointer action can also
+prove compensation for content removed above the viewport: the same visible
+normal-flow control and unchanged ancestor chain must move upward in document coordinates while preserving the current viewport position.
+The total range may grow when the action also reveals content below the control.
+Fixed/sticky/transformed or replaced context cannot supply that proof. Evidence retains signed offsets, context rectangles and
+the residual; missing measurements fall back to the raw/clamped check. Focus,
+recognizable visible anchors, horizontal movement, and additional vertical jumps
+retain their existing checks. The pointer baseline is captured at the actual
+action, after actionability retries and before application capture handlers,
+without waiting for unrelated page data. Explicit opacity and visibility checks
+cover the trigger and its ancestors; a separate visible anchor cannot excuse a
+hidden trigger. Nondefault shape clipping cannot prove an eligible reference;
+ordinary ancestor overflow clips must retain the full trigger within their
+clipping bounds. If the early initialization hook is unavailable, retain the
+original raw baseline and grant no context allowance.
 
 The execution plan is safe-complete rather than fail-fast. Ordinary cell
 failures are collected while later independent work continues; browser-authority

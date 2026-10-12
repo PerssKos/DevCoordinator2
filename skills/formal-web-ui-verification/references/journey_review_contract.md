@@ -337,15 +337,45 @@ declares `continuation`.
   `documentClamp`, and `residualScrollDelta` beyond that unavoidable clamp.
   The same limit applies to the residual; horizontal movement, focus loss,
   offscreen anchors, and extra scrolling are never excused by a shorter page.
+- A trusted click/double-click pointer baseline may additionally establish
+  above-viewport compensation. The trigger must remain the same connected,
+  visible normal-flow node with the same ancestors, layout and visibility styles;
+  opacity, visibility and content-visibility are checked explicitly on that chain. A
+  separately visible continuation cannot excuse a hidden trigger. Nondefault
+  `clip`/`clip-path` is unsupported for a compensation reference. Ordinary
+  ancestor overflow clipping must contain the full trigger rectangle (within
+  0.5 CSS px measurement precision); one remaining visible pixel is insufficient.
+  A fully visible control inside `overflow:hidden` remains eligible. The existing
+  independent viewport visibility rule is unchanged. Fixed,
+  sticky, absolute, transformed, nested-scrolling or replaced context is ineligible.
+  Its measured document-coordinate displacement must be upward (more than 0.5
+  CSS px), with no horizontal displacement beyond 0.5 px; its size must remain
+  unchanged within 0.5 px, and origin, path and viewport must match. Total page
+  height is independent: content revealed below may exceed the removal above. Reference and current document observations must
+  agree. `contextReference` retains the measurements or an explicit unavailable
+  reason; `contextCompensation` records an allowance only when these checks hold.
+  `signedScrollDelta` preserves both original signed offsets. The existing strict
+  residual limit still catches extra scrolling, including a 9 px jump with the
+  default 8 px limit. No new target option or readiness wait grants an exception.
+  Missing trusted-pointer proof (including keyboard-only actions) retains the
+  existing raw/clamped rule. This heuristic does not retroactively validate a
+  failed run whose before-context measurement was not retained.
 - The anchor is the revealed heading or first field. A custom component may
   mark an equivalent recognizable element with `data-ui-continuation-anchor`;
   using a broad container merely because it intersects the viewport fails.
 - `navigation`: set `expectedPath`. The destination must stay on the expected
   origin and render the declared anchor in its initial viewport. Focus is not
   required merely because a new document loaded.
-- `triggerActionIndex` identifies the action immediately before which the
-  verifier records the user's current scroll position. It defaults to the last
-  action.
+- `triggerActionIndex` identifies the activating action. It defaults to the
+  last action. The verifier prepositions the control, then records a trusted
+  pointerdown baseline for click/double-click so actionability retries cannot
+  masquerade as post-activation movement. Its passive window capture hook is
+  installed before navigation/page scripts, so earlier application window or
+  document capture handlers cannot erase their own scroll from the baseline.
+  The hook is armed only for the declared trigger and disarmed afterward; no
+  input values are captured. If that early hook is missing, no baseline overwrite
+  or compensation is allowed. Other actions retain their existing
+  immediately-before-action baseline and cannot claim context compensation.
 
 ## File Selection
 

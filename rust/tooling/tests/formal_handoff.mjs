@@ -78,6 +78,59 @@ for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collap
     document.documentElement.dataset.continued='true';
   };</script>`);
 }
+const heldContinuationReads = new Map();
+const contextModes = ['context-retained', 'context-extra-jump', 'context-fixed', 'context-sticky', 'context-transformed-ancestor', 'context-replaced', 'context-disconnected', 'context-moved', 'context-focus-lost', 'context-offscreen', 'context-actionability', 'context-mixed-growth', 'context-mixed-growth-75', 'context-mixed-uncompensated', 'context-mixed-extra-jump', 'context-mixed-hidden-opacity', 'context-mixed-hidden-visibility', 'context-mixed-hidden-ancestor', 'context-early-document', 'context-early-window', 'context-early-harmless', 'context-missing-hook', 'context-mixed-hidden-clip', 'context-mixed-hidden-ancestor-clip', 'context-mixed-hidden-overflow-zero', 'context-mixed-hidden-overflow-partial', 'context-mixed-overflow-visible'];
+for (const mode of contextModes) {
+  const positioning = mode === 'context-fixed' ? '#label{position:fixed;top:310px;left:20px}'
+    : mode === 'context-sticky' ? '#label{position:sticky;top:310px}'
+    : mode === 'context-transformed-ancestor' ? '#retained{transform:translate(0px)}' : '';
+  variants.set('/continuation-' + mode, `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{overflow-anchor:none}body{margin:0;background:white;color:#111;font:16px sans-serif}main{padding:20px}#spacer{height:868px}#removed{height:32px}#display-identity{display:${mode.includes('-hidden-') ? 'inline' : 'none'}}#pending{height:${mode === 'context-actionability' ? 32 : 0}px}#context-wrap{${mode.includes('overflow-') ? 'height:44px;overflow:hidden' : ''}}#retained{height:130px}h1{font-size:24px}button{height:44px}footer{height:1500px}${positioning}</style><main id="primary" data-continuation-fixture="${mode}"><div id="spacer">Expected delivery collection</div><div id="pending"></div><div id="removed"></div><section id="retained"><h1 id="heading">Parcel contents</h1><span id="display-identity">Parcel 20459000000021</span><div id="context-wrap"><button id="label" data-ui-continuation-anchor>Parcel 20459000000021</button></div></section><div id="continuation" hidden style="height:${mode === 'context-mixed-growth-75' ? 75 : 93}px"><h2 id="continued-heading" tabindex="-1" style="margin:0">Revision details</h2></div><footer>More parcels remain</footer></main><script>
+  const parcelRead = fetch('/continuation-release?mode=${mode}');
+  const read=()=>{const wrapper=document.querySelector('#context-wrap'),box=wrapper.getBoundingClientRect(),button=document.querySelector('#label').getBoundingClientRect(),style=getComputedStyle(wrapper);return {fixture:document.querySelector('#primary').dataset.continuationFixture,x:scrollX,y:scrollY,maxY:Math.max(0,document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight),height:document.scrollingElement.clientHeight,top:button.top,triggerHeight:button.height,wrapper:{x:box.x,y:box.y,width:box.width,height:box.height,clientHeight:wrapper.clientHeight,overflowX:style.overflowX,overflowY:style.overflowY}}};
+  if('${mode}'==='context-missing-hook')delete globalThis.__FORMAL_WEB_UI_CONTINUATION__;
+  let early = null;
+  if('${mode}'.startsWith('context-early-')) ('${mode}'==='context-early-document'?document:window).addEventListener('pointerdown',event=>{
+    if(early || !event.composedPath().includes(document.querySelector('#label')))return;
+    const before=read();if('${mode}'!=='context-early-harmless')scrollBy(0,9);early={before,after:read(),trusted:event.isTrusted};
+  },{capture:true});
+  let actionability = null;
+  if('${mode}'==='context-fixed')document.querySelector('#label').addEventListener('focus',()=>scrollTo(0,670),{once:true});
+  if('${mode}'==='context-actionability') document.querySelector('#label').addEventListener('focus', event=>{
+    const button=event.target; button.disabled=true;
+    setTimeout(()=>{const before=read();document.querySelector('#pending').style.height='0px';void document.body.offsetHeight;scrollBy(0,-32);button.disabled=false;actionability={before,after:read()};},300);
+  },{once:true});
+  document.querySelector('#label').onclick=async event=>{
+    const before=read();
+    const mixed='${mode}'.startsWith('context-mixed-');
+    if(mixed)document.querySelector('#continuation').hidden=false;
+    const expanded=read();
+    const release=await fetch('/continuation-release-trigger?mode=${mode}',{method:'POST'});
+    if(!release.ok)throw new Error('Independent parcel read did not reach hold');
+    await parcelRead;
+    if(!'${mode}'.startsWith('context-early-')) {
+      document.querySelector('#removed').style.height='0px';
+      void document.body.offsetHeight;
+      if('${mode}'!=='context-mixed-uncompensated')scrollBy(0,-32);
+    }
+    if('${mode}'==='context-mixed-hidden-opacity')event.target.style.opacity='0';
+    if('${mode}'==='context-mixed-hidden-visibility')event.target.style.visibility='hidden';
+    if('${mode}'==='context-mixed-hidden-ancestor')document.querySelector('#context-wrap').style.opacity='0';
+    if('${mode}'==='context-mixed-hidden-clip')event.target.style.clipPath='inset(50%)';
+    if('${mode}'==='context-mixed-hidden-ancestor-clip')document.querySelector('#context-wrap').style.clipPath='inset(50%)';
+    if('${mode}'==='context-mixed-hidden-overflow-zero')document.querySelector('#context-wrap').style.height='0px';
+    if('${mode}'==='context-mixed-hidden-overflow-partial')document.querySelector('#context-wrap').style.height='1px';
+    if(['context-extra-jump','context-mixed-extra-jump'].includes('${mode}'))scrollBy(0,-9);
+    if('${mode}'==='context-replaced'){const clone=event.target.cloneNode(true);event.target.replaceWith(clone);}
+    if('${mode}'==='context-disconnected'){event.target.remove();const other=document.createElement('button');other.id='label';other.dataset.uiContinuationAnchor='';other.textContent='Parcel 20459000000021';document.querySelector('#retained').append(other);}
+    if('${mode}'==='context-moved')event.target.style.marginTop='12px';
+    if('${mode}'==='context-offscreen'){event.target.style.position='absolute';event.target.style.top='0px';}
+    document.querySelector(mixed?'#continued-heading':'#label').focus({preventScroll:true});
+    if('${mode}'==='context-focus-lost')document.querySelector('#label').blur();
+    const after=read();
+    await fetch('/continuation-observe?mode=${mode}',{method:'POST',body:JSON.stringify({before,expanded,after,actionability,early})});
+    document.documentElement.dataset.continued='true';
+  };</script>`);
+}
 let uploadMutation = null;
 const uploadHtml = html.replace('<button id="label">Edit signal</button>', '<button id="label">Import measurements</button><label>Fixture file<input type="file" id="upload"></label><p id="filename"></p><p id="upload-result" data-ui-continuation-anchor>Choose a measurement file</p>').replace('</body>', `<script>document.querySelector('#upload').onchange=async event=>{const file=event.target.files[0];const result=await fetch('/uploaded',{method:'POST',headers:{'x-upload-name':file.name,'x-upload-type':file.type},body:file});if(result.ok){document.querySelector('#filename').textContent=file.name;document.querySelector('#upload-result').textContent='Measurements loaded';document.querySelector('#upload-result').dataset.ready='true';event.target.focus();}}</script></body>`);
 let requestCount = 0;
@@ -85,6 +138,18 @@ const sessionObservations = [];
 const server = createServer((request, response) => {
   requestCount++;
   const pathname = new URL(request.url, 'http://fixture').pathname;
+  if (pathname === '/continuation-release') {
+    const mode = new URL(request.url, 'http://fixture').searchParams.get('mode');
+    heldContinuationReads.set(mode, response);
+    response.on('close', () => { if (heldContinuationReads.get(mode) === response) heldContinuationReads.delete(mode); });
+    return;
+  }
+  if (pathname === '/continuation-release-trigger') {
+    const mode = new URL(request.url, 'http://fixture').searchParams.get('mode');
+    const held = heldContinuationReads.get(mode); heldContinuationReads.delete(mode);
+    if (held) { held.writeHead(204); held.end(); }
+    response.writeHead(held ? 204 : 409); response.end(); return;
+  }
   if (pathname === '/session-observe') {
     sessionObservations.push(Object.fromEntries(new URL(request.url, 'http://fixture').searchParams));
     response.writeHead(204); response.end(); return;
@@ -444,23 +509,91 @@ async function recoveryGeometryFixtures() {
   });
 }
 async function continuationPrecisionFixtures() {
-  for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand']) {
+  for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand', ...contextModes]) {
     const config = full('/continuation-' + mode), row = config.targets[0];
     config.viewports = [{ name: 'phone', width: 390, height: 664 }];
     row.includeBase = false;
-    row.geometryAssertions = geometry('#retained', '#heading', '#label');
+    if (mode.startsWith('context-')) row.waitFor = { selector: '#primary[data-continuation-fixture="' + mode + '"]' };
+    row.geometryAssertions = geometry('#retained', '#heading', mode.includes('-hidden-') ? '#display-identity' : '#label');
     row.regions = [{ selector: '#retained', role: 'primary-content', journey: 'edit-signal' }];
     row.states = [{ name: mode, actions: [{ action: 'focus', selector: '#label' }, { action: 'click', selector: '#label' }], waitFor: { selector: 'html[data-continued=true]' }, continuation: { kind: 'in-page', anchor: '#label', focusWithin: '#label', triggerActionIndex: 1 } }];
-    config.fixtureDataShapes[0] = { ...config.fixtureDataShapes[0], state: mode, conditionalDom: ['#retained', '#label'] };
+    if (mode.startsWith('context-mixed-')) Object.assign(row.states[0].continuation, { anchor: '#continued-heading', focusWithin: '#continued-heading' });
+    config.fixtureDataShapes[0] = { ...config.fixtureDataShapes[0], state: mode, conditionalDom: ['#retained', '#label', ...(mode.startsWith('context-mixed-') ? ['#continuation'] : [])] };
     config.requiredCoverage = [{ target: 'handoff', state: mode, viewport: 'phone', width: 390 }];
     await verify('continuation-precision-' + mode, config, async ({ receipt, report, directory }) => {
       const observation = continuationObservations.get(mode);
-      await writeFile(join(directory, 'fixture-scroll-observation.json'), JSON.stringify(observation, null, 2));
       assert(observation, 'real click must record before and after scroll extent');
+      await writeFile(join(directory, 'fixture-scroll-observation.json'), JSON.stringify(observation, null, 2));
       const { before, after } = observation;
+      if (mode.startsWith('context-')) { assert.equal(before.fixture, mode); assert.equal(after.fixture, mode); }
+      if (mode.includes('overflow-')) {
+        assert.equal(before.wrapper.height, 44); assert.equal(before.wrapper.clientHeight, 44);
+        assert.equal(before.wrapper.overflowX, 'hidden'); assert.equal(before.wrapper.overflowY, 'hidden');
+        assert.equal(before.triggerHeight, 44); assert.equal(after.triggerHeight, 44);
+        const height = mode.endsWith('-zero') ? 0 : mode.endsWith('-partial') ? 1 : 44;
+        assert.equal(after.wrapper.height, height); assert.equal(after.wrapper.clientHeight, height);
+      }
       const evidence = report.pages[0].continuation.evidence;
       const findings = report.pages[0].findings.filter(row => row.rule.startsWith('continuation-'));
-      if (mode === 'collapse') {
+      if (mode.startsWith('context-early-')) {
+        assert.equal(observation.early.trusted, true);
+        const actual = mode === 'context-early-harmless' ? 0 : 9;
+        assert.equal(observation.early.after.y - observation.early.before.y, actual);
+        assert.equal(after.y - observation.early.before.y, actual);
+        assert.equal(after.maxY, observation.early.before.maxY);
+        assert.equal(evidence.signedScrollDelta.y, actual, 'baseline must precede application capture handlers');
+        if (actual) { assert(findings.some(row => row.rule === 'continuation-document-jump')); assert.equal(receipt.formal.result, 'failed'); }
+        else { assert.deepEqual(findings, []); assert.equal(receipt.formal.result, 'passed'); }
+      } else if (['context-retained', 'context-actionability', 'context-mixed-growth', 'context-mixed-growth-75', 'context-mixed-overflow-visible'].includes(mode)) {
+        assert.equal(after.y - before.y, -32);
+        assert.equal(after.maxY - before.maxY, mode.startsWith('context-mixed-') ? (mode.endsWith('-75') ? 43 : 61) : -32);
+        if (mode.startsWith('context-mixed-')) { assert(observation.expanded.maxY > before.maxY); assert.equal(observation.expanded.y, before.y); }
+        assert(before.y < after.maxY); assert.equal(after.top, before.top);
+        assert.equal(evidence.focusSatisfied, true); assert.equal(evidence.anchorVisibleInViewport, true);
+        assert.equal(evidence.documentClamp, null, 'this is above-viewport compensation, not a bottom clamp');
+        assert.deepEqual(findings, [], 'late empty content preserves the same visible row and focused control');
+        assert.equal(evidence.signedScrollDelta.y, -32); assert.equal(evidence.residualScrollDelta, 0);
+        assert.equal(evidence.contextReference.baseline, 'trusted-pointerdown');
+        assert.equal(evidence.contextReference.observerOrder, 'init-window-capture-before-page-scripts');
+        assert.equal(evidence.contextCompensation.documentDelta.y, -32);
+        if (mode === 'context-mixed-overflow-visible') {
+          assert.equal(evidence.contextReference.withinAncestorClipBoundsBefore, true);
+          assert.equal(evidence.contextReference.withinAncestorClipBoundsAfter, true);
+          assert.equal(evidence.contextReference.visibleBefore, true); assert.equal(evidence.contextReference.visibleAfter, true);
+        }
+        if (mode === 'context-actionability') {
+          assert(observation.actionability, 'actual disabled-action interval must be observed');
+          assert.equal(observation.actionability.after.y, before.y);
+          assert.equal(observation.actionability.after.y - observation.actionability.before.y, -32);
+        }
+        assert.equal(receipt.formal.result, 'passed');
+      } else if (mode.startsWith('context-')) {
+        const rule = mode.endsWith('focus-lost') ? 'continuation-focus-missing' : mode.endsWith('offscreen') ? 'continuation-anchor-offscreen' : 'continuation-document-jump';
+        assert(findings.some(row => row.rule === rule), 'unsafe context must not conceal the real defect: ' + mode);
+        assert.equal(receipt.formal.result, 'failed');
+        if (['context-extra-jump', 'context-mixed-extra-jump'].includes(mode)) assert.equal(evidence.residualScrollDelta, 9);
+        if (mode === 'context-mixed-uncompensated') { assert.equal(after.y, before.y); assert.equal(after.top - before.top, -32); assert.equal(evidence.residualScrollDelta, 32); }
+        if (['context-fixed', 'context-sticky', 'context-transformed-ancestor', 'context-replaced', 'context-disconnected', 'context-moved'].includes(mode)) assert.equal(evidence.contextCompensation, null);
+        if (mode === 'context-missing-hook') {
+          assert.equal(evidence.contextReference.observed, false);
+          assert.equal(evidence.contextReference.reason, 'early-pointer-hook-unavailable');
+          assert.equal(evidence.signedScrollDelta.y, -32);
+          assert.equal(evidence.residualScrollDelta, 32);
+          assert.equal(evidence.contextCompensation, null);
+        }
+        if (mode.includes('-hidden-')) {
+          assert.equal(evidence.focusSatisfied, true); assert.equal(evidence.anchorVisibleInViewport, true);
+          assert.equal(evidence.contextReference.visibleBefore, true);
+          assert.equal(evidence.contextReference.visibleAfter, false);
+          assert.equal(evidence.contextCompensation, null);
+          if (mode.endsWith('-clip')) assert.equal(evidence.contextReference.clippingSupportedAfter, false);
+          if (mode.includes('overflow-')) {
+            assert.equal(evidence.contextReference.withinAncestorClipBoundsBefore, true);
+            assert.equal(evidence.contextReference.withinAncestorClipBoundsAfter, false);
+          }
+        }
+        if (mode === 'context-fixed') assert.equal(after.top, before.top, 'stable fixed control must not conceal page scrolling');
+      } else if (mode === 'collapse') {
         assert(before.y > after.maxY + 8); assert(after.maxY < before.maxY); assert.equal(after.y, after.maxY);
         assert.equal(evidence.focusSatisfied, true); assert.equal(evidence.anchorVisibleInViewport, true);
         assert.deepEqual(findings, [], 'unavoidable document clamp preserves the focused continuation');
@@ -822,7 +955,7 @@ try {
   }
   }
   }
-} finally { await new Promise(resolve => server.close(resolve)); }
+} finally { for (const response of heldContinuationReads.values()) response.destroy(); await new Promise(resolve => server.close(resolve)); }
 await writeFile(join(scratch, 'results.json'), JSON.stringify({ results }, null, 2));
 console.log(JSON.stringify({ scratch, results }));
 assert(results.every(result => result.passed), 'Formal handoff regression fixtures failed');
