@@ -236,9 +236,18 @@ impl DockerControl for PostgresDocker {
 
     fn remove_container(
         &self,
-        _container_id: &ExactContainerId,
+        container_id: &ExactContainerId,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
+        self.remove_container_in_current_scope(container_id, delete_volumes)
+    }
+
+    fn remove_container_in_current_scope(
+        &self,
+        container_id: &ExactContainerId,
+        delete_volumes: bool,
+    ) -> Result<(), DockerError> {
+        assert_eq!(container_id.as_str(), "d".repeat(64));
         assert!(delete_volumes);
         self.removed.fetch_add(1, Ordering::SeqCst);
         Ok(())
