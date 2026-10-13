@@ -181,6 +181,91 @@ test("ordinary positioned content cannot declare itself a contextual surface", a
   } finally { await page.close(); }
 });
 
+function detailsGroupFixture(mode = "valid") {
+  const summaryId = "actions-toggle";
+  const groupId = "actions-options";
+  const reason = mode === "undeclared" ? "" : `data-ui-contextual-overlay="${mode === "empty-reason" ? " " : "User-disclosed actions; summary closes them"}"`;
+  const controls = mode === "wrong-controls" ? "other-options" : mode === "multiple-controls" ? `${groupId} other-options` : groupId;
+  const labelledBy = mode === "wrong-label" ? "other-toggle" : mode === "multiple-labels" ? `${summaryId} other-toggle` : summaryId;
+  const group = `<div id="${groupId}" role="${mode === "wrong-role" ? "region" : "group"}" aria-labelledby="${labelledBy}" ${reason}><button id="inside">Use existing action</button>${mode === "inner-cover" ? '<div id="inner-cover"></div>' : ""}</div>`;
+  return `<!doctype html><meta charset="utf-8"><style>
+    body{margin:0;background:white;color:#111;font:16px sans-serif}
+    #background{position:absolute;left:42px;top:98px;width:180px;height:44px}
+    #actions{position:relative;margin:24px;width:280px}
+    summary{box-sizing:border-box;height:44px;padding:12px;background:#fff}
+    #actions-options{position:${mode === "static" ? "static" : "absolute"};left:0;top:48px;width:280px;height:190px;background:#eee;z-index:2}
+    #inside{position:absolute;left:18px;top:26px;width:200px;height:44px}
+    #inner-cover{position:absolute;left:18px;top:26px;width:200px;height:44px;background:#333;z-index:3}
+    ${mode === "closed-painted" ? 'details::details-content{content-visibility:visible}' : ""}
+  </style><button id="background">Underlying action</button>
+  <details id="actions"><summary id="${summaryId}" aria-controls="${controls}">Actions</summary>
+    ${mode === "non-direct" ? `<div>${group}</div>` : group}
+    ${mode === "wrong-summary" ? '<summary id="other-toggle" aria-controls="actions-options">Other summary</summary>' : ""}
+  </details>${mode === "wrong-summary" ? "" : '<span id="other-toggle" hidden>Unrelated title</span>'}<span id="other-options" hidden></span>
+  <script>document.querySelector('#inside').onclick=()=>document.body.dataset.invoked='yes';</script>`;
+}
+
+for (const width of [390, 1440]) {
+  test(`native details group permits only its declared outside coverage: ${width}`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 844 } });
+    try {
+      await page.setContent(detailsGroupFixture());
+      assert.equal(await page.locator('#actions').evaluate(element => element.open), false);
+      assert.equal(await page.locator('#actions-options').isVisible(), false);
+      const closed = await measure(page);
+      assert.equal(closed.findings.some(row => row.rule === 'allowed-contextual-overlay'), false);
+      await page.locator('#actions-toggle').click();
+      assert.equal(await page.locator('#actions').evaluate(element => element.open), true);
+      assert.equal(await page.locator('#actions-options').isVisible(), true);
+      const before = await scrollCoordinates(page);
+      const report = await measure(page);
+      assert.deepEqual(await scrollCoordinates(page), before);
+      assert.deepEqual(occlusions(report), []);
+      assert(report.findings.some(row => row.rule === 'allowed-contextual-overlay' && row.selector === '#background'));
+      await page.locator('#inside').click();
+      assert.equal(await page.locator('body').getAttribute('data-invoked'), 'yes');
+      await page.locator('#actions-toggle').click();
+      assert.equal(await page.locator('#actions').evaluate(element => element.open), false);
+      assert.equal(await page.locator('#actions-options').isVisible(), false);
+      assert.deepEqual(occlusions(await measure(page)), []);
+    } finally { await page.close(); }
+  });
+  test(`native details group retains inner-control occlusion: ${width}`, async () => {
+    const page = await browser.newPage({ viewport: { width, height: 844 } });
+    try {
+      await page.setContent(detailsGroupFixture('inner-cover'));
+      await page.locator('#actions-toggle').click();
+      const report = await measure(page);
+      assert(occlusions(report).some(row => row.selector === '#inside' && row.severity === 'critical'));
+      assert(report.findings.some(row => row.rule === 'allowed-contextual-overlay' && row.selector === '#background'));
+    } finally { await page.close(); }
+  });
+}
+
+for (const mode of ['undeclared', 'empty-reason', 'non-direct', 'wrong-controls', 'wrong-label', 'multiple-controls', 'multiple-labels', 'wrong-summary', 'static', 'wrong-role', 'closed-painted']) {
+  test(`native details group rejects unrelated coverage: ${mode}`, async () => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    try {
+      await page.setContent(detailsGroupFixture(mode));
+      if (mode === 'wrong-summary') await page.locator('#actions-options').evaluate(element => element.setAttribute('aria-labelledby', 'other-toggle'));
+      if (mode !== 'closed-painted') await page.locator('#actions-toggle').click();
+      assert.equal(await page.locator('#actions').evaluate(element => element.open), mode !== 'closed-painted');
+      const painted = await page.locator('#actions-options').evaluate(element => {
+        const rect = element.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, top: document.elementFromPoint(80, 110)?.closest('#actions-options') === element };
+      });
+      assert.equal(painted.width, 280);
+      assert.equal(painted.height, 190);
+      assert.equal(painted.top, true, 'negative fixture really paints over the underlying control');
+      const before = await scrollCoordinates(page);
+      const report = await measure(page);
+      assert.deepEqual(await scrollCoordinates(page), before);
+      assert(occlusions(report).some(row => row.selector === '#background' && row.severity === 'critical'));
+      assert.equal(report.findings.some(row => row.rule === 'allowed-contextual-overlay'), false);
+    } finally { await page.close(); }
+  });
+}
+
 for (const width of [390, 1440]) {
   for (const axis of ["x", "y", "both"]) {
     test(`scrolled non-fixed editor content remains reachable: ${width}, ${axis}`, async () => {

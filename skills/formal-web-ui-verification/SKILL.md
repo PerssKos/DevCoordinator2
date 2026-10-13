@@ -51,6 +51,13 @@ positioned dialog/menu/listbox/tooltip/popover surfaces may declare
 recorded as `allowed-contextual-overlay`. This does not exempt their own
 contents from occlusion, clipping, contrast or geometry checks. An empty reason,
 unpositioned element or unrelated undeclared cover receives no exception.
+A positioned, declared `role="group"` also qualifies when it is a direct child
+of open native `details`: that element's first direct `summary` must control
+the group's exact ID through `aria-controls`, and the group must name that
+same summary's exact ID through `aria-labelledby`. Both IDs must resolve to
+those elements in the same tree. This preserves ordinary button semantics;
+closed details, nested groups, static groups and unrelated anchors receive no
+exception. Covered controls inside the group remain fully checked.
 If a real gutter-scroll probe reaches that contextual surface, record the
 declared cover rather than claiming the token is still hidden by the gutter.
 Undeclared covers reached after scrolling remain failures; probes restore their

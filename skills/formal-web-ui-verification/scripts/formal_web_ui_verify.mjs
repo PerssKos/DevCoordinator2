@@ -4412,10 +4412,22 @@ function pageVerifier() {
     }
     return false;
   };
+  const disclosedDetailsGroup = (owner) => {
+    if (!owner.matches('[role="group"]')) return false;
+    const details = owner.parentElement;
+    if (!details?.matches('details[open]')) return false;
+    const summary = [...details.children].find((child) => child.localName === "summary");
+    const root = owner.getRootNode();
+    return Boolean(summary?.id && owner.id &&
+      summary.getAttribute("aria-controls") === owner.id &&
+      owner.getAttribute("aria-labelledby") === summary.id &&
+      root.getElementById?.(owner.id) === owner &&
+      root.getElementById?.(summary.id) === summary);
+  };
   const contextualCover = (element, occluder) => {
     for (let owner = occluder; owner && !containsComposed(owner, element); owner = composedParent(owner)) {
       const reason = owner.getAttribute?.("data-ui-contextual-overlay")?.trim();
-      if (reason && owner.matches('[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover]') &&
+      if (reason && (owner.matches('[role="dialog"], [role="menu"], [role="listbox"], [role="tooltip"], [popover]') || disclosedDetailsGroup(owner)) &&
           ["fixed", "absolute"].includes(cs(owner).position)) return { owner, reason };
     }
     return null;
