@@ -383,7 +383,9 @@ async function configurationFixtures(recoveryOnly = false) {
     config.authProfiles ??= [{ name: 'private', url: target.url, actions: [{ action: 'fill', selector: '#private', value: 'PREFLIGHT_PRIVATE_CANARY' }] }];
     await writeFile(configPath, JSON.stringify(config));
     const beforeRequests = requestCount;
-    const child = spawn(process.execPath, [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', configPath, '--config-only', '--json-out', join(directory, 'report.json')], { cwd: directory, env: { ...process.env, DEVCOORDINATOR_EVIDENCE_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const args = [join(root, 'skills/formal-web-ui-verification/scripts/formal_web_ui_verify.mjs'), '--config', configPath, '--config-only', '--json-out', join(directory, 'report.json')];
+    if (process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES) args.push('--playwright-module-dir', process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES);
+    const child = spawn(process.execPath, args, { cwd: directory, env: { ...process.env, DEVCOORDINATOR_EVIDENCE_DIR: directory }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = ''; child.stdout.on('data', chunk => { stdout += chunk; }); child.stderr.on('data', chunk => { stderr += chunk; });
     const [exitCode] = await once(child, 'exit');
     try {
