@@ -40,8 +40,8 @@ impl SharedDatabase {
     fn remove(&mut self) -> Result<(), String> {
         if let Some(container) = &self.container {
             self.docker
-                .remove_container(container, true)
-                .map_err(|_| "shared database cleanup failed")?;
+                .remove_container_in_current_scope(container, true)
+                .map_err(shared_cleanup_failure)?;
             self.container = None;
         }
         Ok(())
@@ -49,6 +49,9 @@ impl SharedDatabase {
 }
 impl Drop for SharedDatabase {
     fn drop(&mut self) {
+        // A failed setup or ordinary cleanup can leave this exact owned
+        // container behind. Recovery must survive the caller's cancellation.
+        let _cleanup = crate::capacity::NativeCleanupScope::enter();
         let _ = self.remove();
     }
 }
@@ -402,6 +405,10 @@ impl FixtureRun {
     }
 
     pub fn finish(&self) -> bool {
+        // Finalization is recovery, not the ordinary cleanup graph node.
+        // When called inside a fixture, nested drops cannot restart its
+        // recovery deadline; outside a fixture the adapter's bound applies.
+        let _cleanup = crate::capacity::NativeCleanupScope::enter();
         self.closed.store(true, Ordering::Release);
         let slots = std::mem::take(
             &mut *self
@@ -1211,6 +1218,31 @@ fn shared_start_failure(error: crate::docker::DockerError) -> String {
     format!("cannot start owned shared database: {error}")
 }
 
+fn shared_cleanup_failure(error: crate::docker::DockerError) -> String {
+    use crate::docker::{DockerError, DockerErrorKind};
+    // Keep the failing boundary without logging Docker stderr, environment,
+    // command text or private database values. Unknown admission text is not
+    // trusted merely because the error variant accepts a static string.
+    let cause = match &error {
+        DockerError::Admission("cancelled before execution") => "network_admission_cancelled",
+        DockerError::Admission("deadline elapsed before execution") => "network_admission_deadline",
+        DockerError::Admission("unavailable before execution") => "network_admission_unavailable",
+        DockerError::Admission(_) => "network_admission_failed",
+        _ => match error.kind() {
+            DockerErrorKind::CliUnavailable => "cli_unavailable",
+            DockerErrorKind::SpawnFailed => "spawn_failed",
+            DockerErrorKind::TimedOut => "execution_timeout",
+            DockerErrorKind::Cancelled => "execution_cancelled",
+            DockerErrorKind::CommandFailed => "command_failed",
+            DockerErrorKind::NetworkUnavailable => "network_unavailable",
+            DockerErrorKind::InvalidOutput => "invalid_output",
+            DockerErrorKind::InvalidTarget => "invalid_target",
+            DockerErrorKind::InvalidRequest => "invalid_request",
+        },
+    };
+    format!("shared database cleanup failed (cause={cause})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,6 +1255,103 @@ mod tests {
             failure,
             "cannot start owned shared database: docker run failed (exit_code=125; cleanup=removed:1)"
         );
+        use crate::docker::DockerError;
+        for (error, cause) in [
+            (
+                DockerError::Admission("cancelled before execution"),
+                "network_admission_cancelled",
+            ),
+            (
+                DockerError::Admission("deadline elapsed before execution"),
+                "network_admission_deadline",
+            ),
+            (
+                DockerError::Admission("unavailable before execution"),
+                "network_admission_unavailable",
+            ),
+            (
+                DockerError::Admission("private-canary"),
+                "network_admission_failed",
+            ),
+            (
+                DockerError::Timeout {
+                    operation: "private-canary".into(),
+                },
+                "execution_timeout",
+            ),
+            (
+                DockerError::Cancelled {
+                    operation: "private-canary".into(),
+                },
+                "execution_cancelled",
+            ),
+            (
+                DockerError::CommandFailure {
+                    message: "private-canary".into(),
+                    exit_code: Some(1),
+                    signal: None,
+                    stderr: "private-canary".into(),
+                },
+                "command_failed",
+            ),
+        ] {
+            assert_eq!(
+                shared_cleanup_failure(error),
+                format!("shared database cleanup failed (cause={cause})")
+            );
+        }
+        // Exercise the shared-database caller too: reverting it to the generic
+        // recovery entry must fail even if the lower-level scope tests pass.
+        struct RemovalBoundary(AtomicBool);
+        impl DockerControl for RemovalBoundary {
+            fn invoke(
+                &self,
+                invocation: DockerInvocation,
+            ) -> Result<crate::docker::DockerOutput, DockerError> {
+                assert_eq!(invocation.timeout(), Duration::from_secs(60));
+                assert_eq!(
+                    invocation.args(),
+                    ["rm", "--force", "--volumes", &"c".repeat(64)].map(std::ffi::OsString::from)
+                );
+                if !self.0.swap(true, Ordering::SeqCst) {
+                    return Err(DockerError::Admission("deadline elapsed before execution"));
+                }
+                Ok(crate::docker::DockerOutput {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    stdout_truncated: false,
+                    stderr_truncated: false,
+                })
+            }
+            fn spawn_follow_logs(
+                &self,
+                _: &ExactContainerId,
+            ) -> Result<crate::docker::LogFollower, DockerError> {
+                unreachable!("shared removal does not follow logs")
+            }
+            fn remove_container(&self, _: &ExactContainerId, _: bool) -> Result<(), DockerError> {
+                Err(DockerError::InvalidRequest(
+                    "ordinary cleanup selected recovery".into(),
+                ))
+            }
+        }
+        let docker = Arc::new(RemovalBoundary(AtomicBool::new(false)));
+        let mut database = SharedDatabase {
+            docker,
+            container: Some(ExactContainerId::parse("c".repeat(64)).unwrap()),
+            environment: BTreeMap::new(),
+        };
+        assert_eq!(
+            database.remove().unwrap_err(),
+            "shared database cleanup failed (cause=network_admission_deadline)"
+        );
+        assert!(
+            database.container.is_some(),
+            "failure discarded the exact recovery target"
+        );
+        database.remove().unwrap();
+        assert!(database.container.is_none());
     }
     #[test]
     fn shared_phase_names_and_limits_are_checked_before_replacing_a_run() {

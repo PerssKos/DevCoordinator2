@@ -3401,7 +3401,51 @@ cases=[{{id="one",args=[],postgres="slow"}}]
         docker_ids("run", &run)?.len() == 1,
         "queued fixture did not start after readers ended"
     );
+    // The query has its real database already. A second protected browser
+    // window now isolates ordinary cleanup admission from setup admission.
+    data(&world.call("test.start", json!({"path":world.repo,"test":"observers"}))?)?;
+    let mut cleanup_service = await_database_case(&listeners["browser-service"])?;
+    let mut cleanup_reader = await_database_case(&listeners["browser-reader"])?;
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 2 && v["active_writers"] == 0
+    })?;
     sql.write_all(b"1").map_err(|e| e.to_string())?;
+    network_capacity_wait(world, |v| {
+        v["active_readers"] == 2 && v["waiting_writers"] == 1 && v["active_writers"] == 0
+    })?;
+    ensure!(
+        docker_ids("run", &run)?.len() == 1,
+        "ordinary database cleanup removed its container inside the protected window"
+    );
+    let waiting = world.call("test.status", json!({"path":others[0]}))?;
+    ensure!(
+        data(&waiting)?["checks"]
+            .as_array()
+            .is_some_and(|checks| checks
+                .iter()
+                .any(|check| check["phase"] == "cleanup" && check["status"] == "running")),
+        "expected ordinary cleanup node was not waiting"
+    );
+    cleanup_reader.write_all(b"1").map_err(|e| e.to_string())?;
+    let mut cleanup_consumer = await_database_case(&consumer_listener)?;
+    cleanup_service.write_all(b"1").map_err(|e| e.to_string())?;
+    cleanup_service
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    cleanup_service
+        .read_exact(&mut service_checked)
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        &service_checked == b"done",
+        "cleanup-window browser document check failed"
+    );
+    cleanup_consumer
+        .write_all(b"1")
+        .map_err(|e| e.to_string())?;
+    ensure!(
+        world.wait_status(&["passed", "failed"], Duration::from_secs(30))?["status"] == "passed",
+        "cleanup-window browser observer failed"
+    );
     let done = world.wait_status_for(&others[0], &["passed", "failed"], Duration::from_secs(30))?;
     ensure!(
         done["status"] == "passed"
@@ -3423,6 +3467,9 @@ cases=[{{id="one",args=[],postgres="slow"}}]
     world
         .measurements
         .insert("network_queued_writer_and_warm_sql".into(), 1);
+    world
+        .measurements
+        .insert("network_ordinary_cleanup_queued_and_removed".into(), 1);
     Ok(())
 }
 

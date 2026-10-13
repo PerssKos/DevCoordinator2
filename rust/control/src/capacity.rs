@@ -2116,6 +2116,164 @@ mod tests {
             }
         }
 
+        // Ordinary removal keeps the accepted run's context all the way into
+        // the real Docker adapter. Check the actual deadline (>900 seconds)
+        // rather than spending 15 minutes waiting for a substituted ceiling.
+        struct RemovalDocker {
+            inner: crate::docker::DockerCli,
+            deadline: Instant,
+            cancelled: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+            observed: Arc<AtomicU64>,
+        }
+        impl crate::docker::DockerControl for RemovalDocker {
+            fn invoke(
+                &self,
+                invocation: crate::docker::DockerInvocation,
+            ) -> Result<crate::docker::DockerOutput, crate::docker::DockerError> {
+                assert_eq!(invocation.timeout(), Duration::from_secs(60));
+                let context = native_fixture_context().expect("fixture context");
+                assert_eq!(
+                    context.deadline, self.deadline,
+                    "ordinary removal replaced the run deadline"
+                );
+                assert!(!context.cleanup, "ordinary removal entered recovery scope");
+                assert!(Arc::ptr_eq(
+                    &context.cancelled,
+                    self.cancelled.lock().unwrap().as_ref().unwrap()
+                ));
+                self.observed.fetch_add(1, Ordering::SeqCst);
+                crate::docker::DockerControl::invoke(&self.inner, invocation)
+            }
+            fn spawn_follow_logs(
+                &self,
+                container: &crate::docker::ExactContainerId,
+            ) -> Result<crate::docker::LogFollower, crate::docker::DockerError> {
+                crate::docker::DockerControl::spawn_follow_logs(&self.inner, container)
+            }
+        }
+        struct RemovalHandler {
+            docker: RemovalDocker,
+            cancel_before_remove: bool,
+        }
+        impl FixtureHandler for RemovalHandler {
+            fn execute(&self, node: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
+                use crate::docker::{DockerControl, ExactContainerId};
+                if node == "deadline-probe" {
+                    while !cancelled.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    return Err("cancelled probe".into());
+                }
+                *self.docker.cancelled.lock().unwrap() = Some(cancelled.clone());
+                if self.cancel_before_remove {
+                    cancelled.store(true, Ordering::Release);
+                }
+                self.docker
+                    .remove_container_in_current_scope(
+                        &ExactContainerId::parse("b".repeat(64)).unwrap(),
+                        true,
+                    )
+                    .map_err(|error| error.to_string())
+            }
+        }
+        for mode in ["ordinary", "cancelled", "deadline"] {
+            let observed = Arc::new(AtomicU64::new(0));
+            let executable = temporary.path().join(format!("remove-{mode}"));
+            std::fs::write(
+                &executable,
+                "#!/bin/sh\n[ \"$1\" = rm ] || exit 2\nprintf removed > \"$0.removed\"\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let deadline = Instant::now()
+                + if mode == "deadline" {
+                    Duration::from_millis(200)
+                } else {
+                    Duration::from_secs(3600)
+                };
+            broker
+                .register_fixture_handler(
+                    "run-fixture",
+                    Arc::new(RemovalHandler {
+                        docker: RemovalDocker {
+                            inner: crate::docker::DockerCli::new(executable.clone())
+                                .with_network_capacity(broker.clone()),
+                            deadline,
+                            cancelled: Arc::new(Mutex::new(None)),
+                            observed: observed.clone(),
+                        },
+                        cancel_before_remove: mode == "cancelled",
+                    }),
+                    deadline,
+                    BTreeMap::from([
+                        ("database-setup".into(), Some(Duration::from_millis(80))),
+                        ("deadline-probe".into(), Some(Duration::from_millis(80))),
+                    ]),
+                )
+                .unwrap();
+            broker.register_run("removal-reader", uid).unwrap();
+            broker
+                .register_resources(
+                    "removal-reader",
+                    BTreeMap::from([(
+                        "browser".into(),
+                        vec![ResourceClaim {
+                            kind: devcoordinator2_executor_protocol::ResourceKind::Network,
+                            id: "host".into(),
+                            access: devcoordinator2_executor_protocol::ResourceAccess::Shared,
+                        }],
+                    )]),
+                )
+                .unwrap();
+            let reservation = broker
+                .queue_reservation("removal-reader", "browser", uid)
+                .unwrap();
+            assert!(broker.try_reservation(reservation).unwrap());
+            let caller = {
+                let broker = broker.clone();
+                tokio::spawn(async move { call(&broker, "database-setup").await })
+            };
+            if mode == "ordinary" {
+                let ceiling = Instant::now() + Duration::from_secs(2);
+                while broker.snapshot().unwrap().network_stability.waiting_writers != 1 {
+                    assert!(Instant::now() < ceiling);
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                assert_eq!(
+                    tokio::time::timeout(Duration::from_secs(1), call(&broker, "deadline-probe"))
+                        .await
+                        .unwrap()["ok"],
+                    false
+                );
+                assert!(
+                    !caller.is_finished(),
+                    "ordinary removal spent its execution budget waiting for admission"
+                );
+                assert!(!executable.with_extension("removed").exists());
+                broker.unregister_run("removal-reader").unwrap();
+            }
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), caller)
+                    .await
+                    .unwrap()
+                    .unwrap()["ok"],
+                mode == "ordinary"
+            );
+            assert_eq!(
+                executable.with_extension("removed").exists(),
+                mode == "ordinary"
+            );
+            // A panic in the adapter must not satisfy an expected failed RPC.
+            assert_eq!(observed.load(Ordering::SeqCst), 1);
+            if mode != "ordinary" {
+                broker.unregister_run("removal-reader").unwrap();
+            }
+            assert_eq!(
+                broker.snapshot().unwrap().network_stability.waiting_writers,
+                0
+            );
+        }
+
         // Failed detached runs reconcile by exact name even when their caller
         // has already cancelled. Exercise the real Docker adapter/process path,
         // not FakeDocker (which bypasses inherited native cancellation).
@@ -2124,7 +2282,30 @@ mod tests {
             fn execute(&self, _: &str, cancelled: Arc<AtomicBool>) -> Result<(), String> {
                 use crate::docker::DockerControl;
                 cancelled.store(true, Ordering::Release);
-                let outcome = self.0.cleanup_failed_run_container("fixture");
+                let original = native_fixture_context().unwrap();
+                let outcome = {
+                    let before = Instant::now();
+                    let _recovery = NativeCleanupScope::enter();
+                    let context = native_fixture_context().unwrap();
+                    assert!(context.cleanup);
+                    assert!(!context.cancelled.load(Ordering::Acquire));
+                    assert!(!Arc::ptr_eq(&context.cancelled, &cancelled));
+                    assert!(context.deadline >= before + Duration::from_secs(900));
+                    assert!(context.deadline <= Instant::now() + Duration::from_secs(900));
+                    let _nested = NativeCleanupScope::enter();
+                    assert_eq!(native_fixture_context().unwrap().deadline, context.deadline);
+                    let result = self.0.cleanup_failed_run_container("fixture");
+                    assert_eq!(native_fixture_context().unwrap().deadline, context.deadline);
+                    result
+                };
+                assert_eq!(
+                    native_fixture_context().unwrap().deadline,
+                    original.deadline
+                );
+                assert!(Arc::ptr_eq(
+                    &native_fixture_context().unwrap().cancelled,
+                    &cancelled
+                ));
                 if outcome == "removed:1" {
                     Ok(())
                 } else {

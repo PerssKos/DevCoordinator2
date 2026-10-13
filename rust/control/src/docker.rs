@@ -1582,12 +1582,25 @@ pub trait DockerControl: Send + Sync {
         }
     }
 
+    /// Exact-target recovery survives cancellation of the creating caller.
+    /// Ordinary fixture graph cleanup uses `remove_container_in_current_scope`.
     fn remove_container(
         &self,
         container_id: &ExactContainerId,
         delete_volumes: bool,
     ) -> Result<(), DockerError> {
         let _cleanup = crate::capacity::NativeCleanupScope::enter();
+        self.remove_container_in_current_scope(container_id, delete_volumes)
+    }
+
+    /// Ordinary fixture cleanup is still part of its accepted run. Preserve
+    /// that run's deadline and cancellation, including while awaiting the same
+    /// network broker. Recovery callers use `remove_container` instead.
+    fn remove_container_in_current_scope(
+        &self,
+        container_id: &ExactContainerId,
+        delete_volumes: bool,
+    ) -> Result<(), DockerError> {
         let mut argv = vec!["rm".into(), "--force".into()];
         if delete_volumes {
             argv.push("--volumes".into());
