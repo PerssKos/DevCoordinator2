@@ -2463,7 +2463,150 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     );
     stale_discovery_order(world, &repo)?;
     generated_output_safety(world, &repo)?;
+    let owner_races = caller_observation_races(world, &repo);
     linked_manual_caller(world, &repo)?;
+    owner_races
+}
+
+fn caller_observation_races(world: &World, repository: &str) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut observations = Vec::new();
+    for name in ["later-root", "overlapping-root"] {
+        let relative = format!("cache/owner-{name}");
+        world.write_owned(&format!("{relative}/data"), vec![51_u8; 4096])?;
+        let initial = scanned(world, repository, &format!("owner-{name}-initial"))?;
+        let target = initial["artifacts"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row["name"] == format!("owner-{name}"))
+            })
+            .ok_or("owner race target missing")?;
+        let params = json!({"artifact_ids":[target["artifact_id"]]});
+        let before = world.call("storage.cleanup.plan", params.clone())?;
+        ensure!(
+            data(&before)?["ready"] == true,
+            "owner baseline plan not ready"
+        );
+        let barrier = world.state.join("storage-pause-scan");
+        let mut old_scan = None;
+        let exercise = (|| -> Result<(), String> {
+            if name == "overlapping-root" {
+                let key = "owner-overlapping-manual";
+                fs::write(&barrier, key).map_err(|error| error.to_string())?;
+                let started = world.call(
+                    "storage.scan",
+                    json!({"repository_id":repository,"idempotency_key":key}),
+                )?;
+                let id = data(&started)?["job_id"]
+                    .as_str()
+                    .ok_or("manual scan id missing")?
+                    .to_owned();
+                old_scan = Some(id.clone());
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while fs::read_to_string(barrier.with_extension("ready"))
+                    .ok()
+                    .as_deref()
+                    != Some(id.as_str())
+                {
+                    ensure!(
+                        Instant::now() < deadline,
+                        "manual owner scan did not reach barrier"
+                    );
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+            let root = world.call_root(
+                "storage.scan",
+                json!({"repository_id":repository,"idempotency_key":format!("owner-{name}-root")}),
+            )?;
+            let root = wait_job(
+                world,
+                data(&root)?["job_id"]
+                    .as_str()
+                    .ok_or("root race scan id missing")?,
+            )?;
+            ensure!(
+                root["state"] == "completed",
+                "root owner observation failed"
+            );
+            if let Some(id) = old_scan.as_deref() {
+                fs::remove_file(&barrier).map_err(|error| error.to_string())?;
+                ensure!(
+                    wait_job(world, id)?["state"] == "completed",
+                    "older manual scan failed"
+                );
+            }
+            let shown = world.call(
+                "storage.artifact.get",
+                json!({"artifact_id":target["artifact_id"]}),
+            )?;
+            let shown = data(&shown)?;
+            if shown["deletable"] != false
+                || !shown["reasons"].as_array().is_some_and(|reasons| {
+                    reasons.contains(&json!("git_execution_owner_unverified"))
+                })
+            {
+                failures.push(format!(
+                    "{name}: public inventory hid unknown registered owner"
+                ));
+            }
+            let root_plan = world.call_root("storage.cleanup.plan", params.clone())?;
+            if data(&root_plan)?["ready"] != false {
+                failures.push(format!("{name}: root inherited manual source verification"));
+            }
+            let fresh = world.call("storage.cleanup.plan", params.clone())?;
+            if data(&fresh)?["ready"] != true {
+                failures.push(format!(
+                    "{name}: current manual caller blocked by other caller observation"
+                ));
+            }
+            let started = world.call("storage.cleanup.start", json!({"plan_id":data(&before)?["plan_id"],"idempotency_key":format!("owner-{name}-cleanup")}))?;
+            let completed = if let Ok(value) = data(&started) {
+                Some(wait_job(
+                    world,
+                    value["job_id"].as_str().ok_or("race cleanup id missing")?,
+                )?)
+            } else {
+                None
+            };
+            if completed
+                .as_ref()
+                .is_none_or(|job| job["state"] != "completed")
+                || world.repo.join(&relative).exists()
+            {
+                failures.push(format!(
+                    "{name}: caller-only scan invalidated unchanged ready cleanup"
+                ));
+            }
+            observations.push(json!({"case":name,"beforeRevision":target["revision"],"afterRevision":shown["revision"],"inventory":shown,"freshPlan":data(&fresh)?,"start":started,"completion":completed}));
+            Ok(())
+        })();
+        // Always release this fixture's paused request before safe siblings.
+        if barrier.exists() {
+            fs::remove_file(&barrier).map_err(|error| error.to_string())?;
+        }
+        if let Some(id) = old_scan {
+            let _finished = wait_job(world, &id)?;
+        }
+        if let Err(error) = exercise {
+            failures.push(format!("{name}: {error}"));
+        }
+    }
+    let source =
+        fs::read_to_string(world.repo.join("source.txt")).map_err(|error| error.to_string())?;
+    if source != "valuable tracked source\n" {
+        failures.push("owner races changed tracked source".into());
+    }
+    write_private_json(
+        &world.base.join("storage-owner-observation-races.json"),
+        &json!({"cases":observations,"failures":failures,"sourcePreserved":source == "valuable tracked source\n"}),
+    )?;
+    ensure!(
+        failures.is_empty(),
+        "owner observation races: {}",
+        failures.join("; ")
+    );
     Ok(())
 }
 
