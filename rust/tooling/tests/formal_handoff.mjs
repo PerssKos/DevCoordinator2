@@ -224,6 +224,30 @@ const geometry = (primary, heading, identifier) => [
 ];
 const full = (pathname = '/') => structuredClone({ ...base, targets: [{ ...target, url: `${target.url.slice(0, -1)}${pathname}`, geometryAssertions: [...geometry('#primary', '#heading', '#label'), { id: 'hidden-track', kind: 'hidden-navigation-track', selector: '#nav', primarySelector: '#primary', track: { selector: '#layout', axis: 'columns', index: 0 }, maxReservedSize: 0 }] }], fixtureDataShapes: [{ id: 'workspace', revision: 'v1', target: 'handoff', route: pathname, state: 'base', conditionalDom: ['#layout', '#nav', '#primary', '#label'], layoutEffect: 'Workspace and attached hidden navigation track' }], requiredCoverage: [{ target: 'handoff', state: 'base', viewport: 'desktop', width: 1440 }] });
 const results = [];
+const modalHierarchyModes = ['modal', 'modal-descendant', 'modal-inner-clipped', 'modal-inner-scroll', 'modal-offscreen', 'modal-hidden', 'nonmodal-clipped'];
+for (const mode of modalHierarchyModes) {
+  const inner = mode === 'modal-inner-clipped' ? 'height:12px;overflow:hidden' : mode === 'modal-inner-scroll' ? 'height:12px;overflow:auto' : '';
+  const surface = mode === 'modal-offscreen' ? 'top:950px;bottom:auto' : mode === 'modal-hidden' ? 'opacity:0' : '';
+  variants.set('/hierarchy-' + mode, `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{overflow:hidden}body{margin:0;height:3200px;color:#111;background:white;font:16px sans-serif}#outer{position:fixed;top:0;left:0;width:12px;height:12px;overflow:hidden;transform:translateX(0)}dialog{position:fixed;inset:0;margin:auto;width:500px;height:300px;max-width:calc(100vw - 60px);box-sizing:border-box;padding:20px;border:1px solid #555;background:white;color:#111;${surface}}#inner{${inner}}#primary{height:200px}h1{margin-top:0;font-size:24px}button{min-height:40px}</style><div id="outer"><dialog id="dialog"><div id="inner"><main id="primary"><h1 id="heading">Reserve components</h1><button id="label">Part 214</button></main></div></dialog></div><script>scrollTo(0,1200);document.querySelector('#dialog').${mode === 'nonmodal-clipped' ? 'show' : 'showModal'}();scrollTo(0,1200);document.documentElement.dataset.ready='true';</script>`);
+}
+async function modalHierarchyFixtures() {
+  for (const mode of modalHierarchyModes) {
+    const config = full('/hierarchy-' + mode), current = config.targets[0];
+    const selector = mode === 'modal' || mode === 'modal-offscreen' || mode === 'modal-hidden' ? '#dialog' : '#primary';
+    current.waitFor = { selector: 'html[data-ready=true]' };
+    current.regions = [{ selector, role: 'primary-content', journey: 'edit-signal' }];
+    current.geometryAssertions = geometry('#dialog', '#heading', '#label');
+    config.fixtureDataShapes[0].conditionalDom = ['#dialog', '#primary', '#label'];
+    await verify('hierarchy-' + mode, config, ({ receipt, report }) => {
+      const measured = report.pages[0].metrics.journey;
+      assert.equal(measured.viewport.scrollY, 1200, 'The locked background must remain scrolled in the measured state');
+      const rejected = measured.findings.some(row => ['primary-journey-content-missing', 'primary-journey-outside-initial-viewport', 'primary-journey-content-displaced'].includes(row.rule));
+      const expected = !['modal', 'modal-descendant'].includes(mode);
+      assert.equal(rejected, expected, 'Only native top-layer ancestors may be skipped; inner and ordinary clipping remain real');
+      if (!expected) { assert.equal(receipt.formal.result, 'passed'); assert(measured.regions[0].visibleHeight >= 200); }
+    });
+  }
+}
 async function capturePrivacy() {
   const require = createRequire(import.meta.url);
   const modules = process.env.FORMAL_WEB_UI_PLAYWRIGHT_NODE_MODULES ?? join(root, 'ci/playwright/node_modules');
@@ -817,7 +841,8 @@ async function uploadFixtures() {
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
 try {
-  if (process.argv.includes('--continuation-precision-only')) await continuationPrecisionFixtures();
+  if (process.argv.includes('--modal-hierarchy-only')) await modalHierarchyFixtures();
+  else if (process.argv.includes('--continuation-precision-only')) await continuationPrecisionFixtures();
   else if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
   else if (process.argv.includes('--session-only') || process.argv.includes('--browser-isolation-only')) await sessionFixtures();
   else {
@@ -827,6 +852,7 @@ try {
   if (!process.argv.includes('--capture-only')) await uploadFixtures();
   if (!process.argv.includes('--upload-only')) await capturePrivacy();
   if (!process.argv.includes('--capture-only') && !process.argv.includes('--upload-only')) {
+  await modalHierarchyFixtures();
   await recoveryGeometryFixtures();
   await continuationPrecisionFixtures();
   await Promise.all([

@@ -102,13 +102,14 @@ export function resolveHandoffRequirements(config, cells) {
 // and selectors only; inspected text and native control values never escape.
 export function measureHandoffInPage(input) {
   const find = selector => { try { return [...document.querySelectorAll(selector)]; } catch { return []; } };
+  const clippingParent = element => element.matches('dialog:modal') ? null : element.parentElement || element.getRootNode()?.host || null;
   const visible = element => Boolean(element && element.getClientRects().length && element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }));
   const rect = element => { const box = element.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; };
   const clips = element => {
     const box = element.getBoundingClientRect(), rows = [];
     if (element.clientWidth > 0 && element.scrollWidth > element.clientWidth + 1 && ['hidden', 'clip'].includes(getComputedStyle(element).overflowX)) rows.push({ axis: 'x', self: true });
     if (element.clientHeight > 0 && element.scrollHeight > element.clientHeight + 1 && ['hidden', 'clip'].includes(getComputedStyle(element).overflowY)) rows.push({ axis: 'y', self: true });
-    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    for (let parent = clippingParent(element); parent; parent = clippingParent(parent)) {
       const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
       if (['hidden', 'clip'].includes(style.overflowX) && (box.left < bounds.left - 1 || box.right > bounds.right + 1)) rows.push({ axis: 'x', self: false });
       if (['hidden', 'clip'].includes(style.overflowY) && (box.top < bounds.top - 1 || box.bottom > bounds.bottom + 1)) rows.push({ axis: 'y', self: false });
@@ -117,7 +118,7 @@ export function measureHandoffInPage(input) {
   };
   const visibleRect = (box, parent) => {
     let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right), top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
-    for (; parent; parent = parent.parentElement) {
+    for (; parent; parent = clippingParent(parent)) {
       const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
       if (style.display === 'contents') continue;
       const scaleX = parent.offsetWidth ? bounds.width / parent.offsetWidth : 1, scaleY = parent.offsetHeight ? bounds.height / parent.offsetHeight : 1;
@@ -126,7 +127,7 @@ export function measureHandoffInPage(input) {
     }
     return { width: Math.max(0, right - left), height: Math.max(0, bottom - top), fullyVisible: box.width > 1 && box.height > 1 && left <= box.left && right >= box.right && top <= box.top && bottom >= box.bottom };
   };
-  const visibleBox = element => visibleRect(element.getBoundingClientRect(), element.parentElement);
+  const visibleBox = element => visibleRect(element.getBoundingClientRect(), clippingParent(element));
   const visibleTextParent = element => {
     if (!element || getComputedStyle(element).visibility !== 'visible') return false;
     // Text has its own Range boxes; display:contents does not create a box

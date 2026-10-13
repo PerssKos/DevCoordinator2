@@ -3052,6 +3052,7 @@ async function scrollThroughPage(page, { maxIterations = 30 } = {}) {
 function journeyHierarchyVerifier(contract) {
   const findings = [];
   const rows = [];
+  const clippingParent = element => element.matches('dialog:modal') ? null : element.parentElement || element.getRootNode()?.host || null;
   const deepQueryAll = (selector) => {
     const matches = [];
     const roots = [document];
@@ -3103,7 +3104,7 @@ function journeyHierarchyVerifier(contract) {
       const isVisible = visible(element);
       let visibleTop = Math.max(0, rect.top), visibleBottom = Math.min(window.innerHeight, rect.bottom);
       let visibleLeft = Math.max(0, rect.left), visibleRight = Math.min(window.innerWidth, rect.right);
-      for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      for (let parent = clippingParent(element); parent; parent = clippingParent(parent)) {
         const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
         const scaleX = parent.offsetWidth ? bounds.width / parent.offsetWidth : 1, scaleY = parent.offsetHeight ? bounds.height / parent.offsetHeight : 1;
         if (["hidden", "clip", "auto", "scroll"].includes(style.overflowY)) { const edge = bounds.top + parent.clientTop * scaleY; visibleTop = Math.max(visibleTop, edge); visibleBottom = Math.min(visibleBottom, edge + parent.clientHeight * scaleY); }
