@@ -1022,10 +1022,22 @@ impl StorageService {
                     r.artifact.last_used_at_ms =
                         r.artifact.last_used_at_ms.max(old.artifact.last_used_at_ms);
                 }
+                if r.source_owner_observation.is_some() {
+                    // Git ownership failed before all source/mount checks could
+                    // finish. This observation cannot clear older safety failures
+                    // or make an expired complete check look fresh again.
+                    r.blockers.extend(old.blockers.iter().cloned());
+                    r.artifact.verified_at_ms = old.artifact.verified_at_ms;
+                }
+                r.blockers.sort();
+                r.blockers.dedup();
+                let mut prior_blockers = old.blockers.clone();
+                prior_blockers.sort();
+                prior_blockers.dedup();
                 let changed = old.fingerprint != r.fingerprint
                     || old.ancestor_keys != r.ancestor_keys
                     || old.last_activity_signature != r.last_activity_signature
-                    || old.blockers != r.blockers
+                    || prior_blockers != r.blockers
                     || old.artifact.dependencies != r.artifact.dependencies;
                 r.artifact.revision = old.artifact.revision + u64::from(changed);
             }

@@ -33,6 +33,27 @@ pub enum Locator {
     },
 }
 
+/// Private caller-scoped uncertainty, not a transferable successful Git check.
+/// Unknown versions/fields fail closed when reading the stored record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "source_owner_observation_version", deny_unknown_fields)]
+pub enum SourceOwnerObservation {
+    #[serde(rename = "1")]
+    Unavailable {
+        resource_key: String,
+        fingerprint: String,
+        git_root: PathBuf,
+        origin: SourceOwnerOrigin,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceOwnerOrigin {
+    Registered,
+    LocalManual { uid: u32 },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     /// Persistent observation/mutation order, independent of wall-clock changes.
@@ -50,6 +71,8 @@ pub struct Record {
     pub disposal_approved: bool,
     pub disposal_reason: Option<String>,
     pub blockers: Vec<String>,
+    #[serde(default)]
+    pub source_owner_observation: Option<SourceOwnerObservation>,
     pub recovery_lineage: Option<String>,
     pub recovery_verified: bool,
     #[serde(default)]
@@ -57,6 +80,34 @@ pub struct Record {
     pub private_aliases: Vec<PathBuf>,
     #[serde(default)]
     pub retention_eligible: bool,
+}
+
+impl Record {
+    pub fn source_owner_reason(&self) -> Option<&'static str> {
+        self.source_owner_observation.as_ref().map(|observation| {
+            let SourceOwnerObservation::Unavailable {
+                resource_key, fingerprint, git_root, origin,
+            } = observation;
+            if resource_key == &self.resource_key && fingerprint == &self.fingerprint
+                && !matches!(origin, SourceOwnerOrigin::LocalManual { uid: 0 })
+                && matches!(&self.locator, Locator::Directory { git_root: Some(root), .. } if root == git_root)
+            {
+                "git_execution_owner_unverified"
+            } else {
+                "stored_storage_record_invalid"
+            }
+        })
+    }
+
+    /// Only an identity-bound annotation can be omitted for a fresh operation
+    /// validation. Legacy/shared reason strings are never removed here.
+    pub fn for_caller_validation(&self) -> Self {
+        let mut current = self.clone();
+        if self.source_owner_reason() == Some("git_execution_owner_unverified") {
+            current.source_owner_observation = None;
+        }
+        current
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

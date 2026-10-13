@@ -39,6 +39,26 @@ removal. Their protection and ownership checks still apply. Aliases and nested
 data contribute to the planned space only once; each tracked identity retains
 its own result even when one containing-directory removal handles them together.
 
+### Manual source checks and concurrent discovery
+
+A local manual plan and start verify Git source again as the current authenticated
+non-root caller. Root, Console and automatic work retain the registered execution
+owner; they cannot borrow another caller's successful scan or ready plan. Cleanup
+repeats the same checks immediately before removal.
+
+A scan unable to resolve its Git execution owner stores a private, versioned,
+identity-bound uncertainty annotation. Public inventory still reports
+`git_execution_owner_unverified` and is not labelled safe. This caller-specific
+uncertainty alone does not change the artifact revision or invalidate an otherwise
+unchanged manual plan. The plan succeeds only after fresh complete validation for
+its own caller. Legacy untyped reasons and malformed annotations remain blocked.
+
+An incomplete source observation preserves prior safety failures and the last
+complete verification time. Changed files, identity, activity, dependencies,
+protection, leases and policies still invalidate cleanup. Newer scan ordering and
+all existing exact-target comparisons remain binding; no successful owner proof
+is cached or transferred between callers.
+
 ## Legacy Docker ownership
 
 Observed deployments remain read-only through ordinary deployment controls.

@@ -1454,17 +1454,14 @@ fn unused_volume_ownership(world: &mut World, repo: &str) -> Result<(), String> 
         plan["ready"] == true,
         "known unused volume was not plannable"
     );
-    fs::write(
-        mountpoints[0].join("new-data-after-plan"),
-        b"new fixture data",
-    )
-    .map_err(|e| e.to_string())?;
-    let start = mcp(
-        world,
-        "storage_cleanup_start",
-        json!({"plan_id":plan["plan_id"],"idempotency_key":"reject-changed-volume-data"}),
-    )?;
-    let refused = wait_job(world, start["job_id"].as_str().unwrap())?;
+    let refused = cleanup_after_start(world, &plan, "reject-changed-volume-data", || {
+        fs::write(
+            mountpoints[0].join("new-data-after-plan"),
+            b"new fixture data",
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
     ensure!(
         refused["state"] == "failed"
             && refused["receipts"]
@@ -2259,15 +2256,10 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
         "manual guard plan was not ready"
     );
     let root_job = world.call_root("storage.cleanup.start", json!({"plan_id":data(&local_plan)?["plan_id"],"idempotency_key":"root-cannot-borrow-plan"}))?;
-    let root_job = wait_job(
-        world,
-        data(&root_job)?["job_id"]
-            .as_str()
-            .ok_or("root cleanup id missing")?,
-    )?;
     ensure!(
-        root_job["state"] == "failed"
-            && root_job["receipts"][0]["code"] == "git_execution_owner_unverified"
+        error_code(&root_job) == Some("storage_blocked")
+            && root_job["error"]["message"] == "git_execution_owner_unverified"
+            && root_job.get("data").is_none()
             && world.repo.join("cache/root-guard/output.bin").is_file(),
         "root cleanup borrowed a ready manual plan"
     );
@@ -2355,26 +2347,19 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let plan = world.call("storage.cleanup.plan", json!({"artifact_ids":[changed_id]}))?;
     let plan = data(&plan)?;
     ensure!(plan["ready"] == true, "unchanged fixture was blocked");
-    fs::rename(
-        world.repo.join("cache/changed"),
-        world.repo.join("saved-original"),
-    )
-    .map_err(|e| e.to_string())?;
-    std::os::unix::fs::symlink(
-        world.repo.join("saved-original"),
-        world.repo.join("cache/changed"),
-    )
-    .map_err(|e| e.to_string())?;
-    let started = world.call(
-        "storage.cleanup.start",
-        json!({"plan_id":plan["plan_id"],"idempotency_key":"reject-substitution"}),
-    )?;
-    let failed = wait_job(
-        world,
-        data(&started)?["job_id"]
-            .as_str()
-            .ok_or("substitution job id missing")?,
-    )?;
+    let failed = cleanup_after_start(world, &plan, "reject-substitution", || {
+        fs::rename(
+            world.repo.join("cache/changed"),
+            world.repo.join("saved-original"),
+        )
+        .map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(
+            world.repo.join("saved-original"),
+            world.repo.join("cache/changed"),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
     ensure!(
         failed["state"] == "failed",
         "substituted target was not refused"
@@ -2464,8 +2449,54 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     stale_discovery_order(world, &repo)?;
     generated_output_safety(world, &repo)?;
     let owner_races = caller_observation_races(world, &repo);
+    let owner_safety = caller_observation_safety(world, &repo);
     linked_manual_caller(world, &repo)?;
-    owner_races
+    owner_races?;
+    owner_safety
+}
+
+fn cleanup_after_start(
+    world: &World,
+    plan: &Value,
+    key: &str,
+    mutate: impl FnOnce() -> Result<(), String>,
+) -> Result<Value, String> {
+    let barrier = world.state.join("storage-pause-before-cleanup");
+    fs::write(
+        &barrier,
+        plan["plan_id"].as_str().ok_or("paused plan missing")?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut job_id = None;
+    let result = (|| {
+        let start = mcp(
+            world,
+            "storage_cleanup_start",
+            json!({"plan_id":plan["plan_id"],"idempotency_key":key}),
+        )?;
+        let id = start["job_id"]
+            .as_str()
+            .ok_or("paused cleanup missing")?
+            .to_owned();
+        job_id = Some(id.clone());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while fs::read_to_string(barrier.with_extension("ready"))
+            .ok()
+            .as_deref()
+            != Some(id.as_str())
+        {
+            ensure!(
+                Instant::now() < deadline,
+                "cleanup missed pre-mutation boundary"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        mutate()
+    })();
+    fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+    let completed = job_id.map(|id| wait_job(world, &id)).transpose();
+    result?;
+    completed?.ok_or_else(|| "paused cleanup absent".into())
 }
 
 fn caller_observation_races(world: &World, repository: &str) -> Result<(), String> {
@@ -2579,6 +2610,17 @@ fn caller_observation_races(world: &World, repository: &str) -> Result<(), Strin
                     "{name}: caller-only scan invalidated unchanged ready cleanup"
                 ));
             }
+            if shown["revision"] != target["revision"] {
+                failures.push(format!(
+                    "{name}: owner annotation changed shared resource revision"
+                ));
+            }
+            if let Some(completed) = completed.as_ref() {
+                let replay = world.call("storage.cleanup.start", json!({"plan_id":data(&before)?["plan_id"],"idempotency_key":format!("owner-{name}-cleanup")}))?;
+                if data(&replay)? != completed {
+                    failures.push(format!("{name}: lost-reply retry changed exact receipt"));
+                }
+            }
             observations.push(json!({"case":name,"beforeRevision":target["revision"],"afterRevision":shown["revision"],"inventory":shown,"freshPlan":data(&fresh)?,"start":started,"completion":completed}));
             Ok(())
         })();
@@ -2605,6 +2647,282 @@ fn caller_observation_races(world: &World, repository: &str) -> Result<(), Strin
     ensure!(
         failures.is_empty(),
         "owner observation races: {}",
+        failures.join("; ")
+    );
+    Ok(())
+}
+
+// Exercise the real inventory/plan/start surface. Persisted-record faults use
+// the existing isolated authority DB fixture, never the installed database.
+fn caller_observation_safety(world: &World, repository: &str) -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut observations = Vec::new();
+    for name in [
+        "prior-mounted",
+        "prior-tracked",
+        "expired",
+        "legacy",
+        "mismatched",
+        "fingerprint",
+        "gitroot",
+        "zero-uid",
+        "missing-origin",
+        "version",
+        "data",
+        "tracked",
+        "lease",
+        "protection",
+    ] {
+        let relative = format!("cache/owner-negative-{name}");
+        world.write_owned(&format!("{relative}/data"), vec![67_u8; 4096])?;
+        let initial = scanned(world, repository, &format!("owner-negative-{name}-initial"))?;
+        let target = initial["artifacts"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r["name"] == format!("owner-negative-{name}"))
+            })
+            .ok_or("negative owner artifact missing")?;
+        let id = target["artifact_id"]
+            .as_str()
+            .ok_or("negative owner id missing")?
+            .to_owned();
+        let params = json!({"artifact_ids":[id]});
+        let ready = world.call("storage.cleanup.plan", params.clone())?;
+        ensure!(
+            data(&ready)?["ready"] == true,
+            "negative owner baseline not ready"
+        );
+        let db =
+            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+        let read = |id: String| -> Result<String, String> {
+            db.call(move |c| {
+                c.query_row(
+                    "SELECT record_json FROM storage_artifacts WHERE artifact_id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .map_err(devcoordinator2_control::database::DatabaseError::from)
+            })
+            .map_err(|e| e.to_string())
+        };
+        let write = |id: String, value: String| -> Result<(), String> {
+            db.transaction(move |c| {
+                c.execute("UPDATE storage_scan_state SET revision=revision+1 WHERE singleton=1", [])?;
+                let sequence:i64=c.query_row("SELECT revision FROM storage_scan_state WHERE singleton=1",[],|r|r.get(0))?;
+                let changed=c.execute("UPDATE storage_artifacts SET record_json=json_set(?1,'$.update_sequence',?2) WHERE artifact_id=?3",rusqlite::params![value,sequence,id])?;
+                if changed != 1 { return Err(devcoordinator2_control::database::DatabaseError::Domain(devcoordinator2_api::ProtocolError::new(devcoordinator2_api::ErrorCode::StorageBlocked,"fixture_record_missing"))); }
+                Ok(())
+            }).map_err(|e|e.to_string())
+        };
+        if name == "prior-tracked" {
+            world.git(&["add", "-f", &format!("{relative}/data")])?;
+            let rejected = scanned(world, repository, "owner-prior-tracked-rejected")?;
+            world.git(&["rm", "--cached", &format!("{relative}/data")])?;
+            ensure!(
+                rejected["artifacts"]
+                    .as_array()
+                    .is_some_and(|rows| rows.iter().any(|r| r["artifact_id"] == id
+                        && r["reasons"]
+                            .as_array()
+                            .is_some_and(|reasons| reasons.contains(&json!("tracked_source"))))),
+                "real prior tracked source check was not recorded"
+            );
+        }
+        if matches!(name, "prior-mounted" | "expired" | "legacy") {
+            let mut saved: Value =
+                serde_json::from_str(&read(id.clone())?).map_err(|e| e.to_string())?;
+            if name == "prior-mounted" {
+                saved["blockers"] = json!(["mounted_path"]);
+            }
+            if name == "legacy" {
+                saved["blockers"] = json!(["git_execution_owner_unverified"]);
+            }
+            if name == "expired" {
+                saved["artifact"]["verified_at_ms"] = Value::Null;
+            }
+            write(
+                id.clone(),
+                serde_json::to_string(&saved).map_err(|e| e.to_string())?,
+            )?;
+        }
+        let prior_record: Value =
+            serde_json::from_str(&read(id.clone())?).map_err(|e| e.to_string())?;
+        let root = world.call_root("storage.scan",json!({"repository_id":repository,"idempotency_key":format!("owner-negative-{name}-root")}))?;
+        ensure!(
+            wait_job(
+                world,
+                data(&root)?["job_id"]
+                    .as_str()
+                    .ok_or("root negative scan missing")?
+            )?["state"]
+                == "completed",
+            "negative root observation failed"
+        );
+        let saved = read(id.clone())?;
+        let mut lease = None;
+        let mut tracked = false;
+        let exercise = (|| -> Result<(), String> {
+            if matches!(
+                name,
+                "mismatched"
+                    | "fingerprint"
+                    | "gitroot"
+                    | "zero-uid"
+                    | "missing-origin"
+                    | "version"
+            ) {
+                let mut malformed: Value =
+                    serde_json::from_str(&saved).map_err(|e| e.to_string())?;
+                ensure!(
+                    malformed["source_owner_observation"].is_object(),
+                    "typed owner observation absent"
+                );
+                let annotation = &mut malformed["source_owner_observation"];
+                match name {
+                    "mismatched" => annotation["resource_key"] = json!("different"),
+                    "fingerprint" => annotation["fingerprint"] = json!("different"),
+                    "gitroot" => annotation["git_root"] = json!("/different"),
+                    "zero-uid" => annotation["origin"] = json!({"kind":"local_manual","uid":0}),
+                    "missing-origin" => {
+                        annotation
+                            .as_object_mut()
+                            .ok_or("annotation object missing")?
+                            .remove("origin");
+                    }
+                    _ => annotation["source_owner_observation_version"] = json!("2"),
+                }
+                write(
+                    id.clone(),
+                    serde_json::to_string(&malformed).map_err(|e| e.to_string())?,
+                )?;
+            }
+            if name == "data" {
+                world.write_owned(&format!("{relative}/later"), "new data after plan")?;
+            }
+            if name == "tracked" {
+                world.git(&["add", "-f", &format!("{relative}/data")])?;
+                tracked = true;
+            }
+            if name == "lease" {
+                lease = Some(
+                    data(&world.call(
+                        "storage.lease.set",
+                        json!({"artifact_ids":[id],"duration_seconds":60}),
+                    )?)?["lease_id"]
+                        .clone(),
+                );
+            }
+            if name == "protection" {
+                data(&world.call("storage.protection.set",json!({"artifact_id":id,"expected_revision":target["revision"],"protected":true}))?)?;
+            }
+            let plan = world.call("storage.cleanup.plan", params.clone())?;
+            let start=world.call("storage.cleanup.start",json!({"plan_id":data(&ready)?["plan_id"],"idempotency_key":format!("owner-negative-{name}-start")}))?;
+            let expected = match name {
+                "prior-mounted" => "mounted_path",
+                "prior-tracked" | "tracked" => "tracked_source",
+                "expired" => "checks_expired",
+                "legacy" => "git_execution_owner_unverified",
+                "data" => "activity_changed",
+                "lease" => "active_lease",
+                "protection" => "explicitly_protected",
+                _ => "stored_storage_record_invalid",
+            };
+            let parse_failure = matches!(name, "version" | "missing-origin");
+            let plan_refused = if parse_failure {
+                plan["error"]["message"] == expected
+                    && error_code(&plan) == Some("storage_unavailable")
+            } else {
+                data(&plan).is_ok_and(|p| {
+                    p["ready"] == false
+                        && p["items"][0]["blockers"]
+                            .as_array()
+                            .is_some_and(|r| r.contains(&json!(expected)))
+                })
+            };
+            let cas_changed = matches!(name, "lease" | "protection" | "prior-tracked");
+            let expected_start = if cas_changed {
+                "artifact_changed"
+            } else {
+                expected
+            };
+            if !plan_refused
+                || start["error"]["message"] != expected_start
+                || error_code(&start)
+                    != Some(if cas_changed {
+                        "storage_conflict"
+                    } else if parse_failure {
+                        "storage_unavailable"
+                    } else {
+                        "storage_blocked"
+                    })
+                || !world.repo.join(&relative).exists()
+            {
+                failures.push(format!(
+                    "{name}: expected exact plan {expected}/start {expected_start} safety refusal"
+                ));
+            }
+            if matches!(name, "expired" | "prior-tracked" | "prior-mounted") {
+                let show = world.call("storage.artifact.get", json!({"artifact_id":id}))?;
+                if data(&show)?["verified_at_ms"] != prior_record["artifact"]["verified_at_ms"] {
+                    failures.push(format!(
+                        "{name}: incomplete scan refreshed complete-check time"
+                    ));
+                }
+            }
+            observations.push(json!({"case":name,"expectedPlanReason":expected,"expectedStartReason":expected_start,"plan":plan,"start":start,"verifiedBefore":prior_record["artifact"]["verified_at_ms"],"verifiedAfterRoot":serde_json::from_str::<Value>(&saved).map_err(|e|e.to_string())?["artifact"]["verified_at_ms"],"source":"existing isolated daemon fixture","persistedFault":matches!(name,"prior-mounted"|"expired"|"legacy"|"mismatched"|"fingerprint"|"gitroot"|"zero-uid"|"missing-origin"|"version"),"targetPreserved":world.repo.join(&relative).exists()}));
+            Ok(())
+        })();
+        // Restore only this case's controlled private record after corruption.
+        if matches!(
+            name,
+            "mismatched" | "fingerprint" | "gitroot" | "zero-uid" | "missing-origin" | "version"
+        ) {
+            write(id.clone(), saved)?;
+        }
+        if tracked {
+            world.git(&["rm", "--cached", &format!("{relative}/data")])?;
+        }
+        if let Some(lease_id) = lease {
+            data(&world.call("storage.lease.release", json!({"lease_id":lease_id}))?)?;
+        }
+        if let Err(error) = exercise {
+            failures.push(format!("{name}: {error}"));
+        }
+        db.close().map_err(|e| e.to_string())?;
+        if matches!(
+            name,
+            "prior-mounted"
+                | "prior-tracked"
+                | "expired"
+                | "legacy"
+                | "mismatched"
+                | "fingerprint"
+                | "gitroot"
+                | "zero-uid"
+                | "missing-origin"
+                | "version"
+        ) {
+            scanned(
+                world,
+                repository,
+                &format!("owner-negative-{name}-recovery"),
+            )?;
+            let recovered = world.call("storage.cleanup.plan", params)?;
+            if data(&recovered)?["ready"] != true {
+                failures.push(format!(
+                    "{name}: fresh complete owner observation could not recover"
+                ));
+            }
+        }
+    }
+    write_private_json(
+        &world.base.join("storage-owner-observation-safety.json"),
+        &json!({"cases":observations,"failures":failures}),
+    )?;
+    ensure!(
+        failures.is_empty(),
+        "owner observation safety: {}",
         failures.join("; ")
     );
     Ok(())
@@ -2838,6 +3156,7 @@ fn queued_origin_survives_restart(
 ) -> Result<(), String> {
     for origin in [
         "edge",
+        "typed-nonmanual",
         "legacy",
         "unknown-version",
         "malformed-origin",
@@ -2879,6 +3198,17 @@ fn queued_origin_survives_restart(
                 request("storage.cleanup.start", parameters.clone(), "other", None),
             )?
         };
+        if !local {
+            fs::remove_file(&barrier).map_err(|e| e.to_string())?;
+            ensure!(
+                error_code(&started) == Some("storage_blocked")
+                    && started["error"]["message"] == "git_execution_owner_unverified"
+                    && started.get("data").is_none()
+                    && primary.join("cache/root-guard/output.bin").is_file(),
+                "configured edge enqueued a manual caller's plan"
+            );
+            continue;
+        }
         let job_id = data(&started)?["job_id"]
             .as_str()
             .ok_or("origin job missing")?
@@ -2903,6 +3233,7 @@ fn queued_origin_survives_restart(
                 Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
             let id = job_id.clone();
             let expression = match origin {
+                "typed-nonmanual" => "json_set(request_json,'$.local_manual',json('false'))",
                 "legacy" => "json_extract(request_json,'$.parameters')",
                 "unknown-version" => "json_set(request_json,'$.storage_request_version','2')",
                 "malformed-origin" => "json_set(request_json,'$.local_manual','true')",
@@ -2926,7 +3257,7 @@ fn queued_origin_survives_restart(
         // its already-queued Console job must still use its original context.
         world.start_daemon(None, None, None)?;
         let completed = wait_job(world, &job_id)?;
-        let refused = if matches!(origin, "edge" | "legacy") {
+        let refused = if matches!(origin, "edge" | "typed-nonmanual" | "legacy") {
             completed["receipts"][0]["code"] == "git_execution_owner_unverified"
         } else {
             completed["error_code"] == "stored_storage_record_invalid"
@@ -3286,27 +3617,19 @@ fn stale_discovery_order(world: &World, repo: &str) -> Result<(), String> {
         json!({"artifact_ids":[removed["artifact_id"],invalid["artifact_id"]]}),
     )?;
     ensure!(plan["ready"] == true, "ordering cleanup was not ready");
-    fs::rename(
-        world.repo.join("cache/ordering-invalid"),
-        world.repo.join("ordering-saved"),
-    )
-    .map_err(|e| e.to_string())?;
-    std::os::unix::fs::symlink(
-        world.repo.join("ordering-saved"),
-        world.repo.join("cache/ordering-invalid"),
-    )
-    .map_err(|e| e.to_string())?;
-    let cleanup = mcp(
-        world,
-        "storage_cleanup_start",
-        json!({"plan_id":plan["plan_id"],"idempotency_key":"ordering-cleanup"}),
-    )?;
-    let receipt = wait_job(
-        world,
-        cleanup["job_id"]
-            .as_str()
-            .ok_or("ordering cleanup id missing")?,
-    )?;
+    let receipt = cleanup_after_start(world, &plan, "ordering-cleanup", || {
+        fs::rename(
+            world.repo.join("cache/ordering-invalid"),
+            world.repo.join("ordering-saved"),
+        )
+        .map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(
+            world.repo.join("ordering-saved"),
+            world.repo.join("cache/ordering-invalid"),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })?;
     ensure!(
         receipt["state"] == "partial",
         "ordering cleanup did not preserve its partial result: {}",

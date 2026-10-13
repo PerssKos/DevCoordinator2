@@ -546,7 +546,7 @@ impl StorageService {
             let r = records
                 .get(&id)
                 .ok_or_else(|| not_found("artifact_not_found"))?;
-            let row = self.project_with(r.clone(), &projection)?;
+            let row = self.project_with(r.for_caller_validation(), &projection)?;
             let mut blockers = if row.deletable {
                 Vec::new()
             } else {
@@ -650,6 +650,25 @@ impl StorageService {
         if plan.public.expires_at_ms < self.now_ms() {
             return Err(conflict("plan_expired"));
         }
+        let projection = self.projection()?;
+        let context = self.context_for_uid(
+            self.manual_caller_uid(caller)
+                .filter(|_| !plan.public.automatic),
+        )?;
+        let selected = plan
+            .records
+            .iter()
+            .map(|r| r.artifact.artifact_id.clone())
+            .collect::<Vec<_>>();
+        for (scope, revision) in &plan.policies {
+            if projection
+                .policy((!scope.is_empty()).then_some(scope.as_str()))
+                .revision
+                != *revision
+            {
+                return Err(conflict("policy_changed"));
+            }
+        }
         for r in &plan.records {
             let current = self.record(&r.artifact.artifact_id)?;
             if current.artifact.revision != r.artifact.revision
@@ -658,6 +677,20 @@ impl StorageService {
             {
                 return Err(conflict("artifact_changed"));
             }
+            let projected = self.project_with(current.for_caller_validation(), &projection)?;
+            if !projected.deletable {
+                return Err(blocked(
+                    projected
+                        .reasons
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("plan_has_blockers"),
+                ));
+            }
+            if plan.public.automatic && !projected.automatic_eligible {
+                return Err(blocked("automatic_policy_not_due"));
+            }
+            self.backend.validate(&current, &context, &selected)?;
         }
         self.queue(
             "cleanup",
@@ -1055,6 +1088,7 @@ impl StorageService {
             .copied()
             .max()
             .max(projection.lease_ancestor_use.get(&r.resource_key).copied());
+        let source_owner_reason = r.source_owner_reason();
         let mut a = r.artifact;
         a.last_used_at_ms = a
             .last_used_at_ms
@@ -1087,6 +1121,9 @@ impl StorageService {
                 )
             })
             .collect::<Vec<_>>();
+        if let Some(reason) = source_owner_reason {
+            reasons.push(reason.into());
+        }
         if !r.disposal_approved && r.discovered_effect == api::Effect::Unknown {
             reasons.push("ownership_unknown".into());
         }

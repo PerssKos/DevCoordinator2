@@ -339,7 +339,21 @@ impl HostBackend {
             r.blockers.push("disposal_not_authorized".into());
         }
         if let Err(e) = self.validate(&r, context, &[]) {
-            r.blockers.push(e.message);
+            if e.message == "git_execution_owner_unverified" && git.is_some() {
+                r.source_owner_observation =
+                    Some(super::super::model::SourceOwnerObservation::Unavailable {
+                        resource_key: r.resource_key.clone(),
+                        fingerprint: r.fingerprint.clone(),
+                        git_root: git.expect("checked Git root").to_path_buf(),
+                        origin: context
+                            .manual_caller_uid
+                            .map_or(super::super::model::SourceOwnerOrigin::Registered, |uid| {
+                                super::super::model::SourceOwnerOrigin::LocalManual { uid }
+                            }),
+                    });
+            } else {
+                r.blockers.push(e.message);
+            }
         }
         Ok(r)
     }

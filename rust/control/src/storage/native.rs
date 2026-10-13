@@ -172,6 +172,9 @@ impl Backend for HostBackend {
         context: &Context,
         selected: &[String],
     ) -> Result<(), ProtocolError> {
+        if r.source_owner_reason() == Some("stored_storage_record_invalid") {
+            return Err(blocked("stored_storage_record_invalid"));
+        }
         if r.artifact.protected {
             return Err(blocked("explicitly_protected"));
         }
@@ -462,6 +465,7 @@ pub(super) fn candidate(
         disposal_approved: false,
         disposal_reason: None,
         blockers: Vec::new(),
+        source_owner_observation: None,
         recovery_lineage: None,
         recovery_verified: false,
         recovery_created_at_ms: None,
