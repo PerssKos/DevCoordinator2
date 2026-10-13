@@ -3076,7 +3076,13 @@ fn linked_manual_caller(world: &mut World, repository: &str) -> Result<(), Strin
             .ok_or("linked cleanup id missing")?
             .to_owned();
         let deadline = Instant::now() + Duration::from_secs(60);
-        while !barrier.with_extension("ready").exists() {
+        // Earlier controlled cleanup may leave its ready marker behind.
+        // Only this queued job can establish the pre-restart boundary.
+        while fs::read_to_string(barrier.with_extension("ready"))
+            .ok()
+            .as_deref()
+            != Some(job_id.as_str())
+        {
             ensure!(
                 Instant::now() < deadline,
                 "cleanup did not reach the pre-mutation restart boundary"
