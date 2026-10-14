@@ -447,63 +447,147 @@ fn unused_image_ownership(
         .get(..12)
         .ok_or("image identity too short")?
         .to_owned();
-    for (index, reference) in [tag.to_owned(), identity, short].into_iter().enumerate() {
+    let image_unchanged = || -> Result<(), String> {
+        let output = Command::new("docker")
+            .args([
+                "--host", host, "image", "inspect", "--format", "{{.Id}}", tag,
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        ensure!(output.status.success(), "protected image disappeared");
+        ensure!(
+            String::from_utf8(output.stdout)
+                .map_err(|e| e.to_string())?
+                .trim()
+                == identity,
+            "protected image identity changed"
+        );
+        Ok(())
+    };
+    let cleanup_jobs = || -> Result<Vec<Value>, String> {
+        let history = mcp(world, "storage_history", json!({"limit":50}))?;
+        ensure!(
+            history["next_before_ms"].is_null(),
+            "image fixture history exceeded its bound"
+        );
+        let mut jobs = history["jobs"]
+            .as_array()
+            .ok_or("image cleanup history missing")?
+            .iter()
+            .filter(|job| job["kind"] == "cleanup")
+            .map(|job| job["job_id"].clone())
+            .collect::<Vec<_>>();
+        jobs.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        Ok(jobs)
+    };
+    for (index, reference) in [tag.to_owned(), identity.clone(), short]
+        .into_iter()
+        .enumerate()
+    {
+        let declare = || -> Result<(), String> {
+            world.write_config(&format!("schema=2\n[deployment.reserved]\nsource=[\"worktree\"]\ncomponents=[\"image\"]\n[deployment.reserved.component.image]\ntype=\"docker\"\nimage={reference:?}\n"))?;
+            let spec = devcoordinator2_control::repository_config::load_deployment_spec(
+                &world.repo,
+                "reserved",
+            )
+            .map_err(|e| e.to_string())?;
+            let database =
+                Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
+            let store = DeploymentStore::new(database.clone());
+            let target = devcoordinator2_control::deployment_state::RegisteredDeploymentTarget {
+                repository_id: repository.into(),
+                worktree_id: ids::worktree_id(&world.repo).map_err(|e| e.to_string())?,
+            };
+            let deployment =
+                DeploymentStore::deployment_id(&target.worktree_id, "reserved", "worktree");
+            store
+                .upsert(
+                    &deployment,
+                    &target,
+                    &spec,
+                    "worktree",
+                    None,
+                    "stopped",
+                    world.harness.caller_uid,
+                    "other",
+                    None,
+                )
+                .map_err(|e| e.message)?;
+            database.close().map_err(|e| e.to_string())?;
+            Ok(())
+        };
         let plan = mcp(
             world,
             "storage_cleanup_plan",
             json!({"artifact_ids":[row["artifact_id"]]}),
         )?;
         ensure!(plan["ready"] == true, "unused image could not be planned");
-        // Persist a current stopped declaration after planning, without creating
-        // a container consumer. The cleanup must refresh declaration evidence.
-        world.write_config(&format!("schema=2\n[deployment.reserved]\nsource=[\"worktree\"]\ncomponents=[\"image\"]\n[deployment.reserved.component.image]\ntype=\"docker\"\nimage={reference:?}\n"))?;
-        let spec = devcoordinator2_control::repository_config::load_deployment_spec(
-            &world.repo,
-            "reserved",
-        )
-        .map_err(|e| e.to_string())?;
-        let database =
-            Database::open(world.state.join("authority.sqlite3")).map_err(|e| e.to_string())?;
-        let store = DeploymentStore::new(database.clone());
-        let target = devcoordinator2_control::deployment_state::RegisteredDeploymentTarget {
-            repository_id: repository.into(),
-            worktree_id: ids::worktree_id(&world.repo).map_err(|e| e.to_string())?,
-        };
-        let deployment =
-            DeploymentStore::deployment_id(&target.worktree_id, "reserved", "worktree");
-        store
-            .upsert(
-                &deployment,
-                &target,
-                &spec,
-                "worktree",
-                None,
-                "stopped",
-                world.harness.caller_uid,
-                "other",
-                None,
-            )
-            .map_err(|e| e.message)?;
-        database.close().map_err(|e| e.to_string())?;
-        let started = mcp(
+        // A current stopped declaration added after planning is refused before
+        // a cleanup job is queued, through the same real MCP caller boundary.
+        declare()?;
+        let before = cleanup_jobs()?;
+        let refused = mcp_result(
             world,
             "storage_cleanup_start",
             json!({"plan_id":plan["plan_id"],"idempotency_key":format!("reject-new-image-declaration-{index}")}),
         )?;
-        let refused = wait_job(world, started["job_id"].as_str().unwrap())?;
+        ensure!(
+            refused["isError"] == true && refused["structuredContent"].is_null(),
+            "a current stopped image declaration did not refuse cleanup before queueing"
+        );
+        let content = refused["content"]
+            .as_array()
+            .ok_or("MCP refusal content missing")?;
+        ensure!(
+            content.len() == 1 && content[0]["type"] == "text",
+            "MCP refusal was not one typed error"
+        );
+        let error: Value = serde_json::from_str(
+            content[0]["text"]
+                .as_str()
+                .ok_or("MCP refusal text missing")?,
+        )
+        .map_err(|e| e.to_string())?;
+        ensure!(
+            error["code"] == "storage_blocked"
+                && error["message"] == "current_deployment"
+                && error.get("job_id").is_none()
+                && cleanup_jobs()? == before,
+            "image declaration refusal changed cause or queued a cleanup job: {}",
+            bounded_json(&error)
+        );
+        image_unchanged()?;
+        world.write_config("schema=2\n")?;
+        scanned(
+            world,
+            repository,
+            &format!("image-early-declaration-retired-{index}"),
+        )?;
+        let plan = mcp(
+            world,
+            "storage_cleanup_plan",
+            json!({"artifact_ids":[row["artifact_id"]]}),
+        )?;
+        ensure!(
+            plan["ready"] == true,
+            "retired image declaration did not restore eligibility"
+        );
+        // Preserve the late worker boundary too: this declaration appears only
+        // after a real successful start has reached the existing cleanup barrier.
+        let refused = cleanup_after_start(
+            world,
+            &plan,
+            &format!("reject-late-image-declaration-{index}"),
+            declare,
+        )?;
         ensure!(
             refused["state"] == "failed"
                 && refused["receipts"]
                     .as_array()
                     .is_some_and(|rows| rows.iter().any(|r| r["code"] == "current_deployment")),
-            "a current stopped image declaration did not block a previously prepared plan"
+            "a late current stopped image declaration did not block queued cleanup"
         );
-        run_status(
-            "docker",
-            &[
-                "--host", host, "image", "inspect", "--format", "{{.Id}}", tag,
-            ],
-        )?;
+        image_unchanged()?;
         world.write_config("schema=2\n")?;
         scanned(
             world,
@@ -1523,6 +1607,21 @@ fn cli(world: &World, args: &[&str]) -> Result<Value, String> {
 }
 
 fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
+    let response = mcp_result(world, name, arguments)?;
+    ensure!(
+        response["isError"] != true,
+        "MCP storage operation failed: {}",
+        bounded_json(&response)
+    );
+    let result = response["structuredContent"].clone();
+    ensure!(
+        !result.is_null(),
+        "MCP storage operation omitted its typed result"
+    );
+    Ok(result)
+}
+
+fn mcp_result(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     tokio::runtime::Runtime::new().map_err(|e|e.to_string())?.block_on(async {
         tokio::time::timeout(Duration::from_secs(30),async {
@@ -1544,9 +1643,9 @@ fn mcp(world: &World, name: &str, arguments: Value) -> Result<Value, String> {
                 let line=lines.next_line().await.map_err(|e|e.to_string())?.ok_or("MCP tool call closed")?;
                 let response:Value=serde_json::from_str(&line).map_err(|e|e.to_string())?;
                 if response["id"]!=2 {continue;}
-                ensure!(response.get("error").is_none() && response["result"]["isError"]!=true,"MCP storage operation failed: {}",bounded_json(&response));
-                let result=response["result"]["structuredContent"].clone();
-                ensure!(!result.is_null(),"MCP storage operation omitted its typed result");
+                ensure!(response.get("error").is_none(),"MCP storage protocol failed: {}",bounded_json(&response));
+                let result=response["result"].clone();
+                ensure!(result.is_object(),"MCP storage operation omitted its result");
                 child.kill().await.map_err(|e|e.to_string())?;
                 return Ok(result);
             }
@@ -2347,7 +2446,7 @@ pub(super) fn real_files_and_protection(world: &mut World) -> Result<(), String>
     let plan = world.call("storage.cleanup.plan", json!({"artifact_ids":[changed_id]}))?;
     let plan = data(&plan)?;
     ensure!(plan["ready"] == true, "unchanged fixture was blocked");
-    let failed = cleanup_after_start(world, &plan, "reject-substitution", || {
+    let failed = cleanup_after_start(world, plan, "reject-substitution", || {
         fs::rename(
             world.repo.join("cache/changed"),
             world.repo.join("saved-original"),
