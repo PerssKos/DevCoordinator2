@@ -535,6 +535,32 @@ impl Deployments {
                         independent_work_safe: true,
                         user_action_required: false,
                     }];
+                } else if readiness.pending_apply == Some(false)
+                    && readiness
+                        .blockers
+                        .iter()
+                        .any(|blocker| blocker.code == ErrorCode::RouteLeaseConflict)
+                {
+                    // A route can be withdrawn after the applied source has
+                    // already been restored (for example when a shared
+                    // runtime owner disappears). The source comparison is
+                    // still current, so an agent needs a bounded, same-source
+                    // apply action instead of being told to change code or
+                    // configuration. Apply re-allocates any missing stable
+                    // lease, restarts the declared generation, and publishes
+                    // the route only after health succeeds.
+                    readiness.next_actions = vec![devcoordinator2_api::recovery::RecoveryOption {
+                        id: "repair-route".into(),
+                        action: devcoordinator2_api::recovery::Action::Retry,
+                        operation: Some("deployment.apply".into()),
+                        effect: "Reapply the current declared source to restore the stable route lease and publish the route after health succeeds.".into(),
+                        target: Some(target.deployment_id.clone()),
+                        cost: Some("runs the declared build and convergence checks".into()),
+                        risk: Some("replaces the routed generation only after the same source is healthy".into()),
+                        prerequisites: vec!["deployment preflight is ready".into()],
+                        independent_work_safe: true,
+                        user_action_required: false,
+                    }];
                 }
             }
             Err(_) => readiness

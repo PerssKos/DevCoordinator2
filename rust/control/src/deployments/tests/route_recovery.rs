@@ -372,7 +372,18 @@ fn healthy_process_without_its_route_is_not_ready() {
     let status = fixture.status(&first.deployment_id);
     assert_eq!(status.components[0].state, "running");
     assert!(status.route_port.is_none());
-    assert!(!status.readiness.unwrap().ready);
+    let readiness = status.readiness.unwrap();
+    assert!(!readiness.ready);
+    let repair = readiness
+        .next_actions
+        .iter()
+        .find(|action| action.id == "repair-route")
+        .expect("current-source route withdrawal must be actionable");
+    assert_eq!(repair.operation.as_deref(), Some("deployment.apply"));
+    assert_eq!(repair.target.as_deref(), Some(first.deployment_id.as_str()));
+    let recovered = fixture.apply().unwrap();
+    assert!(recovered.readiness.unwrap().ready);
+    assert_eq!(recovered.route_port, first.route_port);
 }
 
 #[test]
