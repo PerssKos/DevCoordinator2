@@ -619,6 +619,7 @@ impl Deployments {
         Ok(result)
     }
 
+    #[cfg(test)]
     pub fn apply(
         &self,
         path: Option<&str>,
@@ -626,17 +627,33 @@ impl Deployments {
         deployment_id: Option<&str>,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
-        self.apply_with_candidate(path, name, deployment_id, None, caller)
+        self.apply_request(
+            &devcoordinator2_api::params::DeploymentApply {
+                path: path.map(str::to_owned),
+                name: name.map(str::to_owned),
+                deployment_id: deployment_id.map(str::to_owned),
+                ..Default::default()
+            },
+            caller,
+        )
     }
 
-    pub fn apply_with_candidate(
+    pub fn apply_request(
         &self,
-        path: Option<&str>,
-        name: Option<&str>,
-        deployment_id: Option<&str>,
-        candidate: Option<&devcoordinator2_api::params::DeploymentCandidateSource>,
+        params: &devcoordinator2_api::params::DeploymentApply,
         caller: &Caller,
     ) -> Result<DeploymentStatus, ProtocolError> {
+        let path = params.path.as_deref();
+        let name = params.name.as_deref();
+        let deployment_id = params.deployment_id.as_deref();
+        let candidate = params.candidate.as_ref();
+        if params.repeat_finite_after.is_some() && (deployment_id.is_none() || candidate.is_some())
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "finite repeat requires an existing deployment_id and no candidate override",
+            ));
+        }
         if candidate.is_some() && deployment_id.is_none() {
             return Err(ProtocolError::new(
                 ErrorCode::ParamsInvalid,
@@ -709,6 +726,10 @@ impl Deployments {
             ));
         }
         let _busy = self.acquire_busy(&target.deployment_id)?;
+        if let Some(expected) = params.repeat_finite_after {
+            target.row = self.store.get(&target.deployment_id)?;
+            self.validate_finite_repeat(&target, expected)?;
+        }
         let snapshot = self
             .git
             .snapshot(&target.worktree, target.caller_uid, target.caller_gid)
@@ -777,6 +798,16 @@ impl Deployments {
                 .with_recovery(guidance));
         }
         let fingerprint = deployment_fingerprint(&target, &snapshot);
+        if params.repeat_finite_after.is_some()
+            && (snapshot.dirty
+                || target.row.as_ref().map(|row| row.spec_fingerprint.as_str())
+                    != Some(fingerprint.as_str()))
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "finite repeat requires the unchanged clean source; inspect and apply changed source separately",
+            ));
+        }
         let domain = DeploymentStore::effective_domain(
             target.row.as_ref(),
             &target.specification,
@@ -792,6 +823,7 @@ impl Deployments {
             ));
         }
         if let Some(row) = &target.row
+            && params.repeat_finite_after.is_none()
             && row.spec_fingerprint == fingerprint
             && matches!(row.state.as_str(), "running" | "completed")
             && !snapshot.dirty
@@ -861,6 +893,7 @@ impl Deployments {
             .specification
             .components
             .iter()
+            .filter(|component| DeploymentStore::is_owned(component))
             .all(ComponentSpec::is_finite_workload)
             .then(|| self.finite_operations.begin(&target.deployment_id));
         let generation_path =
@@ -898,6 +931,54 @@ impl Deployments {
         let mut status = result?;
         self.refresh_readiness(&target, &mut status)?;
         Ok(status)
+    }
+
+    fn validate_finite_repeat(
+        &self,
+        target: &DeploymentTarget,
+        expected: u32,
+    ) -> Result<(), ProtocolError> {
+        let row = target
+            .row
+            .as_ref()
+            .ok_or_else(|| not_found(&target.deployment_id))?;
+        let latest = self
+            .store
+            .generations(&target.deployment_id)?
+            .iter()
+            .map(|generation| generation.number)
+            .max()
+            .unwrap_or(0)
+            .max(row.current_generation.unwrap_or(0));
+        if expected == 0 || expected != latest {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "finite repeat generation changed; inspect the existing attempt before requesting another",
+            ).with_detail(serde_json::json!({"expected_generation":expected,"latest_generation":latest}).to_string()));
+        }
+        let owned = target
+            .specification
+            .components
+            .iter()
+            .filter(|component| DeploymentStore::is_owned(component))
+            .collect::<Vec<_>>();
+        let components = self.store.components(&target.deployment_id)?;
+        if owned.is_empty()
+            || target.specification.route_component().is_some()
+            || !matches!(row.state.as_str(), "completed" | "running")
+            || owned.iter().any(|component| {
+                !component.is_finite_workload()
+                    || !components
+                        .iter()
+                        .any(|saved| saved.name == component.name && saved.state == "completed")
+            })
+        {
+            return Err(ProtocolError::new(
+                ErrorCode::DeploymentApplyFailed,
+                "finite repeat requires completed owned finite components only, without a route",
+            ));
+        }
+        Ok(())
     }
 
     pub fn rollback(
@@ -6873,6 +6954,46 @@ command=["serve"]
             .unwrap();
         assert_eq!(started.state, "completed");
         assert_eq!(docker.actions.lock().unwrap().len(), before);
+        let repeat = devcoordinator2_api::params::DeploymentApply {
+            deployment_id: Some(first.deployment_id.clone()),
+            repeat_finite_after: first.current_generation,
+            ..Default::default()
+        };
+        let repeated = deployments.apply_request(&repeat, &caller).unwrap();
+        assert_eq!(repeated.state, "completed");
+        assert_eq!(repeated.current_generation, Some(2));
+        let after_repeat = docker.actions.lock().unwrap().len();
+        assert!(after_repeat > before);
+        assert!(deployments.apply_request(&repeat, &caller).is_err());
+        assert_eq!(docker.actions.lock().unwrap().len(), after_repeat);
+        let invalid = devcoordinator2_api::params::DeploymentApply {
+            deployment_id: None,
+            path: Some(worktree.to_str().unwrap().to_owned()),
+            name: Some("job".into()),
+            ..repeat.clone()
+        };
+        assert_eq!(
+            deployments
+                .apply_request(&invalid, &caller)
+                .unwrap_err()
+                .code,
+            ErrorCode::ParamsInvalid
+        );
+        let next = devcoordinator2_api::params::DeploymentApply {
+            repeat_finite_after: Some(2),
+            ..repeat
+        };
+        docker.fail_compose.store(true, Ordering::Release);
+        assert!(deployments.apply_request(&next, &caller).is_err());
+        let after_failure = docker.actions.lock().unwrap().len();
+        docker.fail_compose.store(false, Ordering::Release);
+        assert!(deployments.apply_request(&next, &caller).is_err());
+        assert_eq!(docker.actions.lock().unwrap().len(), after_failure);
+        let recovered = deployments
+            .apply(None, None, Some(&first.deployment_id), &caller)
+            .unwrap();
+        assert_eq!(recovered.current_generation, Some(4));
+        assert_eq!(recovered.state, "completed");
     }
 
     #[test]

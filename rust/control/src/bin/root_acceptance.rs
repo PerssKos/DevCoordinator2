@@ -3585,6 +3585,77 @@ depends_on=["borrowed"]
         !public.contains("postgresql://") && !public.contains("password"),
         "borrower response exposed connection credentials"
     );
+    let unsupported = world.call(
+        "deployment.apply",
+        json!({"deployment_id":borrower_id,"repeat_finite_after":generation}),
+    )?;
+    ensure!(
+        error_code(&unsupported) == Some("deployment_apply_failed"),
+        "long-running borrower accepted finite repeat"
+    );
+    let configuration = std::fs::read_to_string(world.repo.join(".devcoordinator.toml"))
+        .map_err(|error| error.to_string())?;
+    world.write_config(&format!(
+        r#"{configuration}
+[deployment.repeat]
+source="worktree"
+components=["db","probe"]
+[deployment.repeat.component.db]
+type="postgres"
+shared_from="{owner_id}/db"
+[deployment.repeat.component.probe]
+type="compose"
+files=["finite-shared.yml"]
+services=["probe"]
+finite_services=["probe"]
+depends_on=["db"]
+timeout_seconds=30
+"#
+    ))?;
+    world.write_owned(
+        "finite-shared.yml",
+        r#"services:
+  probe:
+    image: postgres:16-alpine
+    network_mode: host
+    user: '1000:1000'
+    restart: 'no'
+    environment:
+      DATABASE_URL: '${DATABASE_URL:?required}'
+    entrypoint: ['/bin/sh', '-c']
+    command: ['test -n "$$DATABASE_URL" && printf "shared-finite-complete\n"']
+"#,
+    )?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "shared finite repeat fixture"])?;
+    let finite = data(&world.call(
+        "deployment.apply",
+        json!({"path":world.repo,"name":"repeat"}),
+    )?)?
+    .clone();
+    let request = json!({"deployment_id":finite["deployment_id"],"repeat_finite_after":finite["current_generation"]});
+    let repeated = data(&world.call("deployment.apply", request.clone())?)?.clone();
+    ensure!(
+        component(&repeated, "db")?["owned"] == false,
+        "repeat acquired shared database ownership"
+    );
+    ensure!(
+        component(&repeated, "probe")?["state"] == "completed",
+        "shared finite repeat did not finish"
+    );
+    ensure!(
+        error_code(&world.call("deployment.apply", request)?) == Some("deployment_apply_failed"),
+        "shared stale request ran twice"
+    );
+    ensure!(
+        repeated["current_generation"].as_u64()
+            == finite["current_generation"].as_u64().map(|value| value + 1),
+        "shared repeat generation did not advance once"
+    );
+    data(&world.call(
+        "deployment.remove",
+        json!({"deployment_id":finite["deployment_id"],"delete_data":true}),
+    )?)?;
     let removed = data(&world.call(
         "deployment.remove",
         json!({"deployment_id":borrower_id,"delete_data":true}),
@@ -6133,12 +6204,75 @@ fn case_finite_only_container_completion_failure_cancellation_and_cleanup(
         "unchanged finite container replaced"
     );
 
+    let repeat_request = json!({"deployment_id":first["deployment_id"],"repeat_finite_after":first["current_generation"]});
+    let repeated = world.call("deployment.apply", repeat_request.clone())?;
+    let repeated = data(&repeated)?.clone();
+    ensure!(
+        repeated["state"] == "completed",
+        "explicit repeat did not complete"
+    );
+    ensure!(
+        repeated["current_generation"].as_u64()
+            == first["current_generation"].as_u64().map(|value| value + 1),
+        "repeat did not advance exactly one generation"
+    );
+    let repeated_container = compose_service_id(&project, "probe")?;
+    ensure!(
+        repeated_container != first_container,
+        "explicit repeat reused the completed container"
+    );
+    ensure!(
+        component(&repeated, "probe")?.pointer("/completed_services/0/exit_code")
+            == Some(&json!(0)),
+        "repeat exit receipt missing"
+    );
+    let stale = world.call("deployment.apply", repeat_request)?;
+    ensure!(
+        error_code(&stale) == Some("deployment_apply_failed"),
+        "stale repeat accepted"
+    );
+    ensure!(
+        compose_service_id(&project, "probe")? == repeated_container,
+        "stale retry executed the job twice"
+    );
+    for operation in ["deployment.apply", "deployment.start", "deployment.restart"] {
+        data(&world.call(operation, json!({"deployment_id":first["deployment_id"]}))?)?;
+        ensure!(
+            compose_service_id(&project, "probe")? == repeated_container,
+            "ordinary operation repeated finite work"
+        );
+    }
+    world.write_owned("changed-source.txt", "not part of the applied source\n")?;
+    let changed = world.call("deployment.apply", json!({"deployment_id":first["deployment_id"],"repeat_finite_after":repeated["current_generation"]}))?;
+    ensure!(
+        error_code(&changed) == Some("deployment_apply_failed"),
+        "dirty source repeated implicitly"
+    );
+    ensure!(
+        compose_service_id(&project, "probe")? == repeated_container,
+        "dirty repeat changed the running result"
+    );
+
     setup_finite_only(world, "printf 'finite-failure\\n'; exit 7")?;
+    let changed_commit = world.call("deployment.apply", json!({"deployment_id":first["deployment_id"],"repeat_finite_after":repeated["current_generation"]}))?;
+    ensure!(
+        error_code(&changed_commit) == Some("deployment_apply_failed"),
+        "finite repeat implicitly applied a different committed source"
+    );
+    ensure!(
+        compose_service_id(&project, "probe")? == repeated_container,
+        "changed-source repeat replaced the completed result"
+    );
     let failure = world.call(
         "deployment.apply",
         json!({"path":world.repo,"name":"finite"}),
     )?;
     ensure!(failure["ok"] == false, "nonzero finite exit accepted");
+    let failed_retry = world.call("deployment.apply", json!({"deployment_id":first["deployment_id"],"repeat_finite_after":repeated["current_generation"]}))?;
+    ensure!(
+        error_code(&failed_retry) == Some("deployment_apply_failed"),
+        "old repeat replayed after a failed newer generation"
+    );
     let logs = world.call(
         "deployment.logs",
         json!({"path":world.repo,"name":"finite","component":"probe","tail_lines":20}),

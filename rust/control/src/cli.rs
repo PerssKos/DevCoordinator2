@@ -901,6 +901,8 @@ struct DeploymentApplyArgs {
     candidate_path: Option<PathBuf>,
     #[arg(long, requires = "candidate_path")]
     candidate_commit: Option<String>,
+    #[arg(long, requires = "deployment_id", conflicts_with = "candidate_path")]
+    repeat_finite_after: Option<u32>,
 }
 
 #[derive(Debug, Args)]
@@ -2092,6 +2094,9 @@ impl DeploymentCommand {
             }
             Self::Apply(args) => {
                 let mut params = args.selector.params()?;
+                if let Some(generation) = args.repeat_finite_after {
+                    params.insert("repeat_finite_after".into(), json!(generation));
+                }
                 if let Some(path) = args.candidate_path {
                     params.insert(
                         "candidate".to_owned(),
@@ -4175,6 +4180,29 @@ mod tests {
         assert_eq!(list, json!({}));
         let (_, implicit) = remote_invocation(&["deployment", "apply", "/tmp/repo"]);
         assert_eq!(implicit, json!({"path":"/tmp/repo"}));
+        let (_, repeated) = remote_invocation(&[
+            "deployment",
+            "apply",
+            "--deployment-id",
+            "d1",
+            "--repeat-finite-after",
+            "23",
+        ]);
+        assert_eq!(
+            repeated,
+            json!({"deployment_id":"d1","repeat_finite_after":23})
+        );
+        assert!(
+            Cli::try_parse_from([
+                "devcoordinator2",
+                "deployment",
+                "apply",
+                "/tmp/repo",
+                "--repeat-finite-after",
+                "23"
+            ])
+            .is_err()
+        );
         let (_, cross_checked) = remote_invocation(&[
             "deployment",
             "apply",

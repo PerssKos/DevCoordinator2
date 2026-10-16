@@ -828,6 +828,8 @@ pub enum DeploymentWaitState {
 deployment_params!(DeploymentApply {
     #[serde(default)]
     pub candidate: Option<DeploymentCandidateSource>,
+    #[serde(default)]
+    pub repeat_finite_after: Option<u32>,
 });
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

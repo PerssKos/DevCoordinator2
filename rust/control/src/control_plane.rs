@@ -916,13 +916,7 @@ impl ControlPlane {
             }
             "deployment.apply" => {
                 let params: params::DeploymentApply = decode(params)?;
-                let result = self.deployments.apply_with_candidate(
-                    params.path.as_deref(),
-                    params.name.as_deref(),
-                    params.deployment_id.as_deref(),
-                    params.candidate.as_ref(),
-                    caller,
-                )?;
+                let result = self.deployments.apply_request(&params, caller)?;
                 self.health.sampler().request_storage();
                 self.notify(deployment_event("deployment.applied", &result, None));
                 encode(result)

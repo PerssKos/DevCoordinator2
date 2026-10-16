@@ -429,6 +429,21 @@ An explicitly all-finite Compose component may list every selected service in
 `finite_services`. It completes with state `completed`, not `running`, only when
 every selected service exits successfully. It cannot lease a service port,
 publish a route, or declare a running-service health probe. Existing mixed
+An operator may explicitly repeat a completed finite-only deployment without
+editing its source: `deployment apply --deployment-id <id>
+--repeat-finite-after <last-generation>`. This requires unchanged clean source,
+no candidate override or route, and at least one owned component, all of them
+completed finite workloads. Shared PostgreSQL or external dependencies may
+remain declared; they are not restarted or acquired by the consumer.
+The expected generation is checked against the latest retained attempt under
+the deployment lock. A stale request refuses before execution, including after
+a failed newer attempt. Inspect that attempt rather than automatically replacing
+the expected number. Preparation failures before any attempt/runtime execution
+may be retried. Ordinary apply, start and restart retain their existing behavior.
+The new execution uses the existing generation, receipt and retention machinery;
+it neither deletes/recreates the deployment identity nor promises unlimited
+historical artifact retention.
+
 Compose deployments still require their non-finite services to remain running.
 Unchanged apply and ordinary start preserve completed work instead of rerunning
 it. A changed apply creates a new execution; failures retain diagnostics and do
