@@ -428,7 +428,8 @@ ordinary component without finite services remains limited to 900 seconds.
 An explicitly all-finite Compose component may list every selected service in
 `finite_services`. It completes with state `completed`, not `running`, only when
 every selected service exits successfully. It cannot lease a service port,
-publish a route, or declare a running-service health probe. Existing mixed
+publish a route, or declare a running-service health probe.
+
 An operator may explicitly repeat a completed finite-only deployment without
 editing its source: `deployment apply --deployment-id <id>
 --repeat-finite-after <last-generation>`. This requires unchanged clean source,
@@ -444,7 +445,7 @@ The new execution uses the existing generation, receipt and retention machinery;
 it neither deletes/recreates the deployment identity nor promises unlimited
 historical artifact retention.
 
-Compose deployments still require their non-finite services to remain running.
+Existing mixed Compose deployments still require their non-finite services to remain running.
 Unchanged apply and ordinary start preserve completed work instead of rerunning
 it. A changed apply creates a new execution; failures retain diagnostics and do
 not become completion evidence.
