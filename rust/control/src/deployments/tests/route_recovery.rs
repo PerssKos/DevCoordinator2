@@ -11,11 +11,12 @@ fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
     };
     let applied = fixture
         .deployments
-        .apply_with_candidate(
-            None,
-            None,
-            Some(&first.deployment_id),
-            Some(&candidate),
+        .apply_request(
+            &devcoordinator2_api::params::DeploymentApply {
+                deployment_id: Some(first.deployment_id.clone()),
+                candidate: Some(candidate.clone()),
+                ..Default::default()
+            },
             &fixture.caller,
         )
         .unwrap();
@@ -25,11 +26,12 @@ fn explicit_candidate_keeps_deployment_identity_and_previous_generation() {
     assert_eq!(applied.domain, first.domain);
     let repeated = fixture
         .deployments
-        .apply_with_candidate(
-            None,
-            None,
-            Some(&first.deployment_id),
-            Some(&candidate),
+        .apply_request(
+            &devcoordinator2_api::params::DeploymentApply {
+                deployment_id: Some(first.deployment_id.clone()),
+                candidate: Some(candidate),
+                ..Default::default()
+            },
             &fixture.caller,
         )
         .unwrap();
@@ -44,6 +46,7 @@ fn invalid_candidate_source_never_changes_the_running_deployment() {
         "repository",
         "worktree",
         "missing-target",
+        "repeat",
     ] {
         let fixture = RouteWorld::new(if failure == "worktree" {
             "worktree"
@@ -79,7 +82,15 @@ fn invalid_candidate_source_never_changes_the_running_deployment() {
         assert!(
             fixture
                 .deployments
-                .apply_with_candidate(None, None, target, Some(&candidate), &fixture.caller)
+                .apply_request(
+                    &devcoordinator2_api::params::DeploymentApply {
+                        deployment_id: target.map(str::to_owned),
+                        candidate: Some(candidate),
+                        repeat_finite_after: (failure == "repeat").then_some(1),
+                        ..Default::default()
+                    },
+                    &fixture.caller,
+                )
                 .is_err(),
             "{failure}"
         );
