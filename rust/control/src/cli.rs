@@ -4183,6 +4183,7 @@ mod tests {
         let (_, repeated) = remote_invocation(&[
             "deployment",
             "apply",
+            "/tmp/repo",
             "--deployment-id",
             "d1",
             "--repeat-finite-after",
@@ -4190,7 +4191,7 @@ mod tests {
         ]);
         assert_eq!(
             repeated,
-            json!({"deployment_id":"d1","repeat_finite_after":23})
+            json!({"path":"/tmp/repo","deployment_id":"d1","repeat_finite_after":23})
         );
         assert!(
             Cli::try_parse_from([
