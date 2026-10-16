@@ -58,6 +58,7 @@ for (const name of ['loading', 'access-denied', 'error', 'identity-visible', 'id
   // The absent identity must not cause unrelated fixture script exceptions.
   document = document.replace("document.querySelector('#label').addEventListener", "document.querySelector('#label')?.addEventListener");
   variants.set('/recovery-' + name, document);
+  if (!name.startsWith('text-')) variants.set('/empty-' + name, document.replaceAll('Loading the selected object', 'No saved tasks'));
 }
 const uploadedRequests = [];
 const continuationObservations = new Map();
@@ -416,6 +417,7 @@ async function configurationFixtures(recoveryOnly = false) {
   }
   const na = recoveryConfig('loading');
   await check('config-identity-not-applicable', na, 'valid', receipt => assert.deepEqual(receipt.gapCounts, {}));
+  await check('config-empty-identity-not-applicable', recoveryConfig('loading', 'empty'), 'valid', receipt => assert.deepEqual(receipt.gapCounts, {}));
   for (const [name, mutate] of [
     ['other-kind', row => { row.kind = 'readable-heading'; }],
     ['state', row => { row.applicability.state = 'ordinary'; }],
@@ -491,8 +493,8 @@ async function configurationFixtures(recoveryOnly = false) {
   }
 }
 function recoveryConfig(name, state = name) {
-  const config = full('/recovery-' + name), assertions = config.targets[0].geometryAssertions;
-  assertions.find(row => row.kind === 'readable-canonical-identifier').applicability = { status: 'not-applicable', state, stateSelector: '#recovery-state', reason: 'The selected object is unavailable in this declared recovery state' };
+  const config = full((state === 'empty' ? '/empty-' : '/recovery-') + name), assertions = config.targets[0].geometryAssertions;
+  assertions.find(row => row.kind === 'readable-canonical-identifier').applicability = { status: 'not-applicable', state, stateSelector: '#recovery-state', reason: state === 'empty' ? 'The saved-task collection is empty and contains no task identity' : 'The selected object is unavailable in this declared recovery state' };
   assertions.find(row => row.kind === 'clipping').selector = '#heading';
   config.fixtureDataShapes[0].conditionalDom = ['#layout', '#primary'];
   return config;
@@ -507,18 +509,18 @@ async function recoveryGeometryFixtures() {
       if (name.startsWith('tall-')) assert.equal(measured.regions[0].requiredVisibleHeight, 24);
     });
   }
-  for (const state of ['loading', 'access-denied', 'error']) await verify('identity-not-applicable-' + state, recoveryConfig(state), ({ receipt, report }) => {
+  for (const state of ['loading', 'access-denied', 'error', 'empty']) await verify('identity-not-applicable-' + state, recoveryConfig(state === 'empty' ? 'loading' : state, state), ({ receipt, report }) => {
     assert.equal(receipt.formal.result, 'passed'); assert.equal(receipt.formal.coverage.gapCount, 0);
     const row = report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier');
     assert.equal(row.status, 'not-applicable'); assert.equal(row.measurements.matchCount, 0);
     assert.equal(row.measurements.stateMatchCount, 1); assert.equal(row.measurements.stateVisible, true);
-    assert.equal(row.applicability.state, state); assert(!JSON.stringify(row).includes('Loading the selected object'));
-    for (const mutate of [row => { delete row.measurements.stateVisibleBox; }, row => { delete row.measurements.stateWrapping.fullyVisibleText; }, row => { row.measurements.matchCount = 1; }, row => { row.kind = 'readable-heading'; }]) {
+    assert.equal(row.applicability.state, state); assert(!JSON.stringify(row).includes('Loading the selected object')); assert(!JSON.stringify(row).includes('No saved tasks'));
+    for (const mutate of [row => { delete row.measurements.stateVisibleBox; }, row => { delete row.measurements.stateWrapping.fullyVisibleText; }, row => { row.measurements.matchCount = 1; }, row => { row.kind = 'readable-heading'; }, row => { row.applicability.state = 'ordinary'; }]) {
       const forged = structuredClone(report); mutate(forged.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier'));
       assert.equal(formalDecision(forged, 0, { handoffRequirements: { gaps: [] } }, []).result, 'incomplete', 'An unmeasured N/A row cannot establish a formal pass');
     }
   });
-  for (const [name, expected] of [['identity-visible', 'failed'], ['identity-hidden', 'failed'], ['marker-missing', 'incomplete'], ['marker-ambiguous', 'incomplete'], ['marker-hidden', 'failed'], ['marker-empty', 'failed'], ['marker-zero', 'failed'], ['marker-clipped', 'failed'], ['marker-partial', 'failed']]) await verify('identity-not-applicable-' + name, recoveryConfig(name, 'loading'), ({ receipt, report }) => {
+  for (const state of ['loading', 'empty']) for (const [name, expected] of [['identity-visible', 'failed'], ['identity-hidden', 'failed'], ['marker-missing', 'incomplete'], ['marker-ambiguous', 'incomplete'], ['marker-hidden', 'failed'], ['marker-empty', 'failed'], ['marker-zero', 'failed'], ['marker-clipped', 'failed'], ['marker-partial', 'failed']]) await verify('identity-not-applicable-' + state + '-' + name, recoveryConfig(name, state), ({ receipt, report }) => {
     assert.equal(receipt.formal.result, expected);
     const row = report.pages[0].metrics.handoff.geometry.find(row => row.id === 'identifier');
     assert.equal(row.status, expected); assert.notEqual(row.status, 'not-applicable');

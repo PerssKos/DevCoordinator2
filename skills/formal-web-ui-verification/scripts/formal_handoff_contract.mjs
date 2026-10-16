@@ -42,7 +42,7 @@ export function normalizeGeometry(value, label = 'geometryAssertions') {
       if (row.kind !== 'readable-canonical-identifier' || !row.selector || ['allowance', 'minWidth', 'minWidthRatio', 'primarySelector', 'track', 'maxReservedSize'].some(key => Object.hasOwn(row, key))) throw new Error('applicability requires an unwaived canonical-identifier selector');
       const applicability = row.applicability;
       known(applicability, ['status', 'state', 'stateSelector', 'reason'], 'applicability');
-      if (applicability.status !== 'not-applicable' || !['loading', 'access-denied', 'error'].includes(applicability.state)) throw new Error('unsupported canonical-identifier applicability');
+      if (applicability.status !== 'not-applicable' || !['loading', 'access-denied', 'error', 'empty'].includes(applicability.state)) throw new Error('unsupported canonical-identifier applicability');
       result.applicability = { status: 'not-applicable', state: applicability.state, stateSelector: text(applicability.stateSelector, 'applicability.stateSelector'), reason: text(applicability.reason, 'applicability.reason') };
     }
     for (const bound of ['minWidth', 'minWidthRatio']) if (row[bound] !== undefined) result[bound] = finite(row[bound], bound);
@@ -274,7 +274,7 @@ export function formalDecision(report, exitCode, config, blocking) {
       gaps.push(...geometryRequirementGaps(evidence.geometry).map(gap => ({ cellId: page.cellId, ...gap })));
       for (const row of evidence.geometry.filter(row => row.status === 'not-applicable')) {
         const measured = row.measurements;
-        if (row.kind !== 'readable-canonical-identifier' || row.applicability?.status !== 'not-applicable' || !['loading', 'access-denied', 'error'].includes(row.applicability.state) || measured.matchCount !== 0 || measured.stateMatchCount !== 1 || measured.stateVisible !== true || measured.stateVisibleBox?.fullyVisible !== true || measured.stateClipped?.length !== 0 || !(measured.stateWrapping?.graphemeCount > 0) || measured.stateWrapping.fullyVisibleText !== true || measured.stateWrapping.characterByCharacter !== false) gaps.push({ cellId: page.cellId, id: row.id, reason: 'unmeasured-identity-applicability' });
+        if (row.kind !== 'readable-canonical-identifier' || row.applicability?.status !== 'not-applicable' || !['loading', 'access-denied', 'error', 'empty'].includes(row.applicability.state) || measured.matchCount !== 0 || measured.stateMatchCount !== 1 || measured.stateVisible !== true || measured.stateVisibleBox?.fullyVisible !== true || measured.stateClipped?.length !== 0 || !(measured.stateWrapping?.graphemeCount > 0) || measured.stateWrapping.fullyVisibleText !== true || measured.stateWrapping.characterByCharacter !== false) gaps.push({ cellId: page.cellId, id: row.id, reason: 'unmeasured-identity-applicability' });
       }
       for (const row of [...evidence.geometry, ...evidence.shapes, ...evidence.reported]) if (row.status === 'incomplete') gaps.push({ cellId: page.cellId, id: row.id, reason: row.reason || 'missing-measurement' });
     }

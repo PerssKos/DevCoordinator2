@@ -225,7 +225,7 @@ are incomplete evidence. Initial placement remains a separate assertion.
 Optional `allowance: {"reason":"..."}` retains a measured intentional
 difference. It cannot excuse a missing selector, region, track or measurement.
 Only `readable-canonical-identifier` can declare that the object identity does
-not apply to an actual recovery state:
+not apply to an actual recovery state or genuinely empty collection:
 
 ```json
 {
@@ -241,7 +241,13 @@ not apply to an actual recovery state:
 }
 ```
 
-The supported states are exactly `loading`, `access-denied`, and `error`.
+The supported states are exactly `loading`, `access-denied`, `error`, and `empty`.
+For `empty`, the state selector names the actual empty-collection message,
+not the ordinary collection heading. The identity selector must cover the
+real object identities in that collection, including attached hidden rows.
+An unselected detail panel beside a populated collection is not an empty
+collection. Confirmation dialogs and other object-independent actions do not
+become empty states merely because they have no identifier of their own.
 The selector must name the real object identity; a heading is not a substitute.
 Any matching identity, including an attached hidden element, fails this branch.
 The state selector must resolve to exactly one nonempty, visible, readable,

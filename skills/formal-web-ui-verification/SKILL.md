@@ -404,10 +404,11 @@ candidate preliminary or blocked.
      primary-content width, heading and canonical-identifier readability,
      character-by-character wrapping, document horizontal overflow, clipping,
      and initial-viewport placement.
-     A canonical identifier that cannot exist in a declared loading, access-denied
-     or error state may use the narrowly measured `applicability` contract in
+     A canonical identifier that cannot exist in a declared loading, access-denied,
+     error or genuinely empty collection state may use the narrowly measured `applicability` contract in
      the journey reference. It requires an actually visible, readable recovery
-     marker and no attached identity, including hidden identity; it never skips
+     marker and no attached identity, including hidden identity; an empty list
+     must identify its actual empty-state message, not its ordinary heading. It never skips
      the cell or its remaining geometry. Configuration preflight checks all
      required geometry kinds for every expanded cell before browser work.
      Initial primary-content visibility uses the smaller of the region's own
