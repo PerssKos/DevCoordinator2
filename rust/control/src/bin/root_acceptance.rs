@@ -7526,6 +7526,29 @@ fn case_event_wait_replays_planning_and_groups_heartbeats(world: &mut World) -> 
         .to_owned();
     world.wait_status(&["passed"], Duration::from_secs(30))?;
     world.wait_units_empty(Duration::from_secs(10))?;
+    let deadline = (time::OffsetDateTime::now_utc() + time::Duration::seconds(5))
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| error.to_string())?;
+    let finished = world.call(
+        "event.wait",
+        json!({
+            "cursor":0,
+            "filters":[{
+                "filter_id":"finished",
+                "categories":["test"],
+                "kinds":["test.finished"],
+                "repository_ids":[repository_id],
+                "deadline_at":deadline
+            }]
+        }),
+    )?;
+    ensure!(
+        data(&finished)?["events"].as_array().is_some_and(|events| {
+            events.len() == 1
+                && events[0].pointer("/event/event/data/kind") == Some(&json!("test.finished"))
+        }),
+        "native terminal event did not arrive before its deadline"
+    );
     let test_events = world.call(
         "event.wait",
         json!({
