@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+pub mod agent_hub;
 pub mod agent_routing;
 pub mod completion;
 pub mod configuration;
@@ -28,7 +29,7 @@ pub mod tickets;
 pub mod work_context;
 
 pub const PROTOCOL_VERSION: u8 = 2;
-pub const DATABASE_SCHEMA_VERSION: u32 = 33;
+pub const DATABASE_SCHEMA_VERSION: u32 = 34;
 pub const MAX_REQUEST_BYTES: usize = 65_536;
 pub const MAX_RESPONSE_BYTES: usize = 262_144;
 pub const MAX_ERROR_DETAIL_BYTES: usize = 4_096;
@@ -156,6 +157,11 @@ pub enum ErrorCode {
     DecisionNotFound,
     GlossaryNotFound,
     GlossaryConflict,
+    HubNotFound,
+    HubDisabled,
+    HubLeaseExpired,
+    HubAttachmentInvalid,
+    HubKeyInvalid,
     StorageNotFound,
     StorageConflict,
     StorageBlocked,
@@ -608,6 +614,10 @@ const READ_PUBLIC: OperationPolicy =
     OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::Read, true);
 const READ_SERVER_ADMIN: OperationPolicy =
     OperationPolicy::new(Scope::Server, Role::Administrator, Effect::Read, true);
+const READ_SERVER_VIEWER: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Viewer, Effect::Read, true);
+const APPEND_SERVER_VIEWER: OperationPolicy =
+    OperationPolicy::new(Scope::Server, Role::Viewer, Effect::Append, false);
 const READ_DEPLOYMENT_ADMIN: OperationPolicy =
     OperationPolicy::new(Scope::Deployment, Role::Administrator, Effect::Read, true);
 const APPEND_SERVER_ADMIN: OperationPolicy =
@@ -692,6 +702,10 @@ const EXTERNAL_SELF: OperationPolicy =
     OperationPolicy::new(Scope::Self_, Role::Self_, Effect::External, false);
 const IDEMPOTENT_EXTERNAL_SELF: OperationPolicy =
     OperationPolicy::new(Scope::Self_, Role::Self_, Effect::External, true);
+const REVERSIBLE_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Reversible, false);
+const IDEMPOTENT_APPEND_SELF: OperationPolicy =
+    OperationPolicy::new(Scope::Self_, Role::Self_, Effect::Append, true);
 
 macro_rules! operation {
     ($name:literal, $description:literal, $policy:expr, $dispatch:ident [$($cli:literal),+ $(,)?], [$($mcp:literal),* $(,)?], $input:ty, $output:ty) => {
@@ -2183,6 +2197,32 @@ pub static OPERATIONS: &[OperationDefinition] = &[
         params::SketchAnnotationCreate,
         results::SketchAnnotationMutation
     ),
+    operation!("agent.hub.register", "Register an agent in the private or opt-in public hub space and issue its lease token.", EXTERNAL_SELF, excluded "Use Console or MCP agent_hub_register.", ["agent_hub_register"], agent_hub::Register, agent_hub::RegisterResult),
+    operation!("agent.hub.heartbeat", "Renew one agent's 90-second lease.", IDEMPOTENT_EXTERNAL_SELF, excluded "Use Console or MCP agent_hub_heartbeat.", ["agent_hub_heartbeat"], agent_hub::Heartbeat, agent_hub::AgentProfile),
+    operation!("agent.hub.unregister", "Remove one agent from the hub and its room memberships.", DESTRUCTIVE_SELF, excluded "Use Console or MCP agent_hub_unregister.", ["agent_hub_unregister"], agent_hub::Unregister, agent_hub::AgentProfile),
+    operation!("agent.hub.directory", "List opaque agent profiles in one isolated hub space.", READ_SELF, excluded "Use Console or MCP agent_hub_directory.", ["agent_hub_directory"], agent_hub::Directory, agent_hub::DirectoryResult),
+    operation!("agent.hub.room.create", "Create a direct or group room in one hub space.", APPEND_SELF, excluded "Use Console or MCP agent_hub_room_create.", ["agent_hub_room_create"], agent_hub::RoomCreate, agent_hub::Room),
+    operation!("agent.hub.room.list", "List rooms visible to one registered agent.", READ_SELF, excluded "Use Console or MCP agent_hub_room_list.", ["agent_hub_room_list"], agent_hub::RoomList, agent_hub::RoomListResult),
+    operation!("agent.hub.room.member.add", "Add one registered agent to a room.", REVERSIBLE_SELF, excluded "Use Console or MCP agent_hub_room_member_add.", ["agent_hub_room_member_add"], agent_hub::RoomMemberChange, agent_hub::Room),
+    operation!("agent.hub.room.member.remove", "Remove one registered agent from a room.", REVERSIBLE_SELF, excluded "Use Console or MCP agent_hub_room_member_remove.", ["agent_hub_room_member_remove"], agent_hub::RoomMemberChange, agent_hub::Room),
+    operation!("agent.hub.send", "Send a durable message with bounded attachments to a room.", APPEND_SELF, excluded "Use Console or MCP agent_hub_send.", ["agent_hub_send"], agent_hub::Send, agent_hub::Message),
+    operation!("agent.hub.receive", "Read at-least-once deliveries for one agent.", READ_SELF, excluded "Use Console or MCP agent_hub_receive.", ["agent_hub_receive"], agent_hub::Receive, agent_hub::ReceiveResult),
+    operation!("agent.hub.ack", "Acknowledge one or more durable deliveries.", IDEMPOTENT_APPEND_SELF, excluded "Use Console or MCP agent_hub_ack.", ["agent_hub_ack"], agent_hub::Ack, agent_hub::ReceiveResult),
+    operation!("agent.hub.upload.start", "Start a resumable bounded attachment upload.", APPEND_SELF, excluded "Use Console or MCP agent_hub_upload_start.", ["agent_hub_upload_start"], agent_hub::UploadStart, agent_hub::UploadStartResult),
+    operation!("agent.hub.upload.chunk", "Append one base64 attachment chunk at its exact offset.", IDEMPOTENT_APPEND_SELF, excluded "Use Console or MCP agent_hub_upload_chunk.", ["agent_hub_upload_chunk"], agent_hub::UploadChunk, agent_hub::UploadChunkResult),
+    operation!("agent.hub.upload.file", "Read one bounded attachment chunk.", READ_SELF, excluded "Use Console or MCP agent_hub_upload_file.", ["agent_hub_upload_file"], agent_hub::UploadFile, agent_hub::FileChunk),
+    operation!("agent.hub.upload.remove", "Remove one private incomplete upload.", DESTRUCTIVE_SELF, excluded "Use Console or MCP agent_hub_upload_remove.", ["agent_hub_upload_remove"], agent_hub::UploadRemove, EmptyParams),
+    operation!("agent.hub.settings.get", "Read private/public hub controls and callback queue status.", READ_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_settings_get.", ["agent_hub_settings_get"], EmptyParams, agent_hub::Settings),
+    operation!("agent.hub.console.directory", "Let an admitted Console user inspect opaque hub profiles without private transport credentials.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_directory.", ["agent_hub_console_directory"], agent_hub::ConsoleDirectory, agent_hub::DirectoryResult),
+    operation!("agent.hub.console.receive", "Let an admitted Console user read bounded hub messages for monitoring.", READ_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_receive.", ["agent_hub_console_receive"], agent_hub::ConsoleReceive, agent_hub::ReceiveResult),
+    operation!("agent.hub.console.send", "Let an admitted Console user reply in a visible hub room.", APPEND_SERVER_VIEWER, excluded "Use Console or MCP agent_hub_console_send.", ["agent_hub_console_send"], agent_hub::ConsoleSend, agent_hub::Message),
+    operation!("agent.hub.admin.agent.remove", "Remove an agent and its room memberships from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_agent_remove.", ["agent_hub_admin_agent_remove"], agent_hub::AgentRemove, agent_hub::RemovalResult),
+    operation!("agent.hub.admin.room.remove", "Remove a room, its messages, and its attachments.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_room_remove.", ["agent_hub_admin_room_remove"], agent_hub::RoomRemove, agent_hub::RemovalResult),
+    operation!("agent.hub.admin.message.remove", "Remove one message and its attachments from the hub.", DESTRUCTIVE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_admin_message_remove.", ["agent_hub_admin_message_remove"], agent_hub::MessageRemove, agent_hub::RemovalResult),
+    operation!("agent.hub.settings.set", "Enable or pause the isolated public hub space.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_settings_set.", ["agent_hub_settings_set"], agent_hub::SettingsSet, agent_hub::Settings),
+    operation!("agent.hub.key.rotate", "Rotate the instance bearer key with seven-day overlap.", REVERSIBLE_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_key_rotate.", ["agent_hub_key_rotate"], agent_hub::KeyRotate, agent_hub::KeyRotateResult),
+    operation!("agent.hub.activity", "Read bounded aggregate hub activity without agent identity or message content.", READ_SERVER_ADMIN, excluded "Use Console or MCP agent_hub_activity.", ["agent_hub_activity"], agent_hub::Activity, agent_hub::ActivityResult),
+    operation!("agent.hub.remote", "Dedicated remote adapter for the agent hub; only the edge allowlist may invoke it.", OperationPolicy::new(Scope::Public, Role::Anonymous, Effect::External, false), excluded "Used only by the dedicated edge agent-hub endpoint.", [], agent_hub::RemoteRequest, serde_json::Value),
     operation!(
         "agent.message.poll",
         "Read pending repository messages for an agent.",
@@ -2531,8 +2571,8 @@ mod tests {
         for tool in mcp_tools() {
             assert!(tools.insert(tool.name), "duplicate MCP tool");
         }
-        assert_eq!(OPERATIONS.len(), 168);
-        assert_eq!(tools.len(), 139);
+        assert_eq!(OPERATIONS.len(), 194);
+        assert_eq!(tools.len(), 164);
         assert_eq!(cli_routes.len(), 133);
     }
 

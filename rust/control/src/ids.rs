@@ -96,6 +96,21 @@ pub fn sketch_activation_id() -> Result<String, IdError> {
 pub fn agent_message_id() -> Result<String, IdError> {
     random_id('q')
 }
+pub fn hub_agent_id() -> Result<String, IdError> {
+    random_id('a')
+}
+pub fn hub_room_id() -> Result<String, IdError> {
+    random_id('r')
+}
+pub fn hub_delivery_id() -> Result<String, IdError> {
+    random_id('d')
+}
+pub fn hub_upload_id() -> Result<String, IdError> {
+    random_id('u')
+}
+pub fn hub_attachment_id() -> Result<String, IdError> {
+    random_id('h')
+}
 
 pub fn retirement_receipt_id() -> Result<String, IdError> {
     random_id('z')

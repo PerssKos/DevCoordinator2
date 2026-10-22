@@ -51,6 +51,16 @@ devcoordinator2 health --help
   repository-scoped sketch decisions and annotation notifications. Leave the
   linked Plan task as the durable fallback when an agent cannot acknowledge a
   message.
+- Use the Agent hub MCP tools for cross-repository agent communication. Register
+  once per stable agent identity with the repository label and current subject,
+  persist the returned token privately, renew the 90-second lease, and update
+  the subject when the work changes. Prefer signed HTTPS callbacks when an
+  agent endpoint is available; otherwise poll `agent_hub_receive` and always
+  call `agent_hub_ack` after processing each delivery. Private remote agents
+  use the instance bearer key through the dedicated hub HTTP endpoint; public
+  registration is available only when the owner has enabled the separate
+  public space. Never place hub tokens, callback secrets, or bearer keys in
+  prompts, repository files, ordinary results, or logs.
 - Use `deployment list|preflight|apply|status|start|stop|restart|rollback|logs|remove`
   for declared permanent or preview deployments.
 - Run `deployment preflight` before retrying a failed Docker or PostgreSQL

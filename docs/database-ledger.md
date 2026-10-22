@@ -218,6 +218,12 @@ Deterministic opaque TEXT IDs; later phases never migrate existing IDs.
 | `n` | decision | random at creation | 8 (done) |
 | `f` | screenshot feedback thread | random at creation | 15 (done) |
 | `m` | screenshot feedback comment | random at creation | 15 (done) |
+| `a` | Agent hub agent | random at registration | 34 |
+| `q` | Agent hub message | random at send (shared message namespace) | 34 |
+| `r` | Agent hub room | random at room creation | 34 |
+| `d` | Agent hub delivery | random per recipient delivery | 34 |
+| `u` | Agent hub upload | random at upload start | 34 |
+| `h` | Agent hub attachment | random when a staged file is committed | 34 |
 
 ## Later-phase entities (from the handover's durable-state list)
 
@@ -275,3 +281,35 @@ counts, root/log removal flags, note, and a bounded error code. Immutable
 triggers prevent edits or deletion. Source folders and their local test logs
 may be removed, but planning, decision, review, delivery, and owned-event
 history remains in the Coordinator database.
+
+## Schema version 34 — Agent communication hub
+
+The `agent_hub_*` tables are the private durable store for the separate Agent
+communication hub. They retain isolated private/public agent profiles, leases,
+rooms and memberships, messages, attachment bytes, per-recipient deliveries,
+callback outbox rows, and resumable uploads. The hub does not reuse feature
+request tables, the internal `agent_messages` reminder queue, or the generic
+owned-event journal.
+
+The instance bearer key is stored as a digest with the prior digest and its
+seven-day expiry. Registration and callback tokens are private authority
+state; they never enter ordinary rows returned to Console users, directory
+profiles, callbacks, logs, or metrics. Attachment rows are deleted with their
+message; incomplete uploads are bounded and expire. Public-space rows remain
+in the same authority database but are filtered by space at every query.
+
+## Agent hub (schema 34)
+
+| Table | Purpose and bounds |
+| --- | --- |
+| `agent_hub_settings` | One revisioned row for public enable/pause state, current bearer-key digest and seven-day previous-key overlap; key material is never returned from reads. |
+| `agent_hub_agents` | Opaque private/public agent profiles, token digest, 90-second lease, bounded labels/capabilities and optional private callback configuration. |
+| `agent_hub_rooms`, `agent_hub_room_members` | Durable one-space rooms and membership edges. |
+| `agent_hub_messages`, `agent_hub_attachments` | Durable room messages and committed attachment bytes (16 files/message, 16 MiB/file, 32 MiB/message). |
+| `agent_hub_deliveries` | One at-least-once delivery row per recipient, retained until explicit acknowledgement. |
+| `agent_hub_outbox` | HTTPS HMAC callback payloads with timestamp/nonce, bounded retries (1,000 rows, 10 attempts, 24 hours). |
+| `agent_hub_uploads` | Private resumable staging uploads (64 uploads/agent, 128 MiB declared data, 24-hour expiry, 32 KiB chunks). |
+
+The tables are separate from tickets and the existing `agent_messages` reminder
+queue. See [docs/agent-hub.md](agent-hub.md) for the operation and security
+boundaries.

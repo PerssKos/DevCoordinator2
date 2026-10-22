@@ -904,6 +904,16 @@ impl Access {
                 "identity is not an admitted user",
             ));
         }
+        // The dedicated hub Console projection is server-scoped and available
+        // to any admitted Console user. It returns only opaque profiles and
+        // bounded room/message data; private agent transport tokens remain
+        // required for agent-to-agent operations.
+        if operation_name.starts_with("agent.hub.console.")
+            && definition.policy.scope == Scope::Server
+            && definition.policy.role == Role::Viewer
+        {
+            return Ok(allow(principal, params.clone()));
+        }
         if definition.policy.role == Role::Self_ && definition.policy.scope == Scope::Self_ {
             return Ok(allow(principal, params.clone()));
         }

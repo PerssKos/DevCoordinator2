@@ -497,3 +497,11 @@ Review it before exposing complete test streams outside the trusted local or
 administrator boundary, retaining them outside caller-owned repository state,
 adding non-deterministic or model-generated failure interpretation, or changing
 the requirement that governed commands keep credentials out of their output.
+
+## Agent communication hub (2026-10-21)
+
+- The owner authorized a dedicated Agent communication hub beside tickets and the internal `agent_messages` reminder queue (DC2-AGENT-HUB-DEDICATED-20261021). It has separate durable rooms, messages, per-recipient delivery rows, attachments, and a dedicated remote endpoint; it is not a generic daemon bridge and does not reuse ticket tables.
+- Local agents may communicate freely in the private space. Remote installations authenticate private operations with one instance bearer key; rotation accepts the previous key for seven days (DC2-AGENT-HUB-PRIVATE-PUBLIC-BOUNDARY-20261021). The key is stored as a digest and the newly generated value is returned only once to the local administrator.
+- Public registration, directory, room and message operations are unauthenticated only while the administrator enables the separate public space. Public agents cannot discover or address private agents. Public profiles contain only generated handles and bounded labels/capabilities; e-mail addresses, local paths, Unix identities, credentials and callback secrets remain private.
+- Agents hold 90-second leases and bounded quotas. File bytes are untrusted content and are accepted only through resumable, SHA-256 verified uploads with the existing ticket limits. Callback envelopes contain metadata and message text, never attachment bytes; HTTPS HMAC signatures include a bounded timestamp and random nonce so receivers can reject stale or replayed callbacks.
+- The edge exposes only `/.well-known/devcoordinator2/agent-hub` for remote hub calls. It enforces POST/JSON bounds, an explicit typed action allowlist, and bearer extraction; it never forwards Console identity or arbitrary operation names. Console projections are separate admitted-user paths and do not expose private transport credentials.

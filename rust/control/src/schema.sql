@@ -847,3 +847,112 @@ CREATE TABLE IF NOT EXISTS agent_routing_history (
 );
 CREATE INDEX IF NOT EXISTS agent_routing_history_lookup
   ON agent_routing_history(scope,repository_id,harness,revision);
+
+-- Dedicated Agent communication hub (schema 34).  These tables intentionally
+-- do not reuse tickets or the internal agent_messages reminder queue.
+CREATE TABLE IF NOT EXISTS agent_hub_settings (
+  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+  revision INTEGER NOT NULL DEFAULT 0,
+  public_enabled INTEGER NOT NULL DEFAULT 0 CHECK(public_enabled IN (0,1)),
+  public_paused INTEGER NOT NULL DEFAULT 0 CHECK(public_paused IN (0,1)),
+  current_key_hash TEXT,
+  current_key_created_at TEXT,
+  previous_key_hash TEXT,
+  previous_key_expires_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_hub_agents (
+  agent_id TEXT PRIMARY KEY,
+  handle TEXT NOT NULL UNIQUE,
+  space TEXT NOT NULL CHECK(space IN ('private','public')),
+  display_name TEXT NOT NULL,
+  repository_label TEXT,
+  domain_label TEXT,
+  current_subject TEXT,
+  capabilities_json TEXT NOT NULL DEFAULT '[]',
+  token_hash TEXT NOT NULL,
+  callback_url TEXT,
+  callback_secret TEXT,
+  state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','expired','unregistered')),
+  lease_expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  unregistered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_hub_agents_space ON agent_hub_agents(space,state,handle);
+CREATE TABLE IF NOT EXISTS agent_hub_rooms (
+  room_id TEXT PRIMARY KEY,
+  space TEXT NOT NULL CHECK(space IN ('private','public')),
+  name TEXT NOT NULL,
+  created_by TEXT REFERENCES agent_hub_agents(agent_id),
+  created_at TEXT NOT NULL,
+  archived_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_hub_room_members (
+  room_id TEXT NOT NULL REFERENCES agent_hub_rooms(room_id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES agent_hub_agents(agent_id),
+  joined_at TEXT NOT NULL,
+  PRIMARY KEY(room_id,agent_id)
+);
+CREATE INDEX IF NOT EXISTS agent_hub_room_members_agent ON agent_hub_room_members(agent_id,room_id);
+CREATE TABLE IF NOT EXISTS agent_hub_messages (
+  message_id TEXT PRIMARY KEY,
+  room_id TEXT NOT NULL REFERENCES agent_hub_rooms(room_id),
+  sender_agent_id TEXT REFERENCES agent_hub_agents(agent_id),
+  body TEXT NOT NULL,
+  client_message_id TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(sender_agent_id,client_message_id)
+);
+CREATE INDEX IF NOT EXISTS agent_hub_messages_room ON agent_hub_messages(room_id,created_at,message_id);
+CREATE TABLE IF NOT EXISTS agent_hub_attachments (
+  attachment_id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES agent_hub_messages(message_id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  content BLOB NOT NULL,
+  UNIQUE(message_id,position)
+);
+CREATE INDEX IF NOT EXISTS agent_hub_attachments_message ON agent_hub_attachments(message_id,position);
+CREATE TABLE IF NOT EXISTS agent_hub_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES agent_hub_messages(message_id) ON DELETE CASCADE,
+  recipient_agent_id TEXT NOT NULL REFERENCES agent_hub_agents(agent_id),
+  acknowledged_at TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  UNIQUE(message_id,recipient_agent_id)
+);
+CREATE INDEX IF NOT EXISTS agent_hub_deliveries_recipient ON agent_hub_deliveries(recipient_agent_id,acknowledged_at,created_at);
+CREATE TABLE IF NOT EXISTS agent_hub_outbox (
+  outbox_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delivery_id TEXT NOT NULL UNIQUE REFERENCES agent_hub_deliveries(delivery_id) ON DELETE CASCADE,
+  callback_url TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  signature TEXT NOT NULL,
+  callback_nonce TEXT NOT NULL,
+  signed_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_hub_outbox_due ON agent_hub_outbox(next_attempt_at);
+CREATE TABLE IF NOT EXISTS agent_hub_uploads (
+  upload_id TEXT PRIMARY KEY,
+  owner_agent_id TEXT NOT NULL REFERENCES agent_hub_agents(agent_id),
+  request_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  content BLOB NOT NULL DEFAULT x'',
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  UNIQUE(owner_agent_id,request_key)
+);
+CREATE INDEX IF NOT EXISTS agent_hub_uploads_owner ON agent_hub_uploads(owner_agent_id,expires_at);

@@ -332,6 +332,31 @@ export async function createEdge(config, { log = console } = {}) {
   async function handleRequest(req, res) {
     const host = hostOf(req);
     const url = new URL(req.url || '/', `${scheme}://${host || config.consoleHost}`);
+    // Dedicated Agent hub surface. It accepts one closed action allowlist and
+    // forwards only the typed remote adapter; it never becomes a generic
+    // daemon bridge or inherits Console administrator identity.
+    if ((host === config.consoleHost || host === config.baseDomain) && url.pathname === '/.well-known/devcoordinator2/agent-hub') {
+      if (req.method !== 'POST') return writeJson(res, 405, { ok:false,error:{code:'method_not_allowed',message:'Use POST',detail:''} });
+      let params;
+      try { params = await readJsonBody(req, 60000); }
+      catch { return writeJson(res,400,{ok:false,error:{code:'params_invalid',message:'Invalid agent hub request',detail:''}}); }
+      if (!params || typeof params !== 'object' || Array.isArray(params) || !params.action || typeof params.action !== 'object' || Array.isArray(params.action)) {
+        return writeJson(res,400,{ok:false,error:{code:'params_invalid',message:'Agent hub action is required',detail:''}});
+      }
+      const allowed = new Set(['directory','register','heartbeat','unregister','room_create','room_list','room_member_add','room_member_remove','send','receive','ack','upload_start','upload_chunk','upload_file','upload_remove']);
+      if (typeof params.action.kind !== 'string' || !allowed.has(params.action.kind) || Object.keys(params).some((key) => !['bearer','action'].includes(key)) || Object.keys(params.action).some((key) => key !== 'kind' && key === 'operation')) {
+        return writeJson(res,400,{ok:false,error:{code:'params_invalid',message:'Unsupported agent hub action',detail:''}});
+      }
+      const authorization = typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';
+      if (authorization && !/^Bearer\s+[^\s]+$/i.test(authorization)) {
+        return writeJson(res,400,{ok:false,error:{code:'params_invalid',message:'Invalid agent hub authorization',detail:''}});
+      }
+      params.bearer = authorization ? authorization.replace(/^Bearer\s+/i,'') : (typeof params.bearer === 'string' ? params.bearer : undefined);
+      try {
+        const response = await daemon.call('agent.hub.remote', params);
+        return writeJson(res,response.ok ? 200 : response.error?.code === 'permission_denied' ? 403 : response.error?.code === 'hub_disabled' ? 503 : 400,response);
+      } catch { return writeJson(res,503,{ok:false,error:{code:'daemon_unavailable',message:'Agent hub server unavailable',detail:''}}); }
+    }
     // Public ticket-only surface. Never forward an operation name, target,
     // administrator flag or user identity supplied by an Internet caller.
     if ((host === config.consoleHost || host === config.baseDomain) && url.pathname === '/.well-known/devcoordinator2/tickets') {

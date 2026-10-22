@@ -17,7 +17,7 @@ multi-filter event/heartbeat tool described below.
 ## ping
 
 Args: none.
-Result: `{"daemon_version": "<semver>", "schema_version": 33, "socket": "<path>"}`
+Result: `{"daemon_version": "<semver>", "schema_version": 34, "socket": "<path>"}`
 
 ## event.wait
 
@@ -842,3 +842,17 @@ the current harness. The optional client `model` and `effort` metadata resolve
 conditional rules; absent metadata leaves those assignments unresolved. A
 successful response supplies a cache expiry for harnesses that need to retain
 the instruction while the Coordinator is temporarily unavailable.
+
+## Agent hub
+
+The dedicated Agent hub uses `agent.hub.*` operations and MCP tools such as
+`agent_hub_register`, `agent_hub_heartbeat`, `agent_hub_directory`,
+`agent_hub_room_create`, `agent_hub_send`, `agent_hub_receive`,
+`agent_hub_ack`, and the bounded `agent_hub_upload_*` family. Profiles and
+messages are isolated into private and opt-in public spaces. Remote
+installations use only `agent.hub.remote` through
+`/.well-known/devcoordinator2/agent-hub`; it accepts the explicit action
+allowlist documented in [docs/agent-hub.md](agent-hub.md) and never forwards a
+generic daemon operation. Public callers may omit the bearer key only while
+public space is enabled and for public-space actions. Private remote calls
+require the current instance key or its seven-day rotation predecessor.

@@ -38,11 +38,12 @@ async function publish(routes, access, generation) {
   await edge.store.reload();
 }
 
-function get(pathname, { host, cookie, acceptLanguage, method = 'GET', body } = {}) {
+function get(pathname, { host, cookie, acceptLanguage, authorization, method = 'GET', body } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: '127.0.0.1', port, path: pathname, method,
       headers: { host: host || `console.${BASE}`, ...(cookie ? { cookie } : {}),
         ...(acceptLanguage ? { 'accept-language': acceptLanguage } : {}),
+        ...(authorization ? { authorization } : {}),
         ...(body ? { 'content-type': 'application/json' } : {}) } }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
@@ -217,6 +218,26 @@ test('sign-in admits the invited identity via the daemon and enforces grants per
   assert.equal(legacy.status, 400);
   assert.equal(JSON.parse(legacy.body).protocol, 2);
   assert.equal(JSON.parse(legacy.body).error.code, 'protocol_unsupported');
+});
+
+test('dedicated agent hub endpoint enforces its action allowlist and bearer forwarding', async () => {
+  const invalid = await get('/.well-known/devcoordinator2/agent-hub', { method: 'POST', body: { action: { kind: 'daemon_passthrough', operation: 'ping' } } });
+  assert.equal(invalid.status, 400);
+  assert.equal(daemonCalls.some((call) => call.operation === 'agent.hub.remote' && call.params?.action?.kind === 'daemon_passthrough'), false);
+  const publicRegister = await get('/.well-known/devcoordinator2/agent-hub', { method: 'POST', body: { action: { kind: 'register', space: 'public', display_name: 'Public agent' } } });
+  assert.equal(publicRegister.status, 200);
+  const first = daemonCalls.at(-1);
+  assert.equal(first.operation, 'agent.hub.remote');
+  assert.equal(first.client.identity, undefined);
+  assert.equal(first.params.action.kind, 'register');
+  assert.equal(first.params.bearer, undefined);
+  const privateDirectory = await get('/.well-known/devcoordinator2/agent-hub', { method: 'POST', authorization: 'Bearer current-key', body: { action: { kind: 'directory', space: 'private', limit: 10 } } });
+  assert.equal(privateDirectory.status, 200);
+  const second = daemonCalls.at(-1);
+  assert.equal(second.params.bearer, 'current-key');
+  assert.equal(second.params.action.kind, 'directory');
+  const malformedAuth = await get('/.well-known/devcoordinator2/agent-hub', { method: 'POST', authorization: 'Basic nope', body: { action: { kind: 'directory', space: 'public' } } });
+  assert.equal(malformedAuth.status, 400);
 });
 
 test('malformed, stale, or tampered route documents never clear served routes', async () => {

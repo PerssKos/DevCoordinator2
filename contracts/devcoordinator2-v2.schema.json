@@ -26298,6 +26298,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -26957,6 +26962,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -27831,6 +27841,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -28567,6 +28582,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -29233,6 +29253,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -29913,6 +29938,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -30593,6 +30623,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -31273,6 +31308,11 @@
               "decision_not_found",
               "glossary_not_found",
               "glossary_conflict",
+              "hub_not_found",
+              "hub_disabled",
+              "hub_lease_expired",
+              "hub_attachment_invalid",
+              "hub_key_invalid",
               "storage_not_found",
               "storage_conflict",
               "storage_blocked",
@@ -58345,6 +58385,4856 @@
         "idempotent": false,
         "role": "administrator",
         "scope": "repository"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_register.",
+        "routes": []
+      },
+      "description": "Register an agent in the private or opt-in public hub space and issue its lease token.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "callback_url": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array"
+          },
+          "current_subject": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "domain_label": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repository_label": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "space",
+          "display_name"
+        ],
+        "title": "Register",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "callback_url": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              "current_subject": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "domain_label": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository_label": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "space",
+              "display_name"
+            ],
+            "title": "Register",
+            "type": "object"
+          },
+          "name": "agent_hub_register",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.register",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent": {
+            "$ref": "#/$defs/AgentProfile"
+          },
+          "callback_secret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease_seconds": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "token": {
+            "description": "Returned only on registration or key rotation; never persisted in a\nresponse, profile, history or callback payload.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "token",
+          "lease_seconds"
+        ],
+        "title": "RegisterResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_heartbeat.",
+        "routes": []
+      },
+      "description": "Renew one agent's 90-second lease.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "current_subject": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "auth"
+        ],
+        "title": "Heartbeat",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "current_subject": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "auth"
+            ],
+            "title": "Heartbeat",
+            "type": "object"
+          },
+          "name": "agent_hub_heartbeat",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.heartbeat",
+      "outputSchema": {
+        "$defs": {
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "callback_configured": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "domain_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "type": "string"
+          },
+          "repository_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          },
+          "state": {
+            "$ref": "#/$defs/AgentState"
+          }
+        },
+        "required": [
+          "agent_id",
+          "handle",
+          "space",
+          "display_name",
+          "state",
+          "lease_expires_at",
+          "callback_configured"
+        ],
+        "title": "AgentProfile",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_unregister.",
+        "routes": []
+      },
+      "description": "Remove one agent from the hub and its room memberships.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          }
+        },
+        "required": [
+          "auth"
+        ],
+        "title": "Unregister",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              }
+            },
+            "required": [
+              "auth"
+            ],
+            "title": "Unregister",
+            "type": "object"
+          },
+          "name": "agent_hub_unregister",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.unregister",
+      "outputSchema": {
+        "$defs": {
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "callback_configured": {
+            "type": "boolean"
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "current_subject": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "domain_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "handle": {
+            "type": "string"
+          },
+          "lease_expires_at": {
+            "type": "string"
+          },
+          "repository_label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          },
+          "state": {
+            "$ref": "#/$defs/AgentState"
+          }
+        },
+        "required": [
+          "agent_id",
+          "handle",
+          "space",
+          "display_name",
+          "state",
+          "lease_expires_at",
+          "callback_configured"
+        ],
+        "title": "AgentProfile",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_directory.",
+        "routes": []
+      },
+      "description": "List opaque agent profiles in one isolated hub space.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "space"
+        ],
+        "title": "Directory",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "space"
+            ],
+            "title": "Directory",
+            "type": "object"
+          },
+          "name": "agent_hub_directory",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.directory",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/$defs/AgentProfile"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agents",
+          "public_enabled"
+        ],
+        "title": "DirectoryResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_room_create.",
+        "routes": []
+      },
+      "description": "Create a direct or group room in one hub space.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "members": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "auth",
+          "space",
+          "name"
+        ],
+        "title": "RoomCreate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              },
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "members": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "name": {
+                "maxLength": 160,
+                "minLength": 1,
+                "type": "string"
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "auth",
+              "space",
+              "name"
+            ],
+            "title": "RoomCreate",
+            "type": "object"
+          },
+          "name": "agent_hub_room_create",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.room.create",
+      "outputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "room_id",
+          "space",
+          "name",
+          "created_at",
+          "members"
+        ],
+        "title": "Room",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_room_list.",
+        "routes": []
+      },
+      "description": "List rooms visible to one registered agent.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "limit": {
+            "default": 0,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "space": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Space"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "auth"
+        ],
+        "title": "RoomList",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              },
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "limit": {
+                "default": 0,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "space": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Space"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "auth"
+            ],
+            "title": "RoomList",
+            "type": "object"
+          },
+          "name": "agent_hub_room_list",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.room.list",
+      "outputSchema": {
+        "$defs": {
+          "Room": {
+            "additionalProperties": false,
+            "properties": {
+              "created_at": {
+                "type": "string"
+              },
+              "members": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "name": {
+                "type": "string"
+              },
+              "room_id": {
+                "type": "string"
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "room_id",
+              "space",
+              "name",
+              "created_at",
+              "members"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "rooms": {
+            "items": {
+              "$ref": "#/$defs/Room"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rooms"
+        ],
+        "title": "RoomListResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_room_member_add.",
+        "routes": []
+      },
+      "description": "Add one registered agent to a room.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "room_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "room_id",
+          "agent_id"
+        ],
+        "title": "RoomMemberChange",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "room_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "room_id",
+              "agent_id"
+            ],
+            "title": "RoomMemberChange",
+            "type": "object"
+          },
+          "name": "agent_hub_room_member_add",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.room.member.add",
+      "outputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "room_id",
+          "space",
+          "name",
+          "created_at",
+          "members"
+        ],
+        "title": "Room",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_room_member_remove.",
+        "routes": []
+      },
+      "description": "Remove one registered agent from a room.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "room_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "room_id",
+          "agent_id"
+        ],
+        "title": "RoomMemberChange",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "room_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "room_id",
+              "agent_id"
+            ],
+            "title": "RoomMemberChange",
+            "type": "object"
+          },
+          "name": "agent_hub_room_member_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.room.member.remove",
+      "outputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "members": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "room_id",
+          "space",
+          "name",
+          "created_at",
+          "members"
+        ],
+        "title": "Room",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_send.",
+        "routes": []
+      },
+      "description": "Send a durable message with bounded attachments to a room.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "body": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "client_message_id": {
+            "default": null,
+            "maxLength": 160,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "room_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "room_id",
+          "body"
+        ],
+        "title": "Send",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "body": {
+                "maxLength": 32768,
+                "minLength": 1,
+                "type": "string"
+              },
+              "client_message_id": {
+                "default": null,
+                "maxLength": 160,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "room_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "room_id",
+              "body"
+            ],
+            "title": "Send",
+            "type": "object"
+          },
+          "name": "agent_hub_send",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.send",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/Attachment"
+            },
+            "type": "array"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "sender": {
+            "$ref": "#/$defs/AgentProfile"
+          }
+        },
+        "required": [
+          "message_id",
+          "room_id",
+          "sender",
+          "body",
+          "attachments",
+          "created_at"
+        ],
+        "title": "Message",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_receive.",
+        "routes": []
+      },
+      "description": "Read at-least-once deliveries for one agent.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "room_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "auth"
+        ],
+        "title": "Receive",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "room_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "auth"
+            ],
+            "title": "Receive",
+            "type": "object"
+          },
+          "name": "agent_hub_receive",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.receive",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Delivery": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "delivery_id": {
+                "type": "string"
+              },
+              "message": {
+                "$ref": "#/$defs/Message"
+              }
+            },
+            "required": [
+              "delivery_id",
+              "message",
+              "acknowledged"
+            ],
+            "type": "object"
+          },
+          "Message": {
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "room_id": {
+                "type": "string"
+              },
+              "sender": {
+                "$ref": "#/$defs/AgentProfile"
+              }
+            },
+            "required": [
+              "message_id",
+              "room_id",
+              "sender",
+              "body",
+              "attachments",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deliveries"
+        ],
+        "title": "ReceiveResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_ack.",
+        "routes": []
+      },
+      "description": "Acknowledge one or more durable deliveries.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "delivery_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "auth",
+          "delivery_ids"
+        ],
+        "title": "Ack",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "delivery_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "auth",
+              "delivery_ids"
+            ],
+            "title": "Ack",
+            "type": "object"
+          },
+          "name": "agent_hub_ack",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.ack",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Delivery": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "delivery_id": {
+                "type": "string"
+              },
+              "message": {
+                "$ref": "#/$defs/Message"
+              }
+            },
+            "required": [
+              "delivery_id",
+              "message",
+              "acknowledged"
+            ],
+            "type": "object"
+          },
+          "Message": {
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "room_id": {
+                "type": "string"
+              },
+              "sender": {
+                "$ref": "#/$defs/AgentProfile"
+              }
+            },
+            "required": [
+              "message_id",
+              "room_id",
+              "sender",
+              "body",
+              "attachments",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deliveries"
+        ],
+        "title": "ReceiveResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_upload_start.",
+        "routes": []
+      },
+      "description": "Start a resumable bounded attachment upload.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "byte_size": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content_type": {
+            "default": "application/octet-stream",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 240,
+            "minLength": 1,
+            "type": "string"
+          },
+          "request_key": {
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-fA-F]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "request_key",
+          "name",
+          "byte_size",
+          "sha256"
+        ],
+        "title": "UploadStart",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "default": "application/octet-stream",
+                "type": "string"
+              },
+              "name": {
+                "maxLength": 240,
+                "minLength": 1,
+                "type": "string"
+              },
+              "request_key": {
+                "type": "string"
+              },
+              "sha256": {
+                "pattern": "^[0-9a-fA-F]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "request_key",
+              "name",
+              "byte_size",
+              "sha256"
+            ],
+            "title": "UploadStart",
+            "type": "object"
+          },
+          "name": "agent_hub_upload_start",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.upload.start",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "attachment",
+          "next_offset"
+        ],
+        "title": "UploadStartResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_upload_chunk.",
+        "routes": []
+      },
+      "description": "Append one base64 attachment chunk at its exact offset.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "data_base64": {
+            "maxLength": 45000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "upload_id",
+          "offset",
+          "data_base64"
+        ],
+        "title": "UploadChunk",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "data_base64": {
+                "maxLength": 45000,
+                "minLength": 1,
+                "type": "string"
+              },
+              "offset": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "upload_id",
+              "offset",
+              "data_base64"
+            ],
+            "title": "UploadChunk",
+            "type": "object"
+          },
+          "name": "agent_hub_upload_chunk",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.upload.chunk",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "next_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "upload_id",
+          "next_offset",
+          "complete"
+        ],
+        "title": "UploadChunkResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_upload_file.",
+        "routes": []
+      },
+      "description": "Read one bounded attachment chunk.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "file_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "offset": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "upload_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "auth"
+        ],
+        "title": "UploadFile",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "file_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "offset": {
+                "default": 0,
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "upload_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "auth"
+            ],
+            "title": "UploadFile",
+            "type": "object"
+          },
+          "name": "agent_hub_upload_file",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.upload.file",
+      "outputSchema": {
+        "$defs": {
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachment": {
+            "$ref": "#/$defs/Attachment"
+          },
+          "data_base64": {
+            "type": "string"
+          },
+          "next_offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "offset": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "attachment",
+          "offset",
+          "data_base64"
+        ],
+        "title": "FileChunk",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_upload_remove.",
+        "routes": []
+      },
+      "description": "Remove one private incomplete upload.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "auth": {
+            "$ref": "#/$defs/AgentAuth"
+          },
+          "upload_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "auth",
+          "upload_id"
+        ],
+        "title": "UploadRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "AgentAuth": {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "agent_id",
+                  "token"
+                ],
+                "type": "object"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "$ref": "#/$defs/AgentAuth"
+              },
+              "upload_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "auth",
+              "upload_id"
+            ],
+            "title": "UploadRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_upload_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.upload.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "self",
+        "scope": "self"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_settings_get.",
+        "routes": []
+      },
+      "description": "Read private/public hub controls and callback queue status.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "title": "EmptyParams",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "title": "EmptyParams",
+            "type": "object"
+          },
+          "name": "agent_hub_settings_get",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.settings.get",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "callback_outbox_pending": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "current_key_created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "previous_key_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_enabled": {
+            "type": "boolean"
+          },
+          "public_paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "public_enabled",
+          "public_paused",
+          "callback_outbox_pending"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_console_directory.",
+        "routes": []
+      },
+      "description": "Let an admitted Console user inspect opaque hub profiles without private transport credentials.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "space"
+        ],
+        "title": "ConsoleDirectory",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "space"
+            ],
+            "title": "ConsoleDirectory",
+            "type": "object"
+          },
+          "name": "agent_hub_console_directory",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.console.directory",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/$defs/AgentProfile"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agents",
+          "public_enabled"
+        ],
+        "title": "DirectoryResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_console_receive.",
+        "routes": []
+      },
+      "description": "Let an admitted Console user read bounded hub messages for monitoring.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "room_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "space"
+        ],
+        "title": "ConsoleReceive",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "after": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "room_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "space"
+            ],
+            "title": "ConsoleReceive",
+            "type": "object"
+          },
+          "name": "agent_hub_console_receive",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.console.receive",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Delivery": {
+            "additionalProperties": false,
+            "properties": {
+              "acknowledged": {
+                "type": "boolean"
+              },
+              "delivery_id": {
+                "type": "string"
+              },
+              "message": {
+                "$ref": "#/$defs/Message"
+              }
+            },
+            "required": [
+              "delivery_id",
+              "message",
+              "acknowledged"
+            ],
+            "type": "object"
+          },
+          "Message": {
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "items": {
+                  "$ref": "#/$defs/Attachment"
+                },
+                "type": "array"
+              },
+              "body": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "room_id": {
+                "type": "string"
+              },
+              "sender": {
+                "$ref": "#/$defs/AgentProfile"
+              }
+            },
+            "required": [
+              "message_id",
+              "room_id",
+              "sender",
+              "body",
+              "attachments",
+              "created_at"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deliveries": {
+            "items": {
+              "$ref": "#/$defs/Delivery"
+            },
+            "type": "array"
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deliveries"
+        ],
+        "title": "ReceiveResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "viewer",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_console_send.",
+        "routes": []
+      },
+      "description": "Let an admitted Console user reply in a visible hub room.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "body": {
+            "maxLength": 32768,
+            "minLength": 1,
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "space": {
+            "$ref": "#/$defs/Space"
+          }
+        },
+        "required": [
+          "space",
+          "room_id",
+          "body"
+        ],
+        "title": "ConsoleSend",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "attachments": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "body": {
+                "maxLength": 32768,
+                "minLength": 1,
+                "type": "string"
+              },
+              "room_id": {
+                "type": "string"
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              }
+            },
+            "required": [
+              "space",
+              "room_id",
+              "body"
+            ],
+            "title": "ConsoleSend",
+            "type": "object"
+          },
+          "name": "agent_hub_console_send",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.console.send",
+      "outputSchema": {
+        "$defs": {
+          "AgentProfile": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "callback_configured": {
+                "type": "boolean"
+              },
+              "capabilities": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "current_subject": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": "string"
+              },
+              "domain_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "handle": {
+                "type": "string"
+              },
+              "lease_expires_at": {
+                "type": "string"
+              },
+              "repository_label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "space": {
+                "$ref": "#/$defs/Space"
+              },
+              "state": {
+                "$ref": "#/$defs/AgentState"
+              }
+            },
+            "required": [
+              "agent_id",
+              "handle",
+              "space",
+              "display_name",
+              "state",
+              "lease_expires_at",
+              "callback_configured"
+            ],
+            "type": "object"
+          },
+          "AgentState": {
+            "enum": [
+              "active",
+              "expired",
+              "unregistered"
+            ],
+            "type": "string"
+          },
+          "Attachment": {
+            "additionalProperties": false,
+            "properties": {
+              "attachment_id": {
+                "type": "string"
+              },
+              "byte_size": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "attachment_id",
+              "name",
+              "content_type",
+              "byte_size",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/Attachment"
+            },
+            "type": "array"
+          },
+          "body": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "room_id": {
+            "type": "string"
+          },
+          "sender": {
+            "$ref": "#/$defs/AgentProfile"
+          }
+        },
+        "required": [
+          "message_id",
+          "room_id",
+          "sender",
+          "body",
+          "attachments",
+          "created_at"
+        ],
+        "title": "Message",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "append",
+        "idempotent": false,
+        "role": "viewer",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_agent_remove.",
+        "routes": []
+      },
+      "description": "Remove an agent and its room memberships from the hub.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id"
+        ],
+        "title": "AgentRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id"
+            ],
+            "title": "AgentRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_agent_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.agent.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_room_remove.",
+        "routes": []
+      },
+      "description": "Remove a room, its messages, and its attachments.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "room_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "title": "RoomRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "room_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "room_id"
+            ],
+            "title": "RoomRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_room_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.room.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_admin_message_remove.",
+        "routes": []
+      },
+      "description": "Remove one message and its attachments from the hub.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id"
+        ],
+        "title": "MessageRemove",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id"
+            ],
+            "title": "MessageRemove",
+            "type": "object"
+          },
+          "name": "agent_hub_admin_message_remove",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.admin.message.remove",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "removed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "title": "RemovalResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "destructive",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_settings_set.",
+        "routes": []
+      },
+      "description": "Enable or pause the isolated public hub space.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "public_enabled": {
+            "type": "boolean"
+          },
+          "public_paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "public_enabled",
+          "public_paused"
+        ],
+        "title": "SettingsSet",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "public_enabled": {
+                "type": "boolean"
+              },
+              "public_paused": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "expected_revision",
+              "public_enabled",
+              "public_paused"
+            ],
+            "title": "SettingsSet",
+            "type": "object"
+          },
+          "name": "agent_hub_settings_set",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.settings.set",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "callback_outbox_pending": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "current_key_created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "previous_key_expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_enabled": {
+            "type": "boolean"
+          },
+          "public_paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "public_enabled",
+          "public_paused",
+          "callback_outbox_pending"
+        ],
+        "title": "Settings",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_key_rotate.",
+        "routes": []
+      },
+      "description": "Rotate the instance bearer key with seven-day overlap.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "KeyRotate",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "expected_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "expected_revision"
+            ],
+            "title": "KeyRotate",
+            "type": "object"
+          },
+          "name": "agent_hub_key_rotate",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.key.rotate",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "bearer_key": {
+            "type": "string"
+          },
+          "previous_key_expires_at": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "bearer_key",
+          "previous_key_expires_at"
+        ],
+        "title": "KeyRotateResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "reversible",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Use Console or MCP agent_hub_activity.",
+        "routes": []
+      },
+      "description": "Read bounded aggregate hub activity without agent identity or message content.",
+      "inputSchema": {
+        "$defs": {
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "space": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Space"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "Activity",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$defs": {
+              "Space": {
+                "enum": [
+                  "private",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "limit": {
+                "default": 50,
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "space": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Space"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "title": "Activity",
+            "type": "object"
+          },
+          "name": "agent_hub_activity",
+          "transform": "identity"
+        }
+      ],
+      "name": "agent.hub.activity",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "active_agents": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "deliveries_pending": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "messages": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outbox_pending": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rooms": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active_agents",
+          "rooms",
+          "messages",
+          "deliveries_pending",
+          "outbox_pending"
+        ],
+        "title": "ActivityResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "server"
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": "Used only by the dedicated edge agent-hub endpoint.",
+        "routes": []
+      },
+      "description": "Dedicated remote adapter for the agent hub; only the edge allowlist may invoke it.",
+      "inputSchema": {
+        "$defs": {
+          "AgentAuth": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "type": "string"
+              },
+              "token": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "token"
+            ],
+            "type": "object"
+          },
+          "RemoteAction": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "directory",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 50,
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "space": {
+                    "$ref": "#/$defs/Space"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "space"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "callback_url": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "capabilities": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  "current_subject": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "display_name": {
+                    "maxLength": 160,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "domain_label": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "register",
+                    "type": "string"
+                  },
+                  "repository_label": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "space": {
+                    "$ref": "#/$defs/Space"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "space",
+                  "display_name"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "current_subject": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "heartbeat",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "unregister",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "room_create",
+                    "type": "string"
+                  },
+                  "members": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "name": {
+                    "maxLength": 160,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "space": {
+                    "$ref": "#/$defs/Space"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "space",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "room_list",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 0,
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "space": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Space"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "room_member_add",
+                    "type": "string"
+                  },
+                  "room_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "room_id",
+                  "agent_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "room_member_remove",
+                    "type": "string"
+                  },
+                  "room_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "room_id",
+                  "agent_id"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "attachments": {
+                    "default": [],
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "body": {
+                    "maxLength": 32768,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "client_message_id": {
+                    "default": null,
+                    "maxLength": 160,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "send",
+                    "type": "string"
+                  },
+                  "room_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "room_id",
+                  "body"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "after": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "receive",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 50,
+                    "format": "uint16",
+                    "maximum": 65535,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "room_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "delivery_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "const": "ack",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "delivery_ids"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "byte_size": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "content_type": {
+                    "default": "application/octet-stream",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_start",
+                    "type": "string"
+                  },
+                  "name": {
+                    "maxLength": 240,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "request_key": {
+                    "type": "string"
+                  },
+                  "sha256": {
+                    "pattern": "^[0-9a-fA-F]{64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "request_key",
+                  "name",
+                  "byte_size",
+                  "sha256"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "data_base64": {
+                    "maxLength": 45000,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "kind": {
+                    "const": "upload_chunk",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "format": "uint32",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "upload_id",
+                  "offset",
+                  "data_base64"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "file_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "kind": {
+                    "const": "upload_file",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "upload_id": {
+                    "default": null,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "auth": {
+                    "$ref": "#/$defs/AgentAuth"
+                  },
+                  "kind": {
+                    "const": "upload_remove",
+                    "type": "string"
+                  },
+                  "upload_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "auth",
+                  "upload_id"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "Space": {
+            "enum": [
+              "private",
+              "public"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "Dedicated edge adapter.  Public reads/registration and public-space\nwrites may omit `bearer`; private actions require the current or previous\ninstance key.  This operation is intentionally the only hub operation\navailable to the public edge endpoint.",
+        "properties": {
+          "action": {
+            "$ref": "#/$defs/RemoteAction"
+          },
+          "bearer": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "RemoteRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": "Deliberately not exposed as an MCP tool.",
+      "mcpTools": [],
+      "name": "agent.hub.remote",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "AnyValue"
+      },
+      "policy": {
+        "effect": "external",
+        "idempotent": false,
+        "role": "anonymous",
+        "scope": "public"
       }
     },
     {
