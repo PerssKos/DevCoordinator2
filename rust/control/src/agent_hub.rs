@@ -1399,7 +1399,7 @@ mod tests {
             listed.agents[0].domain_label.as_deref(),
             Some("host.example")
         );
-        assert!(listed.agents[0].callback_configured == false);
+        assert!(!listed.agents[0].callback_configured);
     }
 
     #[test]
