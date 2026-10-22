@@ -1619,9 +1619,7 @@ mod tests {
             .unwrap();
         let pending: u32 = service
             .database
-            .call(|db| {
-                Ok(db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?)
-            })
+            .call(|db| Ok(db.query_row("SELECT count(*) FROM agent_hub_outbox", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(pending, 0);
     }
@@ -1672,7 +1670,9 @@ mod tests {
     fn remote_private_and_public_agents_exchange_messages_through_the_adapter() {
         let (_temp, service) = world();
         let rotated = service
-            .key_rotate(api::KeyRotate { expected_revision: 0 })
+            .key_rotate(api::KeyRotate {
+                expected_revision: 0,
+            })
             .unwrap();
         let register_remote = |bearer: Option<String>, name: &str, space: api::Space| {
             let value = service
@@ -1694,8 +1694,16 @@ mod tests {
                 .unwrap();
             serde_json::from_value::<api::RegisterResult>(value).unwrap()
         };
-        let first = register_remote(Some(rotated.bearer_key.clone()), "private-a", api::Space::Private);
-        let second = register_remote(Some(rotated.bearer_key.clone()), "private-b", api::Space::Private);
+        let first = register_remote(
+            Some(rotated.bearer_key.clone()),
+            "private-a",
+            api::Space::Private,
+        );
+        let second = register_remote(
+            Some(rotated.bearer_key.clone()),
+            "private-b",
+            api::Space::Private,
+        );
         let room = service
             .remote(
                 api::RemoteRequest {
@@ -1740,7 +1748,10 @@ mod tests {
                 &edge(),
             )
             .unwrap();
-        assert_eq!(received["deliveries"][0]["message"]["body"], "private remote message");
+        assert_eq!(
+            received["deliveries"][0]["message"]["body"],
+            "private remote message"
+        );
 
         service
             .settings_set(api::SettingsSet {
@@ -1795,7 +1806,10 @@ mod tests {
                 &edge(),
             )
             .unwrap();
-        assert_eq!(public_received["deliveries"][0]["message"]["body"], "public message");
+        assert_eq!(
+            public_received["deliveries"][0]["message"]["body"],
+            "public message"
+        );
     }
 
     #[test]
@@ -1885,23 +1899,29 @@ mod tests {
                 &local(),
             )
             .unwrap();
-        assert!(service
-            .admin_remove_message(api::MessageRemove {
-                message_id: message.message_id,
-            })
-            .unwrap()
-            .removed);
-        assert!(service
-            .admin_remove_room(api::RoomRemove {
-                room_id: room.room_id,
-            })
-            .unwrap()
-            .removed);
-        assert!(service
-            .admin_remove_agent(api::AgentRemove {
-                agent_id: second.agent.agent_id,
-            })
-            .unwrap()
-            .removed);
+        assert!(
+            service
+                .admin_remove_message(api::MessageRemove {
+                    message_id: message.message_id,
+                })
+                .unwrap()
+                .removed
+        );
+        assert!(
+            service
+                .admin_remove_room(api::RoomRemove {
+                    room_id: room.room_id,
+                })
+                .unwrap()
+                .removed
+        );
+        assert!(
+            service
+                .admin_remove_agent(api::AgentRemove {
+                    agent_id: second.agent.agent_id,
+                })
+                .unwrap()
+                .removed
+        );
     }
 }
