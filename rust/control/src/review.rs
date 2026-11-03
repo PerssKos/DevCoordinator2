@@ -9,6 +9,10 @@ use crate::review_validation::{database_error, invalid, page, text, window};
 use crate::test_state::TestRunStore;
 use crate::usage::{QUERY_TIMEOUT, RepositoryRecord, UsageService};
 
+// Leave time for evidence validation and durable receipt writes within the
+// client's response deadline. Slow collectors remain explicit coverage gaps.
+const REVIEW_USAGE_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
 #[path = "review_evidence.rs"]
 mod evidence;
 #[path = "review_pages.rs"]
@@ -56,7 +60,7 @@ impl ReviewService {
     }
 
     pub(crate) fn prepare(&self, params: Prepare, now_ms: u64) -> Result<Prepared, ProtocolError> {
-        self.prepare_until(params, now_ms, Instant::now() + QUERY_TIMEOUT)
+        self.prepare_until(params, now_ms, Instant::now() + REVIEW_USAGE_BUDGET)
     }
 
     fn prepare_until(
@@ -249,7 +253,7 @@ impl ReviewService {
             return Err(invalid("Review record must fit within 8 KiB"));
         }
         let record = &params.record;
-        let deadline = Instant::now() + QUERY_TIMEOUT;
+        let deadline = Instant::now() + REVIEW_USAGE_BUDGET;
         let prepared = self.prepare_until(
             Prepare {
                 repository_id: record.repository_id.clone(),
