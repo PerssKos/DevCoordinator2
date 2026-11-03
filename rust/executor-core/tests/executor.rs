@@ -14,9 +14,9 @@ use devcoordinator2_executor_core::{
     protocol::{
         CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
         DiagnosticReportFormat, DiagnosticReportSource, ErrorCategory, ExecutionPlan,
-        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream, MAX_RETAINED_ARTIFACT_FILES,
-        MAX_TIMEOUT_SECONDS, ProofKind, RetainedArtifactSpec, RunStatus, Schema2, TerminationReason,
-        ValidationTier,
+        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream,
+        MAX_RETAINED_ARTIFACT_FILES, MAX_TIMEOUT_SECONDS, ProofKind, RetainedArtifactSpec,
+        RunStatus, Schema2, TerminationReason, ValidationTier,
     },
     source_digest,
 };
