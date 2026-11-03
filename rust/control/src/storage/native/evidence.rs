@@ -335,6 +335,7 @@ mod tests {
             ancestor_keys: Vec::new(),
             fingerprint: format!("fingerprint:{run_id}"),
             owner_deployment: None,
+            source_owner_observation: None,
             last_activity_signature: String::new(),
             discovered_effect: devcoordinator2_api::storage::Effect::RetainedEvidence,
             disposal_approved: false,
