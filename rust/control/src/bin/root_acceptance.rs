@@ -3179,7 +3179,17 @@ cases=[{{id="one",args=[],postgres="slow"}}]
             .replace("timeout_seconds=60", "timeout_seconds=5"),
     );
     world.write_config(&configuration)?;
-    world.git(&["add", "."])?;
+    // Earlier checks have already created changing private runtime state.
+    // Commit only this journey's inputs, never its logs or lifecycle files.
+    world.git(&[
+        "add",
+        "--",
+        ".devcoordinator.toml",
+        "network-observer.mjs",
+        "seed.sql",
+        "slow.sql",
+    ])?;
+    world.git(&["diff", "--cached", "--quiet", "--", ".devcoordinator/"])?;
     world.git(&[
         "commit",
         "-qm",
