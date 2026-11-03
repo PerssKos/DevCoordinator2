@@ -200,11 +200,11 @@ returned without copying them into persistent tables. `source_refs` names the
 canonical combined repository/window source; contributing account identities,
 private collector paths and raw model/tool contents remain undisclosed.
 
-Review usage reads share a 30-second budget across already-indexed collectors.
-They reuse existing repository links rather than launch identity probes or
-retry missing mappings. The source reader interrupts expired SQLite queries;
-exhausted sources are reported as `query_budget_exhausted` and missing links as
-`mapping_pending` in `usage.coverage.unavailable_reasons`. Completed source
+Review prepare/record usage reads share a 500-millisecond budget across collectors.
+Repository identity probes and indexed source queries honor that same deadline.
+The source reader interrupts expired SQLite queries;
+exhausted sources are reported as `query_budget_exhausted` in
+`usage.coverage.unavailable_reasons`. Completed source
 measurements remain available with partial coverage; incomplete sources are
 not presented as full totals or fabricated zeroes. The exact review window
 is never shortened. Prepare/record CLI replies have a bounded 20-second wait
@@ -258,7 +258,7 @@ usage references must exactly match the reviewed repository and window. Result
 usage references are `canonical-usage:REPOSITORY_ID:START_MS:END_MS`, with
 `START_MS >= windowEndMs`, `END_MS > START_MS` and `END_MS <= recorded_at_ms`.
 They are read from canonical indexed sources, not accepted as supplied numbers.
-Baseline and all distinct result windows share the same 30-second query budget.
+Baseline and all distinct result windows share the same 500-millisecond query budget.
 General observations may cite either the baseline or declared result usage refs.
 Decision
 references accept either permanent decision IDs or their stable refs.

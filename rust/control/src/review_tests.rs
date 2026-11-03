@@ -121,6 +121,68 @@ fn review_requires_interpretation_and_honest_missing_measurements() {
             .record(fake, "fixture", START + WEEK)
             .is_err()
     );
+
+    // Public prepare/record must finish with honest missing measurements even
+    // when the collector cannot answer. A successful inconclusive review must
+    // still persist and round-trip through the exact receipt surface.
+    use std::os::unix::fs::PermissionsExt;
+    let probe = fixture.repository.join("slow-identity-probe");
+    std::fs::write(&probe, "#!/bin/sh\nexec sleep 5\n").unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = fixture.config.clone();
+    config.codex_usage_sources = vec![crate::config::CodexUsageSource {
+        api_socket: None,
+        uid: rustix::process::getuid().as_raw(),
+        codex_home: fixture.repository.clone(),
+        executable: probe,
+    }];
+    let slow_service = ReviewService::new(
+        fixture.database.clone(),
+        UsageService::with_clock(
+            config,
+            fixture.database.clone(),
+            crate::repository::Registry::new(fixture.database.clone()),
+            std::sync::Arc::new(crate::automation_test_support::FixtureClock),
+        ),
+    );
+    let began = Instant::now();
+    let packet = slow_service.prepare(prepare(), START + WEEK).unwrap();
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(packet.usage.totals.total_tokens, None);
+    assert!(packet.usage.coverage.has_gaps);
+    assert!(
+        packet
+            .usage
+            .coverage
+            .unavailable_reasons
+            .contains_key("query_budget_exhausted")
+    );
+    assert!(
+        packet
+            .usage
+            .outcomes
+            .totals
+            .provider_total_tokens
+            .exact
+            .is_none()
+    );
+    let mut request = record(&fixture);
+    request.record.experiment.disposition = Disposition::Inconclusive;
+    request.record.experiment.baseline.missing_measurements = packet.coverage_gaps.clone();
+    let began = Instant::now();
+    let saved = slow_service
+        .record(request, "fixture", START + WEEK)
+        .unwrap();
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    assert!(saved.completed);
+    assert_eq!(
+        slow_service
+            .receipt(Reference {
+                reference: saved.reference.clone()
+            })
+            .unwrap(),
+        saved
+    );
 }
 
 #[test]
