@@ -20,12 +20,39 @@ window.DevCoordinatorSketches = (() => {
     groups.get(node.batch_id).nodes.push(node);return groups;
   },new Map()).values()];
 
+  // A retained image is read through several bounded API chunks. External
+  // browsers are much more sensitive to starting every thumbnail at once than
+  // the local loopback fixture, so keep one shared queue for each mounted view.
+  const imageQueue = [];
+  let imageLoads = 0;
+  const IMAGE_CONCURRENCY = 4;
+  const pumpImages = () => {
+    while (imageLoads < IMAGE_CONCURRENCY && imageQueue.length) {
+      const job = imageQueue.shift();
+      imageLoads += 1;
+      Promise.resolve().then(job.run).then(job.resolve, job.reject).finally(() => {
+        imageLoads -= 1;
+        pumpImages();
+      });
+    }
+  };
+  const enqueueImage = (run) => new Promise((resolve, reject) => {
+    imageQueue.push({run, resolve, reject});
+    pumpImages();
+  });
+
   async function mount(main, {repositoryId:repo,api,esc:e,signal,imageUrl,openAnnotations}) {
     const query = new URLSearchParams(location.hash.split('?')[1] || '');
     const surface = query.get('surface');
     let draftKey;
     let generation=0;
+    let imageObserver = null;
+    const imageLoaders = new WeakMap();
     const current = () => !signal.aborted;
+    signal.addEventListener('abort', () => {
+      imageObserver?.disconnect();
+      imageObserver = null;
+    }, {once:true});
     const read = (operation,params) => api(`design.sketch.${operation}`,{repository_id:repo,...params});
     const showError = (error, container=main) => {
       if (!current() || error.code==='stale') return;
@@ -34,10 +61,49 @@ window.DevCoordinatorSketches = (() => {
     };
     const images = (root,nodes) => {
       const lookup=new Map(nodes.map(node=>[node.sketch_id,node]));
-      for (const img of root.querySelectorAll('img[data-mockup]')) {
-        if(img.dataset.loaded==='true'||img.closest('details:not([open])'))continue;
-        const node=lookup.get(img.dataset.mockup);if(!node)continue;
-        imageUrl(repo,node).then(url=>{if(current()&&img.isConnected){img.onload=()=>{if(img.isConnected)img.dataset.loaded='true';};img.src=url;}}).catch(error=>{if(current()&&img.isConnected){img.alt=text('option_unavailable_d03e4e');img.closest('figure,button,a')?.classList.add('unavailable');}});
+      const candidates = [...root.querySelectorAll('img[data-mockup]')];
+      const load = (img) => {
+        if (!img.isConnected || img.dataset.loaded==='true' || img.dataset.loading==='true' || img.closest('details:not([open])')) return;
+        const node=lookup.get(img.dataset.mockup);if(!node) return;
+        img.dataset.loading='true';
+        const attempt = Number(img.dataset.attempts || 0) + 1;
+        img.dataset.attempts = String(attempt);
+        const fail = () => {
+          if (!img.isConnected) return;
+          img.dataset.loading='';
+          img.alt=text('option_unavailable_d03e4e');
+          img.classList.add('unavailable');
+          if (attempt < 2) window.setTimeout(() => load(img), 500 * attempt);
+        };
+        enqueueImage(() => current() && img.isConnected
+          ? imageUrl(repo,node)
+          : Promise.reject(new Error('stale sketch image'))
+        ).then(url => {
+          if (!current() || !img.isConnected) return;
+          img.onload=()=>{
+            if (!img.isConnected) return;
+            img.dataset.loading='';
+            img.dataset.loaded='true';
+            img.classList.remove('unavailable');
+          };
+          img.onerror=fail;
+          img.src=url;
+        }).catch(fail);
+      };
+      const eager = img => img.hasAttribute('data-main-mockup');
+      candidates.forEach(img => imageLoaders.set(img, load));
+      if ('IntersectionObserver' in window) {
+        imageObserver ||= new IntersectionObserver(entries => entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          imageObserver?.unobserve(entry.target);
+          imageLoaders.get(entry.target)?.(entry.target);
+        }), {rootMargin:'480px 0px'});
+        candidates.forEach(img => eager(img) ? load(img) : imageObserver.observe(img));
+      } else candidates.forEach(load);
+      for (const details of root.querySelectorAll('details')) {
+        if (details.dataset.mockupImagesBound === 'true') continue;
+        details.dataset.mockupImagesBound='true';
+        details.addEventListener('toggle', () => { if (details.open) images(details,nodes); });
       }
     };
     const status = (node) => node.legacy?h('legacy'):node.current?h('currentSelection'):node.decision==='reject'?h('rejected_aea4a0'):node.decision==='keep'?`${common('status_keep')} · ${h('history')}`:h('undecided_00cc36');

@@ -71,7 +71,7 @@ enum Projection {
     PerformanceFast,
 }
 const SOURCE_OUTPUT_BYTES: usize = 256 * 1024;
-pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(15);
 const PROCESS_POLL: Duration = Duration::from_millis(10);
 const SQLITE_VARIABLE_CHUNK: usize = 20_000;

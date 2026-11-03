@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use devcoordinator2_executor_protocol::{
     CaseSpec, CheckPlan, CheckRole, CompletionMode, DiagnosticReportFormat, DiagnosticReportSource,
-    FailureMode, RetainedArtifactSpec, ValidationTier,
+    FailureMode, MAX_TIMEOUT_SECONDS, RetainedArtifactSpec, ValidationTier,
 };
 use regex::Regex;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
@@ -21,7 +21,8 @@ use toml::{Table, Value};
 pub const CONFIG_NAME: &str = ".devcoordinator.toml";
 pub const MAX_CONFIG_BYTES: u64 = 524_288;
 pub const TIMEOUT_MIN: u64 = 1;
-pub const TIMEOUT_MAX: u64 = 21_600;
+pub const TIMEOUT_MAX: u64 = MAX_TIMEOUT_SECONDS;
+pub const COMPOSE_TIMEOUT_MAX: u64 = 21_600;
 pub const TIMEOUT_DEFAULT: u64 = 600;
 pub const MAX_DIAGNOSTIC_SOURCES: usize = 8;
 pub const MAX_RETAINED_ARTIFACTS: usize = 8;
@@ -2416,7 +2417,7 @@ fn validate_compose_component(
         if specification.finite_services.is_empty() {
             900
         } else {
-            TIMEOUT_MAX
+            COMPOSE_TIMEOUT_MAX
         },
         &format!("{label} timeout_seconds"),
     )?;
@@ -2830,6 +2831,40 @@ tcp = "127.0.0.1:25"
     }
 
     #[test]
+    fn long_governed_test_and_check_timeouts_are_finite_and_bounded() {
+        let temporary = tempdir().expect("tempdir");
+        let config = |test_timeout: u64, check_timeout: u64| {
+            format!(
+                "schema=2\n[test.unit]\ntimeout_seconds={test_timeout}\n[[test.unit.check]]\nname='solve'\ntier='development'\ntimeout_seconds={check_timeout}\ncommand=['solver']\n"
+            )
+        };
+
+        write(temporary.path(), &config(TIMEOUT_MAX, TIMEOUT_MAX - 1));
+        let specification = load_test_spec(temporary.path(), None).expect("long budget accepted");
+        assert_eq!(specification.timeout_seconds, TIMEOUT_MAX);
+        assert_eq!(
+            specification.checks[0].timeout_seconds,
+            Some(TIMEOUT_MAX - 1)
+        );
+
+        for (test_timeout, check_timeout) in [
+            (0, TIMEOUT_MAX),
+            (TIMEOUT_MAX + 1, TIMEOUT_MAX),
+            (TIMEOUT_MAX, 0),
+            (TIMEOUT_MAX, TIMEOUT_MAX + 1),
+        ] {
+            write(temporary.path(), &config(test_timeout, check_timeout));
+            let error = load_test_spec(temporary.path(), None)
+                .expect_err("unbounded or invalid budget rejected");
+            assert!(
+                error.message.contains("timeout_seconds"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    #[test]
     fn test_configuration_rejection_matrix_preserves_existing_classes() {
         let cases = [
             ("", "schema"),
@@ -3049,7 +3084,7 @@ tcp = "127.0.0.1:25"
             let base = format!(
                 "schema=2\n[deployment.check]\ncomponents=['probe']\n[deployment.check.component.probe]\ntype='compose'\nservices={services}\nfinite_services=['probe']\n"
             );
-            for timeout in [901, 3300, TIMEOUT_MAX] {
+            for timeout in [901, 3300, COMPOSE_TIMEOUT_MAX] {
                 write(
                     temporary.path(),
                     &format!("{base}timeout_seconds={timeout}\n"),

@@ -3167,6 +3167,18 @@ fn property<'a>(values: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
+fn resolve_executor_path(current_exe: Option<&Path>) -> Result<PathBuf, ProtocolError> {
+    current_exe
+        .and_then(Path::parent)
+        .map(|directory| directory.join("devcoordinator2-executor"))
+        .ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::InternalError,
+                "running daemon has no executor directory",
+            )
+        })
+}
+
 pub(crate) fn default_executor_path() -> Result<PathBuf, ProtocolError> {
     #[cfg(feature = "root-acceptance")]
     if let Some(path) = std::env::var_os("DEVCOORDINATOR2_ROOT_EXECUTOR") {
@@ -3197,15 +3209,7 @@ pub(crate) fn default_executor_path() -> Result<PathBuf, ProtocolError> {
     // Installation verifies the daemon and executor in one versioned release.
     // A missing sibling must fail the existing executor-availability check;
     // another checkout's target directory is not a compatible fallback.
-    executable
-        .parent()
-        .map(|directory| directory.join("devcoordinator2-executor"))
-        .ok_or_else(|| {
-            ProtocolError::new(
-                ErrorCode::InternalError,
-                "running daemon has no executor directory",
-            )
-        })
+    resolve_executor_path(Some(&executable))
 }
 
 fn client_name(caller: &Caller) -> String {
@@ -3325,6 +3329,46 @@ fn test_not_found() -> ProtocolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn executor_path_prefers_regular_executable_sibling() {
+        let temporary = tempfile::tempdir().unwrap();
+        let release = temporary.path().join("release");
+        std::fs::create_dir(&release).unwrap();
+        let daemon = release.join("devcoordinator2");
+        let executor = release.join("devcoordinator2-executor");
+        std::fs::write(&daemon, b"daemon").unwrap();
+        std::fs::write(&executor, b"executor").unwrap();
+        std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&executor, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolve_executor_path(Some(&daemon)).unwrap(),
+            executor,
+            "a verified release executable should use its adjacent executor"
+        );
+    }
+
+    #[test]
+    fn executor_path_never_falls_back_to_another_release() {
+        let temporary = tempfile::tempdir().unwrap();
+        let release = temporary.path().join("release");
+        std::fs::create_dir(&release).unwrap();
+        let daemon = release.join("devcoordinator2");
+        let executor = release.join("devcoordinator2-executor");
+        std::fs::write(&daemon, b"daemon").unwrap();
+        std::fs::write(&executor, b"executor").unwrap();
+        std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&executor, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            resolve_executor_path(Some(&daemon)).unwrap(),
+            executor,
+            "the existing availability check must reject this adjacent non-executable, not use another checkout"
+        );
+        std::fs::remove_file(&executor).unwrap();
+        assert_eq!(resolve_executor_path(Some(&daemon)).unwrap(), executor);
+        assert!(resolve_executor_path(None).is_err());
+    }
 
     fn check(name: &str, tier: ValidationTier, dependencies: &[&str]) -> CheckPlan {
         CheckPlan {

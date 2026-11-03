@@ -7,6 +7,12 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 pub const EXECUTOR_SCHEMA: u8 = 2;
+/// Maximum finite budget accepted for a governed test or check.
+///
+/// Long scientific simulations may need more than the historical six-hour
+/// ceiling, but every admitted budget must remain bounded so the outer
+/// containment and cleanup guarantees still have a finite deadline.
+pub const MAX_TIMEOUT_SECONDS: u64 = 86_400;
 pub const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_REPORT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_EVENT_BYTES: usize = 4096;
@@ -1244,11 +1250,11 @@ fn validate_check(check: &CheckPlan) -> Result<(), ContractError> {
         validate_relative_path("cwd", &check.cwd)?;
     }
     if let Some(timeout_seconds) = check.timeout_seconds
-        && !(1..=21_600).contains(&timeout_seconds)
+        && !(1..=MAX_TIMEOUT_SECONDS).contains(&timeout_seconds)
     {
         return Err(ContractError::new(format!(
-            "check {:?} timeout_seconds must be null or in [1, 21600]",
-            check.name
+            "check {:?} timeout_seconds must be null or in [1, {MAX_TIMEOUT_SECONDS}]",
+            check.name,
         )));
     }
     let direct = check.command.is_some();
@@ -2859,6 +2865,21 @@ mod tests {
                 .replacen("\"schema\":2", "\"schema\":1", 1);
         let error = ExecutionPlan::from_json(old.as_bytes()).expect_err("schema one rejected");
         assert!(error.to_string().contains("schema must be 2"));
+    }
+
+    #[test]
+    fn governed_timeout_budget_is_finite_and_bounded() {
+        let mut long = check("long", ValidationTier::Development);
+        long.timeout_seconds = Some(MAX_TIMEOUT_SECONDS);
+        long.validate().expect("maximum finite timeout accepted");
+
+        for timeout in [0, MAX_TIMEOUT_SECONDS + 1, u64::MAX] {
+            long.timeout_seconds = Some(timeout);
+            let error = long
+                .validate()
+                .expect_err("unbounded or invalid timeout rejected");
+            assert!(error.to_string().contains("timeout_seconds"), "{error}");
+        }
     }
 
     #[test]

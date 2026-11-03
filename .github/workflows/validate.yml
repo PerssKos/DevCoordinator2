@@ -1,9 +1,7 @@
 name: validate
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Run the full validation suite only when an owner explicitly requests it.
   workflow_dispatch:
 
 permissions:

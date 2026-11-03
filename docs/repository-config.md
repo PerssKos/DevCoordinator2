@@ -55,7 +55,7 @@ user = "test"
 # max_locks_per_transaction = 128  # optional PostgreSQL startup setting
 
 [test.complete]
-timeout_seconds = 21600
+timeout_seconds = 86400
 
 [[test.complete.check]]
 name = "build"
@@ -310,7 +310,7 @@ Validation rules:
   forbidden everywhere.
 - `cwd` must resolve (realpath, after joining) inside the repository; `..`
   or symlink escape is rejected.
-- Test and leaf `timeout_seconds` values are integers in [1, 21600]. The test
+- Test and leaf `timeout_seconds` values are integers in [1, 86400]. The test
   value is outer containment; a leaf value is a failure ceiling.
 - `env` values must not look like secrets (no key names matching
   token/secret/password/key patterns with literal values — reference

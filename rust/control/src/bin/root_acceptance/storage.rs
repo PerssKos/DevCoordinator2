@@ -4,6 +4,12 @@ use devcoordinator2_control::deployment_state::{
     DeploymentStore, ObservedContainerInput, ObservedDeploymentInput,
 };
 
+// This ordering scenario deliberately holds one scan while another performs
+// a complete discovery. Keep its fixture watchdog aligned with wait_job's
+// five-minute acceptance budget so host I/O pressure cannot make the paused
+// scan fail before the fresh observation completes.
+const ORDERING_SCAN_BUDGET: Duration = Duration::from_secs(300);
+
 fn start_fixture_engine(world: &mut World) -> Result<String, String> {
     let socket = world.base.join("builder.sock");
     let config = world.base.join("builder.json");
@@ -3686,7 +3692,7 @@ fn stale_discovery_order(world: &World, repo: &str) -> Result<(), String> {
     let old_id = data(&old)?["job_id"]
         .as_str()
         .ok_or("old scan id missing")?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + ORDERING_SCAN_BUDGET;
     while !barrier.with_extension("ready").exists() {
         ensure!(
             Instant::now() < deadline,

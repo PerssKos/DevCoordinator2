@@ -14,9 +14,9 @@ use devcoordinator2_executor_core::{
     protocol::{
         CaseSpec, CheckPhase, CheckPlan, CheckRole, CompletionMode, DiagnosticOrigin,
         DiagnosticReportFormat, DiagnosticReportSource, ErrorCategory, ExecutionPlan,
-        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream,
-        MAX_RETAINED_ARTIFACT_FILES, ProofKind, RetainedArtifactSpec, RunStatus, Schema2,
-        TerminationReason, ValidationTier,
+        FailureIndexEntry, FailureMode, LeafStatus, LogPhase, LogStream, MAX_RETAINED_ARTIFACT_FILES,
+        MAX_TIMEOUT_SECONDS, ProofKind, RetainedArtifactSpec, RunStatus, Schema2, TerminationReason,
+        ValidationTier,
     },
     source_digest,
 };
@@ -614,6 +614,17 @@ async fn leaf_deadline_terminates_a_signal_resistant_process_group() {
         diagnostic.termination_reason,
         Some(TerminationReason::DeadlineExceeded)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maximum_finite_timeout_is_admitted_and_completes_normally() {
+    let repository = Repository::new("long-timeout");
+    let mut check = direct("long", fixture_exit(0));
+    check.timeout_seconds = Some(MAX_TIMEOUT_SECONDS);
+    let report = execute(plan(&repository, "run-long-timeout", vec![check])).await;
+    assert_eq!(report.status, RunStatus::Passed);
+    assert_eq!(status(&report, "long"), LeafStatus::Passed);
+    assert!(report.failure_index.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

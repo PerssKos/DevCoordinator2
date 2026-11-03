@@ -200,7 +200,7 @@ returned without copying them into persistent tables. `source_refs` names the
 canonical combined repository/window source; contributing account identities,
 private collector paths and raw model/tool contents remain undisclosed.
 
-Review usage reads share a 15-second budget across already-indexed collectors.
+Review usage reads share a 30-second budget across already-indexed collectors.
 They reuse existing repository links rather than launch identity probes or
 retry missing mappings. The source reader interrupts expired SQLite queries;
 exhausted sources are reported as `query_budget_exhausted` and missing links as
@@ -211,6 +211,13 @@ is never shortened. Prepare/record CLI replies have a bounded 20-second wait
 to receive that result; cheap receipt lookups retain their ordinary deadline.
 Records must acknowledge these coverage gaps; no slicing or repeated model
 requests are required merely because an unchanged inactive interval is long.
+
+Schema-7-and-newer review reads use the bounded token-owning-operation
+projection instead of a full historical timing join. Repository and outcome
+attribution remain measured; execution, active, and wait timing remain
+explicitly unknown rather than being synthesized as zero. This keeps daily
+review telemetry available on large collectors while preserving the
+missing-measurement rules.
 
 The bounded evidence page includes existing outcomes and retained run identities
 overlapping the window, plus standing decision excerpts and supersession links.
@@ -251,7 +258,7 @@ usage references must exactly match the reviewed repository and window. Result
 usage references are `canonical-usage:REPOSITORY_ID:START_MS:END_MS`, with
 `START_MS >= windowEndMs`, `END_MS > START_MS` and `END_MS <= recorded_at_ms`.
 They are read from canonical indexed sources, not accepted as supplied numbers.
-Baseline and all distinct result windows share the same 15-second query budget.
+Baseline and all distinct result windows share the same 30-second query budget.
 General observations may cite either the baseline or declared result usage refs.
 Decision
 references accept either permanent decision IDs or their stable refs.

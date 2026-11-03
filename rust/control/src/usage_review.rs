@@ -138,10 +138,18 @@ impl CodexUsage {
                 }
                 return Err("mapping_unavailable".into());
             }
+            // Schema-7+ collectors expose a bounded total-token projection
+            // backed by the repository/time indexes. Use it for review reads
+            // as well as the Performance view so a large historical timing
+            // join is not attempted for the shared review budget. The
+            // projection keeps repository/outcome attribution and leaves
+            // timing dimensions explicitly unknown.
             if schema >= 7
-                && projection == Projection::Tokens
-                && let Some(mut facts) =
+                && let Some(mut facts) = (if projection == Projection::Tokens {
                     super::performance::read(&connection, &family, start_ms, end_ms)?
+                } else {
+                    super::performance::read_fast(&connection, &family, start_ms, end_ms)?
+                })
             {
                 facts.rates = rates.to_vec();
                 let result = super::review_aggregate::display(

@@ -31,6 +31,16 @@ const BINARY_NAMES: &[&str] = &[
     "devcoordinator2-tooling",
 ];
 
+const SELFTEST_BINARY_NAMES: &[&str] = &[
+    // The tooling self-tests resolve these fixtures beside the tooling
+    // executable. Keep them in the same immutable release bundle so a
+    // release can validate itself without reaching into another target tree.
+    "devcoordinator2-selftest-coordinator",
+    "devcoordinator2-selftest-leaf",
+];
+
+const RELEASE_FEATURES: &str = "devcoordinator2-tooling/selftest-fixtures";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandRequest {
     pub program: PathBuf,
@@ -418,6 +428,8 @@ pub fn build_release_binaries_at<R: CommandRunner>(
             "--manifest-path".into(),
             manifest.as_os_str().to_owned(),
             "--workspace".into(),
+            "--features".into(),
+            RELEASE_FEATURES.into(),
         ],
         environment: BTreeMap::from([(OsString::from("PATH"), OsString::from("/usr/bin:/bin"))]),
         clear_environment: true,
@@ -429,7 +441,9 @@ pub fn build_release_binaries_at<R: CommandRunner>(
             useful_failure(&output)
         ));
     }
-    verify_release_binaries_at(cargo_target_dir, source_commit, runner)
+    let binaries = verify_release_binaries_at(cargo_target_dir, source_commit, runner)?;
+    verify_selftest_binaries_at(cargo_target_dir)?;
+    Ok(binaries)
 }
 
 pub fn verify_release_binaries<R: CommandRunner + ?Sized>(
@@ -471,6 +485,16 @@ pub fn verify_release_binaries_at<R: CommandRunner + ?Sized>(
         });
     }
     Ok(receipts)
+}
+
+fn verify_selftest_binaries_at(cargo_target_dir: &Path) -> Result<(), String> {
+    for name in SELFTEST_BINARY_NAMES {
+        let path = cargo_target_dir.join("release").join(name);
+        validate_regular(&path, true).map_err(|error| {
+            format!("Rust self-test binary {name} is unavailable or unsafe: {error}")
+        })?;
+    }
+    Ok(())
 }
 
 pub fn verify_manifest_binaries<R: CommandRunner + ?Sized>(
@@ -2281,6 +2305,11 @@ mod tests {
             std::fs::write(&path, name).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        for name in SELFTEST_BINARY_NAMES {
+            let path = release.join(name);
+            std::fs::write(&path, name).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let runner = FakeRunner::with_outputs(
             std::iter::once(success(""))
                 .chain(BINARY_NAMES.iter().map(|_| success(&commit)))
@@ -2292,18 +2321,32 @@ mod tests {
             home: source.to_owned(),
         };
         let receipts = build_release_binaries(source, &commit, &identity, &tools, &runner).unwrap();
-        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts.len(), BINARY_NAMES.len());
         let requests = runner.requests.lock().unwrap();
         assert_eq!(requests[0].program, tools.setpriv);
         assert!(requests[0].args.contains(&OsString::from("--workspace")));
         assert!(requests[0].args.contains(&OsString::from(format!(
             "DEVCOORDINATOR2_SOURCE_COMMIT={commit}"
         ))));
+        assert!(requests[0].args.contains(&OsString::from("--features")));
+        assert!(requests[0].args.contains(&OsString::from(RELEASE_FEATURES)));
         assert!(
             requests[1..]
                 .iter()
                 .all(|request| request.args == [OsString::from("--source-commit")])
         );
+    }
+
+    #[test]
+    fn release_verification_requires_selftest_companions() {
+        let temporary = tempfile::tempdir().unwrap();
+        let release = temporary.path().join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let coordinator = release.join(SELFTEST_BINARY_NAMES[0]);
+        std::fs::write(&coordinator, "fixture").unwrap();
+        std::fs::set_permissions(&coordinator, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = verify_selftest_binaries_at(temporary.path()).unwrap_err();
+        assert!(error.contains(SELFTEST_BINARY_NAMES[1]));
     }
 
     #[test]

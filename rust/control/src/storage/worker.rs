@@ -15,6 +15,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::watch;
 
+#[cfg(feature = "root-acceptance")]
+const ROOT_ACCEPTANCE_SCAN_BARRIER_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[cfg(target_os = "linux")]
 fn lower_scan_priority() {
     // The scan is observational and may traverse very large trusted-local
@@ -579,7 +582,8 @@ impl StorageService {
                     {
                         std::fs::write(barrier.with_extension("ready"), id)
                             .map_err(|_| blocked("fixture_scan_barrier_unavailable"))?;
-                        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+                        let deadline =
+                            std::time::Instant::now() + ROOT_ACCEPTANCE_SCAN_BARRIER_TIMEOUT;
                         while barrier.exists() {
                             if std::time::Instant::now() >= deadline {
                                 return Err(blocked("fixture_scan_barrier_timeout"));
