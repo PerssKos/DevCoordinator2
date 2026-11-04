@@ -2479,9 +2479,22 @@ function refreshEvidenceSelection() {
 function mergeEvidencePage(target, page) {
   for (const bundle of page.bundles || []) {
     const key = [bundle.formal_run_id, bundle.check, bundle.phase, bundle.case || ''].join('\u0000');
-    const existing = target.bundles.find((item) => [item.formal_run_id, item.check, item.phase, item.case || ''].join('\u0000') === key);
-    if (!existing) target.bundles.push({ ...bundle, cells: [...(bundle.cells || [])] });
-    else for (const cell of bundle.cells || []) if (!existing.cells.some((item) => item.cell_id === cell.cell_id)) existing.cells.push(cell);
+    let existing = target.bundles.find((item) => [item.formal_run_id, item.check, item.phase, item.case || ''].join('\u0000') === key);
+    if (!existing) {
+      existing = { ...bundle, cells: [], coverage: { ...bundle.coverage } };
+      if (bundle.coverage?.required_coverage) existing.coverage.required_coverage = { ...bundle.coverage.required_coverage, entries: [] };
+      target.bundles.push(existing);
+    }
+    for (const cell of bundle.cells || []) if (!existing.cells.some((item) => item.cell_id === cell.cell_id)) existing.cells.push(cell);
+    const incoming = bundle.coverage?.required_coverage;
+    if (incoming) {
+      const required = existing.coverage.required_coverage ||= { ...incoming, entries: [] };
+      const entryKey = (entry) => JSON.stringify([entry.requirement_id || null, entry.target, entry.state, entry.viewport, entry.width ?? null]);
+      const seen = new Set(required.entries.map(entryKey));
+      for (const entry of incoming.entries || []) if (!seen.has(entryKey(entry))) {
+        required.entries.push(entry); seen.add(entryKey(entry));
+      }
+    }
   }
   for (const feedback of page.feedback || []) {
     const existing = target.feedback.find((item) => item.feedback_id === feedback.feedback_id);

@@ -43,11 +43,12 @@ const MANIFEST_NAME: &str = "journey-evidence.json";
 const MULTI_BUNDLE_DIRECTORY: &str = "formal-runs";
 const MANIFEST_KIND: &str = "formal-web-ui-journey-evidence";
 const MANIFEST_SCHEMA: u8 = 1;
-const MAX_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
+// Full role/state/viewport matrices remain bounded independently of response pages.
+const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_IMAGE_CHUNK_BYTES: u32 = 180 * 1024;
 const MAX_MANIFESTS: usize = 256;
-const MAX_CELLS: usize = 512;
+const MAX_CELLS: usize = 2048;
 const MAX_COMMENTS: usize = 512;
 const MAX_MARKS: usize = 64;
 const MAX_POINTS: usize = 256;
@@ -511,13 +512,27 @@ fn evidence_page_units(bundles: &[EvidenceBundle], feedback: &[Feedback]) -> Vec
         let oversized = serde_json::to_vec(bundle)
             .map(|bytes| bytes.len() > MAX_RESPONSE_BYTES / 2)
             .unwrap_or(true);
-        if bundle.cells.is_empty() || !oversized {
+        if !oversized {
             units.push(EvidencePageUnit::Bundle(Box::new(bundle.clone())));
             continue;
         }
-        for cell in &bundle.cells {
-            let mut page = bundle.clone();
-            page.cells = vec![cell.clone()];
+        // Coverage entries can exceed one response even when a cell fits.
+        // Keep complete summary counts, but paginate both vectors without
+        // repeating the full required matrix or dropping unmatched requirements.
+        let mut template = bundle.clone();
+        let cells = std::mem::take(&mut template.cells);
+        let entries = template
+            .coverage
+            .required_coverage
+            .as_mut()
+            .map(|required| std::mem::take(&mut required.entries))
+            .unwrap_or_default();
+        for index in 0..cells.len().max(entries.len()).max(1) {
+            let mut page = template.clone();
+            page.cells.extend(cells.get(index).cloned());
+            if let Some(required) = page.coverage.required_coverage.as_mut() {
+                required.entries.extend(entries.get(index).cloned());
+            }
             units.push(EvidencePageUnit::Bundle(Box::new(page)));
         }
     }
@@ -2985,54 +3000,51 @@ mod tests {
 
     #[test]
     fn oversized_bundle_pages_cells_without_losing_visual_evidence() {
+        const CELL_COUNT: usize = 1048;
         let world = world();
         let second = world
             .evidence
             .join("formal-runs/0000000000000000000000000000000000000000000000000000000000000001");
         fs::create_dir_all(second.join("screenshots")).unwrap();
-        let mut manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(world.evidence.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let mut manifest = world.manifest.clone();
+        manifest["runId"] = json!("formal-web-ui-large");
         let template = manifest["cells"][0].clone();
-        let cells = (0..MAX_CELLS)
+        let mut entries = Vec::new();
+        let cells = (0..CELL_COUNT)
             .map(|index| {
                 let mut cell = template.clone();
-                cell["cellId"] = serde_json::json!(format!("cell-{index}"));
-                cell["planIndex"] = serde_json::json!(index);
+                let target = format!("Screen {index} {}", "a".repeat(192));
+                cell["cellId"] = json!(format!("cell-{index}"));
+                cell["planIndex"] = json!(index);
+                cell["targetName"] = json!(target);
+                entries.push(json!({
+                    "requirementId": format!("required-{index}"),
+                    "target": target, "state": "invalid-password", "viewport": "desktop",
+                    "width": 1440, "status": "satisfied", "reason": "",
+                    "matchingCellIds": [format!("cell-{index}")]
+                }));
                 cell
             })
             .collect::<Vec<_>>();
-        manifest["coverage"]["checkedPages"] = serde_json::json!(MAX_CELLS);
-        manifest["coverage"]["plannedPages"] = serde_json::json!(MAX_CELLS);
+        manifest["coverage"]["checkedPages"] = json!(CELL_COUNT);
+        manifest["coverage"]["plannedPages"] = json!(CELL_COUNT);
+        manifest["coverage"]["requiredCoverage"] = json!({
+            "declaredCount": CELL_COUNT, "satisfiedCount": CELL_COUNT,
+            "failed": false, "entries": entries
+        });
         manifest["cells"] = serde_json::Value::Array(cells);
         fs::copy(
             &world.screenshot,
             second.join("screenshots/cell-1-desktop-viewport.png"),
         )
         .unwrap();
-        fs::write(
-            second.join(MANIFEST_NAME),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
-        let first = world
-            .service
-            .get(
-                EvidenceReference {
-                    path: world.repo.display().to_string(),
-                    run_id: RUN_ID.into(),
-                    offset: 0,
-                    limit: 1,
-                },
-                &caller("owner@example.test"),
-            )
-            .unwrap();
-        assert_eq!(first.bundles.len(), 1);
-        assert_eq!(first.bundles[0].cells.len(), 1);
-        assert!(first.next_offset.is_some());
-        assert!(serde_json::to_vec(&first).unwrap().len() < MAX_RESPONSE_BYTES);
-        let mut offset = first.next_offset.unwrap();
-        let mut cells_seen = first.bundles[0].cells.len();
-        while let Some(next) = offset.checked_add(1) {
+        let raw = serde_json::to_vec_pretty(&manifest).unwrap();
+        assert!(raw.len() > 2 * 1024 * 1024, "exercise the former byte cap");
+        fs::write(second.join(MANIFEST_NAME), &raw).unwrap();
+        let mut offset = 0;
+        let mut cells_seen = HashSet::new();
+        let mut requirements_seen = HashSet::new();
+        loop {
             let page = world
                 .service
                 .get(
@@ -3045,18 +3057,71 @@ mod tests {
                     &caller("owner@example.test"),
                 )
                 .unwrap();
-            cells_seen += page
-                .bundles
-                .iter()
-                .map(|bundle| bundle.cells.len())
-                .sum::<usize>();
-            if page.next_offset.is_none() {
-                break;
+            assert!(
+                page.issues.is_empty(),
+                "the full matrix must remain readable"
+            );
+            assert_eq!(page.image_count, 2);
+            assert!(serialized_response_bytes(&page) <= MAX_RESPONSE_BYTES);
+            for bundle in &page.bundles {
+                if bundle.formal_run_id != "formal-web-ui-large" {
+                    continue;
+                }
+                assert_eq!(bundle.coverage.planned_pages as usize, CELL_COUNT);
+                assert!(bundle.coverage.readiness_eligible);
+                assert!(!bundle.coverage.failed);
+                for cell in &bundle.cells {
+                    assert!(cells_seen.insert(cell.cell_id.clone()));
+                }
+                let required = bundle.coverage.required_coverage.as_ref().unwrap();
+                assert_eq!(required.declared_count as usize, CELL_COUNT);
+                assert_eq!(required.satisfied_count as usize, CELL_COUNT);
+                for entry in &required.entries {
+                    assert!(requirements_seen.insert(entry.requirement_id.clone().unwrap()));
+                }
             }
-            offset = page.next_offset.unwrap();
-            assert!(offset >= next);
+            let Some(next) = page.next_offset else { break };
+            assert!(next > offset);
+            offset = next;
         }
-        assert_eq!(cells_seen, MAX_CELLS + 1);
+        assert_eq!(cells_seen.len(), CELL_COUNT);
+        assert_eq!(requirements_seen.len(), CELL_COUNT);
+
+        // Missing/unselected requirements still have pages when there are no
+        // rendered cells; their failed, non-readiness verdict must survive.
+        manifest["cells"] = json!([]);
+        manifest["coverage"]["checkedPages"] = json!(0);
+        manifest["coverage"]["failed"] = json!(true);
+        manifest["coverage"]["readinessEligible"] = json!(false);
+        manifest["coverage"]["requiredCoverage"]["failed"] = json!(true);
+        manifest["coverage"]["requiredCoverage"]["satisfiedCount"] = json!(CELL_COUNT - 1);
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["status"] = json!("missing");
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["matchingCellIds"] = json!([]);
+        manifest["coverage"]["requiredCoverage"]["entries"][0]["reason"] = json!("Not executed");
+        write_manifest(&second, &manifest);
+        let partial = evidence(&world);
+        assert!(partial.issues.is_empty());
+        let missing = partial
+            .bundles
+            .iter()
+            .find(|bundle| bundle.formal_run_id == "formal-web-ui-large")
+            .unwrap();
+        assert!(missing.cells.is_empty());
+        assert!(missing.coverage.failed);
+        assert!(!missing.coverage.readiness_eligible);
+        assert_eq!(
+            missing.coverage.required_coverage.as_ref().unwrap().entries[0].status,
+            "missing"
+        );
+
+        // Larger supported matrices do not remove either bounded-read guard.
+        manifest["coverage"]["plannedPages"] = json!(MAX_CELLS + 1);
+        write_manifest(&second, &manifest);
+        assert_eq!(evidence(&world).issues[0].code, "invalid_evidence");
+        let mut oversized = raw;
+        oversized.resize(MAX_MANIFEST_BYTES + 1, b' ');
+        fs::write(second.join(MANIFEST_NAME), oversized).unwrap();
+        assert_eq!(evidence(&world).issues[0].code, "invalid_evidence");
     }
 
     fn image_id(result: &EvidenceGet) -> String {
