@@ -564,8 +564,8 @@ function normalizeContinuation(value, name) {
   if (value.focusWithin !== undefined && (typeof value.focusWithin !== "string" || !value.focusWithin.trim())) {
     throw new Error(`${name}.focusWithin must be a non-empty selector when present`);
   }
-  if (kind === "navigation" && (typeof value.expectedPath !== "string" || !value.expectedPath.startsWith("/"))) {
-    throw new Error(`${name}.expectedPath must be an absolute route path for navigation`);
+  if (kind === "navigation" && (typeof value.expectedPath !== "string" || !value.expectedPath.startsWith("/") || value.expectedPath.includes("#"))) {
+    throw new Error(`${name}.expectedPath must be an absolute route path without a fragment for navigation`);
   }
   if (kind === "in-page" && value.expectedPath !== undefined) {
     throw new Error(`${name}.expectedPath is valid only for navigation`);
@@ -5820,10 +5820,18 @@ async function verifyTarget(page, target, viewport, config, cellId, sessionFixtu
   const expectedStatePath = target.continuation?.kind === "navigation"
     ? target.continuation.expectedPath
     : result.requestedPath;
-  if (expectedStatePath !== result.finalPath || result.requestedOrigin !== result.finalOrigin) {
+  // An explicitly declared query is part of the navigation destination. Keep
+  // pathname-only expectations compatible; exact fixture-route binding remains
+  // a separate handoff requirement for every rendered cell.
+  const expectedStateRoute = new URL(expectedStatePath, target.url);
+  const expectedQuery = target.continuation?.kind === "navigation" &&
+    expectedStatePath.includes("?");
+  const queryMatches = !expectedQuery || expectedStateRoute.search === new URL(page.url()).search;
+  if (expectedStateRoute.pathname !== result.finalPath || !queryMatches ||
+      expectedStateRoute.origin !== result.requestedOrigin || result.requestedOrigin !== result.finalOrigin) {
     result.skipped = true;
     result.outcome = "route_mismatch";
-    result.skipReason = `unexpected-final-route-${result.finalPath || "unknown"}; expected-${expectedStatePath || "unknown"}`;
+    result.skipReason = `unexpected-final-route-${result.finalPath || "unknown"}; expected-${expectedStateRoute.pathname || "unknown"}; query-declared-${expectedQuery}; query-matched-${queryMatches}`;
     result.title = await page.title().catch(() => "");
     return finish();
   }
