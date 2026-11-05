@@ -844,8 +844,68 @@ async function uploadFixtures() {
   const failedAction = structuredClone(uploaded); failedAction.targets[0].states[0].actions[0].selector = '#label';
   await verify('upload-failed-action-private', failedAction, async ({ receipt, directory }) => { assert.equal(receipt.formal.result, 'failed'); await verifyPrivacy(directory); });
 }
+async function navigationRouteFixtures() {
+  const destination = '/navigation-destination';
+  const query = '?month=2026-10&team=SYNTHETIC_TEAM&lang=uk';
+  const declaredFragment = full(destination);
+  declaredFragment.targets[0].states = [{ name: 'invalid', actions: [{ action: 'click', selector: '#label' }],
+    continuation: { kind: 'navigation', anchor: '#heading', expectedPath: destination + '#declared' },
+  }];
+  await verify('navigation-declared-fragment-invalid', declaredFragment, () => {}, /expectedPath must be an absolute route path without a fragment/);
+  variants.set(destination, html.replace('</body>', '<script>const heading=document.querySelector("#heading");heading.tabIndex=-1;heading.focus();heading.dataset.arrived="true";</script></body>'));
+  const scenarios = [
+    { name: 'exact-query', expected: destination + query, actual: destination + query, outcome: 'passed' },
+    { name: 'query-with-fragment', expected: destination + query, actual: destination + query + '#expenses', outcome: 'passed' },
+    { name: 'same-page-guidance', expected: '/?lang=ru&team=1&month=2026-10', actual: '/?lang=ru&team=1&month=2026-10#expenses', samePage: true, outcome: 'passed' },
+    { name: 'wrong-month', expected: destination + query, actual: destination + query.replace('2026-10', '2026-11') },
+    { name: 'wrong-team', expected: destination + query, actual: destination + query.replace('SYNTHETIC_TEAM', 'SYNTHETIC_OTHER') },
+    { name: 'query-order', expected: destination + query, actual: destination + '?team=SYNTHETIC_TEAM&month=2026-10&lang=uk' },
+    { name: 'cross-origin', expected: destination + query, actual: destination + query, foreign: true },
+    { name: 'pathname-only', expected: destination, actual: destination, outcome: 'passed' },
+    { name: 'pathname-only-with-query', expected: destination, actual: destination + query, outcome: 'incomplete' },
+  ];
+  for (const scenario of scenarios) {
+    const start = scenario.samePage ? '/?lang=ru&team=1&month=2026-10#month' : '/navigation-start-' + scenario.name;
+    const startPath = new URL(start, target.url).pathname;
+    const url = new URL(scenario.actual, target.url);
+    if (scenario.foreign) url.hostname = 'localhost';
+    const navigate = scenario.samePage
+      ? `history.replaceState(null,'',${JSON.stringify(url.href)});const heading=document.querySelector('#heading');heading.tabIndex=-1;heading.focus();heading.dataset.arrived='true'`
+      : `location.href=${JSON.stringify(url.href)}`;
+    variants.set(startPath, html.replace('</body>', `<script>document.querySelector('#label').onclick=()=>{${navigate}};</script></body>`));
+    const config = full(start), row = config.targets[0];
+    row.includeBase = false;
+    row.states = [{ name: 'arrived', actions: [{ action: 'click', selector: '#label' }],
+      waitFor: { selector: '#heading[data-arrived="true"]' },
+      continuation: { kind: 'navigation', anchor: '#heading', expectedPath: scenario.expected },
+    }];
+    config.fixtureDataShapes[0].route = scenario.expected;
+    config.fixtureDataShapes[0].state = 'arrived'; config.requiredCoverage[0].state = 'arrived';
+    await verify('navigation-' + scenario.name, config, ({ receipt, report }) => {
+      const page = report.pages[0];
+      assert.equal(page.requestedPath, startPath);
+      assert.equal(page.finalPath, new URL(scenario.actual, target.url).pathname, 'Public route evidence remains pathname-only');
+      if (scenario.outcome) {
+        assert.equal(page.outcome, 'checked', 'Legacy pathname-only gates do not reject an undeclared query themselves');
+        assert.equal(receipt.formal.result, scenario.outcome);
+        assert.equal(page.continuation.evidence.anchorVisibleInViewport, true);
+        if (scenario.outcome === 'incomplete') {
+          assert.equal(page.metrics.handoff.shapes[0].routeMatched, false, 'Exact rendered fixture binding remains mandatory');
+        }
+      } else {
+        assert.equal(page.outcome, 'route_mismatch');
+        assert.notEqual(receipt.formal.result, 'passed');
+        for (const value of ['SYNTHETIC_TEAM', 'SYNTHETIC_OTHER', '2026-10', '2026-11', '?month', '?team']) {
+          assert(!page.skipReason.includes(value), 'Mismatch summaries must not disclose query values');
+        }
+      }
+    });
+    variants.delete(startPath);
+  }
+}
 try {
-  if (process.argv.includes('--modal-hierarchy-only')) await modalHierarchyFixtures();
+  if (process.argv.includes('--navigation-only')) await navigationRouteFixtures();
+  else if (process.argv.includes('--modal-hierarchy-only')) await modalHierarchyFixtures();
   else if (process.argv.includes('--continuation-precision-only')) await continuationPrecisionFixtures();
   else if (process.argv.includes('--recovery-geometry-only')) { await configurationFixtures(true); await recoveryGeometryFixtures(); }
   else if (process.argv.includes('--session-only') || process.argv.includes('--browser-isolation-only')) await sessionFixtures();
@@ -859,6 +919,7 @@ try {
   await modalHierarchyFixtures();
   await recoveryGeometryFixtures();
   await continuationPrecisionFixtures();
+  await navigationRouteFixtures();
   await Promise.all([
     verify('formal-receipt', base, ({ exitCode, receipt }) => {
       assert.equal(exitCode, 0); assert(receipt.formal, 'The verifier must emit its measured formal receipt');
