@@ -22,6 +22,9 @@ use crate::audit_ledger::{
 };
 
 const RECEIPT_LIMIT: usize = 2048;
+// This child runs the complete sequential handoff suite, not one page verifier.
+// Keep its execution budget separate from individual verifier/metric deadlines.
+const FULL_HANDOFF_SUITE_TIMEOUT: Duration = Duration::from_secs(480);
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1688,7 +1691,7 @@ fn run_state_and_wait_phase(
             json!(playwright_module_dir(root)?),
             json!(root.join("rust/tooling/tests/formal_handoff.mjs")),
         ),
-        timeout,
+        FULL_HANDOFF_SUITE_TIMEOUT,
     )?;
     scenarios += 1;
     let popup_clean = run_verifier(
