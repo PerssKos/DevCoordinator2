@@ -79,6 +79,31 @@ for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collap
     document.documentElement.dataset.continued='true';
   };</script>`);
 }
+// Removing an earlier editor can shorten the page while the clicked row stays
+// at its viewport position; that is distinct from merely landing at the new end.
+const shrinkContextModes = ['shrink-context-retained', 'shrink-context-extra-jump',
+  'shrink-context-uncompensated', 'shrink-context-replaced', 'shrink-context-fixed',
+  'shrink-context-focus-lost', 'shrink-context-bottom-clamp'];
+for (const mode of shrinkContextModes) {
+  const bottomClamp = mode === 'shrink-context-bottom-clamp';
+  variants.set('/continuation-' + mode, `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><style>html{overflow-anchor:none}body{margin:0;background:white;color:#111;font:16px sans-serif}main{padding:20px}#spacer{height:${bottomClamp ? 0 : 868}px}#removed{height:400px}#retained{height:130px}h1{font-size:24px}button{height:44px}#continuation{height:100px}footer{height:${bottomClamp ? 100 : 350}px}${mode === 'shrink-context-fixed' ? '#label{position:fixed;top:310px;left:20px}' : ''}</style><header style="padding:20px">Delivery collection</header><main id="primary"><div id="spacer"></div><div id="removed"></div><section id="retained"><h1 id="heading">Parcel contents</h1><button id="label" data-ui-continuation-anchor>Parcel 20459000000021</button></section><div id="continuation" hidden>Selected parcel details</div><footer>More parcels remain</footer></main><script>
+  const read=()=>({x:scrollX,y:scrollY,maxY:Math.max(0,document.scrollingElement.scrollHeight-document.scrollingElement.clientHeight),top:document.querySelector('#label').getBoundingClientRect().top});
+  document.querySelector('#label').addEventListener('focus',()=>scrollTo(0,document.scrollingElement.scrollHeight),{once:true});
+  document.querySelector('#label').onclick=async event=>{
+    const before=read();
+    document.querySelector('#removed').style.height='0px';
+    document.querySelector('#continuation').hidden=false;
+    void document.body.offsetHeight;
+    if('${mode}'!=='shrink-context-uncompensated')scrollTo(0,before.y-400);
+    if('${mode}'==='shrink-context-extra-jump')scrollBy(0,-9);
+    if('${mode}'==='shrink-context-replaced')event.target.replaceWith(event.target.cloneNode(true));
+    document.querySelector('#label').focus({preventScroll:true});
+    if('${mode}'==='shrink-context-focus-lost')document.querySelector('#label').blur();
+    const after=read();
+    await fetch('/continuation-observe?mode=${mode}',{method:'POST',body:JSON.stringify({before,after})});
+    document.documentElement.dataset.continued='true';
+  };</script>`);
+}
 const heldContinuationReads = new Map();
 const contextModes = ['context-retained', 'context-extra-jump', 'context-fixed', 'context-sticky', 'context-transformed-ancestor', 'context-replaced', 'context-disconnected', 'context-moved', 'context-focus-lost', 'context-offscreen', 'context-actionability', 'context-mixed-growth', 'context-mixed-growth-75', 'context-mixed-uncompensated', 'context-mixed-extra-jump', 'context-mixed-hidden-opacity', 'context-mixed-hidden-visibility', 'context-mixed-hidden-ancestor', 'context-early-document', 'context-early-window', 'context-early-harmless', 'context-missing-hook', 'context-mixed-hidden-clip', 'context-mixed-hidden-ancestor-clip', 'context-mixed-hidden-overflow-zero', 'context-mixed-hidden-overflow-partial', 'context-mixed-overflow-visible'];
 for (const mode of contextModes) {
@@ -537,7 +562,7 @@ async function recoveryGeometryFixtures() {
   });
 }
 async function continuationPrecisionFixtures() {
-  for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand', ...contextModes]) {
+  for (const mode of ['collapse', 'collapse-extra-jump', 'no-shrink-jump', 'collapse-focus-lost', 'collapse-offscreen', 'expand', ...contextModes, ...shrinkContextModes]) {
     const config = full('/continuation-' + mode), row = config.targets[0];
     config.viewports = [{ name: 'phone', width: 390, height: 664 }];
     row.includeBase = false;
@@ -563,7 +588,35 @@ async function continuationPrecisionFixtures() {
       }
       const evidence = report.pages[0].continuation.evidence;
       const findings = report.pages[0].findings.filter(row => row.rule.startsWith('continuation-'));
-      if (mode.startsWith('context-early-')) {
+      if (mode.startsWith('shrink-context-')) {
+        assert.equal(before.y, before.maxY, 'real focus reaches the former document end');
+        assert(before.y > after.maxY); assert(after.maxY < before.maxY);
+        assert(evidence.documentClamp, 'the old viewport is beyond the shortened document');
+        if (mode === 'shrink-context-bottom-clamp') {
+          assert(before.y - 400 < 0, 'retaining the old row position would require negative scroll');
+          assert.equal(after.y, 0); assert.equal(evidence.contextCompensation, null);
+          assert.equal(evidence.residualScrollDelta, 0); assert.deepEqual(findings, []);
+          assert.equal(receipt.formal.result, 'passed');
+        } else if (mode === 'shrink-context-retained') {
+          assert.equal(after.y, before.y - 400); assert(after.y < after.maxY - 8);
+          assert.equal(after.top, before.top); assert.equal(evidence.contextCompensation.documentDelta.y, -400);
+          assert.equal(evidence.contextReference.sameNodeAndAncestors, true);
+          assert.equal(evidence.contextReference.normalFlowBefore, true); assert.equal(evidence.contextReference.normalFlowAfter, true);
+          assert.equal(evidence.contextReference.visibleBefore, true); assert.equal(evidence.contextReference.visibleAfter, true);
+          assert.equal(evidence.residualScrollDelta, 0); assert.deepEqual(findings, []);
+          assert.equal(receipt.formal.result, 'passed');
+        } else {
+          const rule = mode === 'shrink-context-focus-lost' ? 'continuation-focus-missing' : 'continuation-document-jump';
+          assert(findings.some(row => row.rule === rule), 'shorter document must not hide a real continuation failure: ' + mode);
+          assert.equal(receipt.formal.result, 'failed');
+          if (mode === 'shrink-context-extra-jump') assert.equal(evidence.residualScrollDelta, 9);
+          if (mode === 'shrink-context-uncompensated') {
+            assert.equal(after.y, after.maxY); assert.equal(after.top - before.top, -100);
+            assert.equal(evidence.residualScrollDelta, 100);
+          }
+          if (['shrink-context-replaced', 'shrink-context-fixed'].includes(mode)) assert.equal(evidence.contextCompensation, null);
+        }
+      } else if (mode.startsWith('context-early-')) {
         assert.equal(observation.early.trusted, true);
         const actual = mode === 'context-early-harmless' ? 0 : 9;
         assert.equal(observation.early.after.y - observation.early.before.y, actual);

@@ -2812,12 +2812,18 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
     x: reference.afterRect.x + reference.afterDocument.scrollX - reference.beforeRect.x - beforeContinuation.scrollX,
     y: reference.afterRect.y + reference.afterDocument.scrollY - reference.beforeRect.y - beforeContinuation.scrollY,
   } : null;
+  const referenceExpectedScrollY = referenceDocumentDelta
+    ? beforeContinuation.scrollY + referenceDocumentDelta.y : null;
   // Content removed above a control can be compensated while new content below
   // grows the total page. Measure that control, not the net page-height change.
   // Require the same node/ancestor chain and unchanged
   // layout styles; fixed overlays or a replacement cannot prove page stability.
   // The after-reference and document samples must describe the same state.
-  const contextCompensated = !rangeShrank && sameDocument &&
+  // Shrinking the page does not exclude preserving the same visible row.
+  // Prefer that observed context when its scroll position is reachable;
+  // otherwise retain the unavoidable bottom-clamp allowance.
+  const contextCompensated = sameDocument &&
+    (!rangeShrank || (referenceExpectedScrollY >= 0 && referenceExpectedScrollY <= current.maxScrollY)) &&
     reference?.observed && reference.sameNodeAndAncestors && reference.stylesUnchanged &&
     reference.normalFlowBefore && reference.normalFlowAfter && reference.visibleBefore && reference.visibleAfter &&
     ['scrollX', 'scrollY', 'maxScrollY', 'clientWidth', 'clientHeight', 'path', 'origin'].every(key =>
@@ -2828,7 +2834,7 @@ async function verifyContinuation(page, continuation, beforeContinuation) {
   const contextCompensation = contextCompensated ? {
     beforeRect: reference.beforeRect, afterRect: reference.afterRect,
     documentDelta: referenceDocumentDelta, rangeDelta,
-    expectedScrollY: beforeContinuation.scrollY + referenceDocumentDelta.y,
+    expectedScrollY: referenceExpectedScrollY,
   } : null;
   const expectedScrollY = contextCompensation?.expectedScrollY ?? clampedScrollY;
   const residualScrollDelta = beforeContinuation
