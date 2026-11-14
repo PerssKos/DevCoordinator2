@@ -15,27 +15,31 @@ use crate::database::OptionalExtension;
 use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::test_containers::{
     ContainerCleanupAttempt, ContainerCleanupStatus, ContainerCleanupSummary, ContainerCreate,
-    ContainerInspection, ContainerOperationResult, ContainerReference, TestContainerRecord,
+    ContainerDiagnostic, ContainerInspection, ContainerOperationResult, ContainerReference,
+    TestContainerRecord,
 };
 use devcoordinator2_api::{ProtocolError, results::TestStatus};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use time::{format_description::FormatItem, macros::format_description};
 
 use crate::access::Caller;
 use crate::config::Config;
 use crate::database::{Database, DatabaseError};
 use crate::docker::{
-    CreateContainerRequest, DockerControl, DockerError, ExactContainerId, ManagedLabelContext,
-    RunDetachedRequest,
+    ContainerLogCapture, CreateContainerRequest, DockerControl, DockerError, ExactContainerId,
+    ManagedLabelContext, RunDetachedRequest,
 };
 use crate::platform::Clock;
 use crate::repository::resolve_worktree;
+use crate::test_state::CONTAINER_DIAGNOSTIC_CAP;
 use crate::test_state::{ContainerLeaseAccess, ContainerMutationLease, TestRunStore};
 
 const TIMESTAMP_FORMAT: &[FormatItem<'static>] =
     format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 const RECORD_CAP: usize = 256;
 const MAX_LABEL_BYTES: usize = 256;
+const CONTAINER_DIAGNOSTIC_TAIL_LINES: u16 = 500;
 pub(crate) const FIXTURE_PHASE_TIMEOUT_SECONDS: u64 = 120;
 
 #[derive(Clone)]
@@ -330,7 +334,7 @@ impl TestContainerService {
         deadline: Instant,
     ) -> Result<CleanupOutcome, ProtocolError> {
         context.unlock()?;
-        self.verify_record_labels(record)?;
+        self.verify_record(record, context)?;
         self.refresh_record(context, record)?;
         if record.cleanup_status == ContainerCleanupStatus::Complete {
             return Ok(CleanupOutcome::Settled);
@@ -401,6 +405,23 @@ impl TestContainerService {
                     })?;
                 record.solver_exit_code = inspection.exit_code;
                 record.solver_signal = inspection.signal;
+                record.oom_killed = inspection.oom_killed;
+                if record.diagnostic.is_none() && unexpected_fixture_exit(&inspection) {
+                    if let Ok(capture) = self
+                        .docker
+                        .container_log_capture(&id, CONTAINER_DIAGNOSTIC_TAIL_LINES)
+                    {
+                        record.diagnostic = Some(
+                            self.retain_diagnostic(context, record, &capture)
+                                .map_err(CleanupFailure::State)?,
+                        );
+                    }
+                }
+                // Persist exit/OOM state and the diagnostic reference while the
+                // exact container still exists. Cleanup may then safely remove
+                // it without losing the failure boundary.
+                self.save_cleanup_record(context, record, deadline)
+                    .map_err(CleanupFailure::State)?;
             }
             if Instant::now() >= deadline {
                 return Err(CleanupFailure::State(cleanup_receipt_pending_error(record)));
@@ -672,6 +693,9 @@ impl TestContainerService {
                 Ok(inspection) => {
                     records[index].solver_exit_code = inspection.exit_code;
                     records[index].solver_signal = inspection.signal;
+                    records[index].oom_killed = inspection.oom_killed;
+                    let mut inspection = inspection;
+                    inspection.diagnostic = records[index].diagnostic.clone();
                     Some(inspection)
                 }
                 Err(error) => {
@@ -1203,6 +1227,42 @@ impl TestContainerService {
         self.write_records(&directory, &records, context.uid, context.gid)
     }
 
+    fn retain_diagnostic(
+        &self,
+        context: &Context,
+        record: &TestContainerRecord,
+        capture: &ContainerLogCapture,
+    ) -> Result<ContainerDiagnostic, ProtocolError> {
+        let payload = capture.text.as_bytes();
+        if payload.len() > CONTAINER_DIAGNOSTIC_CAP {
+            return Err(ProtocolError::new(
+                ErrorCode::TestStartFailed,
+                "container diagnostics exceeded the bounded capture",
+            ));
+        }
+        let directory = self
+            .store
+            .open_container_run(&context.worktree, &context.run_id, None)
+            .map_err(state_error)?
+            .ok_or_else(ownership_error)?;
+        let reference = self
+            .store
+            .write_container_diagnostics(
+                &directory,
+                &record.owner_token,
+                payload,
+                context.uid,
+                context.gid,
+            )
+            .map_err(state_error)?;
+        Ok(ContainerDiagnostic {
+            reference,
+            bytes: payload.len() as u64,
+            sha256: lower_hex(&Sha256::digest(payload)),
+            truncated: capture.truncated,
+        })
+    }
+
     fn archive_receipt(&self, context: &Context) -> Result<(), ProtocolError> {
         if context.status != TestStatus::Running
             && let Some(directory) = self
@@ -1509,7 +1569,15 @@ impl TestContainerService {
         {
             return Err(ownership_error());
         }
-        self.verify_record_labels(record)
+        self.verify_record_labels(record)?;
+        if record
+            .diagnostic
+            .as_ref()
+            .is_some_and(|diagnostic| !valid_diagnostic(diagnostic, &record.owner_token))
+        {
+            return Err(ownership_error());
+        }
+        Ok(())
     }
 
     fn verify_record_labels(&self, record: &TestContainerRecord) -> Result<(), ProtocolError> {
@@ -1562,6 +1630,8 @@ impl TestContainerService {
             .map(|mut inspection| {
                 inspection.labels = record.labels.clone();
                 inspection.native_execution_began = record.native_execution_began;
+                inspection.oom_killed = record.oom_killed.or(inspection.oom_killed);
+                inspection.diagnostic = record.diagnostic.clone();
                 inspection.cleanup_status = record.cleanup_status;
                 inspection.cleanup_attempts = record.cleanup_attempts.clone();
                 inspection.retryable = record
@@ -1642,6 +1712,10 @@ impl TestContainerService {
                 .and_then(|state| state.get("Signal"))
                 .and_then(Value::as_i64)
                 .and_then(|value| i32::try_from(value).ok()),
+            oom_killed: state
+                .and_then(|state| state.get("OOMKilled"))
+                .and_then(Value::as_bool),
+            diagnostic: None,
             native_execution_began: false,
             cleanup_status: ContainerCleanupStatus::Pending,
             cleanup_attempts: Vec::new(),
@@ -1693,6 +1767,8 @@ fn pending_record(
         stderr_ref: None,
         stdout_bytes: 0,
         stderr_bytes: 0,
+        oom_killed: None,
+        diagnostic: None,
         cleanup_status: ContainerCleanupStatus::Pending,
         cleanup_attempts: Vec::new(),
     }
@@ -1990,6 +2066,28 @@ fn error_details(error: &DockerError) -> (Option<i32>, Option<i32>, String) {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| bounded_error(error)),
     )
+}
+
+fn unexpected_fixture_exit(inspection: &ContainerInspection) -> bool {
+    let stopped = !matches!(inspection.state.as_str(), "running" | "created" | "paused");
+    stopped
+        && (inspection.oom_killed == Some(true)
+            || inspection.exit_code != Some(0)
+            || inspection.state == "dead")
+}
+
+fn valid_diagnostic(diagnostic: &ContainerDiagnostic, owner_token: &str) -> bool {
+    diagnostic.reference == format!("diagnostics/{owner_token}.log")
+        && diagnostic.bytes <= CONTAINER_DIAGNOSTIC_CAP as u64
+        && diagnostic.sha256.len() == 64
+        && diagnostic
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn next_action(status: ContainerCleanupStatus) -> &'static str {

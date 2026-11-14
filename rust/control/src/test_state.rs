@@ -31,6 +31,7 @@ const EVIDENCE_FILE: &str = "evidence.json";
 const JSON_LIMIT: u64 = 2 * 1024 * 1024;
 const HISTORY_CAP: usize = 1_000;
 const EVIDENCE_CAP: usize = 50;
+pub(crate) const CONTAINER_DIAGNOSTIC_CAP: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum TestStateError {
@@ -567,6 +568,29 @@ impl TestRunStore {
             }
         }
         Ok(directory)
+    }
+
+    /// Retain a bounded container log inside the exact run ownership
+    /// directory. The caller must already have authenticated the owner and
+    /// hold the directory lease returned by `open_container_run`.
+    pub(crate) fn write_container_diagnostics(
+        &self,
+        directory: &File,
+        owner_token: &str,
+        payload: &[u8],
+        uid: u32,
+        gid: u32,
+    ) -> Result<String, TestStateError> {
+        if payload.len() > CONTAINER_DIAGNOSTIC_CAP {
+            return Err(TestStateError::Invalid(
+                "container diagnostics exceed the bounded capture".into(),
+            ));
+        }
+        validate_atom(owner_token)?;
+        let diagnostics = ensure_directory(directory, "diagnostics", 0o700, Some((uid, gid)))?;
+        let file = format!("{owner_token}.log");
+        atomic_bytes(&diagnostics, &file, payload, 0o600, uid, gid)?;
+        Ok(format!("diagnostics/{file}"))
     }
 
     pub(crate) fn container_runs(&self, worktree: &Path) -> Result<Vec<String>, TestStateError> {
