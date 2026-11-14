@@ -334,7 +334,17 @@ impl TestContainerService {
         deadline: Instant,
     ) -> Result<CleanupOutcome, ProtocolError> {
         context.unlock()?;
-        self.verify_record(record, context)?;
+        // Cleanup resolves the run through the synthetic `cleanup` check
+        // context, so validate the persisted labels here rather than applying
+        // the record's original check identity to that context.
+        self.verify_record_labels(record)?;
+        if record
+            .diagnostic
+            .as_ref()
+            .is_some_and(|diagnostic| !valid_diagnostic(diagnostic, &record.owner_token))
+        {
+            return Err(ownership_error());
+        }
         self.refresh_record(context, record)?;
         if record.cleanup_status == ContainerCleanupStatus::Complete {
             return Ok(CleanupOutcome::Settled);
