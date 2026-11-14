@@ -416,16 +416,16 @@ impl TestContainerService {
                 record.solver_exit_code = inspection.exit_code;
                 record.solver_signal = inspection.signal;
                 record.oom_killed = inspection.oom_killed;
-                if record.diagnostic.is_none() && unexpected_fixture_exit(&inspection) {
-                    if let Ok(capture) = self
+                if record.diagnostic.is_none()
+                    && unexpected_fixture_exit(&inspection)
+                    && let Ok(capture) = self
                         .docker
                         .container_log_capture(&id, CONTAINER_DIAGNOSTIC_TAIL_LINES)
-                    {
-                        record.diagnostic = Some(
-                            self.retain_diagnostic(context, record, &capture)
-                                .map_err(CleanupFailure::State)?,
-                        );
-                    }
+                {
+                    record.diagnostic = Some(
+                        self.retain_diagnostic(context, record, &capture)
+                            .map_err(CleanupFailure::State)?,
+                    );
                 }
                 // Persist exit/OOM state and the diagnostic reference while the
                 // exact container still exists. Cleanup may then safely remove
