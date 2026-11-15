@@ -577,7 +577,8 @@ async function startFakeDaemon(dir) {
         }
         socket.end(JSON.stringify({ protocol: 3, id: req.id, ...payload }) + '\n', markSettled);
       };
-      if (!draining && scenario.delayMs && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
+      if (!draining && scenario.delayMs && (!scenario.delayRepository || scenario.delayRepository === req.params.repository_id)
+        && (!scenario.delayOperations || scenario.delayOperations.includes(req.operation))
         && !scenario.delayExceptOperations?.includes(req.operation)) await new Promise((resolve) => delayedReplies.add(resolve));
       const cmd = req.operation;
       if ((scenario.cacheState || scenario.usageIndexing) && req.params.wait_for_refresh && !mutable.cacheReleased) await new Promise((resolve) => delayedReplies.add(resolve));
@@ -973,7 +974,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}) });
+    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_ONCE ? { performancePendingOnce: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS ? { delayMs: Number(process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_MS), delayRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_REPOSITORY || null, delayOperations: (process.env.CONSOLE_VERIFY_PERFORMANCE_DELAY_OPERATIONS || 'performance.overview,performance.review').split(',').filter(Boolean) } : {}) });
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;

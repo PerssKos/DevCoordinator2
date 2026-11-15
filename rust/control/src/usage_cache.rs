@@ -339,6 +339,7 @@ mod tests {
             1,
             &[],
             BTreeMap::new(),
+            None,
             0,
         );
         report.totals.total_tokens = tokens;

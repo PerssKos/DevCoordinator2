@@ -18,7 +18,7 @@ use devcoordinator2_api::params::{
 };
 use devcoordinator2_api::results::{
     CoverageState, MeasuredTime, PhaseTime, ToolFamily, ToolOutcome, UsageActivity, UsageCost,
-    UsageCoverage, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
+    UsageCoverage, UsageLoading, UsageModelCost, UsageOutcome, UsageRepositories, UsageRepository,
     UsageRepositoryRow, UsageSemantics, UsageSeriesPoint, UsageSnapshot, UsageTime, UsageTools,
     UsageTotals, UsageWorktree, UsageWorktreeScope,
 };
@@ -155,6 +155,7 @@ enum TokenField {
 
 #[derive(Default)]
 struct SourceReport {
+    loading: Option<UsageLoading>,
     source_snapshot: Option<devcoordinator2_api::results::UsageSourceSnapshot>,
     supplied_cost: Option<UsageCost>,
     snapshot: Option<devcoordinator2_api::results::UsageSnapshot>,
@@ -726,6 +727,7 @@ impl CodexUsage {
             bucket_count,
             &[],
             BTreeMap::new(),
+            None,
             self.config.codex_usage_sources.len(),
         );
         if let Some(selection) = &selection {
@@ -808,6 +810,7 @@ impl CodexUsage {
     ) -> Result<UsageRepository, ProtocolError> {
         let mut reports = Vec::new();
         let mut failures = BTreeMap::new();
+        let mut loading = None;
         let mut progress = Vec::new();
         let deadline = Some(deadline.unwrap_or_else(|| Instant::now() + QUERY_TIMEOUT));
         for source in &self.config.codex_usage_sources {
@@ -885,7 +888,27 @@ impl CodexUsage {
                                 Err(error) => increment(&mut failures, &error.message),
                             }
                         }
-                        Err(reason) => increment(&mut failures, &reason),
+                        Err(reason) => {
+                            if loading.is_none() && collector_api::is_pending(&reason) {
+                                loading = self.api.loading_for(
+                                    source,
+                                    Some(&key),
+                                    selection
+                                        .as_ref()
+                                        .and_then(|s| s.source_keys.get(&source.uid))
+                                        .and_then(|v| v.as_deref()),
+                                    selection
+                                        .as_ref()
+                                        .map(|s| s.include_unassigned)
+                                        .unwrap_or(true),
+                                    None,
+                                    &[],
+                                    start_ms,
+                                    end_ms,
+                                );
+                            }
+                            increment(&mut failures, &reason)
+                        }
                     }
                 }
                 Err(error) => increment(&mut failures, &error.message),
@@ -900,6 +923,7 @@ impl CodexUsage {
             bucket_count,
             &reports,
             failures,
+            loading,
             self.config.codex_usage_sources.len(),
         );
         if let Some(mut selection) = selection {
@@ -1507,6 +1531,7 @@ fn combine(
     bucket_count: usize,
     reports: &[(u32, SourceReport)],
     failures: BTreeMap<String, u64>,
+    loading: Option<UsageLoading>,
     configured: usize,
 ) -> UsageRepository {
     let mut tokens = BTreeMap::new();
@@ -1843,6 +1868,11 @@ fn combine(
                 .filter_map(|(_, report)| report.source_snapshot.clone())
                 .collect(),
             snapshot,
+            loading: loading.or_else(|| {
+                reports
+                    .iter()
+                    .find_map(|(_, report)| report.loading.clone())
+            }),
             state: coverage_state.clone(),
             has_gaps: coverage_state != CoverageState::Complete,
             configured_collectors: u32::try_from(configured).unwrap_or(u32::MAX),
@@ -2500,6 +2530,7 @@ pub(crate) mod tests {
                 (2, source("testing", 50, (5, 15))),
             ],
             BTreeMap::new(),
+            None,
             2,
         );
         assert_eq!(report.coverage.state, CoverageState::Complete);

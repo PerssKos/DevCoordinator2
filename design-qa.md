@@ -955,6 +955,18 @@ Comparison history: the initial implementation was revised to keep the inspector
 
 final result: blocked
 
+## Performance loading progress and token-detail repair — 2026-11-15
+
+The selected current Product Design continuation is the adjusted child `sa883456b1cc80992`, batch `k62a66b8af96ee389`, with parent `s059881c2d3594edd`. The retained source image is the generated-image artifact `exec-7475c8e8-f84e-4cec-8bb8-deb3926edc1a.png`, SHA-256 `c1d649763a8023f28a601bf9361b874a79f8bc36ec5efd2fe2cf2b8c0ca38b59`, actual viewport 1975×796. It shows the selected inline spinner beside Overview usage with a measured remaining-time estimate. The parent and the two rejected first-pass options remain retained historical records.
+
+The implementation shows that inline signal after one second of an owned token read. It uses an indeterminate spinner and an explicit estimate only after three comparable completed source reads; otherwise it says the remaining time is unknown, and an overrun says it is taking longer than estimated. The collector deadline is never presented as an ETA. Token-detail popovers now show provider components when supplied and a clear unavailable message for breakdowns that do not contain those components, instead of a list of empty dashes.
+
+The current rendered journey passed 583 checks across both themes and widths 390, 927, 1239, 1440 and 1001 pixels, including delayed reads, remaining-time estimates, mobile visibility, reloads, review continuation and token-detail popovers. Formal run `formal-web-ui-mwi2izco-2cbb43a4` passed all 32 light/dark cells at widths 390, 1001, 1443 and 2153 pixels. The separate manual receipt passed all 32 cells. Evidence is retained in `/tmp/performance-progress-formal/` (`report12.json`, `manual-review.json`, `review-queue12.json`, screenshots) and `/tmp/performance-progress-browser-final2/`. The formal run has two existing intentional narrow-table scroll warnings and no P0-P2 finding.
+
+This visual review covers the selected adjusted state and the delayed pending state; live source identity and live timing remain deployment checks. The source comparison is limited to the one-window selected mockup and its pending state; no current mockup exists for unrelated Console routes. The current Product Design audit remains pending until the live candidate is deployed and its source identity is verified.
+
+final result: blocked
+
 
 ## Usage selection visibility and completeness chrome repair (2026-10-08)
 

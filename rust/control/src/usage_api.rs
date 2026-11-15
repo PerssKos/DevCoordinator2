@@ -5,6 +5,7 @@ use devcoordinator2_api::review::ReviewUsage;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::Digest;
+use std::collections::VecDeque;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
@@ -24,6 +25,9 @@ const COLD_WAITER_FOR: Duration = Duration::from_secs(15);
 // its socket does not cancel the producer's scan and permits duplicate work.
 const SOURCE_READ_BUDGET: Duration = Duration::from_secs(300);
 const MAX_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PROFILE_SAMPLES: usize = 8;
+const MAX_PROFILES: usize = 96;
+const PROFILE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
 
 pub(super) fn is_pending(reason: &str) -> bool {
@@ -71,16 +75,25 @@ struct State {
     failed_until: HashMap<String, (Instant, String)>,
     inflight: HashMap<String, Flight>,
     cold_waiters: HashMap<String, ColdWaiter>,
+    profiles: HashMap<String, ProfileHistory>,
 }
 struct Flight {
     source: PathBuf,
     bytes: usize,
+    started: Instant,
+    profile: String,
 }
 
 struct ColdWaiter {
     source: PathBuf,
     touched: Instant,
     bytes: usize,
+    first_seen: Instant,
+}
+
+#[derive(Default)]
+struct ProfileHistory {
+    samples: VecDeque<(Instant, u64)>,
 }
 
 impl State {
@@ -107,9 +120,49 @@ impl State {
                     source: source.to_owned(),
                     touched: Instant::now(),
                     bytes,
+                    first_seen: Instant::now(),
                 },
             );
         }
+    }
+
+    fn record_duration(&mut self, profile: String, duration_ms: u64) {
+        let now = Instant::now();
+        self.profiles.retain(|_, history| {
+            history
+                .samples
+                .retain(|(at, _)| now.duration_since(*at) < PROFILE_RETENTION);
+            !history.samples.is_empty()
+        });
+        if !self.profiles.contains_key(&profile)
+            && self.profiles.len() >= MAX_PROFILES
+            && let Some(oldest) = self
+                .profiles
+                .iter()
+                .min_by_key(|(_, history)| history.samples.front().map(|(at, _)| *at))
+                .map(|(key, _)| key.clone())
+        {
+            self.profiles.remove(&oldest);
+        }
+        let history = self.profiles.entry(profile).or_default();
+        history.samples.push_back((now, duration_ms));
+        while history.samples.len() > MAX_PROFILE_SAMPLES {
+            history.samples.pop_front();
+        }
+    }
+
+    fn median_duration(&self, profile: &str) -> (u64, u8) {
+        let Some(history) = self.profiles.get(profile) else {
+            return (0, 0);
+        };
+        let mut values = history
+            .samples
+            .iter()
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
+        values.sort_unstable();
+        let samples = u8::try_from(values.len()).unwrap_or(u8::MAX);
+        (values.get(values.len() / 2).copied().unwrap_or(0), samples)
     }
 }
 
@@ -122,6 +175,7 @@ struct Entry {
 pub(super) struct SummaryRead {
     summary: Arc<Summary>,
     refresh_reason: Option<String>,
+    loading: Option<UsageLoading>,
 }
 
 impl std::ops::Deref for SummaryRead {
@@ -138,9 +192,22 @@ impl SummaryRead {
             Some(summary) => Ok(Self {
                 summary,
                 refresh_reason: Some(reason.into()),
+                loading: None,
             }),
             None => Err(reason.into()),
         }
+    }
+
+    fn cached_with_loading(
+        report: Arc<Summary>,
+        reason: &str,
+        loading: Option<UsageLoading>,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            summary: report,
+            refresh_reason: Some(reason.into()),
+            loading,
+        })
     }
 
     pub(super) fn source_report(
@@ -169,8 +236,142 @@ impl SummaryRead {
             increment(&mut report.coverage_events, "api_snapshot_stale");
             increment(&mut report.coverage_events, reason);
         }
+        if let Some(loading) = &self.loading {
+            report.loading = Some(loading.clone());
+        }
         report
     }
+}
+
+fn loading_from_state(
+    state: &State,
+    key: &str,
+    profile: &str,
+    now: Instant,
+) -> Option<UsageLoading> {
+    let (elapsed, state_name) = if let Some(flight) = state.inflight.get(key) {
+        (now.saturating_duration_since(flight.started), "reading")
+    } else if let Some(waiter) = state.cold_waiters.get(key) {
+        (
+            now.saturating_duration_since(waiter.first_seen),
+            "waiting_for_source",
+        )
+    } else {
+        return None;
+    };
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    let (median, samples) = state.median_duration(profile);
+    let enough = samples >= 3;
+    let (state, remaining) = if enough && elapsed_ms >= median {
+        ("estimate_exceeded", None)
+    } else if enough {
+        (state_name, Some(median.saturating_sub(elapsed_ms)))
+    } else {
+        (state_name, None)
+    };
+    Some(UsageLoading {
+        state: state.into(),
+        elapsed_ms,
+        estimated_remaining_ms: remaining,
+        estimate_samples: samples,
+        estimate_basis: enough.then(|| "recent_comparable_source_reads".into()),
+    })
+}
+
+fn query_key(
+    source: &CodexUsageSource,
+    repository: Option<&str>,
+    worktree_keys: Option<&[String]>,
+    include_unassigned: bool,
+    start: u64,
+    end: u64,
+) -> String {
+    format!(
+        "{}:{:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
+        source.uid,
+        source.api_socket,
+        repository.unwrap_or("all"),
+        worktree_keys,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The timing profile must match the complete source query scope"
+)]
+fn profile_key(
+    source: &CodexUsageSource,
+    repository: Option<&str>,
+    worktree_keys: Option<&[String]>,
+    include_unassigned: bool,
+    workstream: Option<&str>,
+    bindings: &[crate::usage_context::Binding],
+    start: u64,
+    end: u64,
+) -> Result<String, String> {
+    let span = end.saturating_sub(start);
+    let span_class = if span <= 86_400_000 {
+        "24h"
+    } else if span <= 7 * 86_400_000 {
+        "7d"
+    } else if span <= 30 * 86_400_000 {
+        "30d"
+    } else {
+        "long"
+    };
+    let bytes = serde_json::to_vec(&(
+        source.uid,
+        source
+            .api_socket
+            .as_ref()
+            .map(|path| path.to_string_lossy()),
+        repository,
+        worktree_keys,
+        include_unassigned,
+        workstream,
+        bindings,
+        span_class,
+        "summary",
+    ))
+    .map_err(|_| "work_context_unavailable")?;
+    Ok(sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The cache key must retain the complete source query scope"
+)]
+fn full_query_key(
+    source: &CodexUsageSource,
+    repository: Option<&str>,
+    worktree_keys: Option<&[String]>,
+    include_unassigned: bool,
+    workstream: Option<&str>,
+    bindings: &[crate::usage_context::Binding],
+    start: u64,
+    end: u64,
+) -> Result<String, String> {
+    let revision = serde_json::to_vec(bindings).map_err(|_| "work_context_unavailable")?;
+    let revision = sha2::Sha256::digest(revision)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(
+        "{}:{}:{}",
+        query_key(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            start,
+            end
+        ),
+        workstream.unwrap_or("all"),
+        revision
+    ))
 }
 
 #[derive(Clone, Deserialize)]
@@ -427,18 +628,26 @@ impl CollectorApi {
         deadline: Instant,
     ) -> Result<SummaryRead, String> {
         let path = source.api_socket.as_ref().ok_or("api_not_configured")?;
-        let key = format!(
-            "{}:{path:?}:{}:{:?}:{include_unassigned}:{start}:{end}",
-            source.uid,
-            repository.unwrap_or("all"),
+        let key = full_query_key(
+            source,
+            repository,
             worktree_keys,
-        );
-        let revision = serde_json::to_vec(bindings).map_err(|_| "work_context_unavailable")?;
-        let revision = sha2::Sha256::digest(revision)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
-        let key = format!("{key}:{}:{revision}", workstream.unwrap_or("all"));
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+        )?;
+        let profile = profile_key(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+        )?;
         if bindings.len() > crate::usage_context::MAX_BINDINGS {
             return Err("api_contract_unsupported".into());
         }
@@ -463,6 +672,7 @@ impl CollectorApi {
             return Ok(SummaryRead {
                 summary: entry.report.clone(),
                 refresh_reason: None,
+                loading: None,
             });
         }
         let saved = state.entries.get(&key).map(|entry| entry.report.clone());
@@ -502,6 +712,8 @@ impl CollectorApi {
                 Flight {
                     source: path.clone(),
                     bytes: request_bytes,
+                    started: Instant::now(),
+                    profile: profile.clone(),
                 },
             );
             let cache = self.clone();
@@ -550,6 +762,7 @@ impl CollectorApi {
                 return Ok(SummaryRead {
                     summary: entry.report.clone(),
                     refresh_reason: None,
+                    loading: None,
                 });
             }
             if let Some((_, reason)) = state.failed_until.get(&key) {
@@ -557,8 +770,12 @@ impl CollectorApi {
             }
             // Freshness triggers one revalidation; it does not erase a
             // completed exact-query observation before its caller can read it.
-            if saved.is_some() {
-                return SummaryRead::cached_or_error(saved, "api_refresh_pending");
+            if let Some(saved) = saved {
+                return SummaryRead::cached_with_loading(
+                    saved,
+                    "api_refresh_pending",
+                    loading_from_state(&state, &key, &profile, Instant::now()),
+                );
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err("api_refresh_pending".into());
@@ -576,12 +793,59 @@ impl CollectorApi {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Loading metadata uses the same exact scope as the source request"
+    )]
+    pub(super) fn loading_for(
+        &self,
+        source: &CodexUsageSource,
+        repository: Option<&str>,
+        worktree_keys: Option<&[String]>,
+        include_unassigned: bool,
+        workstream: Option<&str>,
+        bindings: &[crate::usage_context::Binding],
+        start: u64,
+        end: u64,
+    ) -> Option<UsageLoading> {
+        let key = full_query_key(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+        )
+        .ok()?;
+        let profile = profile_key(
+            source,
+            repository,
+            worktree_keys,
+            include_unassigned,
+            workstream,
+            bindings,
+            start,
+            end,
+        )
+        .ok()?;
+        let (state, _) = &*self.0;
+        let state = state.lock().ok()?;
+        loading_from_state(&state, &key, &profile, Instant::now())
+    }
+
     fn finish(&self, key: String, result: Result<(Summary, usize), String>) {
         let (guard, changed) = &*self.0;
         let mut state = guard
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.inflight.remove(&key);
+        let flight = state.inflight.remove(&key);
+        if let (Some(flight), Ok(_)) = (&flight, &result) {
+            let duration_ms =
+                u64::try_from(flight.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            state.record_duration(flight.profile.clone(), duration_ms);
+        }
         match result {
             Ok((report, bytes)) if bytes <= MAX_CACHED_BYTES => {
                 state.failed_until.remove(&key);
@@ -1272,6 +1536,7 @@ impl CodexUsage {
                 count,
                 &reports,
                 failures,
+                None,
                 self.config.codex_usage_sources.len(),
             );
             rows.push(UsageRepositoryRow {

@@ -159,6 +159,16 @@ Stale source publication remains a coverage gap. Pending journal entries may
 keep its snapshot refreshing, but a successful stale read is not a failed
 refresh. Only a failed source state or an actual refresh error marks failure.
 
+While an owned source query is running, `coverage.loading` may report
+`waiting_for_source`, `reading`, or `estimate_exceeded`, with elapsed time and
+an optional `estimated_remaining_ms`. The estimate is present only after three
+recent successful reads with the same source, repository, selection, binding,
+workstream, and window class; it uses a bounded median and is labeled with
+`recent_comparable_source_reads`. A first read, a queued read, or an unrelated
+scope keeps the estimate unknown. The five-minute source deadline is a timeout
+boundary, never an ETA. Loading clears when the owned read completes, even when
+the producer reports stale publication or partial coverage.
+
 ## Verification and activation
 
 Acceptance exercises authorized context ingestion and `review.prepare` through

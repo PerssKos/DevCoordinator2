@@ -2324,6 +2324,8 @@ pub struct UsageCoverage {
     pub sources: Vec<UsageSourceSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<UsageSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loading: Option<UsageLoading>,
     pub state: CoverageState,
     pub has_gaps: bool,
     pub configured_collectors: u32,
@@ -2335,6 +2337,22 @@ pub struct UsageCoverage {
     pub unavailable_reasons: BTreeMap<String, u64>,
     pub database_schemas: Vec<u32>,
     pub taxonomy_versions: Vec<u32>,
+}
+
+/// Bounded progress metadata for an owned usage-source read. An estimate is
+/// absent until comparable completed reads exist; it is never inferred from
+/// the source deadline or publication backlog.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageLoading {
+    pub state: String,
+    pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_remaining_ms: Option<u64>,
+    #[serde(default)]
+    pub estimate_samples: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_basis: Option<String>,
 }
 
 /// A privacy-safe source label and the exact producer frontiers used by a report.

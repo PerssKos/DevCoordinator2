@@ -35,7 +35,7 @@ export function performanceFixture(operation, params, scenario = {}) {
       return { coverage: { ...coverage, state: 'partial', has_gaps: true }, totals: { total_tokens: total, model_requests: 40, tool_calls: 40, operations: 80, cost: unavailableCost }, activities: activityRows, time: {}, tools: {}, semantics: {}, outcomes: { schemaVersion: 1, coverage: 'partial', totals: totalEffort, attributed: effort(0), unattributed: { ...totalEffort, activities: {} }, unattributedReasons: { outcome_not_declared: 80 }, rows: [], totalRows: 0, nextCursor: null, kinds: { unattributed: totalEffort.providerTotalTokens }, basis: 'Measured repository activity is available; outcome attribution and costs remain unavailable.' } };
     }
     const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
-    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null } } : {}) } : coverage,
+    return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null }, loading: scenario.performanceLoadingEstimate ? { state: 'reading', elapsed_ms: 1200, estimated_remaining_ms: 120000, estimate_samples: 4, estimate_basis: 'recent_comparable_source_reads' } : undefined } : {}) } : coverage,
       totals: { total_tokens: scenario.usageUnavailable ? null : total, cost: cost(total) }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
@@ -79,10 +79,28 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     probe.remove();
     return fits;
   }));
-  daemon.setScenario({ ...scenario, performancePendingByWindow: true });
+  const tokenBadge = page.locator('.performance-token-detail-button').first();
+  await tokenBadge.click();
+  const tokenPopover = tokenBadge.locator('..').locator('.performance-token-popover');
+  const tokenPopoverText = await tokenPopover.innerText();
+  verify('token detail popovers retain provider components', tokenPopoverText.includes('Cached input') && !/Cached input\s+—/.test(tokenPopoverText));
+  await tokenBadge.click();
+  daemon.setScenario({ ...scenario, delayMs: 1600, delayOperations: ['performance.overview'] });
+  await page.goto('about:blank');
+  const delayedTokenRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview'));
+  await page.goto(`${baseUrl}#/performance/${REPO}`);
+  await delayedTokenRequest;
+  await page.waitForTimeout(1100);
+  verify('slow token reads show inline progress after one second', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Loading token usage'));
+  daemon.releaseDelayed();
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4'), null, { timeout: 15000 });
+  verify('inline progress clears after token measurements complete', await page.locator('[data-performance-loading-progress]').isHidden());
+  daemon.setScenario({ ...scenario, performancePendingByWindow: true, performanceLoadingEstimate: true });
   await page.goto('about:blank');
   await page.goto(`${baseUrl}#/performance/${REPO}`);
   await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  await page.waitForTimeout(1100);
+  verify('pending measurements show an evidence-based remaining-time estimate', await page.locator('[data-performance-loading-progress]').isVisible() && (await page.locator('[data-performance-loading-progress]').innerText()).includes('Estimated remaining: about 2 min'));
   verify('pending measurements do not claim unavailable or empty data', (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes') && (await page.locator('[data-performance-period-total]').innerText()).includes('Loading') && (await page.locator('[data-performance-lifetime]').innerText()).includes('Loading'));
   const initialQueries = daemon.calls.filter(call => call.operation === 'performance.overview').map(call => call.params);
   const initialWindow = initialQueries.find(params => !params.totals_only), initialLifetime = initialQueries.find(params => params.totals_only);

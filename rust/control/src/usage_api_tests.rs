@@ -74,6 +74,119 @@ fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
 }
 
 #[test]
+fn source_loading_reports_unknown_estimate_overrun_and_completion_for_exact_scope() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            response_gate.wait();
+            response(params, 20, 135)
+        },
+    );
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let deadline = Instant::now() + Duration::from_millis(50);
+    assert_eq!(
+        api.summary(&peer.source, Some(KEY), None, true, 10, 20, deadline,)
+            .err()
+            .as_deref(),
+        Some("api_refresh_pending")
+    );
+    let profile = profile_key(&peer.source, Some(KEY), None, true, None, &[], 10, 20).unwrap();
+    let initial = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(initial.state, "reading");
+    assert_eq!(initial.estimated_remaining_ms, None);
+    assert_eq!(initial.estimate_samples, 0);
+    {
+        let mut state = api.0.0.lock().unwrap();
+        state.profiles.insert(
+            profile.clone(),
+            ProfileHistory {
+                samples: (0..3)
+                    .map(|index| (Instant::now() - Duration::from_secs(index + 1), 1_000))
+                    .collect(),
+            },
+        );
+    }
+    let estimated = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(estimated.estimate_samples, 3);
+    assert!(estimated.estimated_remaining_ms.is_some());
+    assert_eq!(
+        estimated.estimate_basis.as_deref(),
+        Some("recent_comparable_source_reads")
+    );
+    {
+        let mut state = api.0.0.lock().unwrap();
+        state.inflight.values_mut().next().unwrap().started =
+            Instant::now() - Duration::from_secs(2);
+    }
+    let overrun = api
+        .loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+        .unwrap();
+    assert_eq!(overrun.state, "estimate_exceeded");
+    assert_eq!(overrun.estimated_remaining_ms, None);
+    let saved: Summary = serde_json::from_value(response(
+        &json!({"repositoryKey": KEY, "fromAt": 10, "toAt": 20}),
+        20,
+        135,
+    ))
+    .unwrap();
+    let displayed = SummaryRead::cached_with_loading(
+        Arc::new(saved),
+        "api_refresh_pending",
+        Some(estimated.clone()),
+    )
+    .unwrap()
+    .source_report(Some(KEY), 1, None, true);
+    assert_eq!(displayed.loading, Some(estimated));
+    assert!(
+        api.loading_for(&peer.source, Some(KEY), None, true, None, &[], 11, 20)
+            .is_none()
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert!(
+        api.0
+            .0
+            .lock()
+            .unwrap()
+            .profiles
+            .get(&profile)
+            .is_some_and(|history| !history.samples.is_empty())
+    );
+    assert!(
+        api.loading_for(&peer.source, Some(KEY), None, true, None, &[], 10, 20)
+            .is_none()
+    );
+    assert_eq!(
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            20,
+            Instant::now() + Duration::from_secs(2)
+        )
+        .unwrap()
+        .report
+        .provider_tokens[0]
+            .measured_tokens,
+        135
+    );
+}
+
+#[test]
 fn source_projection_keeps_unknown_only_tokens_unknown_and_preserves_snapshot() {
     let mut value = response(&json!({"repositoryKey":KEY,"fromAt":10,"toAt":20}), 20, 135);
     let summary: Summary = serde_json::from_value(value.clone()).unwrap();
