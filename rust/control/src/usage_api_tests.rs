@@ -73,6 +73,36 @@ fn source_projection_keeps_unknown_only_tokens_unknown_and_preserves_snapshot() 
     let metadata = report.source_snapshot.unwrap();
     assert_eq!(metadata.generation, 7);
     assert_eq!(metadata.pending_entries, 0);
+    let mut stale = value.clone();
+    stale["snapshot"]["freshness"] = json!("stale");
+    stale["snapshot"]["pendingEntries"] = json!(97);
+    let summary: Summary = serde_json::from_value(stale.clone()).unwrap();
+    let report = summary.source_report(Some(KEY), 1, None, true);
+    let snapshot = report.snapshot.unwrap();
+    assert!(snapshot.refreshing);
+    assert!(
+        !snapshot.refresh_failed,
+        "stale publication with a successful read is not a failed refresh"
+    );
+    assert_eq!(report.source_snapshot.unwrap().freshness, "stale");
+    let failed =
+        SummaryRead::cached_or_error(Some(Arc::new(summary)), "api_contract_unsupported").unwrap();
+    assert!(
+        failed
+            .source_report(Some(KEY), 1, None, true)
+            .snapshot
+            .unwrap()
+            .refresh_failed
+    );
+    stale["snapshot"]["freshness"] = json!("failed");
+    let failed: Summary = serde_json::from_value(stale).unwrap();
+    assert!(
+        failed
+            .source_report(Some(KEY), 1, None, true)
+            .snapshot
+            .unwrap()
+            .refresh_failed
+    );
     for token in value["report"]["providerTokens"].as_array_mut().unwrap() {
         token["measuredTokens"] = json!(0);
         token["exactTokens"] = Value::Null;

@@ -1010,3 +1010,13 @@ The Product Design catalog was refreshed and the audit/design-QA contracts were 
 Typography, colors, assets and copy retain the existing Console system. The responsive repair changes only when the existing outcome/review columns stack. The independent live-data acceptance must still verify measured totals, activity and outcomes after the reviewed deployment. The prior historical comparisons above remain preserved; this entry does not replace their source images or reinterpret their decisions.
 
 final result: blocked
+
+## Performance activity retention follow-up — 2026-11-15
+
+Live verification after the usage recovery found measured headlines but missing activity rows and chart groups. The compact review response fallback had removed the known breakdowns from the dedicated Performance response. The follow-up preserves those measurements, fills a missing repository activity aggregate from measured activity rows, and keeps the refreshed overview headline when returning from a review. Repeated activity names now include their recorded phase so users can distinguish the rows.
+
+The rendered journey passed 373 checks, including a 40-row activity table with unavailable costs and refresh/review continuation. Formal run `formal-web-ui-mwhcryr8-ee6f36c8` passed all 24 light/dark viewport cells. Every initial and full-page capture was reviewed, and the separate manual receipt passed all 24 cells. Evidence is retained in `/tmp/formal-web-ui-verification-chzXya/`. A browser probe confirmed that the existing narrow table scroll exposes the rightmost values without document overflow. No P0-P2 visual finding remains in this fixture; the compact overflow-legend wrapping is minor existing polish.
+
+These synthetic measurements establish rendered behavior only. Real repository acceptance remains required after deployment, and the current visual reference question in the preceding recovery entry is still unanswered. No source-comparison or qualified delivery pass is claimed.
+
+final result: blocked

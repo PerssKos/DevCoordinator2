@@ -72,7 +72,15 @@ window.DevCoordinatorPerformance = (() => {
     function costMatrix(usage) {
       const activityRows = (usage.activities || []).filter(row => row.total_tokens || row.cost?.estimated_usd_micros != null);
       if (!activityRows.length) return '';
-      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(activityLabel(row.activity))}</td><td>${tokenDetail(activityLabel(row.activity), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
+      const phases = new Map();
+      for (const row of activityRows) {
+        if (!phases.has(row.activity)) phases.set(row.activity, new Set());
+        if (row.phase) phases.get(row.activity).add(row.phase);
+      }
+      const rowLabel = row => phases.get(row.activity).size > 1 && row.phase
+        ? `${activityLabel(row.activity)} · ${window.DevCoordinatorI18n.t('common.phase_' + row.phase)}`
+        : activityLabel(row.activity);
+      return `<section class="performance-cost-matrix"><div class="performance-section-head"><div><h2>Activity breakdown</h2><p class="muted">Provider tokens and API-equivalent estimate by activity.</p></div><small class="muted">Standard API-equivalent basis</small></div><div class="tablewrap"><table><thead><tr><th>Activity</th><th>Tokens</th><th>API-equivalent USD</th><th>Requests</th><th>Coverage</th></tr></thead><tbody>${activityRows.map(row => `<tr><td>${esc(rowLabel(row))}</td><td>${tokenDetail(rowLabel(row), { measured: row.total_tokens, exact: usage.coverage.state === 'complete' ? row.total_tokens : null }, row.cost)}</td><td><strong>${esc(costAmount(row.cost))}</strong></td><td>${integer(row.operations)}</td><td><span class="performance-status ${esc(costState(row.cost).toLowerCase())}">${esc(costState(row.cost))}</span></td></tr>`).join('')}</tbody></table></div></section>`;
     }
     async function render(root, repositoryId, signal) {
       if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
@@ -121,7 +129,9 @@ window.DevCoordinatorPerformance = (() => {
         }, 5000));
       }
       async function read(operation, params, useCache = true) {
-        const key = `${operation}:${JSON.stringify(params)}`; const saved = cache.get(key);
+        // A refresh updates the same period instead of caching a second version.
+        const scope = { ...params }; delete scope.wait_for_refresh;
+        const key = `${operation}:${JSON.stringify(scope)}`; const saved = cache.get(key);
         if (useCache && saved && Date.now() - saved.at < 60000) return saved.data;
         const data = await api(operation, params);
         if (active()) { if (cache.size > 32) cache.delete(cache.keys().next().value); cache.set(key, { at: Date.now(), data }); }

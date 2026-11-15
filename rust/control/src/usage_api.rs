@@ -1053,7 +1053,7 @@ impl Summary {
                 refresh_failed: self
                     .snapshot
                     .as_ref()
-                    .is_some_and(|s| matches!(s.freshness.as_str(), "stale" | "failed")),
+                    .is_some_and(|s| s.freshness == "failed"),
                 progress_completed: None,
                 progress_total: None,
                 progress_stage: None,

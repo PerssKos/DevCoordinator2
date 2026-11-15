@@ -973,7 +973,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario(scenario);
+    daemon.setScenario(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { ...scenario, performanceDense: true } : scenario);
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;

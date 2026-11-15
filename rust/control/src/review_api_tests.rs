@@ -76,6 +76,242 @@ fn priced_response(params: &Value) -> Value {
     value
 }
 
+fn activity_response(params: &Value, count: usize) -> Value {
+    use devcoordinator2_api::outcomes::OutcomeMeasurement;
+    use devcoordinator2_api::results::{UsageActivity, UsageCost};
+
+    let total = count as u64 * 20;
+    let mut value = response(params, START + WEEK, total);
+    let phases = [
+        "planning",
+        "implementation",
+        "testing",
+        "deployment",
+        "reporting",
+    ];
+    let activities = [
+        "coding",
+        "research",
+        "requirements",
+        "repository_analysis",
+        "unit_testing",
+        "integration_testing",
+        "build_validation",
+        "documentation_authoring",
+    ];
+    let rows = (0..count).map(|index| {
+        let activity = if count == 40 { activities[index % activities.len()].to_owned() } else { format!("activity_{index:03}") };
+        json!({"phase":phases[index / activities.len() % phases.len()], "activity":activity, "attributionProvenance":"declared", "measuredTokens":20, "exactTokens":null, "unknownObservations":0})
+    }).collect::<Vec<_>>();
+    let mut review: ReviewUsage = serde_json::from_value(value["review"].clone()).unwrap();
+    review.activities = rows
+        .iter()
+        .map(|row| UsageActivity {
+            phase: row["phase"].as_str().unwrap().into(),
+            activity: row["activity"].as_str().unwrap().into(),
+            total_tokens: 20,
+            share: None,
+            operations: None,
+            provenance: [("declared".into(), 20)].into(),
+            cost: UsageCost::default(),
+        })
+        .collect();
+    if let Some(first) = review.outcomes.rows.first_mut() {
+        first.effort.provider_total_tokens = OutcomeMeasurement {
+            measured: total - 25,
+            exact: Some(total - 25),
+            unknown: 0,
+        };
+        let mut next = first.clone();
+        next.outcome_id = "other-outcome".into();
+        next.effort.provider_total_tokens = OutcomeMeasurement {
+            measured: 10,
+            exact: Some(10),
+            unknown: 0,
+        };
+        review.outcomes.rows.push(next);
+        review.outcomes.total_rows = 2;
+        review.outcomes.attributed.operations = 2;
+        review.outcomes.totals.operations = 3;
+    }
+    if params["fromAt"] == START + 2 {
+        review.outcomes.totals.activities.insert(
+            "coding".into(),
+            OutcomeMeasurement {
+                measured: 7,
+                exact: None,
+                unknown: 0,
+            },
+        );
+    }
+    if params["workstreamId"].as_str().is_some() {
+        review.outcomes.totals.provider_total_tokens = OutcomeMeasurement {
+            measured: 100,
+            exact: None,
+            unknown: 0,
+        };
+    }
+    value["review"] = serde_json::to_value(review).unwrap();
+    value["report"]["providerTokensByActivity"] = json!(rows);
+    value["snapshot"]["freshness"] = json!("stale");
+    value["snapshot"]["pendingEntries"] = json!(97);
+    value
+}
+
+#[test]
+fn performance_activity_breakdowns_survive_paging_and_keep_review_scope() {
+    let mut fixture = Fixture::new();
+    let saved = fixture
+        .service
+        .record(super::tests::record(&fixture), "fixture", START + WEEK)
+        .unwrap();
+    let root = fixture._temporary.path();
+    let peer = Peer::start(root, &root.join("activity-source"), |params| {
+        activity_response(params, 40)
+    });
+    let authorized = caller();
+    crate::usage_context::ingest(
+        &fixture.database,
+        authorized.uid,
+        "project-alpha",
+        authorized.work.as_ref().unwrap(),
+        START + 1,
+    )
+    .unwrap();
+    fixture.config.codex_usage_sources = vec![peer.source.clone()];
+    let plane = ControlPlane::with_adapters(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Arc::new(|_: &RouteAccessSection| Ok(())),
+        Arc::new(FixtureClock),
+    )
+    .unwrap();
+    let authorized = Caller {
+        work: None,
+        ..authorized
+    };
+    let params = json!({"repository_id":"project-alpha", "window_start_ms":START, "window_end_ms":START + WEEK, "outcome_limit":1});
+    let result = plane
+        .execute("performance.overview", params.clone(), &authorized)
+        .unwrap();
+    let shown: devcoordinator2_api::performance::OverviewResult =
+        serde_json::from_value(result.clone()).unwrap();
+    let usage = shown.usage.unwrap();
+    assert_eq!(
+        usage.activities.len(),
+        40,
+        "Performance must retain the source's activity matrix"
+    );
+    assert!(
+        serde_json::to_vec(&usage).unwrap().len() > 16 * 1024,
+        "fixture must cross the compact review ceiling"
+    );
+    assert!(serde_json::to_vec(&usage).unwrap().len() <= 64 * 1024);
+    assert_eq!(shown.total_tokens.measured, 800);
+    assert_eq!(usage.outcomes.totals.activities.len(), 8);
+    for measurement in usage.outcomes.totals.activities.values() {
+        assert_eq!(measurement.measured, 100);
+        assert_eq!(measurement.exact, None);
+    }
+    assert!(!usage.coverage.events.is_empty());
+    assert!(!usage.coverage.token_observations.is_empty());
+    assert!(usage.coverage.snapshot.as_ref().unwrap().refreshing);
+    assert!(!usage.coverage.snapshot.as_ref().unwrap().refresh_failed);
+    assert!(
+        usage
+            .activities
+            .iter()
+            .all(|activity| activity.cost.status == "unavailable"
+                && activity.cost.estimated_usd_micros.is_none())
+    );
+    assert_eq!(shown.cost.estimated_usd_micros, None);
+    let envelope =
+        devcoordinator2_api::ResponseEnvelope::success("activity-regression", result.clone())
+            .unwrap();
+    let wire = devcoordinator2_api::encode_response(&envelope);
+    assert!(wire.len() < devcoordinator2_api::MAX_RESPONSE_BYTES);
+    let envelope: Value = serde_json::from_slice(&wire).unwrap();
+    assert_eq!(
+        envelope["data"]["usage"]["activities"]
+            .as_array()
+            .unwrap()
+            .len(),
+        40
+    );
+
+    let mut next_params = params.clone();
+    next_params["outcome_cursor"] = json!(usage.outcomes.next_cursor.unwrap());
+    let next: devcoordinator2_api::performance::OverviewResult = serde_json::from_value(
+        plane
+            .execute("performance.overview", next_params, &authorized)
+            .unwrap(),
+    )
+    .unwrap();
+    let next = next.usage.unwrap();
+    assert_eq!(next.activities.len(), 40);
+    assert_eq!(next.outcomes.totals.activities.len(), 8);
+    assert_eq!(next.outcomes.rows[0].outcome_id, "other-outcome");
+
+    let packet: Prepared = serde_json::from_value(
+        plane
+            .execute(
+                "review.prepare",
+                serde_json::to_value(input()).unwrap(),
+                &authorized,
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(serde_json::to_vec(&packet.usage).unwrap().len() <= 16 * 1024);
+    assert!(packet.usage.outcomes.totals.activities.is_empty());
+    let scoped: devcoordinator2_api::performance::ReviewResult = serde_json::from_value(plane.execute("performance.review", json!({"repository_id":"project-alpha", "reference":saved.reference, "outcome_limit":1}), &authorized).unwrap()).unwrap();
+    assert_eq!(scoped.usage.activities.len(), 40);
+    assert!(
+        scoped.usage.outcomes.totals.activities.is_empty(),
+        "repository activity cannot allocate named-workstream effort"
+    );
+    assert_eq!(
+        scoped.usage.outcomes.totals.provider_total_tokens.measured,
+        100
+    );
+
+    let mut explicit_params = params;
+    explicit_params["window_start_ms"] = json!(START + 2);
+    let explicit: devcoordinator2_api::performance::OverviewResult = serde_json::from_value(
+        plane
+            .execute("performance.overview", explicit_params, &authorized)
+            .unwrap(),
+    )
+    .unwrap();
+    let activities = explicit.usage.unwrap().outcomes.totals.activities;
+    assert_eq!(
+        activities.len(),
+        1,
+        "an explicit producer map must not be overwritten"
+    );
+    assert_eq!(activities["coding"].measured, 7);
+}
+
+#[test]
+fn performance_activity_breakdowns_fail_explicitly_beyond_display_bound() {
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let peer = Peer::start(root, &root.join("large-source"), |params| {
+        activity_response(params, 200)
+    });
+    fixture.config.codex_usage_sources = vec![peer.source.clone()];
+    let plane = ControlPlane::with_adapters(
+        fixture.config.clone(),
+        fixture.database.clone(),
+        Arc::new(|_: &RouteAccessSection| Ok(())),
+        Arc::new(FixtureClock),
+    )
+    .unwrap();
+    let error = plane.execute("performance.overview", json!({"repository_id":"project-alpha", "window_start_ms":START, "window_end_ms":START + WEEK, "outcome_limit":1}), &Caller {work:None, ..caller()}).unwrap_err();
+    assert_eq!(error.code, ErrorCode::ParamsInvalid);
+    assert!(error.message.contains("exceeds the supported size"));
+}
+
 #[test]
 fn performance_and_repository_totals_resolve_cold_identity_without_sibling_requests() {
     use crate::usage_api_fixture::ResponseGate;

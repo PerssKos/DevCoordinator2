@@ -5,6 +5,22 @@ use devcoordinator2_api::{
 };
 use std::collections::BTreeSet;
 
+// Each rich usage page is at most 64 KiB. Bound the complete result too,
+// leaving half the 256 KiB transport cap for its envelope and notifications.
+const MAX_PERFORMANCE_RESULT_BYTES: usize = 128 * 1024;
+
+fn bounded_result<T: serde::Serialize>(result: T) -> Result<T, ProtocolError> {
+    let bytes = serde_json::to_vec(&result)
+        .map_err(|_| invalid("Cannot encode Performance response"))?
+        .len();
+    if bytes > MAX_PERFORMANCE_RESULT_BYTES {
+        return Err(invalid(&format!(
+            "Performance response exceeds the supported size ({bytes} bytes); narrow the window"
+        )));
+    }
+    Ok(result)
+}
+
 impl ReviewService {
     pub(crate) fn performance_overview(
         &self,
@@ -68,7 +84,7 @@ impl ReviewService {
                 )
             }
         };
-        Ok(api::OverviewResult {
+        bounded_result(api::OverviewResult {
             repository_id: p.repository_id,
             window_start_ms: p.window_start_ms,
             window_end_ms: p.window_end_ms,
@@ -148,7 +164,7 @@ impl ReviewService {
                 self.performance_comparisons(&review, &usage, now, deadline)?,
             )
         };
-        Ok(api::ReviewResult {
+        bounded_result(api::ReviewResult {
             review,
             usage,
             evidence,

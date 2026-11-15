@@ -99,6 +99,15 @@ its outcome rows, activity, or costs. Lifetime requests retain their finite
 zero-to-selected-time scope; unbounded producer metadata does not provide a
 provider-reported total and cannot substitute for that measurement.
 
+Compact review usage pages retain their 16 KiB evidence-packet budget. Dedicated
+Performance usage pages retain measured activity, outcome, kind, and coverage
+breakdowns within a 64 KiB page budget; a page that cannot fit fails explicitly.
+Complete Performance results are bounded to 128 KiB, leaving room for the
+transport envelope. A repository-wide Performance chart may aggregate canonical
+repository activity rows when the producer omits that aggregate map. Explicit
+producer maps remain intact, and repository rows never allocate activity to a
+named workstream or outcome.
+
 The five-second freshness period starts revalidation; it does not make completed
 measurements unavailable. A later request returns the last valid exact-query
 snapshot while one bounded source refresh runs, including when the caller has
@@ -112,6 +121,10 @@ A failed refresh preserves these measurements with
 `refresh_failed: true` and the precise bounded reason until a successful refresh
 replaces them. Cold failures still have no measurements. Existing memory, byte,
 admission, retry and eviction bounds apply; no usage copy is stored durably.
+
+Stale source publication remains a coverage gap. Pending journal entries may
+keep its snapshot refreshing, but a successful stale read is not a failed
+refresh. Only a failed source state or an actual refresh error marks failure.
 
 ## Verification and activation
 

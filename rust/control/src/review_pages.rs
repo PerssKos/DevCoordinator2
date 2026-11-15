@@ -17,7 +17,8 @@ struct Snapshot {
 const LIFETIME: Duration = Duration::from_secs(300);
 const MAX_CACHE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 8 * 1024 * 1024;
-const MAX_PAGE_BYTES: usize = 16 * 1024;
+const MAX_REVIEW_PAGE_BYTES: usize = 16 * 1024;
+const MAX_PERFORMANCE_PAGE_BYTES: usize = 64 * 1024;
 
 impl ReviewService {
     pub(super) fn outcome_usage(
@@ -76,7 +77,7 @@ impl ReviewService {
                 .ok_or_else(|| {
                     invalid("Outcome cursor expired or changed scope; start a new first page")
                 })?;
-            return page(&snapshot.usage, id, offset, limit as usize);
+            return page(&snapshot.usage, id, offset, limit as usize, tokens_only);
         }
         let read = if tokens_only {
             UsageService::performance_window
@@ -105,6 +106,24 @@ impl ReviewService {
                 ] {
                     metric.exact = None;
                     metric.unknown = metric.unknown.max(1);
+                }
+            }
+            if params.workstream_id.is_none() && usage.outcomes.totals.activities.is_empty() {
+                // Repository activity rows are a measured repository summary.
+                // They can fill its missing chart aggregate, but cannot
+                // allocate effort to a named workstream or outcome.
+                for activity in &usage.activities {
+                    let entry = usage
+                        .outcomes
+                        .totals
+                        .activities
+                        .entry(activity.activity.clone())
+                        .or_default();
+                    entry.measured = entry
+                        .measured
+                        .checked_add(activity.total_tokens)
+                        .ok_or_else(|| invalid("Usage overflow"))?;
+                    entry.exact = None;
                 }
             }
         }
@@ -171,7 +190,7 @@ impl ReviewService {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let result = page(&usage, &id, 0, limit as usize)?;
+        let result = page(&usage, &id, 0, limit as usize, tokens_only)?;
         if result.outcomes.next_cursor.is_none() {
             return Ok(result);
         }
@@ -212,7 +231,13 @@ fn page(
     id: &str,
     offset: usize,
     limit: usize,
+    performance: bool,
 ) -> Result<ReviewUsage, ProtocolError> {
+    let max_bytes = if performance {
+        MAX_PERFORMANCE_PAGE_BYTES
+    } else {
+        MAX_REVIEW_PAGE_BYTES
+    };
     let rows = &usage.outcomes.rows;
     if offset > rows.len() || offset > 0 && offset == rows.len() {
         return Err(invalid("Outcome cursor is outside the snapshot"));
@@ -225,10 +250,15 @@ fn page(
         let encoded_bytes = serde_json::to_vec(&result)
             .map_err(|_| invalid("Cannot encode usage"))?
             .len();
-        if encoded_bytes <= MAX_PAGE_BYTES {
+        if encoded_bytes <= max_bytes {
             return Ok(result);
         }
         if end <= offset + 1 {
+            if performance {
+                return Err(invalid(&format!(
+                    "Performance usage page exceeds the supported size ({encoded_bytes} bytes); narrow the window"
+                )));
+            }
             // A single review row can still exceed the packet ceiling when
             // the surrounding repository has a large provenance/tool matrix.
             // Preserve headline measurements and cost components, while
@@ -256,7 +286,7 @@ fn page(
             if serde_json::to_vec(&bounded)
                 .map_err(|_| invalid("Cannot encode usage"))?
                 .len()
-                <= MAX_PAGE_BYTES
+                <= max_bytes
             {
                 return Ok(bounded);
             }
