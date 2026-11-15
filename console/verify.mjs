@@ -607,8 +607,8 @@ async function startFakeDaemon(dir) {
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
       if (cmd.startsWith('performance.')) {
-        const pendingKey = req.params.totals_only ? 'lifetime' : 'period';
-        const pending = cmd === 'performance.overview' && scenario.performancePendingOnce && !mutable.performancePendingServed.has(pendingKey);
+        const pendingKey = cmd === 'performance.review' ? `review:${req.params.reference}` : scenario.performancePendingByWindow ? JSON.stringify([req.params.repository_id, req.params.window_start_ms, req.params.window_end_ms, !!req.params.totals_only]) : req.params.totals_only ? 'lifetime' : 'period';
+        const pending = ['performance.overview', 'performance.review'].includes(cmd) && scenario.performancePendingRepository === req.params.repository_id || (cmd === 'performance.overview' && (scenario.performancePendingOnce || scenario.performancePendingByWindow) || cmd === 'performance.review' && scenario.performanceReviewPendingOnce) && !mutable.performancePendingServed.has(pendingKey);
         if (pending) mutable.performancePendingServed.add(pendingKey);
         return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
       }
@@ -973,7 +973,7 @@ async function main() {
     const scenarioName = process.env.CONSOLE_VERIFY_HOLD_SCENARIO || 'populated';
     const scenario = SCENARIOS[scenarioName];
     if (!scenario) throw new Error(`unknown hold scenario ${scenarioName}`);
-    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}) });
+    daemon.setScenario({ ...scenario, ...(process.env.CONSOLE_VERIFY_PERFORMANCE_DENSE ? { performanceDense: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_WORKSTREAM ? { performanceWorkstream: true } : {}), ...(process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY ? { performancePendingRepository: process.env.CONSOLE_VERIFY_PERFORMANCE_PENDING_REPOSITORY } : {}) });
     const { cookie } = sessions.issue({ sub: 'sub', email: scenario.identity, name: 'Verifier' });
     const holdView = process.env.CONSOLE_VERIFY_HOLD_VIEW || `#/deployments/${DEP}`;
     const targetUrl = `http://${HOST}:${port}/${holdView}`;

@@ -99,6 +99,14 @@ its outcome rows, activity, or costs. Lifetime requests retain their finite
 zero-to-selected-time scope; unbounded producer metadata does not provide a
 provider-reported total and cannot substitute for that measurement.
 
+Console writes the selected period and the separate all-recorded cutoff into
+its route before the first request. Reloading therefore consumes the same
+pending or completed queries instead of starting new scans with new timestamps.
+The Refresh control advances relative windows and the all-recorded cutoff;
+custom period boundaries remain unchanged. Pending overview and review
+measurements use loading text until their bounded source read completes, rather
+than claiming that data is unavailable or that the period has no outcomes.
+
 Compact review usage pages retain their 16 KiB evidence-packet budget. Dedicated
 Performance usage pages retain measured activity, outcome, kind, and coverage
 breakdowns within a 64 KiB page budget; a page that cannot fit fails explicitly.
@@ -124,6 +132,15 @@ not yet consumed that completed snapshot. Coverage events identify
 snapshot's `updated_at_ms` is the producer's summary-generation time, so a new
 request cannot make old measurements appear newly observed. The separate source
 snapshot retains the producer's original publication times and frontiers.
+
+If an uncached query waits behind another read of the same source, its normal
+retry gets a turn before a completed query starts another stale revalidation.
+The completed query still returns its own measured snapshot; no result is
+borrowed across time windows, repositories, workstreams, or binding revisions.
+This uses only bounded admission hints inside the existing cache, not queued
+query payloads or additional workers. Hints expire after fifteen seconds
+without a retry and share the existing admission-memory budget. Other sources
+remain independent.
 
 A failed refresh preserves these measurements with
 `refresh_failed: true` and the precise bounded reason until a successful refresh

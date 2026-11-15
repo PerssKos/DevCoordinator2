@@ -25,7 +25,7 @@ export function performanceFixture(operation, params, scenario = {}) {
       ['unknown', 160000, 1],
     ].map(([activity, tokens, operations]) => ({ activity, total_tokens: tokens * base, operations, cost: cost(tokens * base) }));
     const unavailableCost = { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null };
-    if (scenario.performanceDense) {
+    if (scenario.performanceDense && !scenario.usageUnavailable) {
       const names = ['coding', 'configuration', 'repository_analysis', 'diagnosis', 'work_planning', 'research', 'test_authoring', 'integration_testing'];
       const phases = ['planning', 'implementation', 'testing', 'deployment', 'reporting'];
       activityRows.splice(0, activityRows.length, ...Array.from({ length: 40 }, (_, index) => ({ phase: phases[index % 5], activity: names[Math.floor(index / 5)], total_tokens: total / 40, operations: null, cost: unavailableCost })));
@@ -79,6 +79,26 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
     probe.remove();
     return fits;
   }));
+  daemon.setScenario({ ...scenario, performancePendingByWindow: true });
+  await page.goto('about:blank');
+  await page.goto(`${baseUrl}#/performance/${REPO}`);
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  verify('pending measurements do not claim unavailable or empty data', (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes') && (await page.locator('[data-performance-period-total]').innerText()).includes('Loading') && (await page.locator('[data-performance-lifetime]').innerText()).includes('Loading'));
+  const initialQueries = daemon.calls.filter(call => call.operation === 'performance.overview').map(call => call.params);
+  const initialWindow = initialQueries.find(params => !params.totals_only), initialLifetime = initialQueries.find(params => params.totals_only);
+  const routeWindow = new URLSearchParams(page.url().split('?')[1]);
+  verify('ordinary repository URL retains exact query anchors before completion', Number(routeWindow.get('from')) === initialWindow.window_start_ms && Number(routeWindow.get('to')) === initialWindow.window_end_ms && Number(routeWindow.get('recordedTo')) === initialLifetime.window_end_ms);
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4') && document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 15000 });
+  const reloadPeriod = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  const reloadLifetime = page.waitForRequest(request => request.url().endsWith('/performance.overview') && request.postDataJSON().totals_only);
+  await page.reload();
+  const afterPeriod = (await reloadPeriod).postDataJSON(), afterLifetime = (await reloadLifetime).postDataJSON();
+  verify('reload reuses the completed period and lifetime queries', afterPeriod.window_start_ms === initialWindow.window_start_ms && afterPeriod.window_end_ms === initialWindow.window_end_ms && afterLifetime.window_end_ms === initialLifetime.window_end_ms);
+  await page.waitForFunction(() => document.querySelector('[data-performance-period-total]')?.textContent.includes('6.4') && document.querySelector('[data-performance-lifetime]')?.textContent.includes('32'), null, { timeout: 15000 });
+  const refreshRequest = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const refreshed = (await refreshRequest).postDataJSON();
+  verify('explicit refresh advances the selected relative window', refreshed.window_end_ms > afterPeriod.window_end_ms && refreshed.window_end_ms - refreshed.window_start_ms === 7 * 86400000);
   daemon.setScenario({ ...scenario, performancePendingOnce: true });
   await page.reload();
   await page.locator('[data-performance-history] tbody tr').first().waitFor();
@@ -126,6 +146,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('selecting review changes only scoped usage', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && (await page.locator('[data-performance-lifetime]').innerText()).includes('32'));
   verify('comparison and rationale are present', (await page.locator('[data-performance-reader]').innerText()).includes('25.0%') && (await page.locator('[data-performance-reader]').innerText()).includes('Alternatives considered'));
   verify('review selection moves focus to its reader', await page.locator('[data-performance-reader]').evaluate(e => document.activeElement === e));
+  daemon.setScenario({ ...scenario, performanceReviewPendingOnce: true });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('[data-performance-coverage]')?.textContent.includes('Loading usage'));
+  verify('pending selected review keeps its decision and honest loading state', (await page.locator('[data-performance-reader]').innerText()).includes('Decision') && (await page.locator('[data-performance-charts]').innerText()).includes('Loading token breakdowns') && (await page.locator('[data-performance-outcomes]').innerText()).includes('Loading outcomes'));
+  await page.waitForFunction(() => document.querySelector('[data-performance-scope-total] .performance-token-detail-button')?.textContent.includes('1M'), null, { timeout: 15000 });
+  verify('selected review receives its completed measurements without reload', await page.locator('.performance-cost-matrix tbody tr').count() === 3 && daemon.calls.filter(call => call.operation === 'performance.review').length >= 2);
   daemon.setScenario({ ...scenario, performanceWorkstream: true });
   await page.reload();
   await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
@@ -165,6 +191,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await page.locator('[data-performance-range="30d"]').click();
   await page.waitForFunction(() => document.querySelector('[data-performance-range="30d"]')?.getAttribute('aria-pressed') === 'true');
   verify('range change returns to overview', !page.url().includes('review='));
+  const selectedTo = Number(new URLSearchParams(page.url().split('?')[1]).get('to'));
+  const selectedRefresh = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const selectedParams = (await selectedRefresh).postDataJSON();
+  verify('refresh advances an explicitly routed relative range', selectedParams.window_end_ms > selectedTo && selectedParams.window_end_ms - selectedParams.window_start_ms === 30 * 86400000);
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.locator('[data-performance-custom-open]').click();
   await page.waitForFunction(() => document.activeElement?.matches('.performance-date-dialog input[name=from]'));
   verify('custom dates receive focus in the viewport', await page.locator('.performance-date-dialog input[name=from]').evaluate(e => document.activeElement===e && e.getBoundingClientRect().left >= 0));
@@ -178,6 +210,11 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   await customResponse;
   await page.waitForFunction(() => location.hash.includes('range=custom'));
   verify('custom range uses UTC boundaries', daemon.calls.some(call => call.operation === 'performance.overview' && call.params.window_start_ms === Date.UTC(2026, 8, 10) && call.params.window_end_ms === Date.UTC(2026, 8, 13)));
+  const customRefresh = page.waitForRequest(request => request.url().endsWith('/performance.overview') && !request.postDataJSON().totals_only);
+  await page.locator('[data-performance-refresh]').click();
+  const customParams = (await customRefresh).postDataJSON();
+  verify('refresh keeps explicit custom boundaries', customParams.window_start_ms === Date.UTC(2026, 8, 10) && customParams.window_end_ms === Date.UTC(2026, 8, 13));
+  await page.locator('[data-performance-history] tbody tr').first().waitFor();
   await page.locator('[data-performance-select]').first().click(); await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
   await page.screenshot({ path: path.join(output, `performance-${theme}-${viewport.width}.png`), fullPage: true });
   if (viewport.width <= 600) verify('outcome names retain a readable column', (await page.locator('.performance-outcome-table tbody tr td:first-child').first().boundingBox()).width >= 160);

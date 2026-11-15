@@ -1,6 +1,15 @@
 use super::*;
 use crate::usage_api_fixture::{KEY, capability, response};
 
+fn expire_completed_summaries(api: &CollectorApi) {
+    // Fair-admission tests age a completed observation while keeping an
+    // actively polled cold hint current. The full expire() test seam ages
+    // all cache state, including abandoned hints and failed-read backoffs.
+    for entry in api.0.0.lock().unwrap().entries.values_mut() {
+        entry.loaded = Instant::now() - FRESH_FOR;
+    }
+}
+
 #[test]
 fn api_contract_requires_negotiation_and_complete_consistent_fresh_metadata() {
     validate_capability(&json!({"localUsageAccounting":capability()})).unwrap();
@@ -200,4 +209,158 @@ fn independent_healthy_collectors_do_not_hold_the_global_cache_lock_during_ipc()
         assert!(left.join().unwrap().is_ok());
         assert!(right.join().unwrap().is_ok());
     });
+}
+
+#[test]
+fn waiting_cold_lifetime_read_precedes_repeated_period_revalidation() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let revalidation = ResponseGate::default();
+    let response_revalidation = revalidation.clone();
+    let periods = Arc::new(AtomicUsize::new(0));
+    let observed = periods.clone();
+    let peer = Peer::start(
+        directory.path(),
+        &directory.path().join("home"),
+        move |params| {
+            if params["fromAt"] == 10 {
+                if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                    response_gate.wait();
+                } else {
+                    response_revalidation.wait();
+                }
+                response(params, 20, 135)
+            } else {
+                response(params, 20, 270)
+            }
+        },
+    );
+    let release = gate.release_on_drop();
+    let release_revalidation = revalidation.release_on_drop();
+    let api = CollectorApi::default();
+    let read = |start, budget| {
+        api.summary(
+            &peer.source,
+            Some(KEY),
+            None,
+            true,
+            start,
+            20,
+            Instant::now() + budget,
+        )
+    };
+
+    assert_eq!(
+        read(10, Duration::from_millis(100)).err().as_deref(),
+        Some("api_refresh_pending")
+    );
+    assert_eq!(
+        read(0, Duration::from_millis(100)).err().as_deref(),
+        Some("api_source_busy")
+    );
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    expire_completed_summaries(&api);
+    // Browser polls the period first. Its saved result must remain visible,
+    // while its revalidation yields to the lifetime query waiting for data.
+    let period = read(10, Duration::from_secs(2)).unwrap();
+    assert_eq!(period.report.provider_tokens[0].measured_tokens, 135);
+    let lifetime = read(0, Duration::from_secs(2));
+    release_revalidation.release();
+    let lifetime = lifetime.expect("a cached period must not starve a waiting lifetime read");
+    assert_eq!(lifetime.report.provider_tokens[0].measured_tokens, 270);
+    assert_eq!(lifetime.report.time_range.as_ref().unwrap().start_ms, 0);
+    assert_eq!(periods.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cold_waiter_hints_are_bounded_expire_and_preserve_source_isolation() {
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let left = directory.path().join("left");
+    let right = directory.path().join("right");
+    std::fs::create_dir_all(&left).unwrap();
+    std::fs::create_dir_all(&right).unwrap();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let a = Peer::start(&left, &left.join("home"), move |params| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        response_gate.wait();
+        response(params, 20, 135)
+    });
+    let (entered_source, entered) = std::sync::mpsc::channel();
+    let b = Peer::start(&right, &right.join("home"), move |params| {
+        entered_source.send(()).unwrap();
+        response(params, 20, 270)
+    });
+    let release = gate.release_on_drop();
+    let api = CollectorApi::default();
+    let read = |source: &crate::config::CodexUsageSource, end, budget| {
+        api.summary(
+            source,
+            Some(KEY),
+            None,
+            true,
+            10,
+            end,
+            Instant::now() + budget,
+        )
+    };
+    assert_eq!(
+        read(&a.source, 20, Duration::from_millis(100))
+            .err()
+            .as_deref(),
+        Some("api_refresh_pending")
+    );
+    for end in 21..21 + MAX_CACHED as u64 + 1 {
+        assert_eq!(
+            read(&a.source, end, Duration::from_millis(100))
+                .err()
+                .as_deref(),
+            Some("api_source_busy")
+        );
+    }
+    {
+        let state = api.0.0.lock().unwrap();
+        assert_eq!(state.cold_waiters.len(), MAX_CACHED);
+        assert!(state.pending_bytes() <= MAX_INFLIGHT_BYTES);
+    }
+    let independent = read(&b.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(independent.report.provider_tokens[0].measured_tokens, 270);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+    expire_completed_summaries(&api);
+    let independent = read(&b.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(independent.report.provider_tokens[0].measured_tokens, 270);
+    entered
+        .recv_timeout(Duration::from_secs(2))
+        .expect("another source's waiters must not block revalidation");
+
+    release.release();
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    {
+        let mut state = api.0.0.lock().unwrap();
+        for waiter in state.cold_waiters.values_mut() {
+            // Advance only retained waiter age, not request or source time.
+            // An abandoned poll must expire without a test timer delay.
+            waiter.touched = Instant::now() - COLD_WAITER_FOR;
+        }
+    }
+    expire_completed_summaries(&api);
+    let stale = read(&a.source, 20, Duration::from_secs(2)).unwrap();
+    assert_eq!(stale.report.provider_tokens[0].measured_tokens, 135);
+    assert!(api.wait_until_idle(Instant::now() + Duration::from_secs(2)));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expired waiters must release the revalidation turn"
+    );
+    assert!(api.0.0.lock().unwrap().cold_waiters.is_empty());
 }

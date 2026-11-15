@@ -86,7 +86,8 @@ window.DevCoordinatorPerformance = (() => {
       if (!identity()?.administrator) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p class=\"notice\"><span data-i18n=\"performance.administrator_access_is_required_to_read_perform_81e663\">Administrator access is required to read performance reviews.</span></p>"; return; }
       if (!repositoryId) { root.innerHTML = "<h1><a class=\"destination-link\" href=\"#/performance\"><span data-i18n=\"performance.performance_442ade\">Performance</span></a></h1><p><span data-i18n=\"performance.no_repository_is_selected_386f0c\">No repository is selected.</span></p>"; return; }
       let session = sessions.get(repositoryId);
-      if (!session) { session = { end: Date.now(), lifetimeEnd: Date.now(), range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
+      const now = Date.now();
+      if (!session) { session = { end: now, lifetimeEnd: now, range: '7d', scroll: 0 }; if (sessions.size >= 16) sessions.delete(sessions.keys().next().value); sessions.set(repositoryId, session); }
       const query = new URLSearchParams(location.hash.split('?')[1] || '');
       const range = ['7d', '30d', '90d', 'custom'].includes(query.get('range')) ? query.get('range') : session.range;
       const parsedEnd = Number(query.get('to'));
@@ -94,6 +95,8 @@ window.DevCoordinatorPerformance = (() => {
       const parsedStart = Number(query.get('from'));
       const start = query.has('from') && Number.isSafeInteger(parsedStart) && parsedStart >= 0 && parsedStart < end ? parsedStart : Math.max(0, end - (parseInt(range, 10) || 7) * DAY);
       session.end = end; session.range = range;
+      const recordedTo = Number(query.get('recordedTo'));
+      if (query.has('recordedTo') && Number.isSafeInteger(recordedTo) && recordedTo > 0) session.lifetimeEnd = Math.min(recordedTo, now);
       const reference = query.get('review');
       const active = () => !signal.aborted && root.querySelector('[data-performance-page]');
       const find = name => root.querySelector(`[data-performance-${name}]`);
@@ -101,10 +104,12 @@ window.DevCoordinatorPerformance = (() => {
       let currentUsage = null; let reviewData = null; let historyBefore = session.history?.next_before ?? null; let revisionBefore = null;
       const refreshTimers = new Map();
       function route(review, overrides = {}) {
-        const p = new URLSearchParams({ range, from: String(start), to: String(end), ...overrides });
+        const p = new URLSearchParams({ range, from: String(start), to: String(end), recordedTo: String(session.lifetimeEnd), ...overrides });
         if (review) p.set('review', review);
         return `#/performance/${encodeURIComponent(repositoryId)}?${p}`;
       }
+      // Reloads must consume the same exact query, including a read still in progress.
+      if (location.hash !== route(reference)) history.replaceState(history.state, '', route(reference));
       function navigate(review, overrides) {
         if (!reference) session.scroll = window.scrollY;
         location.hash = route(review, overrides);
@@ -121,6 +126,7 @@ window.DevCoordinatorPerformance = (() => {
         const coverage = data?.usage?.coverage || data?.coverage;
         return usageRefreshPending(coverage);
       }
+      const pendingMeasurements = coverage => coverage?.state === 'unavailable' && usageRefreshPending(coverage);
       function scheduleRefresh(name, readAgain) {
         if (refreshTimers.has(name) || signal.aborted) return;
         refreshTimers.set(name, window.setTimeout(() => {
@@ -148,7 +154,13 @@ window.DevCoordinatorPerformance = (() => {
         <aside class="performance-reader" data-performance-reader tabindex="-1" aria-label="Selected performance review" data-i18n-attrs='{"aria-label":"performance.selected_performance_review_362d6a"}'>${reference ? "<p><span data-i18n=\"performance.loading_review_fc2441\">Loading review…</span></p>" : "<h2><span data-i18n=\"performance.review_details_1640b0\">Review details</span></h2><p class=\"muted\"><span data-i18n=\"performance.select_a_review_to_see_its_decisions_measurement_316280\">Select a review to see its decisions, measurements and evidence.</span></p>"}</aside></div></section>`;
       root.querySelectorAll('[data-performance-range]').forEach(button => button.addEventListener('click', () => { const nextEnd = Date.now(); navigate(null, { range: button.dataset.performanceRange, from: String(nextEnd - parseInt(button.dataset.performanceRange, 10) * DAY), to: String(nextEnd) }); }));
       find('overview')?.addEventListener('click', () => navigate(null));
-      find('refresh').addEventListener('click', () => { cache.clear(); session.history = null; session.periodUsage = null; session.end = Date.now(); session.lifetimeEnd = Date.now(); window.render(); });
+      find('refresh').addEventListener('click', () => {
+        cache.clear(); session.history = null; session.periodUsage = null;
+        const nextEnd = Date.now(); session.lifetimeEnd = nextEnd;
+        const bounds = range === 'custom' ? {} : { from: String(Math.max(0, nextEnd - parseInt(range, 10) * DAY)), to: String(nextEnd) };
+        history.replaceState(history.state, '', route(reference, bounds));
+        window.render();
+      });
       const form = root.querySelector('.performance-date-dialog form');
       const custom = root.querySelector('.performance-date-dialog');
       root.append(custom);
@@ -184,6 +196,15 @@ window.DevCoordinatorPerformance = (() => {
         const workstream = reference && reviewData?.review.record.workstreamId;
         // The producer scopes outcomes by workstream; its other rows remain repository-wide.
         const source = workstream ? outcomes.totals.cost : usage.totals;
+        if (!append && pendingMeasurements(usage.coverage) && !total.measured) {
+          showCoverage(usage);
+          window.DevCoordinatorI18n.text(find('scope-total'), 'performance.loading_measurements_baea02');
+          find('charts').innerHTML = `<p>${window.DevCoordinatorI18n.markup('performance.loading_token_breakdowns_b62cda')}</p>`;
+          window.DevCoordinatorI18n.text(find('outcomes'), 'performance.loading_outcomes_a12af3');
+          window.DevCoordinatorI18n.text(find('outcome-count'), 'performance.loading_ba3bbb');
+          find('outcomes-more').innerHTML = '';
+          return;
+        }
         if (!append) {
           showCoverage(usage);
           find('scope-total').innerHTML = `${tokenDetail(reference ? 'Review total' : 'Period total', total, source)}${reference ? '' : ' · ' + esc(period(start, end))}`;
@@ -251,9 +272,10 @@ window.DevCoordinatorPerformance = (() => {
         try {
           const data = await read('performance.overview', waitForRefresh ? { ...requests, wait_for_refresh: true } : requests, !waitForRefresh);
           if (!active()) return;
-          find('period-total').innerHTML = tokenDetail('Overview period total', data.total_tokens, data.totals);
-          find('period-cost').innerHTML = esc(costAmount(data.cost));
-          find('cost-status').textContent = `${costState(data.cost)} · Standard API basis`;
+          const pending = pendingMeasurements(data.usage?.coverage || data.coverage) && !data.total_tokens.measured;
+          find('period-total').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('Overview period total', data.total_tokens, data.totals);
+          find('period-cost').innerHTML = pending ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : esc(costAmount(data.cost));
+          find('cost-status').textContent = pending ? 'Standard API basis' : `${costState(data.cost)} · Standard API basis`;
           if (!reference) {
             if (data.usage) showUsage(!waitForRefresh && session.periodUsage?.start === start && session.periodUsage?.end === end ? session.periodUsage.usage : data.usage);
             if (session.scroll) window.scrollTo({ top: session.scroll });
@@ -267,15 +289,15 @@ window.DevCoordinatorPerformance = (() => {
         try {
           const data = await read('performance.overview', { repository_id: repositoryId, window_start_ms: 0, window_end_ms: session.lifetimeEnd, totals_only: true }, !waitForRefresh);
           if (!active()) return;
-          find('lifetime').innerHTML = tokenDetail('All recorded total', data.total_tokens, data.totals);
+          find('lifetime').innerHTML = pendingMeasurements(data.coverage) && !data.total_tokens.measured ? window.DevCoordinatorI18n.markup('performance.loading_ba3bbb') : tokenDetail('All recorded total', data.total_tokens, data.totals);
           find('lifetime').title = coverageStatusText(data.coverage);
           if (needsRefresh(data)) scheduleRefresh('lifetime', loadLifetime);
           else clearRefresh('lifetime');
         }
         catch (error) { if (active()) { window.DevCoordinatorI18n.text(find('lifetime'), "performance.unavailable_ca1844"); find('lifetime').title = error.message; } }
       }
-      async function loadReview() {
-        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }); if (active()) showReview(data); }
+      async function loadReview(waitForRefresh = false) {
+        try { const data = await read('performance.review', { repository_id: repositoryId, reference, outcome_limit: 5 }, !waitForRefresh); if (!active()) return; showReview(data); if (needsRefresh(data)) scheduleRefresh('review', loadReview); else clearRefresh('review'); }
         catch (error) { if (active()) { errorPanel(find('reader'), error.message, loadReview); window.DevCoordinatorI18n.text(find('coverage'), "performance.review_measurements_are_unavailable_497d4e"); find('charts').innerHTML = ''; window.DevCoordinatorI18n.text(find('outcomes'), "performance.review_measurements_are_unavailable_497d4e"); } }
       }
       await Promise.allSettled([loadHistory(), loadPeriod(), loadLifetime(), ...(reference ? [loadReview()] : [])]);

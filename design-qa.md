@@ -955,6 +955,7 @@ Comparison history: the initial implementation was revised to keep the inspector
 
 final result: blocked
 
+
 ## Usage selection visibility and completeness chrome repair (2026-10-08)
 
 ### Source and implementation
@@ -1028,5 +1029,17 @@ Final review found that named-workstream reviews could display repository activi
 The expanded rendered journey passed 463 checks across both themes and five widths. It reproduced 14 failures before the correction and now covers distinct repository/workstream totals, known and unknown scoped components, both chart bucket types, and outcome continuation. Formal run `formal-web-ui-mwhe921u-c4fe6068` and its separate manual receipt passed all 48 cells: dense overview and selected workstream review in light/dark at the same 12 widths as the preceding runs. Both captures for every cell were reviewed; no P0-P2 finding remains. Private evidence: `/tmp/formal-web-ui-verification-0tHLd5/`. Two initial setup failures are retained separately and are not passing evidence.
 
 This verifies synthetic rendered behavior and the scope correction, not real source availability. The current visual reference remains unconfirmed as documented above, so source comparison and qualified visual delivery remain pending.
+
+final result: blocked
+
+## Performance fresh-load and reload recovery — 2026-11-15
+
+The repeated live report exposed a shared query-completion problem. On the deployed source, an ordinary Performance URL took about 406 seconds to populate, then about 497 seconds again after reload. Reload generated different exact query timestamps, while repeated revalidation could hold back a query with no measurements. Pending responses also displayed unavailable or empty conclusions.
+
+The repair anchors the period and all-recorded cutoff in the URL before requesting data, gives actively waiting cold queries priority over stale revalidation, and keeps pending overview and selected-review measurements visibly loading. Refresh advances relative windows while preserving explicit custom boundaries. The current CodexMulti usage-v2 contract 1 and format 3 interface was verified against the live producer; its DuckDB/Parquet storage is consumed through that interface.
+
+The existing rendered journey now passes 543 checks, including bare-URL reload, pending review completion and explicit refresh. Formal run `formal-web-ui-mwhuoaey-e21dc91e` passed all 32 cells: loaded and pending overview/review states, light/dark themes, and widths 390, 1001, 1443 and 2153 pixels. Every initial and full-page capture was manually inspected after the formal pass, and the separate manual receipt passed all 32 cells. No P0-P2 visual finding remains. Private evidence is retained in `/tmp/formal-web-ui-verification-yeGX0e/`. The preceding configuration-only blocked run remains in `/tmp/formal-web-ui-verification-AKv2eF/` as diagnostic evidence.
+
+These fixture captures verify loading semantics and rendered behavior, not live query latency. The bare-URL/reload acceptance must be repeated after deployment. The visual-reference question documented in the earlier recovery entry remains unresolved; no source-comparison or qualified visual-delivery pass is claimed.
 
 final result: blocked

@@ -16,6 +16,9 @@ const MAX_CACHED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED: usize = 96;
 const FRESH_FOR: Duration = Duration::from_secs(5);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
+// Normal Console retries arrive every five seconds. A cold scope that stopped
+// retrying must not indefinitely prevent another scope's revalidation.
+const COLD_WAITER_FOR: Duration = Duration::from_secs(15);
 // The source may need more than two minutes for a real seven-day snapshot.
 // Keep that one owned read alive across bounded foreground requests; closing
 // its socket does not cancel the producer's scan and permits duplicate work.
@@ -67,10 +70,47 @@ struct State {
     entries: HashMap<String, Entry>,
     failed_until: HashMap<String, (Instant, String)>,
     inflight: HashMap<String, Flight>,
+    cold_waiters: HashMap<String, ColdWaiter>,
 }
 struct Flight {
     source: PathBuf,
     bytes: usize,
+}
+
+struct ColdWaiter {
+    source: PathBuf,
+    touched: Instant,
+    bytes: usize,
+}
+
+impl State {
+    fn pending_bytes(&self) -> usize {
+        self.inflight
+            .values()
+            .map(|flight| flight.bytes)
+            .chain(self.cold_waiters.values().map(|waiter| waiter.bytes))
+            .sum()
+    }
+
+    fn remember_cold_waiter(&mut self, key: &str, source: &Path) {
+        if let Some(waiter) = self.cold_waiters.get_mut(key) {
+            waiter.touched = Instant::now();
+            return;
+        }
+        let bytes = key.len().saturating_add(source.as_os_str().len());
+        if self.cold_waiters.len() < MAX_CACHED
+            && bytes <= MAX_INFLIGHT_BYTES.saturating_sub(self.pending_bytes())
+        {
+            self.cold_waiters.insert(
+                key.to_owned(),
+                ColdWaiter {
+                    source: source.to_owned(),
+                    touched: Instant::now(),
+                    bytes,
+                },
+            );
+        }
+    }
 }
 
 struct Entry {
@@ -412,6 +452,9 @@ impl CollectorApi {
         state
             .failed_until
             .retain(|_, (until, _)| *until > Instant::now());
+        state
+            .cold_waiters
+            .retain(|_, waiter| waiter.touched.elapsed() < COLD_WAITER_FOR);
         if let Some(entry) = state
             .entries
             .get(&key)
@@ -428,13 +471,27 @@ impl CollectorApi {
         }
         if !state.inflight.contains_key(&key) {
             if state.inflight.values().any(|flight| &flight.source == path) {
+                if saved.is_none() {
+                    // Remember only bounded admission metadata, not another
+                    // worker or query payload. Its next foreground retry
+                    // claims the existing slot after this read completes.
+                    state.remember_cold_waiter(&key, path);
+                }
                 return SummaryRead::cached_or_error(saved, "api_source_busy");
             }
-            let inflight_bytes = state
-                .inflight
-                .values()
-                .map(|flight| flight.bytes)
-                .sum::<usize>();
+            if saved.is_some()
+                && state
+                    .cold_waiters
+                    .iter()
+                    .any(|(waiting_key, waiter)| waiting_key != &key && &waiter.source == path)
+            {
+                // A repeated stale read already has useful measurements.
+                // Give a still-polling cold query a turn before revalidating
+                // those measurements again, without borrowing its scope.
+                return SummaryRead::cached_or_error(saved, "api_source_busy");
+            }
+            state.cold_waiters.remove(&key);
+            let inflight_bytes = state.pending_bytes();
             if state.inflight.len() >= MAX_CACHED
                 || request_bytes > MAX_INFLIGHT_BYTES.saturating_sub(inflight_bytes)
             {
@@ -591,6 +648,9 @@ impl CollectorApi {
         }
         for (until, _) in state.failed_until.values_mut() {
             *until = Instant::now();
+        }
+        for waiter in state.cold_waiters.values_mut() {
+            waiter.touched = Instant::now() - COLD_WAITER_FOR;
         }
     }
 
