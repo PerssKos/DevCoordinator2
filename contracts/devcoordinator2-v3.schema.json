@@ -10192,6 +10192,33 @@
             ],
             "type": "string"
           },
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "ContainerInspection": {
             "additionalProperties": false,
             "properties": {
@@ -10207,6 +10234,16 @@
               },
               "container_id": {
                 "type": "string"
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "exit_code": {
                 "format": "int32",
@@ -10238,6 +10275,12 @@
               },
               "next_action": {
                 "type": "string"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "retryable": {
                 "type": "boolean"
@@ -10306,6 +10349,16 @@
               "created_at": {
                 "type": "string"
               },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image": {
                 "type": "string"
               },
@@ -10321,6 +10374,12 @@
               "native_execution_began": {
                 "default": false,
                 "type": "boolean"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "operation_failed": {
                 "default": false,
@@ -10569,6 +10628,33 @@
             ],
             "type": "string"
           },
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "ContainerInspection": {
             "additionalProperties": false,
             "properties": {
@@ -10584,6 +10670,16 @@
               },
               "container_id": {
                 "type": "string"
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "exit_code": {
                 "format": "int32",
@@ -10615,6 +10711,12 @@
               },
               "next_action": {
                 "type": "string"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "retryable": {
                 "type": "boolean"
@@ -10683,6 +10785,16 @@
               "created_at": {
                 "type": "string"
               },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image": {
                 "type": "string"
               },
@@ -10698,6 +10810,12 @@
               "native_execution_began": {
                 "default": false,
                 "type": "boolean"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "operation_failed": {
                 "default": false,
@@ -10946,6 +11064,33 @@
             ],
             "type": "string"
           },
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "ContainerInspection": {
             "additionalProperties": false,
             "properties": {
@@ -10961,6 +11106,16 @@
               },
               "container_id": {
                 "type": "string"
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "exit_code": {
                 "format": "int32",
@@ -10992,6 +11147,12 @@
               },
               "next_action": {
                 "type": "string"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "retryable": {
                 "type": "boolean"
@@ -11060,6 +11221,16 @@
               "created_at": {
                 "type": "string"
               },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image": {
                 "type": "string"
               },
@@ -11075,6 +11246,12 @@
               "native_execution_began": {
                 "default": false,
                 "type": "boolean"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "operation_failed": {
                 "default": false,
@@ -11172,6 +11349,193 @@
           "record"
         ],
         "title": "ContainerOperationResult",
+        "type": "object"
+      },
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "transport": {
+        "longRunning": false,
+        "passiveWait": false,
+        "responseTimeoutSeconds": 10
+      }
+    },
+    {
+      "cli": {
+        "excludedReason": null,
+        "routes": [
+          {
+            "dispatch": "protocol",
+            "route": "call test.container.diagnostic"
+          }
+        ]
+      },
+      "description": "Read one bounded verified diagnostic from an exact owned test container.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "byte_offset": {
+            "default": 0,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "maxLength": 64,
+            "minLength": 64,
+            "type": "string"
+          },
+          "max_bytes": {
+            "default": 16384,
+            "format": "uint32",
+            "maximum": 49152,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "path": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "run_id",
+          "check",
+          "container_id"
+        ],
+        "title": "ContainerDiagnosticRequest",
+        "type": "object"
+      },
+      "mcpExcludedReason": null,
+      "mcpTools": [
+        {
+          "inputSchema": {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "additionalProperties": false,
+            "properties": {
+              "byte_offset": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "check": {
+                "type": "string"
+              },
+              "container_id": {
+                "maxLength": 64,
+                "minLength": 64,
+                "type": "string"
+              },
+              "max_bytes": {
+                "default": 16384,
+                "format": "uint32",
+                "maximum": 49152,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "run_id",
+              "check",
+              "container_id"
+            ],
+            "title": "ContainerDiagnosticRequest",
+            "type": "object"
+          },
+          "name": "test_container_diagnostic",
+          "transform": "identity"
+        }
+      ],
+      "name": "test.container.diagnostic",
+      "outputSchema": {
+        "$defs": {
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "Content is disclosed only by an explicit bounded diagnostic request.",
+        "properties": {
+          "byte_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "check": {
+            "type": "string"
+          },
+          "container_id": {
+            "type": "string"
+          },
+          "diagnostic": {
+            "$ref": "#/$defs/ContainerDiagnostic"
+          },
+          "next_byte_offset": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "container_id",
+          "run_id",
+          "check",
+          "diagnostic",
+          "byte_offset",
+          "text"
+        ],
+        "title": "ContainerDiagnosticContent",
         "type": "object"
       },
       "policy": {
@@ -11323,6 +11687,33 @@
             ],
             "type": "string"
           },
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "ContainerInspection": {
             "additionalProperties": false,
             "properties": {
@@ -11338,6 +11729,16 @@
               },
               "container_id": {
                 "type": "string"
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "exit_code": {
                 "format": "int32",
@@ -11369,6 +11770,12 @@
               },
               "next_action": {
                 "type": "string"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "retryable": {
                 "type": "boolean"
@@ -11437,6 +11844,16 @@
               "created_at": {
                 "type": "string"
               },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image": {
                 "type": "string"
               },
@@ -11452,6 +11869,12 @@
               "native_execution_began": {
                 "default": false,
                 "type": "boolean"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "operation_failed": {
                 "default": false,
@@ -11700,6 +12123,33 @@
             ],
             "type": "string"
           },
+          "ContainerDiagnostic": {
+            "additionalProperties": false,
+            "description": "Metadata for bounded diagnostics retained before an owned container is\nremoved. The log body stays in the private run directory. Ordinary\ninspection exposes only this metadata; the explicit diagnostic operation\nreturns verified bounded contents.",
+            "properties": {
+              "bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reference": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "reference",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
           "ContainerInspection": {
             "additionalProperties": false,
             "properties": {
@@ -11715,6 +12165,16 @@
               },
               "container_id": {
                 "type": "string"
+              },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "exit_code": {
                 "format": "int32",
@@ -11746,6 +12206,12 @@
               },
               "next_action": {
                 "type": "string"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "retryable": {
                 "type": "boolean"
@@ -11814,6 +12280,16 @@
               "created_at": {
                 "type": "string"
               },
+              "diagnostic": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ContainerDiagnostic"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "image": {
                 "type": "string"
               },
@@ -11829,6 +12305,12 @@
               "native_execution_began": {
                 "default": false,
                 "type": "boolean"
+              },
+              "oom_killed": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "operation_failed": {
                 "default": false,

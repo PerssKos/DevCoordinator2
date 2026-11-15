@@ -7452,6 +7452,10 @@ fn cases() -> Vec<Case> {
             database_lifecycle::shared_ownership_and_recovery,
         ),
         (
+            "shared_database_retained_exit_diagnostics",
+            database_lifecycle::retained_exit_diagnostics,
+        ),
+        (
             "container_receipt_monotonicity_and_pending_intent_recovery",
             database_lifecycle::completed_receipt_and_renamed_intent,
         ),

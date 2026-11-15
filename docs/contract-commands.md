@@ -232,6 +232,23 @@ When a check declares `coordinator-json`, the summary also carries
 `failed_diagnostics`, native execution state, and cleanup status. A nonzero
 diagnostic count is terminal failure even if the reporting command exits zero.
 
+## test.container.diagnostic
+
+Args: the same exact `path`, `run_id`, `check`, and `container_id` as
+`test.container.inspect`, plus `byte_offset` (default 0) and `max_bytes`
+(default 16384, maximum 49152). The result returns verified diagnostic metadata,
+bounded `text`, and a `next_byte_offset` when another page remains. Offsets
+must follow UTF-8 character boundaries. Each read verifies the private retained
+file against its recorded size and SHA-256 before disclosing content.
+
+Ordinary inspection returns metadata only. Unexpected fixture exits retain up
+to 500 log lines and 64 KiB before exact cleanup, with exit/OOM state and an
+explicit truncation flag. A failed capture leaves a retryable cleanup obligation
+and preserves the container for `test.container.retry`. Normal cleanup creates
+no failure log. Diagnostic files expire with their owning run's existing
+retention policy; no diagnostic is `log_not_found`, and missing or changed
+retained bytes are `test_log_unavailable`.
+
 ## test.capacity.get | test.capacity.set
 
 - `test.capacity.get` takes no arguments.

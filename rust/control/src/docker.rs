@@ -1825,18 +1825,6 @@ pub trait DockerControl: Send + Sync {
         container_id: &ExactContainerId,
         tail_lines: u16,
     ) -> Result<ContainerLogCapture, DockerError> {
-        let text = self.container_logs(container_id, tail_lines)?;
-        Ok(ContainerLogCapture {
-            truncated: text.len() >= MAX_LOG_BYTES,
-            text,
-        })
-    }
-
-    fn container_logs(
-        &self,
-        container_id: &ExactContainerId,
-        tail_lines: u16,
-    ) -> Result<String, DockerError> {
         if tail_lines == 0 || tail_lines > 5_000 {
             return Err(DockerError::InvalidRequest(
                 "tail_lines must be in 1..5000".to_owned(),
@@ -1851,10 +1839,34 @@ pub trait DockerControl: Send + Sync {
             ],
             Duration::from_secs(30),
         )?)?;
-        Ok(bounded_tail(
-            &format!("{}{}", output.stdout, output.stderr),
-            MAX_LOG_BYTES,
-        ))
+        if !output.success() {
+            // CLI failures can contain private runtime values. Keep typed
+            // command facts and never mislabel that stderr as container logs.
+            return Err(DockerError::CommandFailure {
+                message: "container diagnostic capture failed".into(),
+                exit_code: Some(output.exit_code),
+                signal: None,
+                stderr: String::new(),
+            });
+        }
+        let combined = format!("{}{}", output.stdout, output.stderr);
+        let mut start = combined.len().saturating_sub(MAX_LOG_BYTES);
+        while !combined.is_char_boundary(start) {
+            start += 1;
+        }
+        Ok(ContainerLogCapture {
+            truncated: output.stdout_truncated || output.stderr_truncated || start != 0,
+            text: combined[start..].to_owned(),
+        })
+    }
+
+    fn container_logs(
+        &self,
+        container_id: &ExactContainerId,
+        tail_lines: u16,
+    ) -> Result<String, DockerError> {
+        self.container_log_capture(container_id, tail_lines)
+            .map(|capture| capture.text)
     }
 
     fn compose_invoke(
@@ -3347,6 +3359,35 @@ mod tests {
             vec![container.clone()]
         );
         assert_eq!(fake.container_logs(&container, 20).unwrap(), "stdoutstderr");
+
+        let tail = format!("{}final-diagnostic\n", "€".repeat(MAX_LOG_BYTES));
+        let mut upstream_truncated = output(0, "captured-prefix\n", "");
+        upstream_truncated.stdout_truncated = true;
+        let captures = FakeDocker::new(vec![
+            output(0, &tail, ""),
+            output(0, "x".repeat(MAX_LOG_BYTES), ""),
+            upstream_truncated,
+            output(1, "", "PRIVATE_DOCKER_FAILURE"),
+        ]);
+        let bounded = captures.container_log_capture(&container, 500).unwrap();
+        assert!(bounded.truncated);
+        assert!(bounded.text.len() <= MAX_LOG_BYTES);
+        assert!(bounded.text.ends_with("final-diagnostic\n"));
+        let exact = captures.container_log_capture(&container, 500).unwrap();
+        assert_eq!(exact.text.len(), MAX_LOG_BYTES);
+        assert!(!exact.truncated, "an exact bound is not truncation");
+        let upstream = captures.container_log_capture(&container, 500).unwrap();
+        assert_eq!(upstream.text, "captured-prefix\n");
+        assert!(
+            upstream.truncated,
+            "subprocess truncation must remain explicit"
+        );
+        let failed = captures
+            .container_log_capture(&container, 500)
+            .err()
+            .expect("a nonzero logs command must fail capture");
+        assert_eq!(failed.command_details().0, Some(1));
+        assert!(!failed.to_string().contains("PRIVATE_DOCKER_FAILURE"));
     }
 
     #[test]

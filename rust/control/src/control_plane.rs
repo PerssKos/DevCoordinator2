@@ -1286,6 +1286,9 @@ handlers! { self,params,caller,now,actor,administrator,repository,operation;
     TestContainerInspect => {
                 self.test_containers.inspect(params, caller)
             };
+    TestContainerDiagnostic => {
+                self.test_containers.diagnostic(params, caller)
+            };
     TestContainerRemove => {
                 self.test_containers.remove(params, caller)
             };

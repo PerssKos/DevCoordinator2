@@ -701,11 +701,34 @@ mod tests {
                 )
                 .unwrap()
                 .unwrap();
-            let record = serde_json::from_value(serde_json::json!({
+            let mut record: devcoordinator2_api::test_containers::TestContainerRecord = serde_json::from_value(serde_json::json!({
                 "container_id":"d".repeat(64),"name":"owned-fixture","run_id":run_id,"check":"postgres",
                 "repository_id":"r1111111111111111","worktree_id":"w1111111111111111","owner_token":"fixture-owner",
                 "labels":{},"image":"postgres:16-alpine","command":[],"created_at":"2026-09-03T12:00:00Z","cleanup_status":status
             })).unwrap();
+            if index == 1 {
+                use sha2::{Digest, Sha256};
+                let payload = b"owned private container diagnostic\n";
+                let reference = store
+                    .write_container_diagnostics(
+                        &directory,
+                        &record.owner_token,
+                        payload,
+                        rustix::process::getuid().as_raw(),
+                        rustix::process::getgid().as_raw(),
+                    )
+                    .unwrap();
+                record.diagnostic =
+                    Some(devcoordinator2_api::test_containers::ContainerDiagnostic {
+                        reference,
+                        bytes: payload.len() as u64,
+                        sha256: Sha256::digest(payload)
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect(),
+                        truncated: false,
+                    });
+            }
             store
                 .write_container_records(
                     &directory,
@@ -733,6 +756,26 @@ mod tests {
             store
                 .archive_container_run(&worktree, run_id, &directory)
                 .unwrap();
+        }
+        {
+            let diagnostics = worktree
+                .join(".devcoordinator/test/containers/receipts")
+                .join(&runs[1].0)
+                .join("diagnostics");
+            let owned = diagnostics.join("fixture-owner.log");
+            let foreign = diagnostics.join("foreign.log");
+            std::fs::write(&foreign, b"foreign evidence").unwrap();
+            assert!(store.retire_container_run(&worktree, &runs[1].0).is_err());
+            assert!(
+                owned.exists(),
+                "unowned files must prevent destructive retention"
+            );
+            std::fs::remove_file(&foreign).unwrap();
+            std::fs::remove_file(&owned).unwrap();
+            std::os::unix::fs::symlink(runs[1].1.join("run.json"), &owned).unwrap();
+            assert!(store.retire_container_run(&worktree, &runs[1].0).is_err());
+            std::fs::remove_file(&owned).unwrap();
+            std::fs::write(&owned, b"owned private container diagnostic\n").unwrap();
         }
         {
             let directory = store

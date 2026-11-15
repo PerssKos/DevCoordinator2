@@ -593,6 +593,44 @@ impl TestRunStore {
         Ok(format!("diagnostics/{file}"))
     }
 
+    pub(crate) fn read_container_diagnostics(
+        &self,
+        directory: &File,
+        owner_token: &str,
+    ) -> Result<Vec<u8>, TestStateError> {
+        validate_atom(owner_token)?;
+        let diagnostics = open_child(directory, "diagnostics")?.ok_or_else(|| {
+            TestStateError::Invalid("retained container diagnostics are missing".into())
+        })?;
+        let file = File::from(
+            unix_fs::openat(
+                &diagnostics,
+                format!("{owner_token}.log"),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|error| errno("open retained container diagnostics", error))?,
+        );
+        let metadata = file
+            .metadata()
+            .map_err(|error| filesystem("inspect retained container diagnostics", error))?;
+        if !metadata.is_file() || metadata.len() > CONTAINER_DIAGNOSTIC_CAP as u64 {
+            return Err(TestStateError::Invalid(
+                "retained container diagnostics are not a bounded regular file".into(),
+            ));
+        }
+        let mut payload = Vec::new();
+        file.take(CONTAINER_DIAGNOSTIC_CAP as u64 + 1)
+            .read_to_end(&mut payload)
+            .map_err(|error| filesystem("read retained container diagnostics", error))?;
+        if payload.len() > CONTAINER_DIAGNOSTIC_CAP {
+            return Err(TestStateError::Invalid(
+                "retained container diagnostics exceed the capture bound".into(),
+            ));
+        }
+        Ok(payload)
+    }
+
     pub(crate) fn container_runs(&self, worktree: &Path) -> Result<Vec<String>, TestStateError> {
         let Some(test) = self.open_test(worktree)? else {
             return Ok(Vec::new());
@@ -762,6 +800,36 @@ impl TestRunStore {
                 .file_name()
                 .to_str()
                 .map_err(|_| TestStateError::Invalid("container receipt name is invalid".into()))?;
+            if name == "diagnostics" {
+                let diagnostics = open_child(directory, name)?.ok_or_else(|| {
+                    TestStateError::Invalid("container diagnostics directory vanished".into())
+                })?;
+                for entry in Dir::read_from(&diagnostics)
+                    .map_err(|error| errno("inspect container diagnostic entries", error))?
+                {
+                    let entry =
+                        entry.map_err(|error| errno("read container diagnostic entry", error))?;
+                    let name = entry.file_name().to_str().map_err(|_| {
+                        TestStateError::Invalid("container diagnostic name is invalid".into())
+                    })?;
+                    if matches!(name, "." | "..") {
+                        continue;
+                    }
+                    let record = records
+                        .iter()
+                        .find(|record| {
+                            record.diagnostic.is_some()
+                                && name == format!("{}.log", record.owner_token)
+                        })
+                        .ok_or_else(|| {
+                            TestStateError::Invalid(
+                                "container diagnostics contain an unowned entry".into(),
+                            )
+                        })?;
+                    self.read_container_diagnostics(directory, &record.owner_token)?;
+                }
+                continue;
+            }
             if !matches!(
                 name,
                 "." | ".." | CONTAINER_LIFECYCLE_FILE | "retention-expired.json"
