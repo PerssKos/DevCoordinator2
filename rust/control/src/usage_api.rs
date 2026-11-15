@@ -155,9 +155,11 @@ impl State {
         let Some(history) = self.profiles.get(profile) else {
             return (0, 0);
         };
+        let now = Instant::now();
         let mut values = history
             .samples
             .iter()
+            .filter(|(at, _)| now.duration_since(*at) < PROFILE_RETENTION)
             .map(|(_, value)| *value)
             .collect::<Vec<_>>();
         values.sort_unstable();
@@ -261,8 +263,10 @@ fn loading_from_state(
     };
     let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     let (median, samples) = state.median_duration(profile);
-    let enough = samples >= 3;
-    let (state, remaining) = if enough && elapsed_ms >= median {
+    let enough = state_name == "reading" && samples >= 3;
+    let (state, remaining) = if state_name == "waiting_for_source" {
+        (state_name, None)
+    } else if enough && elapsed_ms >= median {
         ("estimate_exceeded", None)
     } else if enough {
         (state_name, Some(median.saturating_sub(elapsed_ms)))
@@ -273,8 +277,13 @@ fn loading_from_state(
         state: state.into(),
         elapsed_ms,
         estimated_remaining_ms: remaining,
-        estimate_samples: samples,
-        estimate_basis: enough.then(|| "recent_comparable_source_reads".into()),
+        estimate_samples: if state_name == "waiting_for_source" {
+            0
+        } else {
+            samples
+        },
+        estimate_basis: (enough && state_name == "reading")
+            .then(|| "recent_comparable_source_reads".into()),
     })
 }
 
@@ -310,7 +319,9 @@ fn profile_key(
     end: u64,
 ) -> Result<String, String> {
     let span = end.saturating_sub(start);
-    let span_class = if span <= 86_400_000 {
+    let span_class = if start == 0 {
+        "lifetime"
+    } else if span <= 86_400_000 {
         "24h"
     } else if span <= 7 * 86_400_000 {
         "7d"

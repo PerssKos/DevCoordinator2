@@ -330,5 +330,11 @@
   "agent_select_model": "Select model",
   "agent_select_effort": "Select effort",
   "agent_updated": "Updated {value}",
-  "agent_no_repositories": "No repositories are available for an override."
+  "agent_no_repositories": "No repositories are available for an override.",
+  "usageLoadingTokens": "Loading token usage…",
+  "usageLoadingReviews": "Loading review history…",
+  "usageEstimateUnknown": "Estimated remaining: unknown",
+  "usageEstimateExceeded": "Taking longer than estimated",
+  "usageEstimateSeconds": "Estimated remaining: about {count} sec",
+  "usageEstimateMinutes": "Estimated remaining: about {count} min"
 }

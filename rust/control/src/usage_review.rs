@@ -70,8 +70,7 @@ impl CodexUsage {
                     reports.push((uid, report));
                 }
                 Ok((_, Err(reason))) | Err(reason) => {
-                    if loading.is_none()
-                        && super::collector_api::is_pending(&reason)
+                    if super::collector_api::is_pending(&reason)
                         && let Some(source) = self.config.codex_usage_sources.get(index)
                         && let Ok(key) = self.repository_key(source, repository, now_ms, false)
                         && let Ok(contexts) = crate::usage_context::read(
@@ -82,7 +81,7 @@ impl CodexUsage {
                             end_ms,
                         )
                     {
-                        loading = self.api.loading_for(
+                        let candidate = self.api.loading_for(
                             source,
                             Some(&key),
                             None,
@@ -92,6 +91,23 @@ impl CodexUsage {
                             start_ms,
                             end_ms,
                         );
+                        loading = match (loading.take(), candidate) {
+                            (None, candidate) => candidate,
+                            (Some(existing), Some(candidate)) => {
+                                Some(devcoordinator2_api::results::UsageLoading {
+                                    state: if existing.state == candidate.state {
+                                        existing.state
+                                    } else {
+                                        "reading".into()
+                                    },
+                                    elapsed_ms: existing.elapsed_ms.max(candidate.elapsed_ms),
+                                    estimated_remaining_ms: None,
+                                    estimate_samples: 0,
+                                    estimate_basis: None,
+                                })
+                            }
+                            (existing, None) => existing,
+                        };
                     }
                     increment(&mut failures, &reason)
                 }
