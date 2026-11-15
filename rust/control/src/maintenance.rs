@@ -60,9 +60,20 @@ impl Budget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobStatus {
     Complete,
-    Deferred { not_before_ms: u64 },
-    Continue { cursor: String },
-    Retry { reason: String },
+    Deferred {
+        not_before_ms: u64,
+    },
+    Continue {
+        cursor: String,
+    },
+    Retry {
+        reason: String,
+    },
+    /// The job cannot make progress without changing its accepted input.
+    /// Explicit jobs are removed from the maintenance cursor after this step.
+    Failed {
+        reason: String,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JobResult {
@@ -471,13 +482,21 @@ fn run_step(database: &Database, shared: &Shared, request: &Request) -> Result<J
             Some("job_failed"),
             Duration::from_secs((1u64 << generation.min(6)).min(60)),
         ),
+        JobStatus::Failed { reason } => (
+            "failed",
+            request.job.checkpoint().or(cursor),
+            Some(reason.as_str()),
+            Duration::from_secs(3600),
+        ),
     };
     let due = now_ms().saturating_add(delay.as_millis() as u64);
     let encoded = serde_json::to_string(&next).map_err(|_| "maintenance cursor encoding failed")?;
     database.maintenance_transaction(|tx|{
         let changed=tx.execute("UPDATE coordinator_maintenance SET cursor=$1::jsonb,due_at_ms=$2,lease_until_ms=0,last_status=$3,last_rows=$4,last_bytes=$5,last_error_code=$6 WHERE job_key=$7 AND attempts=$8",params![encoded,due,status,result.rows,result.bytes,error,key,generation])?;
         if changed!=1{return Err(DatabaseError::Startup("maintenance lease changed".into()));}
-        if request.interval.is_none() && matches!(result.status,JobStatus::Complete) {
+        if request.interval.is_none()
+            && matches!(result.status, JobStatus::Complete | JobStatus::Failed { .. })
+        {
             tx.execute("DELETE FROM coordinator_maintenance WHERE job_key=$1 AND attempts=$2",params![key,generation])?;
         }
         Ok(())
