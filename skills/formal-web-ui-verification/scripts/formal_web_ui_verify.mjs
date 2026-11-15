@@ -796,6 +796,13 @@ function normalizeWaitFor(value, name) {
       normalized[key] = value[key].trim();
     }
   }
+  if (value.responseStatus !== undefined) {
+    const status = Number(value.responseStatus);
+    if (!normalized.responseUrl || !Number.isInteger(status) || status < 100 || status > 599) {
+      throw new Error(`${name}.responseStatus requires responseUrl and an HTTP status integer`);
+    }
+    normalized.responseStatus = status;
+  }
   if (value.loadState !== undefined) {
     if (!["load", "domcontentloaded", "networkidle"].includes(value.loadState)) {
       throw new Error(`${name}.loadState must be one of load, domcontentloaded, networkidle`);
@@ -955,11 +962,16 @@ async function applyWaitFor(page, waitFor, armed = null, evidence = []) {
   };
   const handles = armed || armWaitFor(page, waitFor);
   if (waitFor.responseUrl) {
+    const detail = { matcher: waitFor.responseUrl };
     await record("response", async () => {
       const result = await handles.response;
       if (result.error) throw result.error;
+      detail.status = result.value.status();
+      if (waitFor.responseStatus !== undefined && detail.status !== waitFor.responseStatus) {
+        throw new Error(`response status ${detail.status} did not match ${waitFor.responseStatus}`);
+      }
       return result.value;
-    }, { matcher: waitFor.responseUrl });
+    }, detail);
   }
   if (waitFor.url) {
     await record("url", async () => {
@@ -1075,6 +1087,39 @@ function normalizeActionList(value, name, { allowEmpty = false } = {}) {
       ownerState: ownerState?.trim() || null,
     };
   });
+}
+
+function normalizeCleanup(value, name) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      Object.keys(value).some((key) => !["actions", "waitFor"].includes(key))) {
+    throw new Error(`${name} must contain only actions and optional waitFor`);
+  }
+  const actions = normalizeActionList(value.actions, `${name}.actions`);
+  if (actions.length > 32 || actions.some((action) =>
+    action.ownerJourney || action.ownerState || action.timeoutMs <= 0 || action.timeoutMs > 30000)) {
+    throw new Error(`${name} requires at most 32 unconditional actions with 1..30000 ms deadlines`);
+  }
+  const waitFor = normalizeWaitFor(value.waitFor, `${name}.waitFor`);
+  for (const key of ["timeoutMs", "loadStateTimeoutMs"]) {
+    if (waitFor[key] !== undefined && (waitFor[key] <= 0 || waitFor[key] > 30000)) {
+      throw new Error(`${name}.waitFor.${key} must be between 1 and 30000 ms`);
+    }
+  }
+  return { actions, waitFor };
+}
+
+function publicCleanup(cleanup) {
+  if (!cleanup) return undefined;
+  return {
+    actions: cleanup.actions.map((action) => ({
+      ...action,
+      ...(Object.hasOwn(action, "value") ? { value: "<redacted>" } : {}),
+    })),
+    waitFor: cleanup.waitFor?.readback && Object.hasOwn(cleanup.waitFor.readback, "equals")
+      ? { ...cleanup.waitFor, readback: { ...cleanup.waitFor.readback, equals: "<redacted>" } }
+      : cleanup.waitFor,
+  };
 }
 
 function normalizeExecution(value, name, base = null) {
@@ -1227,6 +1272,7 @@ function normalizeTargetDefaults(value) {
       value.performance,
       "targetDefaults.performance",
     ),
+    cleanup: normalizeCleanup(value.cleanup, "targetDefaults.cleanup"),
   };
 }
 
@@ -1260,6 +1306,7 @@ function normalizeTargets(config, cli) {
       return {
         name: state.name.trim(),
         actions,
+        cleanup: normalizeCleanup(state.cleanup, `target.states[${stateIndex}].cleanup`),
         waitFor: normalizeWaitFor(state.waitFor, `target.states[${stateIndex}].waitFor`),
         afterFailureWaitFor: normalizeWaitFor(
           state.afterFailureWaitFor,
@@ -1364,6 +1411,9 @@ function normalizeTargets(config, cli) {
             `targets[${targetIndex}].execution`,
             targetDefaults.execution,
           ),
+          cleanup: item.cleanup === undefined
+            ? targetDefaults.cleanup
+            : normalizeCleanup(item.cleanup, `targets[${targetIndex}].cleanup`),
           authProfile: item.authProfile === undefined
             ? targetDefaults.authProfile
             : normalizeAuthProfileName(item.authProfile, `targets[${targetIndex}].authProfile`),
@@ -1683,6 +1733,7 @@ function privacySafeConfigContract(config) {
     : waitFor;
   const redactActions = (states) => (states || []).map((state) => ({
     ...state,
+    cleanup: publicCleanup(state.cleanup),
     waitFor: redactWaitFor(state.waitFor),
     afterFailureWaitFor: redactWaitFor(state.afterFailureWaitFor),
     actions: (state.actions || []).map((action) => ({
@@ -1692,6 +1743,7 @@ function privacySafeConfigContract(config) {
   }));
   const targets = (config.targets || []).map((target) => ({
     ...target,
+    cleanup: publicCleanup(target.cleanup),
     waitFor: redactWaitFor(target.waitFor),
     states: redactActions(target.states),
   }));
@@ -1701,7 +1753,7 @@ function privacySafeConfigContract(config) {
   }));
   return {
     targets,
-    targetDefaults: config.targetDefaults,
+    targetDefaults: { ...config.targetDefaults, cleanup: publicCleanup(config.targetDefaults?.cleanup) },
     viewports: config.viewports,
     waitFor: config.waitFor || null,
     areas: config.areas,
@@ -1978,7 +2030,7 @@ function publicExecutionPlan(cells, maxPageCount, selection = null, requiredCove
 
 function publicTarget(target) {
   const { states, verificationState, includeBase, repositoryRoot, targetGroupId, baseTargetName, ...safe } = target;
-  return safe;
+  return { ...safe, cleanup: publicCleanup(target.cleanup) };
 }
 
 function publicViewport(viewport) {
@@ -2021,6 +2073,7 @@ function expandTargetStates(targets) {
         ],
         continuation: state.continuation,
         afterFailureWaitFor: state.afterFailureWaitFor,
+        cleanup: state.cleanup ?? target.cleanup,
         execution: normalizeExecution(state.execution, `state ${state.name}.execution`, target.execution),
         authProfile: state.authProfile ?? target.authProfile,
         performance: {
@@ -2216,6 +2269,7 @@ function prepareTargetContracts(targets, config) {
         ...(Object.hasOwn(action, "value") ? { value: "<redacted>" } : {}),
       })),
       afterFailureWaitFor: target.afterFailureWaitFor || null,
+      cleanup: publicCleanup(target.cleanup),
       execution: target.execution,
       authProfile: target.authProfile || null,
     };
@@ -6469,11 +6523,13 @@ function cacheSecretDigest(config, target) {
       selector: action.selector,
       value: action.value,
     })),
+    cleanupActions: target.cleanup?.actions,
     readbackExpectations: [
       config.waitFor?.readback?.equals,
       target.waitFor?.readback?.equals,
       target.verificationState?.waitFor?.readback?.equals,
       target.verificationState?.afterFailureWaitFor?.readback?.equals,
+      target.cleanup?.waitFor?.readback?.equals,
       authProfile?.waitFor?.readback?.equals,
     ],
   }));
@@ -6753,7 +6809,8 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
   if (profile && !profile.ok) {
     const page = syntheticCellResult(cell, "auth_setup_error", `authentication profile failed: ${profile.error}`);
     page.execution = execution;
-    page.cleanup = { status: "not-required" };
+    page.cleanup = { status: "not-required", ...(cell.target.cleanup
+      ? { postCapture: { status: "skipped", reason: "authentication-not-ready" } } : {}) };
     return {
       page,
       unsafeStop: cell.target.execution.stopOnFailure
@@ -6766,13 +6823,18 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
     cacheRead = readCachedCell(cell, config, browserLabel, cacheRoot);
     if (cacheRead.hit) {
       cacheRead.page.execution = execution;
-      cacheRead.page.cleanup = { status: "not-required" };
+      cacheRead.page.cleanup = { status: "not-required", ...(cell.target.cleanup
+        ? { postCapture: { status: "skipped", reason: "cached-cell" } } : {}) };
       return { page: cacheRead.page, unsafeStop: null };
     }
   }
   let context = null;
+  let page = null;
   let pageResult = null;
   let cleanupError = null;
+  let postCapture = cell.target.cleanup
+    ? { status: "not-applicable", reason: "page-not-created" }
+    : null;
   try {
     context = await browser.newContext({
       ...cell.viewport.contextOptions,
@@ -6780,7 +6842,7 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
       ...(config.ignoreHttpsErrors ? { ignoreHTTPSErrors: true } : {}),
     });
     await applyConfiguredCookies(context, config.cookies, cell.target.url);
-    const page = await context.newPage();
+    page = await context.newPage();
     pageResult = await verifyTarget(page, cell.target, cell.viewport, config, cell.cellId);
   } catch (error) {
     pageResult = syntheticCellResult(
@@ -6789,11 +6851,28 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
       `cell execution failed: ${String(error?.message || error).slice(0, 512)}`,
     );
   } finally {
+    if (page && cell.target.cleanup) {
+      try {
+        const cleanup = await applyInteractionState(page, {
+          ...cell.target.cleanup,
+          // Arm all cleanup response waits before the first action.
+          continuation: { triggerActionIndex: 0 },
+        });
+        postCapture = {
+          status: cleanup.failure ? "failed" : "completed",
+          actions: cleanup.actionTimings,
+          waits: cleanup.waitEvidence,
+          ...(cleanup.failure ? { failure: cleanup.failure } : {}),
+        };
+      } catch (error) {
+        postCapture = { status: "failed", reason: `cleanup execution failed (${error?.name || "error"})` };
+      }
+    }
     if (context) {
       try {
         await context.close();
       } catch (error) {
-        cleanupError = String(error?.message || error).slice(0, 512);
+        cleanupError = `context close failed (${error?.name || "error"})`;
       }
     }
   }
@@ -6801,11 +6880,16 @@ async function runVerificationCell(browser, cell, config, browserLabel, authStat
   pageResult.cleanup = cleanupError
     ? { status: "failed", error: cleanupError }
     : { status: "completed" };
+  if (postCapture) {
+    pageResult.cleanup.contextStatus = cleanupError ? "failed" : "completed";
+    pageResult.cleanup.postCapture = postCapture;
+    if (postCapture.status !== "completed") pageResult.cleanup.status = "failed";
+  }
   pageResult.cache = { hit: false, reason: cacheRead.reason, key: cacheRead.key || null };
-  if (cleanupError && pageResult.outcome === "checked") {
+  if (pageResult.cleanup.status === "failed" && pageResult.outcome === "checked") {
     pageResult.skipped = true;
     pageResult.outcome = "cleanup_error";
-    pageResult.skipReason = `isolated browser context cleanup failed: ${cleanupError}`;
+    pageResult.skipReason = cleanupError || "declared post-capture UI cleanup failed";
   }
   if (cacheRoot) {
     try {
@@ -6905,7 +6989,8 @@ async function executePlan(
         stopOnFailure: cell.target.execution.stopOnFailure,
         stopReason: cell.target.execution.stopReason,
       };
-      page.cleanup = { status: "not-required" };
+      page.cleanup = { status: "not-required", ...(cell.target.cleanup
+        ? { postCapture: { status: "skipped", reason: "unsafe-stop-unexecuted" } } : {}) };
       results.set(cell.planIndex, page);
       appendProgress(config, page);
     }
