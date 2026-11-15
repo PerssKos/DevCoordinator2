@@ -1834,7 +1834,9 @@ pub trait DockerControl: Send + Sync {
             vec![
                 "logs".into(),
                 "--tail".into(),
-                tail_lines.to_string().into(),
+                // One extra line proves whether the requested tail omitted
+                // earlier content, even when no byte limit was reached.
+                (u32::from(tail_lines) + 1).to_string().into(),
                 container_id.as_str().into(),
             ],
             Duration::from_secs(30),
@@ -1850,7 +1852,13 @@ pub trait DockerControl: Send + Sync {
             });
         }
         let combined = format!("{}{}", output.stdout, output.stderr);
-        let mut start = combined.len().saturating_sub(MAX_LOG_BYTES);
+        let line_count = combined.split_inclusive('\n').count();
+        let line_start: usize = combined
+            .split_inclusive('\n')
+            .take(line_count.saturating_sub(usize::from(tail_lines)))
+            .map(str::len)
+            .sum();
+        let mut start = combined.len().saturating_sub(MAX_LOG_BYTES).max(line_start);
         while !combined.is_char_boundary(start) {
             start += 1;
         }
@@ -3368,6 +3376,8 @@ mod tests {
             output(0, "x".repeat(MAX_LOG_BYTES), ""),
             upstream_truncated,
             output(1, "", "PRIVATE_DOCKER_FAILURE"),
+            output(0, "one\ntwo\n", ""),
+            output(0, "one\ntwo\nthree\n", ""),
         ]);
         let bounded = captures.container_log_capture(&container, 500).unwrap();
         assert!(bounded.truncated);
@@ -3388,6 +3398,17 @@ mod tests {
             .expect("a nonzero logs command must fail capture");
         assert_eq!(failed.command_details().0, Some(1));
         assert!(!failed.to_string().contains("PRIVATE_DOCKER_FAILURE"));
+        let exact_lines = captures.container_log_capture(&container, 2).unwrap();
+        assert_eq!(exact_lines.text, "one\ntwo\n");
+        assert!(!exact_lines.truncated, "exactly N short lines are complete");
+        let overflow_lines = captures.container_log_capture(&container, 2).unwrap();
+        assert!(
+            overflow_lines.truncated,
+            "N+1 short lines must report line truncation"
+        );
+        assert_eq!(overflow_lines.text, "two\nthree\n");
+        assert_eq!(captures.calls()[4].args[2], "3");
+        assert_eq!(captures.calls()[5].args[2], "3");
     }
 
     #[test]
