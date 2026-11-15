@@ -108,6 +108,14 @@ repository activity rows when the producer omits that aggregate map. Explicit
 producer maps remain intact, and repository rows never allocate activity to a
 named workstream or outcome.
 
+The producer scopes outcome effort by workstream, while its report totals and
+activity rows remain repository-wide. For a named-workstream review, Console
+uses the outcome aggregate's own cost and token components and omits the
+unrelated repository activity table. Activity/kind chart buckets contain token
+measurements only; their detail popovers never substitute aggregate components.
+Missing component detail remains unavailable, and each outcome retains its own
+measured cost.
+
 The five-second freshness period starts revalidation; it does not make completed
 measurements unavailable. A later request returns the last valid exact-query
 snapshot while one bounded source refresh runs, including when the caller has

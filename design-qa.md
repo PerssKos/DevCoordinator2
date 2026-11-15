@@ -1020,3 +1020,13 @@ The rendered journey passed 373 checks, including a 40-row activity table with u
 These synthetic measurements establish rendered behavior only. Real repository acceptance remains required after deployment, and the current visual reference question in the preceding recovery entry is still unanswered. No source-comparison or qualified delivery pass is claimed.
 
 final result: blocked
+
+## Performance measurement scope correction — 2026-11-15
+
+Final review found that named-workstream reviews could display repository activity and components beside a smaller scoped total. Chart bucket popovers also reused aggregate component details. The Console now uses scoped outcome cost for review totals, omits the unrelated repository matrix for a named workstream, and leaves unsupported bucket details unavailable. Repository overviews, unscoped review matrices, and each outcome's own cost remain available.
+
+The expanded rendered journey passed 463 checks across both themes and five widths. It reproduced 14 failures before the correction and now covers distinct repository/workstream totals, known and unknown scoped components, both chart bucket types, and outcome continuation. Formal run `formal-web-ui-mwhe921u-c4fe6068` and its separate manual receipt passed all 48 cells: dense overview and selected workstream review in light/dark at the same 12 widths as the preceding runs. Both captures for every cell were reviewed; no P0-P2 finding remains. Private evidence: `/tmp/formal-web-ui-verification-0tHLd5/`. Two initial setup failures are retained separately and are not passing evidence.
+
+This verifies synthetic rendered behavior and the scope correction, not real source availability. The current visual reference remains unconfirmed as documented above, so source comparison and qualified visual delivery remain pending.
+
+final result: blocked

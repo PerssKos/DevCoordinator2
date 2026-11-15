@@ -9,7 +9,7 @@ export function performanceFixture(operation, params, scenario = {}) {
   const end = params.window_end_ms || Date.UTC(2026, 8, 22); const start = params.window_start_ms ?? end - 86400000;
   const repo = params.repository_id || REPO;
   const makeReview = (id, revision, disposition = 'retained') => ({ reference: `${id}@${revision}`, record_id: id, revision, completed: disposition !== 'proposed', recorded_at_ms: end - revision * 1000,
-    record: { version: 1, repositoryId: repo, projectId: repo, workstreamId: null, windowStartMs: end - 86400000, windowEndMs: end - 3600000, outcomeId: 'p1111111111111101', experiment: {
+    record: { version: 1, repositoryId: repo, projectId: repo, workstreamId: scenario.performanceWorkstream ? 'fixture-workstream' : null, windowStartMs: end - 86400000, windowEndMs: end - 3600000, outcomeId: 'p1111111111111101', experiment: {
       hypothesis: 'Repeated usage reads delayed the same measured workload.', alternatives: ['Read in one batch.', 'Keep separate queries.'], chosenAction: disposition === 'unchanged' ? 'Keep the existing verification workflow.' : 'Read repository usage in one batch.', disposition,
       reason: 'The same workload used fewer tokens and passed the same quality checks.', baseline: { evidenceRefs: [], interpretation: 'The baseline measures the same workload.', missingMeasurements: [] }, evidenceRefs: [], resultEvidenceRefs: [], observations: [{ kind: 'intentional_validation', interpretation: 'Required validation remains part of both measurements.', evidenceRefs: [] }], comparison: { narrative: 'The same workload completed with fewer tokens.', inputChangeReason: null }, successCriteria: 'Reduce tokens with passing quality checks.', rollbackCondition: 'Revert if quality checks fail.', scopeRepoId: repo, preservesQuality: true,
     } } });
@@ -36,13 +36,20 @@ export function performanceFixture(operation, params, scenario = {}) {
     }
     const totals = effort(total); totals.activities = Object.fromEntries(activityRows.map(row => [row.activity, metric(row.total_tokens)]));
     return { coverage: scenario.usageUnavailable ? { ...coverage, state: 'unavailable', has_gaps: true, available_collectors: 0, unavailable_reasons: scenario.performanceRefreshPending ? { api_refresh_pending: 1 } : { mapping_unavailable: 1, query_budget_exhausted: 1 }, ...(scenario.performanceRefreshPending ? { snapshot: { refreshing: true, refresh_failed: false, updated_at_ms: null } } : {}) } : coverage,
-      totals: { total_tokens: scenario.usageUnavailable ? null : total }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
+      totals: { total_tokens: scenario.usageUnavailable ? null : total, cost: cost(total) }, activities: scenario.empty || scenario.usageUnavailable ? [] : activityRows, time: {}, tools: {}, semantics: {},
       outcomes: { schemaVersion: 1, coverage: scenario.usageUnavailable ? 'unavailable' : 'complete', totals: scenario.usageUnavailable ? { ...effort(0), providerTotalTokens: { measured: 0, exact: null, unknown: 1 } } : totals, attributed: effort(6240000 * base), unattributed: effort(160000 * base), unattributedReasons: { outcome_not_declared: 1 }, rows: scenario.empty || scenario.usageUnavailable ? [] : next ? rows.slice(2) : rows.slice(0, 2), totalRows: scenario.empty || scenario.usageUnavailable ? 0 : 4, nextCursor: next || scenario.empty || scenario.usageUnavailable ? null : 'fixture:2', kinds: { improvement: metric(4000000 * base), user_feedback: metric(1600000 * base), goal: metric(640000 * base), unattributed: metric(160000 * base) }, basis: 'Provider total observations are counted once. Missing attribution remains explicit.' } };
   };
   if (operation === 'performance.overview') { const total = params.totals_only ? 32000000 : 6400000; const u = usage(total, !!params.outcome_cursor); const estimate = u.totals.cost || cost(total); return { repository_id: repo, window_start_ms: start, window_end_ms: end, generated_at_ms: end, total_tokens: u.outcomes.totals.providerTotalTokens, totals: { total_tokens: total, input_tokens: total, cached_input_tokens: total * .1, output_tokens: total * .35, reasoning_tokens: total * .12, model_requests: 4, tool_calls: 2, operations: 4, ...u.totals, cost: estimate }, cost: estimate, coverage: u.coverage, usage: params.totals_only ? null : u }; }
   if (operation === 'performance.reviews') return { total_reviews: scenario.empty ? 12 * 0 : 12, next_before: params.before || scenario.empty ? null : 20, records: scenario.empty ? [] : params.record_id ? [{ review: makeReview(params.record_id, params.before ? 1 : 2), revision_count: 2 }] : params.before ? [{ review: makeReview('review-older', 1, 'inconclusive'), revision_count: 1 }] : [{ review: makeReview('review-new', 2), revision_count: 2 }, { review: makeReview('review-unchanged', 1, 'unchanged'), revision_count: 1 }] };
   const [id, revision] = params.reference.split('@'); const r = makeReview(id, Number(revision), id.includes('older') ? 'inconclusive' : 'retained');
-  return { review: r, usage: usage(1000000, !!params.outcome_cursor), evidence: [{ source: { kind: 'decision', reference: 'QUALITY' }, title: 'Keep verification quality', body: 'Preserve the quality checks while reducing repeated reads.', available: true }, { source: { kind: 'outcome', reference: 'p1111111111111101' }, title: 'Faster usage queries', body: '', available: true }, { source: { kind: 'run', reference: 'w1/expired-run' }, title: 'Run evidence', body: '', available: false }], comparisons: id.includes('older') ? [] : [{ source: { kind: 'usage', reference: 'fixture' }, window_start_ms: end - 3600000, window_end_ms: end, verified_improvement: true, explanation: 'Comparable workload and passing quality evidence.', metrics: [{ metric: 'tokens', before: metric(1000000), after: metric(750000), reduction: 250000, reduction_percent: 25 }, { metric: 'active_agent_ms', before: metric(42000), after: metric(28000), reduction: 14000, reduction_percent: 100 / 3 }] }] };
+  const reviewUsage = usage(1000000, !!params.outcome_cursor);
+  if (scenario.performanceWorkstream) {
+    const repositoryUsage = usage(6400000, !!params.outcome_cursor);
+    reviewUsage.totals = repositoryUsage.totals;
+    reviewUsage.activities = repositoryUsage.activities;
+    if (!scenario.performanceWorkstreamCost) reviewUsage.outcomes.totals.cost = { status: 'unavailable', basis: 'api_equivalent', currency: 'USD', processing_tier: 'standard', estimated_usd_micros: null };
+  }
+  return { review: r, usage: reviewUsage, evidence: [{ source: { kind: 'decision', reference: 'QUALITY' }, title: 'Keep verification quality', body: 'Preserve the quality checks while reducing repeated reads.', available: true }, { source: { kind: 'outcome', reference: 'p1111111111111101' }, title: 'Faster usage queries', body: '', available: true }, { source: { kind: 'run', reference: 'w1/expired-run' }, title: 'Run evidence', body: '', available: false }], comparisons: id.includes('older') ? [] : [{ source: { kind: 'usage', reference: 'fixture' }, window_start_ms: end - 3600000, window_end_ms: end, verified_improvement: true, explanation: 'Comparable workload and passing quality evidence.', metrics: [{ metric: 'tokens', before: metric(1000000), after: metric(750000), reduction: 250000, reduction_percent: 25 }, { metric: 'active_agent_ms', before: metric(42000), after: metric(28000), reduction: 14000, reduction_percent: 100 / 3 }] }] };
 }
 
 export async function verifyPerformance({ page, daemon, check, scenario, baseUrl, output, theme, viewport }) {
@@ -101,6 +108,12 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('period total opens measured token breakdown', await page.locator('[data-performance-period-total] .performance-token-popover').isVisible() && (await page.locator('[data-performance-period-total] .performance-token-popover').innerText()).includes('Cached input'));
   await page.locator('[data-performance-period-total] .performance-token-detail-button').click();
   verify('both grouping charts and outcome composition are visible', await page.locator('.performance-distribution').count() === 2 && await page.locator('.performance-outcome-table .performance-stack').count() === 3);
+  for (const chart of await page.locator('.performance-distribution').all()) {
+    const group = chart.locator('.performance-legend .performance-token-detail').first();
+    await group.locator('button').click();
+    verify('group details do not borrow repository token components', (await group.locator('dd').allInnerTexts()).every(value => value === '—'));
+    await group.locator('button').click();
+  }
   verify('cost matrix shows API-equivalent estimates', await page.locator('.performance-cost-matrix').count() === 1 && (await page.locator('.performance-cost-matrix').innerText()).includes('API-equivalent USD'));
   await page.locator('.performance-exact summary').first().click();
   verify('exact values can be read without color', (await page.locator('.performance-exact[open]').innerText()).includes('3,744,000'));
@@ -113,6 +126,29 @@ export async function verifyPerformance({ page, daemon, check, scenario, baseUrl
   verify('selecting review changes only scoped usage', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && (await page.locator('[data-performance-period-total]').innerText()).includes('6.4') && (await page.locator('[data-performance-lifetime]').innerText()).includes('32'));
   verify('comparison and rationale are present', (await page.locator('[data-performance-reader]').innerText()).includes('25.0%') && (await page.locator('[data-performance-reader]').innerText()).includes('Alternatives considered'));
   verify('review selection moves focus to its reader', await page.locator('[data-performance-reader]').evaluate(e => document.activeElement === e));
+  daemon.setScenario({ ...scenario, performanceWorkstream: true });
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  verify('workstream review keeps scoped totals without a repository activity table', (await page.locator('[data-performance-scope-total]').innerText()).includes('1M') && await page.locator('.performance-cost-matrix').count() === 0);
+  for (const selector of ['[data-performance-scope-total]', '.performance-distribution .performance-section-head strong', '.performance-outcome-table tfoot']) {
+    const detail = page.locator(selector).first().locator('.performance-token-detail');
+    await detail.locator('button').click();
+    verify('workstream totals keep unavailable components unknown', (await detail.locator('dd').allInnerTexts()).every(value => value === '—'));
+    await detail.locator('button').click();
+  }
+  await page.locator('[data-performance-outcomes-more] button').click();
+  await page.locator('.performance-outcome-table tbody tr').filter({ hasText: 'Verification coverage' }).waitFor();
+  verify('workstream outcome pagination preserves the scoped view', await page.locator('.performance-cost-matrix').count() === 0 && (await page.locator('.performance-outcome-table tfoot').innerText()).includes('1M'));
+  daemon.setScenario({ ...scenario, performanceWorkstream: true, performanceWorkstreamCost: true });
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  await page.locator('[data-performance-scope-total] button').click();
+  verify('available workstream component detail retains its own measured values', await page.locator('[data-performance-scope-total] dd').first().innerText() === '1,000,000');
+  await page.locator('[data-performance-scope-total] button').click();
+  daemon.setScenario(scenario);
+  await page.reload();
+  await page.locator('[data-performance-reader] .performance-gain').first().waitFor();
+  verify('repository-wide review retains its activity table', await page.locator('.performance-cost-matrix tbody tr').count() === 3);
   await page.locator('[data-performance-revisions] summary').click();
   await page.locator('[data-performance-revision-more] button').click();
   await page.locator('[data-performance-revision-list] a').filter({ hasText: 'Revision 1' }).click();
