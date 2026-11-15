@@ -84,6 +84,14 @@ without weakening the fresh complete run required for readiness. Read
 [references/journey_review_contract.md](references/journey_review_contract.md)
 before using these advanced contracts.
 
+States that acquire application resources may declare bounded `cleanup` UI
+actions and a response wait after capture. Require an actual editable field
+when the state promises an editing lease, then close the editor normally and
+verify its release response. Browser-context closure alone is not proof of
+server-side cleanup. Cleanup runs before context close even after failed
+capture; a failed cleanup blocks readiness. Read the post-capture cleanup
+contract in `references/journey_review_contract.md` before configuring it.
+
 Each checked cell automatically emits a redacted initial-viewport screenshot
 and full-page screenshot plus a changed visual-review queue. Screenshot hashes
 prove integrity only. Manual review repeats only for new cells or changed
