@@ -18,7 +18,7 @@ impl ReviewService {
             ));
         }
         let repository = self.repository(&p.repository_id)?;
-        let (total_tokens, totals, cost, coverage, usage) = 'overview: {
+        let (total_tokens, totals, cost, coverage, usage) = {
             if p.totals_only {
                 if p.outcome_cursor.is_some() {
                     return Err(invalid("Totals do not accept an outcome cursor"));
@@ -39,25 +39,10 @@ impl ReviewService {
                 let cost = totals.cost.clone();
                 (measurement, Some(totals), cost, report.coverage, None)
             } else {
-                let recent = now.saturating_sub(p.window_end_ms) < 120_000;
-                if recent
-                    && p.window_end_ms.saturating_sub(p.window_start_ms) <= 32 * 86_400 * 1_000
-                {
-                    let usage = self.fast_performance_usage(
-                        &repository,
-                        p.window_start_ms,
-                        p.window_end_ms,
-                        p.wait_for_refresh,
-                    )?;
-                    let cost = usage.totals.cost.clone();
-                    break 'overview (
-                        usage.outcomes.totals.provider_total_tokens.clone(),
-                        Some(usage.totals.clone()),
-                        cost,
-                        usage.coverage.clone(),
-                        Some(usage),
-                    );
-                }
+                // One exact-query source cache serves every overview period.
+                // Age-based routing would abandon an in-flight read once the
+                // selected period became two minutes old, and the repository
+                // display projection omits its declared outcome attribution.
                 let usage = self.performance_usage(
                     &repository,
                     &Prepare {

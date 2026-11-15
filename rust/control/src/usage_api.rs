@@ -16,7 +16,10 @@ const MAX_CACHED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CACHED: usize = 96;
 const FRESH_FOR: Duration = Duration::from_secs(5);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
-const SOURCE_READ_BUDGET: Duration = super::QUERY_TIMEOUT;
+// The source may need more than two minutes for a real seven-day snapshot.
+// Keep that one owned read alive across bounded foreground requests; closing
+// its socket does not cancel the producer's scan and permits duplicate work.
+const SOURCE_READ_BUDGET: Duration = Duration::from_secs(300);
 const MAX_INFLIGHT_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const API_BUDGET: Duration = Duration::from_millis(650);
 
@@ -1194,6 +1197,9 @@ impl CodexUsage {
                             Err(_) => return Ok(None),
                         }
                     }
+                    // The collection must start its own existing background
+                    // mapper instead of waiting for a detail/lifetime request.
+                    Err(error) if error.message == "mapping_pending" => return Ok(None),
                     Err(error) => increment(&mut failures, &error.message),
                 }
             }

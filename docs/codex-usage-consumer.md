@@ -91,6 +91,13 @@ coverage when the foreground wait expires, and retains the bounded background
 result for the next identical request. A foreground timeout is not a thirty-second
 source failure. Changing the window or work bindings selects a different cache
 entry; a warm result is never borrowed from another scope.
+The owned source read has a five-minute deadline while foreground source waits
+remain bounded to 650 milliseconds. Performance overview uses this same exact
+period and explicit work-context projection for recent and historical periods,
+so elapsed time cannot switch an unfinished request to another cache or discard
+its outcome rows, activity, or costs. Lifetime requests retain their finite
+zero-to-selected-time scope; unbounded producer metadata does not provide a
+provider-reported total and cannot substitute for that measurement.
 
 The five-second freshness period starts revalidation; it does not make completed
 measurements unavailable. A later request returns the last valid exact-query

@@ -460,7 +460,7 @@ async function startFakeDaemon(dir) {
   const connections = new Set(), idleWaiters = new Set();
   let pendingHandlers = 0, draining = false;
   const notifyIdle = () => { if (!connections.size && !pendingHandlers) for (const resolve of [...idleWaiters]) resolve(); };
-  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
+  const mutable = { stopped: false, serviceStopped: false, taskUpdates: new Map(), createdTasks: [], previewRequested: false, failNextTaskUpdate: false, failNextLogCatalog: false, failNextLogRead: false, failNextLogPage: false, usageCollectionReads: 0, performancePendingServed: new Set(), capacityCap: 80, logAge: 86400, logDepth: 3, evidenceImage: ONE_PIXEL_PNG, evidenceWidth: 1, evidenceHeight: 1, evidenceFeedback: [], feedbackSequence: 0 };
   const evidenceImage = (imageId, kind = 'viewport') => ({
     status: 'available', image_id: imageId, kind, mime: 'image/png',
     size: mutable.evidenceImage.length,
@@ -606,7 +606,12 @@ async function startFakeDaemon(dir) {
       }
       if (scenario.denied && ADMIN_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires administrator`, detail: '' } });
       if (cmd.startsWith('performance.') && !scenario.admin) return reply({ ok:false, error:{code:'permission_denied',message:'Administrator access required',detail:''} });
-      if (cmd.startsWith('performance.')) return reply({ok:true,data:performanceFixture(cmd,req.params,scenario)});
+      if (cmd.startsWith('performance.')) {
+        const pendingKey = req.params.totals_only ? 'lifetime' : 'period';
+        const pending = cmd === 'performance.overview' && scenario.performancePendingOnce && !mutable.performancePendingServed.has(pendingKey);
+        if (pending) mutable.performancePendingServed.add(pendingKey);
+        return reply({ok:true,data:performanceFixture(cmd,req.params,pending ? {...scenario, usageUnavailable:true, performanceRefreshPending:true} : scenario)});
+      }
       if (scenario.denied && OPERATOR_ONLY.includes(cmd)) return reply({ ok: false, error: { code: 'permission_denied', message: `${cmd} requires operator`, detail: '' } });
       const artifacts = artifactResponse(cmd, req.params, scenario);
       if (artifacts) return reply(artifacts);
@@ -894,7 +899,7 @@ async function startFakeDaemon(dir) {
   return {
     socketPath,
     calls,
-    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
+    setScenario: (s) => { draining = false; for (const release of headerReplies) release(); headerReplies.clear(); mutable.headersReleased = false; for (const release of delayedReplies) release(); delayedReplies.clear(); scenario = s; mutable.cacheReleased = false; mutable.testSweepMutated = false; mutable.stopped = false; mutable.serviceStopped = false; mutable.taskUpdates.clear(); mutable.createdTasks.length = 0; mutable.previewRequested = false; mutable.failNextTaskUpdate = false; mutable.failNextLogCatalog = !!s.logCatalogError; mutable.failNextLogRead = !!s.logReadError; mutable.failNextLogPage = !!s.logPageError; mutable.usageCollectionReads = 0; mutable.performancePendingServed.clear(); mutable.capacityCap = 80; mutable.logAge = 86400; mutable.logDepth = 3; mutable.evidenceFeedback.length = 0; mutable.feedbackSequence = 0; calls.length = 0; },
     setEvidenceImage: (bytes, width, height) => { mutable.evidenceImage = Buffer.from(bytes); mutable.evidenceWidth = width; mutable.evidenceHeight = height; },
     failNextTaskUpdate: () => { mutable.failNextTaskUpdate = true; },
     mutateTestSweep: () => { mutable.testSweepMutated = true; },
@@ -960,7 +965,7 @@ async function main() {
   const payload = { generation: 1, published_at: 'x', domain: BASE, routes: [], access: { owners: ['owner@example.test'], grants: [] } };
   await fs.writeFile(path.join(tmp, 'routes.json'), JSON.stringify({ schema: 1, payload_sha256: crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex'), ...payload }));
   const secret = 'console-verify-secret-0123456789';
-  const edge = await createEdge({ baseDomain: BASE, consoleHost: HOST, httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1/', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'), daemonSocket: daemon.socketPath, consoleDir: path.resolve(path.dirname(new URL(import.meta.url).pathname)) }, { log: { info() {}, warn() {}, error: (...a) => console.error('edge', ...a), debug() {} } });
+  const edge = await createEdge({ baseDomain: BASE, consoleHost: HOST, httpPort: 0, httpOnly: true, sessionSecret: secret, oidcIssuer: 'http://127.0.0.1:1/', oidcClientId: '', oidcClientSecret: '', routesFile: path.join(tmp, 'routes.json'), stateDir: path.join(tmp, 'edge-state'), daemonSocket: daemon.socketPath, uiSourceRevision: process.env.CONSOLE_VERIFY_SOURCE_REVISION || '', consoleDir: path.resolve(path.dirname(new URL(import.meta.url).pathname)) }, { log: { info() {}, warn() {}, error: (...a) => console.error('edge', ...a), debug() {} } });
   const [port] = await edge.listen();
   const sessions = createSessionManager({ secret, ttlMs: 3600000, cookieName: 'dc2_session', cookieDomain: `.${BASE}`, secure: false });
   const holdFile = process.env.CONSOLE_VERIFY_HOLD_FILE;
@@ -1069,7 +1074,7 @@ async function main() {
 
   if (process.env.CONSOLE_VERIFY_TRANSLATIONS_ONLY || process.env.CONSOLE_VERIFY_LOCALIZATION_ONLY || process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY || process.env.CONSOLE_VERIFY_TESTS_DESIGN_ONLY || process.env.CONSOLE_VERIFY_ARTIFACTS_ONLY || process.env.CONSOLE_VERIFY_WORKSPACE_ONLY || process.env.CONSOLE_VERIFY_ANNOTATIONS_ONLY || process.env.CONSOLE_VERIFY_EVIDENCE_LAYOUT_ONLY) {
     try {
-      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [{ width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
+      const translatedViewports = process.env.CONSOLE_VERIFY_AUDIT ? [{ width: 1487, height: 1058 }] : [...(process.env.CONSOLE_VERIFY_PERFORMANCE_ONLY ? [{ width: 1001, height: 900 }] : []), { width: 1440, height: 900 }, { width: 1239, height: 843 }, { width: 927, height: 873 }, { width: 390, height: 844 }];
       for (const viewport of translatedViewports) {
         for (const theme of ['light', 'dark']) {
           const context = await browser.newContext({ viewport, reducedMotion: 'reduce', colorScheme: theme });

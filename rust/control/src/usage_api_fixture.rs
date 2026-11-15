@@ -18,11 +18,13 @@ pub(crate) struct ResponseGate(Arc<(Mutex<bool>, Condvar)>);
 
 impl ResponseGate {
     pub(crate) fn wait(&self) {
+        self.wait_for(Duration::from_secs(5));
+    }
+
+    pub(crate) fn wait_for(&self, timeout: Duration) {
         let (state, changed) = &*self.0;
         let (released, _) = changed
-            .wait_timeout_while(state.lock().unwrap(), Duration::from_secs(5), |released| {
-                !*released
-            })
+            .wait_timeout_while(state.lock().unwrap(), timeout, |released| !*released)
             .unwrap();
         assert!(*released, "fixture response was not explicitly released");
     }

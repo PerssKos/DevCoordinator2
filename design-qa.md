@@ -996,3 +996,17 @@ final result: blocked
 The selected Usage worktree-scope direction is implemented in the Console and has a focused rendered journey. The current evidence covers the anchored checkbox scope control, consolidated selection, partial selection, empty selection, and canonical `codex` grouping; the formal browser receipt, manual screenshot receipt, Product Design audit, and live source-identity verification remain outstanding for this new surface.
 
 The remaining blocker is delivery of the CodexMulti producer build containing schema 9 worktree attribution. Until that build is installed and exercised through the Coordinator collector, per-worktree totals remain explicitly unavailable while consolidated historical totals remain valid.
+
+## Performance usage recovery — 2026-11-15
+
+The current repair restores pending period and lifetime measurements, keeps outcome attribution on one query path, and prevents the outcome table from wrapping headings into individual characters at intermediate widths. It preserves the existing Console controls and visual language.
+
+The current fixture journey passed 343 checks. Formal run `formal-web-ui-mwh63f6r-2c5c30c9` passed all 24 light/dark cells at 390, 599, 600, 601, 999, 1000, 1001, 1249, 1250, 1251, 1443 and 1920 CSS pixels. Every initial and full-page image was manually reviewed after the formal pass. The initial review found a P2 table-width defect at 1001 pixels; the existing stacked layout now applies through 1250 pixels, and the complete formal/manual rerun passed.
+
+Current implementation evidence is retained in the private fixture bundle `/tmp/formal-web-ui-verification-Ts4QMX/`, including `report.json`, `manual-review.json`, and the numbered initial/full-page screenshots. These images use synthetic measurements and prove layout and interaction only. They do not establish live usage availability or full assistive-technology conformance.
+
+The Product Design catalog was refreshed and the audit/design-QA contracts were loaded. The previously approved Performance Cost Matrix image is retained as a legacy record, with no current Performance continuation selection. It cannot be silently promoted to a current design source. The owner has been asked whether the existing Console layout should be the reference for this repair. Until that reference is confirmed, there is no valid current source/implementation comparison, and no Product Design pass is claimed.
+
+Typography, colors, assets and copy retain the existing Console system. The responsive repair changes only when the existing outcome/review columns stack. The independent live-data acceptance must still verify measured totals, activity and outcomes after the reviewed deployment. The prior historical comparisons above remain preserved; this entry does not replace their source images or reinterpret their decisions.
+
+final result: blocked

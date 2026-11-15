@@ -5,7 +5,7 @@ use crate::control_plane::ControlPlane;
 use crate::daemon::OperationExecutor;
 use crate::usage_api_fixture::{KEY, Peer, capability, response};
 use devcoordinator2_api::work_context::{WorkAttribution, WorkContext, WorkSource};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 fn input() -> Prepare {
@@ -63,6 +63,248 @@ fn service(fixture: &Fixture, source: crate::config::CodexUsageSource) -> Review
             Arc::new(FixtureClock),
         ),
     )
+}
+
+fn priced_response(params: &Value) -> Value {
+    let mut value = response(params, START + WEEK, 135);
+    value["report"]["cost"] = json!({
+        "basis":"api_equivalent", "currency":"USD", "status":"complete", "processingTier":"standard",
+        "estimatedUsdMicros":135, "inputUsdMicros":135, "cachedInputUsdMicros":0, "cacheWriteUsdMicros":0, "outputUsdMicros":0,
+        "inputTokens":135, "uncachedInputTokens":135, "cachedInputTokens":0, "cacheWriteTokens":0, "outputTokens":0, "reasoningTokens":0,
+        "providerTotalTokens":135, "pricedObservations":2, "unknownObservations":0, "rateCardRefs":["fixture-standard"]
+    });
+    value
+}
+
+#[test]
+fn performance_and_repository_totals_resolve_cold_identity_without_sibling_requests() {
+    use crate::usage_api_fixture::ResponseGate;
+
+    for operation in ["performance.overview", "usage.repositories"] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let gate = ResponseGate::default();
+        let response_gate = gate.clone();
+        let peer = Peer::start(root, &root.join("usage-home"), move |params| {
+            response_gate.wait();
+            priced_response(params)
+        });
+        let release = gate.release_on_drop();
+        fixture.config.codex_usage_sources = vec![peer.source.clone()];
+        let plane = ControlPlane::with_adapters(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Arc::new(|_: &RouteAccessSection| Ok(())),
+            Arc::new(FixtureClock),
+        )
+        .unwrap();
+        let mut params = if operation == "performance.overview" {
+            json!({"repository_id":"project-alpha","window_start_ms":START,"window_end_ms":START + WEEK})
+        } else {
+            json!({"range":"24h"})
+        };
+        let authorized = Caller {
+            work: None,
+            ..caller()
+        };
+        let cold = plane
+            .execute(operation, params.clone(), &authorized)
+            .unwrap();
+        if operation == "performance.overview" {
+            assert_eq!(cold["total_tokens"]["exact"], Value::Null);
+            assert_eq!(cold["totals"]["total_tokens"], Value::Null);
+            assert_eq!(cold["coverage"]["available_collectors"], 0);
+        } else {
+            assert_eq!(cold["repositories"][0]["total_tokens"], Value::Null);
+        }
+        release.release();
+        params["wait_for_refresh"] = json!(true);
+        let populated = plane.execute(operation, params, &authorized).unwrap();
+        let (total, totals, coverage, cost) = if operation == "performance.overview" {
+            (
+                &populated["total_tokens"]["measured"],
+                Some(&populated["totals"]),
+                &populated["coverage"],
+                &populated["cost"],
+            )
+        } else {
+            let row = &populated["repositories"][0];
+            (&row["total_tokens"], None, &row["coverage"], &row["cost"])
+        };
+        assert_eq!(total, 135, "{operation} must finish its own cold mapping");
+        assert_eq!(coverage["available_collectors"], 1, "{operation}");
+        assert_eq!(cost["status"], "complete", "{operation}");
+        assert!(
+            cost["estimated_usd_micros"]
+                .as_u64()
+                .is_some_and(|value| value > 0)
+        );
+        if let Some(totals) = totals {
+            assert_eq!(totals["input_tokens"], 135);
+            assert!(
+                populated["usage"]["activities"]
+                    .as_array()
+                    .is_some_and(|rows| !rows.is_empty())
+            );
+        }
+        let requests = peer.requests.lock().unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request["method"] == "localUsage/repositoryIdentity")
+                .count(),
+            1,
+            "{operation} resolves and retains its own identity"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request["method"] == "localUsage/summary")
+        );
+    }
+}
+
+#[test]
+fn performance_overview_retains_the_owned_read_past_foreground_and_recency_budgets() {
+    use crate::usage_api_fixture::ResponseGate;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let mut fixture = Fixture::new();
+    let root = fixture._temporary.path();
+    let gate = ResponseGate::default();
+    let response_gate = gate.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let (entered_source, entered) = std::sync::mpsc::channel();
+    let peer = Peer::start(root, &root.join("slow-source"), move |params| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        entered_source.send(()).unwrap();
+        response_gate.wait_for(Duration::from_secs(45));
+        let mut value = priced_response(params);
+        let mut next = value["review"]["outcomes"]["rows"][0].clone();
+        next["outcomeId"] = json!("other-outcome");
+        next["effort"]["providerTotalTokens"] = json!({"measured":10,"exact":10,"unknown":0});
+        value["review"]["outcomes"]["rows"][0]["effort"]["providerTotalTokens"] =
+            json!({"measured":110,"exact":110,"unknown":0});
+        value["review"]["outcomes"]["rows"]
+            .as_array_mut()
+            .unwrap()
+            .push(next);
+        value["review"]["outcomes"]["totalRows"] = json!(2);
+        value["review"]["outcomes"]["attributed"]["operations"] = json!(2);
+        value["review"]["outcomes"]["totals"]["operations"] = json!(3);
+        value["review"]["totals"]["operations"] = json!(3);
+        value["report"]["counts"]["operations"] = json!(3);
+        value
+    });
+    let release = gate.release_on_drop();
+    let authorized = caller();
+    crate::usage_context::ingest(
+        &fixture.database,
+        authorized.uid,
+        "project-alpha",
+        authorized.work.as_ref().unwrap(),
+        START + 1,
+    )
+    .unwrap();
+    fixture.service = service(&fixture, peer.source.clone());
+    let params = || devcoordinator2_api::performance::Overview {
+        repository_id: "project-alpha".into(),
+        window_start_ms: START,
+        window_end_ms: START + WEEK,
+        outcome_cursor: None,
+        outcome_limit: Some(1),
+        totals_only: false,
+        wait_for_refresh: true,
+    };
+    let began = Instant::now();
+    let cold = fixture
+        .service
+        .performance_overview(params(), START + WEEK)
+        .unwrap();
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert_eq!(cold.total_tokens.exact, None);
+    assert_eq!(cold.totals.unwrap().total_tokens, None);
+    assert_eq!(cold.coverage.available_collectors, 0);
+    assert!(cold.coverage.snapshot.unwrap().refreshing);
+    entered.recv_timeout(Duration::from_secs(2)).unwrap();
+
+    // Observe the real request's terminal-state condition through the former
+    // 30-second transport deadline. A dropped socket would finish the owned
+    // read and wake this observer early; it must remain in flight until the
+    // explicit response release below. Advancing request time also crosses
+    // the former two-minute routing cutoff without a two-minute wall wait.
+    assert!(
+        !fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(31)),
+        "the owned source read must remain in flight past its former deadline"
+    );
+    let later = START + WEEK + 180_000;
+    let began = Instant::now();
+    let pending = fixture
+        .service
+        .performance_overview(params(), later)
+        .unwrap();
+    assert!(began.elapsed() < Duration::from_secs(1));
+    assert!(pending.coverage.snapshot.unwrap().refreshing);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    release.release();
+    assert!(
+        fixture
+            .service
+            .usage
+            .wait_for_collector_refresh(Instant::now() + Duration::from_secs(5))
+    );
+
+    let populated = fixture
+        .service
+        .performance_overview(params(), later)
+        .unwrap();
+    assert_eq!(populated.total_tokens.measured, 135);
+    assert_eq!(populated.totals.unwrap().input_tokens, Some(135));
+    assert_eq!(populated.cost.estimated_usd_micros, Some(135));
+    let usage = populated.usage.unwrap();
+    assert_eq!(usage.outcomes.rows.len(), 1);
+    assert_eq!(usage.outcomes.rows[0].outcome_id, "spec");
+    assert_eq!(
+        usage.outcomes.rows[0].title.as_deref(),
+        Some("Specify the workflow")
+    );
+    assert_eq!(usage.outcomes.rows[0].kind.as_deref(), Some("improvement"));
+    assert_eq!(usage.outcomes.kinds["improvement"].measured, 110);
+    assert_eq!(usage.outcomes.kinds["unknown"].measured, 10);
+    assert_eq!(
+        usage.outcomes.unattributed.provider_total_tokens.measured,
+        15
+    );
+    assert!(!usage.activities.is_empty());
+    let next = fixture
+        .service
+        .performance_overview(
+            devcoordinator2_api::performance::Overview {
+                outcome_cursor: usage.outcomes.next_cursor,
+                ..params()
+            },
+            later + 90 * 86_400_000,
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+    assert_eq!(next.outcomes.rows.len(), 1);
+    assert_eq!(next.outcomes.rows[0].outcome_id, "other-outcome");
+    assert_eq!(
+        next.outcomes.rows[0].effort.provider_total_tokens.measured,
+        10
+    );
+    assert!(next.outcomes.next_cursor.is_none());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "retry must consume the completed exact-window read"
+    );
 }
 
 #[test]

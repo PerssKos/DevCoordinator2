@@ -269,6 +269,16 @@ impl UsageService {
         let records = self.records()?;
         let report = self.usage.repositories(&records, params.range.clone())?;
         if params.wait_for_refresh {
+            if report.repositories.iter().all(|row| {
+                row.coverage.available_collectors > 0
+                    && !row
+                        .coverage
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.refreshing)
+            }) {
+                return Ok(report);
+            }
             self.usage.wait_for_refresh(None);
             return self.usage.repositories_tokens(&records, params.range);
         }
@@ -436,78 +446,6 @@ impl UsageService {
         )
     }
 
-    /// Fast token/cost projection used by the Performance overview. It uses
-    /// the same bounded repository cache as Usage, so the page can paint the
-    /// saved snapshot immediately while the indexed refresh runs in a worker.
-    pub(crate) fn performance_snapshot(
-        &self,
-        repository: &RepositoryRecord,
-        start: u64,
-        end: u64,
-        wait_for_refresh: bool,
-    ) -> Result<UsageRepository, ProtocolError> {
-        let now_ms = self.usage.now_ms()?;
-        let rate_cards = self.usage.rate_cards()?;
-        // Performance reads are an exact overview period, rather than the
-        // multi-bucket Usage chart. Keeping one bucket selects the indexed
-        // Performance reader for every requested period, including 7d/30d,
-        // so cost components and token totals share one bounded snapshot.
-        let range = UsageRange::Hours24;
-        let cached_start = start;
-        let cached_end = end;
-        let bucket = end.saturating_sub(start).max(1);
-        let count = 1;
-        let projection = Projection::Tokens;
-        let mut report = if wait_for_refresh {
-            // Start the cost-capable refresh before waiting. The fast and
-            // complete projections have separate cache keys, so waiting on
-            // the fast key first would return before cost enrichment starts.
-            self.usage.cached_window(
-                repository,
-                range.clone(),
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                Projection::Tokens,
-                rate_cards,
-                None,
-            )?;
-            self.usage.wait_for_refresh(Some(&repository.repository_id));
-            self.usage.cached_window(
-                repository,
-                range,
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                Projection::Tokens,
-                self.usage.rate_cards()?,
-                None,
-            )?
-        } else {
-            self.usage.cached_window(
-                repository,
-                range,
-                now_ms,
-                cached_start,
-                cached_end,
-                bucket,
-                count,
-                false,
-                projection,
-                rate_cards,
-                None,
-            )?
-        };
-        self.attach_outcome_titles(&mut report)?;
-        Ok(report)
-    }
-
     pub(crate) fn performance_tokens(
         &self,
         repository: &RepositoryRecord,
@@ -606,7 +544,10 @@ impl CodexUsage {
         let now_ms = self.now_ms()?;
         let mut rows = Vec::new();
         for repository in repositories {
-            let report = self.repository_tokens(repository, range.clone())?;
+            // Consume the same display entry started by repositories().
+            // Switching projections here starts a second, empty cache entry
+            // after the first entry has already finished refreshing.
+            let report = self.repository_fast(repository, range.clone())?;
             rows.push(UsageRepositoryRow {
                 repository_id: report.repository_id,
                 display_name: report.display_name,
