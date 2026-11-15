@@ -1898,8 +1898,12 @@ document.querySelector('#close').onclick=async()=>{const response=await fetch('/
             return Err(format!("cleanup value leaked into {file}"));
         }
     }
-    if report["evidence"]["config"]["sha256"] == positive["evidence"]["config"]["sha256"] {
-        return Err("cleanup declaration was absent from the source-bound config identity".into());
+    // Both first cells have the same source, state, viewport and target. Their
+    // cleanup declaration alone changes this per-cell intent identity.
+    if report["pages"][0]["review"]["intentFingerprint"]
+        == positive["pages"][0]["review"]["intentFingerprint"]
+    {
+        return Err("cleanup declaration was absent from the source-bound intent identity".into());
     }
     let mut invalid = config(Some(
         json!({"actions":[{"action":"click","selector":"#close","timeoutMs":0}]}),
