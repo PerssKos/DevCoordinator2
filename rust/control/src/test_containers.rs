@@ -15,8 +15,8 @@ use crate::database::OptionalExtension;
 use devcoordinator2_api::ErrorCode;
 use devcoordinator2_api::test_containers::{
     ContainerCleanupAttempt, ContainerCleanupStatus, ContainerCleanupSummary, ContainerCreate,
-    ContainerDiagnostic, ContainerInspection, ContainerOperationResult, ContainerReference,
-    TestContainerRecord,
+    ContainerDiagnostic, ContainerDiagnosticContent, ContainerDiagnosticRequest,
+    ContainerInspection, ContainerOperationResult, ContainerReference, TestContainerRecord,
 };
 use devcoordinator2_api::{ProtocolError, results::TestStatus};
 use serde_json::Value;
@@ -100,6 +100,7 @@ enum CleanupOutcome {
 
 enum CleanupFailure {
     Docker(DockerError),
+    Diagnostic(DockerError),
     State(ProtocolError),
 }
 
@@ -416,12 +417,11 @@ impl TestContainerService {
                 record.solver_exit_code = inspection.exit_code;
                 record.solver_signal = inspection.signal;
                 record.oom_killed = inspection.oom_killed;
-                if record.diagnostic.is_none()
-                    && unexpected_fixture_exit(&inspection)
-                    && let Ok(capture) = self
+                if record.diagnostic.is_none() && unexpected_fixture_exit(&inspection) {
+                    let capture = self
                         .docker
                         .container_log_capture(&id, CONTAINER_DIAGNOSTIC_TAIL_LINES)
-                {
+                        .map_err(CleanupFailure::Diagnostic)?;
                     record.diagnostic = Some(
                         self.retain_diagnostic(context, record, &capture)
                             .map_err(CleanupFailure::State)?,
@@ -449,6 +449,21 @@ impl TestContainerService {
                     .map(|error| cleanup_details(record, &error)),
             ),
             Err(CleanupFailure::State(error)) => return Err(error),
+            Err(CleanupFailure::Diagnostic(error)) => {
+                let (exit, signal, _) = error.command_details();
+                (
+                    ContainerCleanupStatus::Pending,
+                    true,
+                    Some((
+                        exit,
+                        signal,
+                        format!(
+                            "Container diagnostic capture {:?}; retry cleanup to preserve logs before removal",
+                            error.kind()
+                        ),
+                    )),
+                )
+            }
             Err(CleanupFailure::Docker(error)) => {
                 let retryable = docker_retryable(&error);
                 (
@@ -723,6 +738,76 @@ impl TestContainerService {
             operation: "inspected".into(),
             record: records[index].clone(),
             inspection,
+        })
+    }
+
+    pub fn diagnostic(
+        &self,
+        params: ContainerDiagnosticRequest,
+        caller: &Caller,
+    ) -> Result<ContainerDiagnosticContent, ProtocolError> {
+        if params.max_bytes == 0 || params.max_bytes > 49_152 {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "max_bytes must be in 1..49152",
+            ));
+        }
+        let reference = ContainerReference {
+            path: params.path,
+            run_id: params.run_id,
+            check: params.check,
+            container_id: params.container_id,
+        };
+        let context = self.resolve_reference(&reference, caller)?;
+        let (records, index) = self.find_record(&context, &reference)?;
+        let record = &records[index];
+        self.verify_record(record, &context)?;
+        if record.container_id != reference.container_id {
+            return Err(ownership_error());
+        }
+        let diagnostic = record.diagnostic.clone().ok_or_else(|| {
+            ProtocolError::new(
+                ErrorCode::LogNotFound,
+                "this container has no retained diagnostic",
+            )
+        })?;
+        let payload = self
+            .store
+            .read_container_diagnostics(&context.records, &record.owner_token)
+            .map_err(|_| diagnostic_unavailable())?;
+        if payload.len() as u64 != diagnostic.bytes
+            || lower_hex(&Sha256::digest(&payload)) != diagnostic.sha256
+        {
+            return Err(diagnostic_unavailable());
+        }
+        let text = std::str::from_utf8(&payload).map_err(|_| diagnostic_unavailable())?;
+        let start = params.byte_offset as usize;
+        if !text.is_char_boundary(start) {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "byte_offset must be a character boundary within the diagnostic",
+            ));
+        }
+        let mut end = start
+            .saturating_add(params.max_bytes as usize)
+            .min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start && start < text.len() {
+            return Err(ProtocolError::new(
+                ErrorCode::ParamsInvalid,
+                "max_bytes is too small for the next diagnostic character",
+            ));
+        }
+        Ok(ContainerDiagnosticContent {
+            container_id: record.container_id.clone(),
+            run_id: record.run_id.clone(),
+            check: record.check.clone(),
+            diagnostic,
+            byte_offset: params.byte_offset,
+            next_byte_offset: (end < text.len()).then_some(end as u32),
+            text: text[start..end].to_owned(),
         })
     }
 
@@ -2080,8 +2165,12 @@ fn error_details(error: &DockerError) -> (Option<i32>, Option<i32>, String) {
 
 fn unexpected_fixture_exit(inspection: &ContainerInspection) -> bool {
     let stopped = !matches!(inspection.state.as_str(), "running" | "created" | "paused");
+    // Only daemon-created database services carry a component binding. Finite
+    // containers created through the public API deliberately have none.
+    let service_fixture = inspection.labels.contains_key("devcoordinator2.component");
     stopped
-        && (inspection.oom_killed == Some(true)
+        && (service_fixture
+            || inspection.oom_killed == Some(true)
             || inspection.exit_code != Some(0)
             || inspection.state == "dead")
 }
@@ -2094,6 +2183,13 @@ fn valid_diagnostic(diagnostic: &ContainerDiagnostic, owner_token: &str) -> bool
             .sha256
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn diagnostic_unavailable() -> ProtocolError {
+    ProtocolError::new(
+        ErrorCode::TestLogUnavailable,
+        "retained container diagnostics are unavailable or do not match their receipt",
+    )
 }
 
 fn lower_hex(bytes: &[u8]) -> String {

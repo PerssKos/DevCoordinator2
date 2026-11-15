@@ -1550,6 +1550,16 @@
       },
       "responseTimeoutSeconds": 10
     },
+    "test.container.diagnostic": {
+      "passiveWait": false,
+      "policy": {
+        "effect": "read",
+        "idempotent": true,
+        "role": "administrator",
+        "scope": "repository"
+      },
+      "responseTimeoutSeconds": 10
+    },
     "test.container.inspect": {
       "passiveWait": false,
       "policy": {

@@ -50,8 +50,9 @@ pub struct ContainerCleanupAttempt {
 }
 
 /// Metadata for bounded diagnostics retained before an owned container is
-/// removed.  The log body stays in the private run directory; protocol
-/// responses expose only its scoped reference and integrity facts.
+/// removed. The log body stays in the private run directory. Ordinary
+/// inspection exposes only this metadata; the explicit diagnostic operation
+/// returns verified bounded contents.
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerDiagnostic {
@@ -124,6 +125,38 @@ pub struct ContainerReference {
     pub check: String,
     #[schemars(length(equal = 64))]
     pub container_id: String,
+}
+
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerDiagnosticRequest {
+    pub path: String,
+    pub run_id: String,
+    pub check: String,
+    #[schemars(length(equal = 64))]
+    pub container_id: String,
+    #[serde(default)]
+    pub byte_offset: u32,
+    #[serde(default = "default_diagnostic_bytes")]
+    #[schemars(range(min = 1, max = 49152))]
+    pub max_bytes: u32,
+}
+
+const fn default_diagnostic_bytes() -> u32 {
+    16 * 1024
+}
+
+/// Content is disclosed only by an explicit bounded diagnostic request.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerDiagnosticContent {
+    pub container_id: String,
+    pub run_id: String,
+    pub check: String,
+    pub diagnostic: ContainerDiagnostic,
+    pub byte_offset: u32,
+    pub next_byte_offset: Option<u32>,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]

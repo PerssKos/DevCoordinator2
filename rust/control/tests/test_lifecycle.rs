@@ -271,8 +271,11 @@ struct PostgresDocker {
     timeout_after_remove: AtomicBool,
     reused_name: AtomicBool,
     exited: AtomicBool,
+    container_exit_code: AtomicI32,
     oom_killed: AtomicBool,
     diagnostic_logs: Mutex<String>,
+    fail_capture: AtomicBool,
+    captured: AtomicU64,
     removal_gate: Mutex<Option<RemovalGate>>,
     creation_gate: Mutex<Option<RemovalGate>>,
 }
@@ -290,8 +293,11 @@ impl PostgresDocker {
             timeout_after_remove: AtomicBool::new(false),
             reused_name: AtomicBool::new(false),
             exited: AtomicBool::new(false),
+            container_exit_code: AtomicI32::new(0),
             oom_killed: AtomicBool::new(false),
             diagnostic_logs: Mutex::new(String::new()),
+            fail_capture: AtomicBool::new(false),
+            captured: AtomicU64::new(0),
             removal_gate: Mutex::new(None),
             creation_gate: Mutex::new(None),
         }
@@ -306,6 +312,7 @@ impl PostgresDocker {
     fn exit_unexpectedly(&self, oom_killed: bool, logs: &str) {
         self.oom_killed.store(oom_killed, Ordering::SeqCst);
         self.exited.store(true, Ordering::SeqCst);
+        self.container_exit_code.store(1, Ordering::SeqCst);
         *self.diagnostic_logs.lock().unwrap() = logs.into();
     }
 }
@@ -459,7 +466,11 @@ impl DockerControl for PostgresDocker {
         }
         let exited = self.exited.load(Ordering::SeqCst);
         let status = if exited { "exited" } else { "running" };
-        let exit_code = if exited { 1 } else { 0 };
+        let exit_code = if exited {
+            self.container_exit_code.load(Ordering::SeqCst)
+        } else {
+            0
+        };
         Ok(serde_json::json!({
             "Id": container_id.as_str(), "Name": format!("/{}", self.name.lock().unwrap()),
             "Config": {"Image":"postgres:18", "Labels": self.observed_labels()},
@@ -472,6 +483,12 @@ impl DockerControl for PostgresDocker {
         _container_id: &ExactContainerId,
         _tail_lines: u16,
     ) -> Result<ContainerLogCapture, DockerError> {
+        self.captured.fetch_add(1, Ordering::SeqCst);
+        if self.fail_capture.load(Ordering::SeqCst) {
+            return Err(DockerError::Timeout {
+                operation: "logs".into(),
+            });
+        }
         Ok(ContainerLogCapture {
             text: self.diagnostic_logs.lock().unwrap().clone(),
             truncated: false,
@@ -2961,6 +2978,7 @@ fn shared_postgres_image_metadata_does_not_change_ownership_or_escape_inspection
         normal.record.diagnostic.is_none(),
         "a running fixture cleaned up normally must not create a failure diagnostic"
     );
+    assert_eq!(docker.captured.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -2992,6 +3010,8 @@ fn native_container_image_metadata_keeps_create_inspect_and_cleanup_owned() {
     if created.is_err() {
         docker.image_labels.lock().unwrap().clear();
     }
+    docker.exit_unexpectedly(false, "expected successful finite output");
+    docker.container_exit_code.store(0, Ordering::SeqCst);
     let cleaned = world.containers.retry(reference, &world.caller).unwrap();
     world.systemd.finish(&started.unit);
     world.wait_status(if created.is_ok() {
@@ -3014,6 +3034,8 @@ fn native_container_image_metadata_keeps_create_inspect_and_cleanup_owned() {
         devcoordinator2_api::test_containers::ContainerCleanupStatus::Complete
     );
     assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    assert!(cleaned.record.diagnostic.is_none());
+    assert_eq!(docker.captured.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -3170,7 +3192,7 @@ fn shared_postgres_unexpected_exit_retains_private_bounded_diagnostics() {
     let started = world.start();
     execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
     let reference = shared_postgres_reference(&world, &docker, &started);
-    let logs = "postgres runtime failure\nsecret=must-stay-private\n";
+    let logs = "postgres runtime failure\nsecret=must-stay-private\n€ diagnostic\n";
     docker.exit_unexpectedly(true, logs);
     world.systemd.finish(&started.unit);
     let summary = world.wait_status(TestStatus::Passed);
@@ -3211,12 +3233,92 @@ fn shared_postgres_unexpected_exit_retains_private_bounded_diagnostics() {
         "raw container logs must not cross the exact-owner metadata response"
     );
 
+    let request = devcoordinator2_api::test_containers::ContainerDiagnosticRequest {
+        path: reference.path.clone(),
+        run_id: reference.run_id.clone(),
+        check: reference.check.clone(),
+        container_id: reference.container_id.clone(),
+        byte_offset: 0,
+        max_bytes: 19,
+    };
+    let mut cursor = request.clone();
+    let mut retrieved = String::new();
+    loop {
+        let content = world
+            .containers
+            .diagnostic(cursor.clone(), &world.caller)
+            .unwrap();
+        assert!(content.text.len() <= request.max_bytes as usize);
+        assert_eq!(content.diagnostic, *diagnostic);
+        retrieved.push_str(&content.text);
+        match content.next_byte_offset {
+            Some(offset) => cursor.byte_offset = offset,
+            None => break,
+        }
+    }
+    assert_eq!(retrieved, logs);
+    let mut invalid = request.clone();
+    invalid.byte_offset = logs.find('€').unwrap() as u32 + 1;
+    assert_eq!(
+        world
+            .containers
+            .diagnostic(invalid, &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    let mut invalid = request.clone();
+    invalid.max_bytes = 49_153;
+    assert_eq!(
+        world
+            .containers
+            .diagnostic(invalid, &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::ParamsInvalid
+    );
+    let repeated = world
+        .containers
+        .retry(reference.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(repeated.record, observed.record);
+    assert_eq!(docker.captured.load(Ordering::SeqCst), 1);
+
     let artifact = world
         .worktree
         .join(".devcoordinator/test/containers/receipts")
         .join(&started.run_id)
         .join(&diagnostic.reference);
-    assert_eq!(std::fs::read_to_string(artifact).unwrap(), logs);
+    std::fs::write(&artifact, logs.replace("runtime", "changed")).unwrap();
+    assert_eq!(
+        world
+            .containers
+            .diagnostic(request.clone(), &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::TestLogUnavailable,
+        "changed evidence must fail its recorded hash"
+    );
+    std::fs::remove_file(&artifact).unwrap();
+    std::os::unix::fs::symlink(world.worktree.join(".devcoordinator.toml"), &artifact).unwrap();
+    assert_eq!(
+        world
+            .containers
+            .diagnostic(request.clone(), &world.caller)
+            .unwrap_err()
+            .code,
+        ErrorCode::TestLogUnavailable,
+        "retained diagnostic reads must refuse symlinks"
+    );
+    let mut foreign_read = request;
+    foreign_read.check = "shared-foreign".into();
+    assert!(
+        world
+            .containers
+            .diagnostic(foreign_read, &world.caller)
+            .is_err(),
+        "a different check cannot read another fixture's retained bytes"
+    );
 
     let mut foreign = reference;
     foreign.check = "shared-foreign".into();
@@ -3224,6 +3326,74 @@ fn shared_postgres_unexpected_exit_retains_private_bounded_diagnostics() {
         world.containers.inspect(foreign, &world.caller).is_err(),
         "a different check cannot read another fixture's retained diagnostics"
     );
+}
+
+#[test]
+fn shared_postgres_capture_failure_keeps_the_exact_fixture_for_retry() {
+    use devcoordinator2_api::test_containers::{
+        ContainerCleanupStatus, ContainerDiagnosticRequest,
+    };
+    let docker = Arc::new(PostgresDocker::new());
+    let world = shared_postgres_world(docker.clone());
+    let started = world.start();
+    execute_admitted_database_setup(&world.capacity, &started, &world.worktree);
+    let reference = shared_postgres_reference(&world, &docker, &started);
+    docker.exit_unexpectedly(false, "postgres failure retained after retry\n");
+    docker.container_exit_code.store(0, Ordering::SeqCst);
+    docker.fail_capture.store(true, Ordering::SeqCst);
+    world.systemd.finish(&started.unit);
+    world.wait_status(TestStatus::Failed);
+    let pending = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(
+        pending.record.cleanup_status,
+        ContainerCleanupStatus::Pending
+    );
+    assert!(pending.record.diagnostic.is_none());
+    assert!(pending.record.cleanup_attempts.last().unwrap().retryable);
+    assert!(
+        pending
+            .record
+            .cleanup_attempts
+            .last()
+            .unwrap()
+            .stderr
+            .as_deref()
+            .unwrap()
+            .contains("diagnostic capture")
+    );
+    assert!(docker.present.load(Ordering::SeqCst));
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 0);
+
+    docker.fail_capture.store(false, Ordering::SeqCst);
+    let complete = world
+        .containers
+        .retry(reference.clone(), &world.caller)
+        .unwrap();
+    assert_eq!(
+        complete.record.cleanup_status,
+        ContainerCleanupStatus::Complete
+    );
+    assert_eq!(docker.removed.load(Ordering::SeqCst), 1);
+    let read = world
+        .containers
+        .diagnostic(
+            ContainerDiagnosticRequest {
+                path: reference.path,
+                run_id: reference.run_id,
+                check: reference.check,
+                container_id: reference.container_id,
+                byte_offset: 0,
+                max_bytes: 1024,
+            },
+            &world.caller,
+        )
+        .unwrap();
+    assert_eq!(read.text, "postgres failure retained after retry\n");
+    assert_eq!(complete.record.oom_killed, Some(false));
+    assert_eq!(complete.record.solver_exit_code, Some(0));
 }
 
 #[test]
@@ -3673,8 +3843,19 @@ fn shared_postgres_typed_migration_and_expiry_never_restore_legacy_copies() {
         vec!["e".repeat(64)],
         "only IDs with durable typed ownership may be retired"
     );
+    docker.exit_unexpectedly(false, "owned diagnostic expires with its run\n");
     world.systemd.finish(&started.unit);
     world.wait_status(TestStatus::Passed);
+    let completed = world
+        .containers
+        .inspect(reference.clone(), &world.caller)
+        .unwrap();
+    let diagnostic = completed.record.diagnostic.as_ref().unwrap();
+    let path = root
+        .join("receipts")
+        .join(&started.run_id)
+        .join(&diagnostic.reference);
+    assert!(path.exists());
     let logs = TestLogService::with_clock(
         world.database.clone(),
         Registry::new(world.database.clone()),

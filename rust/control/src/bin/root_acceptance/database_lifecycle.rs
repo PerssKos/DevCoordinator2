@@ -3,6 +3,168 @@
 use super::*;
 use devcoordinator2_control::docker::{DockerCli, DockerControl, ExactContainerId};
 
+pub(super) fn retained_exit_diagnostics(world: &mut World) -> Result<(), String> {
+    let (listener, gate) = database_case_gate(world)?;
+    let command = command_json(&fixture_command(
+        world,
+        &[
+            "postgres-query-gate",
+            "SELECT 1",
+            gate.to_str().ok_or("invalid gate")?,
+        ],
+    ))?;
+    world.write_config(&format!(
+        r#"schema=2
+[test.database]
+timeout_seconds=120
+[test.database.postgres]
+image="postgres:16-alpine"
+user="app"
+database="app_test"
+[[test.database.check]]
+name="database-user"
+tier="release"
+command={command}
+timeout_seconds=90
+[[test.database.check]]
+name="after-exit"
+tier="release"
+requires=["database-user"]
+command=["/usr/bin/psql","--no-psqlrc","--set=ON_ERROR_STOP=1","-tA","-c","SELECT 1"]
+timeout_seconds=10
+"#
+    ))?;
+    world.git(&["add", "."])?;
+    world.git(&["commit", "-qm", "retained container diagnostic acceptance"])?;
+    let started = world.start_fresh(json!({"path":world.repo,"test":"database"}), None)?;
+    let run = test_run_id(&started)?.to_owned();
+    let mut gate = await_database_case(&listener)?;
+    let records: Value = serde_json::from_slice(
+        &fs::read(
+            world
+                .repo
+                .join(".devcoordinator/test/containers/pending")
+                .join(&run)
+                .join("container-lifecycle.json"),
+        )
+        .map_err(|_| "shared fixture receipt missing")?,
+    )
+    .map_err(|_| "shared fixture receipt invalid")?;
+    let record = records
+        .as_array()
+        .and_then(|records| records.first())
+        .ok_or("shared fixture exact ownership missing")?;
+    let id = record["container_id"]
+        .as_str()
+        .ok_or("fixture ID missing")?;
+    let request = json!({"path":world.repo,"run_id":run,"check":record["check"],"container_id":id});
+    let live = world.call("test.container.inspect", request.clone())?;
+    ensure!(
+        data(&live)?["inspection"]["state"] == "running"
+            && data(&live)?["record"]["labels"]["devcoordinator2.instance"] == world.unit_prefix
+            && data(&live)?["record"].get("diagnostic").is_none(),
+        "fixture was not ready, exactly owned, and diagnostic-free before failure"
+    );
+    // The harness owns this exact container in its isolated namespace. Write
+    // non-secret PostgreSQL log lines through its real logging driver, then stop
+    // PostgreSQL after readiness without asking governed cleanup to cause it.
+    run_status(
+        "docker",
+        &[
+            "exec",
+            id,
+            "psql",
+            "-U",
+            "app",
+            "-d",
+            "app_test",
+            "-c",
+            "DO $$ BEGIN FOR i IN 1..900 LOOP RAISE LOG 'fixture post-readiness diagnostic %', repeat('x', 180); END LOOP; END $$;",
+        ],
+    )?;
+    run_status("docker", &["kill", "--signal=KILL", id])?;
+    let exact = ExactContainerId::parse(id.to_owned()).map_err(|_| "invalid exact fixture")?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let value = DockerCli::default()
+            .inspect(&exact)
+            .map_err(|_| "fixture state unavailable")?;
+        if value["State"]["Status"] == "exited" {
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "controlled PostgreSQL exit did not settle"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    gate.write_all(b"1").map_err(|error| error.to_string())?;
+    world.wait_run_status(&started, &["failed"], Duration::from_secs(30))?;
+    ensure!(
+        !DockerCli::default()
+            .container_present(&exact)
+            .map_err(|_| "cannot prove exact fixture absence")?,
+        "governed cleanup did not remove the exact exited fixture"
+    );
+    let cleaned = world.call("test.container.inspect", request.clone())?;
+    let record = &data(&cleaned)?["record"];
+    ensure!(
+        record["cleanup_status"] == "cleanup_complete"
+            && record["oom_killed"] == false
+            && record["solver_exit_code"]
+                .as_i64()
+                .is_some_and(|exit| exit != 0),
+        "governed cleanup lost PostgreSQL exit or OOM facts"
+    );
+    ensure!(
+        record["diagnostic"]["truncated"] == true
+            && record["diagnostic"]["bytes"]
+                .as_u64()
+                .is_some_and(|bytes| bytes <= 65536),
+        "real oversized container logs were not retained with an honest bound"
+    );
+    let mut read = request.clone();
+    read["max_bytes"] = json!(4096);
+    read["byte_offset"] = json!(0);
+    let mut text = String::new();
+    loop {
+        let content = world.call("test.container.diagnostic", read.clone())?;
+        let content = data(&content)?;
+        let chunk = content["text"].as_str().ok_or("diagnostic text missing")?;
+        ensure!(
+            chunk.len() <= 4096,
+            "diagnostic response exceeded its explicit bound"
+        );
+        text.push_str(chunk);
+        match content["next_byte_offset"].as_u64() {
+            Some(offset) => read["byte_offset"] = json!(offset),
+            None => break,
+        }
+        ensure!(
+            text.len() <= 65536,
+            "diagnostic pagination did not remain bounded"
+        );
+    }
+    ensure!(
+        text.contains("fixture post-readiness diagnostic")
+            && record["diagnostic"]["sha256"] == sha256_hex(text.as_bytes())
+            && record["diagnostic"]["bytes"] == text.len(),
+        "supported post-cleanup read lost or changed retained container diagnostics"
+    );
+    let mut foreign = read;
+    foreign["check"] = json!("shared-foreign");
+    ensure!(
+        world.call("test.container.diagnostic", foreign)?["ok"] == false,
+        "diagnostic content crossed its exact check ownership"
+    );
+    let retry = retry_when_idle(world, &request)?;
+    ensure!(
+        data(&retry)?["record"] == *record,
+        "completed cleanup retry changed retained diagnostic evidence"
+    );
+    Ok(())
+}
+
 pub(super) fn shared_ownership_and_recovery(world: &mut World) -> Result<(), String> {
     let (listener, gate) = database_case_gate(world)?;
     let command = command_json(&fixture_command(
