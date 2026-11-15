@@ -1901,6 +1901,11 @@ fn observation_age_and_plan_expiry(world: &World, row: &Value, now: u64) -> Resu
 }
 
 pub(super) fn worktrees_and_backup_floor(world: &mut World) -> Result<(), String> {
+    // This scenario owns filesystem fixtures and creates no Docker consumers.
+    // Observe a real private engine so unrelated host-container churn cannot
+    // invalidate its cleanup prerequisites. Mount-consumer and engine-outage
+    // coverage remain separate acceptance scenarios with their own fixtures.
+    start_fixture_engine(world)?;
     world.write_config("schema = 2\n")?;
     world.write_owned("source.txt", "authoritative fixture source\n")?;
     world.write_owned("package.json", "{\"name\":\"storage-fixture\"}\n")?;
@@ -2641,7 +2646,8 @@ fn native_backup_retirement(world: &mut World, repo: &str) -> Result<(), String>
             && in_use["reasons"]
                 .as_array()
                 .is_some_and(|v| v.contains(&json!("active_process"))),
-        "open native backup was removable"
+        "open native backup protection was not verified: {}",
+        bounded_json(&in_use)
     );
     for name in [
         "native-prepared",
