@@ -363,6 +363,9 @@ impl SourceCursor {
                                     None
                                 }
                             };
+                        if tracked_source == Some(true) {
+                            out.tracked_source_directories.insert(entry_path.clone());
+                        }
                         classify_unconfigured_directory(name.as_ref(), tracked_source)
                     }
                     _ => None,
@@ -539,6 +542,7 @@ impl HostBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation_test_support::Fixture;
     use crate::storage::model::Repository;
     use std::process::Command;
 
@@ -616,7 +620,7 @@ mod tests {
         };
         let linked_root = SourceRoot {
             path: linked.clone(),
-            git: Some(repository),
+            git: Some(repository.clone()),
             repository_id: Some("fixture".into()),
             repository_name: Some("Fixture".into()),
             kind: None,
@@ -634,5 +638,40 @@ mod tests {
             Some((api::Kind::BuildOutput, false))
         );
         assert_eq!(classify_unconfigured_directory("build", None), None);
+
+        let fixture = Fixture::new();
+        let backend = HostBackend::new(fixture.config.clone(), fixture.database.clone());
+        let mut scan_context = context;
+        scan_context.discovering = true;
+        let mut cursor = SourceCursor::new(&scan_context);
+        let mut discovery = Discovery::default();
+        for _ in 0..64 {
+            if cursor
+                .step(
+                    &backend,
+                    &mut scan_context,
+                    &mut discovery,
+                    DiscoveryBudget {
+                        entries: 256,
+                        elapsed: Duration::from_millis(100),
+                    },
+                )
+                .unwrap()
+            {
+                break;
+            }
+        }
+        assert!(
+            discovery
+                .tracked_source_directories
+                .contains(&repository.join("build"))
+        );
+        assert!(discovery.records.iter().all(|record| {
+            !matches!(
+                &record.locator,
+                crate::storage::model::Locator::Directory { path, .. }
+                    if path == &repository.join("build")
+            )
+        }));
     }
 }

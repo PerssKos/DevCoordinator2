@@ -1,6 +1,6 @@
 use devcoordinator2_api::storage as api;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// Private native identity, never projected into an inventory or event.
@@ -100,6 +100,10 @@ pub struct Discovery {
     pub filesystems: Vec<api::Filesystem>,
     pub coverage_gaps: Vec<String>,
     pub complete_kinds: Vec<api::Kind>,
+    /// Directory names that were skipped as generated output because Git
+    /// showed tracked source files below them. Reconciliation uses this
+    /// evidence to retire rows persisted by an older classifier.
+    pub tracked_source_directories: BTreeSet<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]

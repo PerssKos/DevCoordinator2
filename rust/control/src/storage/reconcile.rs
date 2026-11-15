@@ -115,7 +115,20 @@ impl ReconcileCursor {
                         self.existing_page.pop_front();
                         continue;
                     }
-                    if !self.discovery.complete_kinds.contains(&old.artifact.kind) {
+                    let tracked_source_directory = old.artifact.kind == api::Kind::BuildOutput
+                        && matches!(
+                            &old.locator,
+                            super::model::Locator::Directory { path, .. }
+                                if self.discovery.tracked_source_directories.contains(path)
+                        );
+                    if tracked_source_directory {
+                        // This row was emitted by a prior scan before the
+                        // source-folder classifier consulted Git. The path is
+                        // still present, so ordinary absence probing cannot
+                        // retire it; the fresh scan's tracked-source evidence
+                        // is the authoritative replacement observation.
+                        self.missing.insert(id.clone());
+                    } else if !self.discovery.complete_kinds.contains(&old.artifact.kind) {
                         if old.artifact.kind != api::Kind::BuildCache
                             || self.discovery.repository_id.is_none()
                         {
@@ -477,5 +490,50 @@ mod tests {
         assert_eq!(revived.update_sequence, 30);
         assert!(revived.artifact.removed_at_ms.is_none());
         assert_eq!(revived.artifact.revision, 2);
+    }
+
+    #[test]
+    fn tracked_source_directory_retires_persisted_build_output() {
+        let fixture = Fixture::new();
+        let service = service(&fixture);
+        let source = fixture.repository.join("tools/build");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("source.txt"), "tracked source\n").unwrap();
+
+        let mut stale = record("stale-tracked-build", service.now_ms());
+        stale.artifact.kind = api::Kind::BuildOutput;
+        stale.artifact.name = "tools/build".into();
+        let (device, inode) = crate::storage::fs::identity(&source).unwrap();
+        stale.locator = super::super::model::Locator::Directory {
+            path: source.clone(),
+            device,
+            inode,
+            root: fixture.repository.clone(),
+            git_root: Some(fixture.repository.clone()),
+        };
+        stale.resource_key = format!("fs:{device}:{inode}");
+        stale.private_aliases = vec![source.clone()];
+        save(&service, &stale);
+
+        let mut cursor = ReconcileCursor::new(
+            &service,
+            Discovery {
+                repository_id: Some("project-alpha".into()),
+                complete_kinds: vec![api::Kind::BuildOutput],
+                tracked_source_directories: std::iter::once(source).collect(),
+                ..Discovery::default()
+            },
+            2,
+        )
+        .unwrap();
+        for _ in 0..32 {
+            if cursor.step(&service, Duration::from_millis(100)).unwrap().0 {
+                break;
+            }
+        }
+
+        let retired = service.record("stale-tracked-build").unwrap();
+        assert!(retired.artifact.removed_at_ms.is_some());
+        assert_eq!(retired.update_sequence, 2);
     }
 }
