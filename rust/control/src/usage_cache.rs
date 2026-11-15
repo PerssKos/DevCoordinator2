@@ -24,6 +24,7 @@ struct State {
 struct Entry {
     repository_id: String,
     report: UsageRepository,
+    cutoff_ms: u64,
     completed: Option<Instant>,
     touched: Instant,
     refreshing: bool,
@@ -32,11 +33,22 @@ struct Entry {
     bytes: usize,
 }
 impl UsageCache {
+    #[cfg(test)]
     pub(crate) fn get(
         &self,
         key: String,
-        mut empty: UsageRepository,
+        empty: UsageRepository,
         load: impl FnOnce() -> Result<UsageRepository, ProtocolError> + Send + 'static,
+    ) -> UsageRepository {
+        self.get_window(key, 0, empty, move |_| load())
+    }
+
+    pub(crate) fn get_window(
+        &self,
+        key: String,
+        cutoff_ms: u64,
+        mut empty: UsageRepository,
+        load: impl FnOnce(u64) -> Result<UsageRepository, ProtocolError> + Send + 'static,
     ) -> UsageRepository {
         let (state, changed) = &*self.0;
         let mut state = state
@@ -67,6 +79,7 @@ impl UsageCache {
         let entry = state.entries.entry(key.clone()).or_insert_with(|| Entry {
             repository_id: empty.repository_id.clone(),
             report: empty,
+            cutoff_ms,
             completed: None,
             touched: Instant::now(),
             refreshing: false,
@@ -77,6 +90,11 @@ impl UsageCache {
         entry.touched = Instant::now();
         let start = !entry.refreshing && entry.completed.is_none_or(|at| at.elapsed() >= FRESH_FOR);
         if start {
+            // Pending source reads keep their exact cutoff across foreground
+            // retries. Only a completed display cycle may start a newer one.
+            if room && entry.completed.is_some() {
+                entry.cutoff_ms = cutoff_ms;
+            }
             entry.refreshing = room;
             entry.refresh_failed = !room;
         }
@@ -91,8 +109,11 @@ impl UsageCache {
             progress_total: source.as_ref().and_then(|s| s.progress_total),
             progress_stage: source.as_ref().and_then(|s| s.progress_stage.clone()),
         });
+        let cutoff_ms = entry.cutoff_ms;
         if start && room {
-            state.pending.push_back((key, Box::new(load)));
+            state
+                .pending
+                .push_back((key, Box::new(move || load(cutoff_ms))));
         }
         let spawn = !state.running && !state.pending.is_empty();
         if spawn {
@@ -258,6 +279,23 @@ impl UsageCache {
                 })
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
+
+    #[cfg(test)]
+    pub(crate) fn wait_until_idle(&self, deadline: Instant) -> bool {
+        let (guard, changed) = &*self.0;
+        let mut state = guard.lock().unwrap();
+        while state.entries.values().any(|entry| entry.refreshing) {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (updated, waited) = changed.wait_timeout(state, remaining).unwrap();
+            state = updated;
+            if waited.timed_out() && state.entries.values().any(|entry| entry.refreshing) {
+                return false;
+            }
+        }
+        true
+    }
 }
 // Bound serialization without allocating a second copy. The multiplier covers
 // numeric-heavy structs, vectors and owned strings in display projections.
@@ -325,7 +363,8 @@ mod tests {
         let cache = UsageCache::default();
         let (release, blocked) = mpsc::channel();
         let started = Instant::now();
-        let first = cache.get("key".into(), report(None), move || {
+        let first = cache.get_window("key".into(), 100, report(None), move |cutoff| {
+            assert_eq!(cutoff, 100);
             blocked.recv_timeout(Duration::from_secs(2)).unwrap();
             Ok(report(Some(100)))
         });
@@ -333,12 +372,14 @@ mod tests {
         assert_eq!(first.totals.total_tokens, None);
         assert!(first.coverage.snapshot.unwrap().refreshing);
         for _ in 0..10 {
-            let duplicate = cache.get("key".into(), report(None), || panic!("duplicate loader"));
+            let duplicate = cache.get_window("key".into(), 200, report(None), |_| {
+                panic!("duplicate loader")
+            });
             assert!(duplicate.coverage.snapshot.unwrap().refreshing);
         }
         release.send(()).unwrap();
         cache.wait(Some("fixture"));
-        let ready = cache.get("key".into(), report(None), || panic!("fresh loader"));
+        let ready = cache.get_window("key".into(), 200, report(None), |_| panic!("fresh loader"));
         assert_eq!(ready.totals.total_tokens, Some(100));
         assert_eq!(
             ready.coverage.snapshot,
@@ -353,7 +394,11 @@ mod tests {
         );
 
         expire(&cache, "key");
-        cache.get("key".into(), report(None), || {
+        cache.get_window("key".into(), 300, report(None), |cutoff| {
+            assert_eq!(
+                cutoff, 300,
+                "completed observations allow a newer revalidation cutoff"
+            );
             let mut pending = report(None);
             pending.coverage.configured_collectors = 1;
             pending
@@ -363,13 +408,19 @@ mod tests {
             Ok(pending)
         });
         cache.wait(None);
-        let retry = cache.get("key".into(), report(None), || Ok(report(Some(200))));
+        let retry = cache.get_window("key".into(), 400, report(None), |cutoff| {
+            assert_eq!(
+                cutoff, 300,
+                "a pending revalidation keeps its existing cutoff"
+            );
+            Ok(report(Some(200)))
+        });
         assert_eq!(retry.totals.total_tokens, Some(100));
         let snapshot = retry.coverage.snapshot.unwrap();
         assert!(snapshot.refreshing);
         assert!(!snapshot.refresh_failed);
         cache.wait(None);
-        let ready = cache.get("key".into(), report(None), || {
+        let ready = cache.get_window("key".into(), 400, report(None), |_| {
             panic!("completed source loader")
         });
         assert_eq!(ready.totals.total_tokens, Some(200));

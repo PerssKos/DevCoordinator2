@@ -759,7 +759,7 @@ impl CodexUsage {
         }
         let usage = self.clone();
         let repository = repository.clone();
-        Ok(self.cache.get(key, empty, move || {
+        Ok(self.cache.get_window(key, end_ms, empty, move |cutoff_ms| {
             // Identity mapping belongs to this existing background loader,
             // never the Console request. One shared budget bounds every path.
             let selection = selection
@@ -778,7 +778,7 @@ impl CodexUsage {
                 range,
                 now_ms,
                 start_ms,
-                end_ms,
+                cutoff_ms,
                 bucket_ms,
                 bucket_count,
                 resolve_missing,

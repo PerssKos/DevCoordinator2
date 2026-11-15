@@ -364,3 +364,145 @@ fn cold_waiter_hints_are_bounded_expire_and_preserve_source_isolation() {
     );
     assert!(api.0.0.lock().unwrap().cold_waiters.is_empty());
 }
+
+#[test]
+fn usage_repository_retry_consumes_completed_query_after_clock_advances() {
+    use crate::automation_test_support::{Fixture, START, WEEK};
+    use crate::usage_api_fixture::{Peer, ResponseGate};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    struct MovingClock(Arc<AtomicU64>);
+    impl crate::platform::Clock for MovingClock {
+        fn now_utc(&self) -> time::OffsetDateTime {
+            time::OffsetDateTime::from_unix_timestamp_nanos(
+                i128::from(self.0.load(Ordering::SeqCst)) * 1_000_000,
+            )
+            .unwrap()
+        }
+    }
+    for range in [UsageRange::Hours24, UsageRange::Days7, UsageRange::Days30] {
+        let mut fixture = Fixture::new();
+        let root = fixture._temporary.path();
+        let first = ResponseGate::default();
+        let first_response = first.clone();
+        let later = ResponseGate::default();
+        let later_response = later.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let peer = Peer::start(root, &root.join("usage-source"), move |params| {
+            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                first_response.wait();
+            } else {
+                later_response.wait();
+            }
+            response(params, START + WEEK, 135)
+        });
+        let release_first = first.release_on_drop();
+        let release_later = later.release_on_drop();
+        fixture.config.codex_usage_sources = vec![peer.source.clone()];
+        let clock = Arc::new(AtomicU64::new(START + WEEK));
+        let service = UsageService::with_clock(
+            fixture.config.clone(),
+            fixture.database.clone(),
+            Registry::new(fixture.database.clone()),
+            Arc::new(MovingClock(clock.clone())),
+        );
+        let params = |wait_for_refresh| devcoordinator2_api::params::UsageRepository {
+            repository_id: "project-alpha".into(),
+            range: range.clone(),
+            worktree_ids: None,
+            include_unassigned: true,
+            wait_for_refresh,
+        };
+        let cold = service.repository(params(false)).unwrap();
+        assert_eq!(cold.totals.total_tokens, None);
+        assert!(
+            service
+                .usage
+                .cache
+                .wait_until_idle(Instant::now() + Duration::from_secs(3))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release_first.release();
+        assert!(service.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+        clock.store(START + WEEK + 10_000, Ordering::SeqCst);
+
+        let refreshed = service.repository(params(true)).unwrap();
+        release_later.release();
+        assert_eq!(
+            refreshed.totals.total_tokens,
+            Some(135),
+            "Usage retry must consume its completed earlier cutoff before starting a new cutoff"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "a moving wall clock must not abandon the completed source query"
+        );
+        assert_eq!(refreshed.generated_at_ms, START + WEEK + 10_000);
+        assert_eq!(
+            refreshed.coverage.snapshot.as_ref().unwrap().updated_at_ms,
+            Some(START + WEEK),
+            "producer generation time is independent of a later report assembly"
+        );
+        let (start, _, bucket, count) = usage_window(&range, START + WEEK);
+        let record = RepositoryRecord {
+            repository_id: "project-alpha".into(),
+            display_name: "Project Alpha".into(),
+            root_path: fixture.repository.clone(),
+        };
+        let now = START + WEEK + 10_000;
+        let aligned_end = now.div_ceil(bucket) * bucket;
+        // Progress and chart callers share the token display entry. They must
+        // consume that entry's original cutoff as well as the full detail entry.
+        service
+            .usage
+            .repository_buckets(
+                &record,
+                range.clone(),
+                bucket,
+                count,
+                now,
+                aligned_end,
+                true,
+            )
+            .unwrap();
+        assert!(
+            service
+                .usage
+                .cache
+                .wait_until_idle(Instant::now() + Duration::from_secs(2))
+        );
+        let bucketed = service
+            .usage
+            .repository_buckets(
+                &record,
+                range.clone(),
+                bucket,
+                count,
+                now,
+                aligned_end,
+                true,
+            )
+            .unwrap();
+        assert_eq!(bucketed.totals.total_tokens, Some(135));
+        assert_eq!(bucketed.generated_at_ms, now);
+        assert_eq!(
+            bucketed.coverage.snapshot.as_ref().unwrap().updated_at_ms,
+            Some(START + WEEK)
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let requests = peer.requests.lock().unwrap();
+        for request in requests
+            .iter()
+            .filter(|request| request["method"] == "localUsage/summary")
+        {
+            assert_eq!(request["params"]["repositoryKey"], KEY);
+            assert_eq!(request["params"]["fromAt"], start);
+            assert_eq!(request["params"]["toAt"], START + WEEK);
+            assert_eq!(request["params"]["includeReview"], true);
+            assert_eq!(request["params"]["includeUnassigned"], true);
+        }
+        assert!(service.wait_for_collector_refresh(Instant::now() + Duration::from_secs(2)));
+    }
+}

@@ -133,6 +133,14 @@ snapshot's `updated_at_ms` is the producer's summary-generation time, so a new
 request cannot make old measurements appear newly observed. The separate source
 snapshot retains the producer's original publication times and frontiers.
 
+Usage chart retries also retain the pending display entry's exact source
+cutoff. A moving wall clock within the same chart bucket cannot abandon a
+completed source query for a newer window. After that display cycle completes,
+normal revalidation may advance the cutoff. The existing projection, bucket,
+selection, rate-card, queue, and memory boundaries remain unchanged.
+The retained cutoff does not replace the report's assembly time or the
+producer's original snapshot generation and publication timestamps.
+
 If an uncached query waits behind another read of the same source, its normal
 retry gets a turn before a completed query starts another stale revalidation.
 The completed query still returns its own measured snapshot; no result is
