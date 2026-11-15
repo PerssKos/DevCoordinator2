@@ -381,6 +381,14 @@ pub struct DockerOutput {
     pub stderr_truncated: bool,
 }
 
+/// Bounded output captured from an exact container before it is removed.
+/// Contents are written only to the private lifecycle artifact; protocol
+/// responses expose its digest and size instead of this text.
+pub struct ContainerLogCapture {
+    pub text: String,
+    pub truncated: bool,
+}
+
 impl DockerOutput {
     pub fn success(&self) -> bool {
         self.exit_code == 0
@@ -1810,6 +1818,18 @@ pub trait DockerControl: Send + Sync {
             return ContainerState::missing();
         };
         container_state_from_inspect(&info)
+    }
+
+    fn container_log_capture(
+        &self,
+        container_id: &ExactContainerId,
+        tail_lines: u16,
+    ) -> Result<ContainerLogCapture, DockerError> {
+        let text = self.container_logs(container_id, tail_lines)?;
+        Ok(ContainerLogCapture {
+            truncated: text.len() >= MAX_LOG_BYTES,
+            text,
+        })
     }
 
     fn container_logs(

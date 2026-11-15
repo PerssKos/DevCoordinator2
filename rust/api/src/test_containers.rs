@@ -49,6 +49,19 @@ pub struct ContainerCleanupAttempt {
     pub retryable: bool,
 }
 
+/// Metadata for bounded diagnostics retained before an owned container is
+/// removed.  The log body stays in the private run directory; protocol
+/// responses expose only its scoped reference and integrity facts.
+#[derive(Clone, Debug, JsonSchema, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerDiagnostic {
+    pub reference: String,
+    pub bytes: u64,
+    pub sha256: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// The daemon-owned record for one temporary container.  This is retained in
 /// the governed run directory so cleanup can be retried after a daemon
 /// restart; callers cannot provide or replace the owner token.
@@ -82,6 +95,10 @@ pub struct TestContainerRecord {
     pub stdout_bytes: u64,
     #[serde(default)]
     pub stderr_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oom_killed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<ContainerDiagnostic>,
     #[serde(default = "default_cleanup_status")]
     pub cleanup_status: ContainerCleanupStatus,
     #[serde(default)]
@@ -126,6 +143,10 @@ pub struct ContainerInspection {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oom_killed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<ContainerDiagnostic>,
     pub native_execution_began: bool,
     pub cleanup_status: ContainerCleanupStatus,
     #[serde(default)]
