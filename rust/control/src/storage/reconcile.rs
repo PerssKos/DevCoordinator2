@@ -120,7 +120,13 @@ impl ReconcileCursor {
                             &old.locator,
                             super::model::Locator::Directory { path, .. }
                                 if self.discovery.tracked_source_directories.contains(path)
-                        );
+                        )
+                        && !old.artifact.protected
+                        && !self.context.protected_resources.contains(&old.resource_key)
+                        && !self.context.protected_ancestors.contains(&old.resource_key)
+                        && !self.context.leased_artifacts.contains(&id)
+                        && !self.context.leased_resources.contains(&old.resource_key)
+                        && !self.context.leased_ancestors.contains(&old.resource_key);
                     if tracked_source_directory {
                         // This row was emitted by a prior scan before the
                         // source-folder classifier consulted Git. The path is
@@ -535,5 +541,51 @@ mod tests {
         let retired = service.record("stale-tracked-build").unwrap();
         assert!(retired.artifact.removed_at_ms.is_some());
         assert_eq!(retired.update_sequence, 2);
+    }
+
+    #[test]
+    fn tracked_source_retirement_preserves_explicit_protection() {
+        let fixture = Fixture::new();
+        let service = service(&fixture);
+        let source = fixture.repository.join("third_party/crashpad/build");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("BUILD.gn"), "tracked source\n").unwrap();
+
+        let mut protected = record("protected-tracked-build", service.now_ms());
+        protected.artifact.kind = api::Kind::BuildOutput;
+        protected.artifact.name = "third_party/crashpad/build".into();
+        protected.artifact.protected = true;
+        let (device, inode) = crate::storage::fs::identity(&source).unwrap();
+        protected.locator = super::super::model::Locator::Directory {
+            path: source.clone(),
+            device,
+            inode,
+            root: fixture.repository.clone(),
+            git_root: Some(fixture.repository.clone()),
+        };
+        protected.resource_key = format!("fs:{device}:{inode}");
+        protected.private_aliases = vec![source.clone()];
+        save(&service, &protected);
+
+        let mut cursor = ReconcileCursor::new(
+            &service,
+            Discovery {
+                repository_id: Some("project-alpha".into()),
+                complete_kinds: vec![api::Kind::BuildOutput],
+                tracked_source_directories: std::iter::once(source).collect(),
+                ..Discovery::default()
+            },
+            2,
+        )
+        .unwrap();
+        for _ in 0..32 {
+            if cursor.step(&service, Duration::from_millis(100)).unwrap().0 {
+                break;
+            }
+        }
+
+        let retained = service.record("protected-tracked-build").unwrap();
+        assert!(retained.artifact.removed_at_ms.is_none());
+        assert!(retained.artifact.protected);
     }
 }
